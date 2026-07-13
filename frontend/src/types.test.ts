@@ -16,7 +16,7 @@ describe('moldLocation', () => {
     expect(moldLocation({ ...base, status: 'ON_MACHINE', machine: { id: 3, code: 'MC-03', name: '3号机' } })).toBe('MC-03 · 3号机')
   })
 
-  it('returns processor for outsourced mold', () => {
-    expect(moldLocation({ ...base, status: 'OUTSOURCED', processor: { id: 4, code: 'P01', name: '外协厂' } })).toBe('P01 · 外协厂')
+  it('shows customer returned for an outsourced mold', () => {
+    expect(moldLocation({ ...base, status: 'OUTSOURCED', processor: { id: 4, code: 'P01', name: '外协厂' } })).toBe('客户收回')
   })
 })

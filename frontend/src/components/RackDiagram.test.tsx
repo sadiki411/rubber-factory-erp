@@ -32,7 +32,20 @@ describe('RackDiagram', () => {
     expect(screen.getByText('J01 · 1号模具架')).toBeInTheDocument()
     expect(screen.getByText('MJ-009')).toBeInTheDocument()
     expect(screen.getByText('ABC-100')).toBeInTheDocument()
-    expect(screen.getByText('空位')).toBeInTheDocument()
+    expect(screen.getByText('空位 · 点击放入')).toBeInTheDocument()
+  })
+
+  it('opens quick creation for an empty slot and still opens occupied mold details', async () => {
+    const user = userEvent.setup()
+    const onEmptySlotClick = vi.fn()
+    const onMoldClick = vi.fn()
+    render(<RackDiagram layout={layout} onEmptySlotClick={onEmptySlotClick} onMoldClick={onMoldClick} />)
+
+    await user.click(screen.getByRole('button', { name: 'J01-L01-A-P02 空位' }))
+    expect(onEmptySlotClick).toHaveBeenCalledWith(expect.objectContaining({ id: 2 }))
+
+    await user.click(screen.getByRole('button', { name: 'J01-L01-A-P01 MJ-009' }))
+    expect(onMoldClick).toHaveBeenCalledWith(9)
   })
 
   it('shows both S2 and S1 and invokes the stacking switch', async () => {

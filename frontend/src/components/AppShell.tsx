@@ -1,6 +1,5 @@
 import {
   AppstoreOutlined,
-  DatabaseOutlined,
   FileExcelOutlined,
   HomeOutlined,
   LogoutOutlined,
@@ -23,7 +22,6 @@ const menuItems = [
   { key: '/quality', icon: <SafetyCertificateOutlined />, label: '品检出货' },
   { key: '/molds', icon: <ToolOutlined />, label: '模具台账' },
   { key: '/racks', icon: <AppstoreOutlined />, label: '货架总览' },
-  { key: '/master-data', icon: <DatabaseOutlined />, label: '标准资料' },
   { key: '/rack-config', icon: <SettingOutlined />, label: '货架配置' },
   { key: '/imports', icon: <FileExcelOutlined />, label: 'Excel 导入' },
 ]

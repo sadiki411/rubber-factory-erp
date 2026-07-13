@@ -417,7 +417,7 @@ class ProductionRun(TimeStampedModel):
             ).first()
             mold_status, mold_machine_id = mold_state or (None, None)
             if mold_status == MoldAsset.Status.OUTSOURCED:
-                errors["mold"] = "待上机或生产中的订单不能关联外协模具。"
+                errors["mold"] = "待上机或生产中的订单不能关联客户收回的模具。"
             elif self.status == self.Status.RUNNING:
                 if station_machine_id is None:
                     errors["station"] = "该生产机台尚未关联模具台账机台，不能登记为生产中。"

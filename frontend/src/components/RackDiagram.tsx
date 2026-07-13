@@ -7,11 +7,12 @@ interface Props {
   loading?: boolean
   highlightMoldId?: number
   onMoldClick?: (moldId: number) => void
+  onEmptySlotClick?: (slot: RackSlot) => void
   onCapacityChange?: (zone: RackZone, capacity: number) => void
   onStackingChange?: (zone: RackZone, enabled: boolean) => void
 }
 
-function SlotCell({ slot, highlightMoldId, onMoldClick }: Pick<Props, 'highlightMoldId' | 'onMoldClick'> & { slot?: RackSlot }) {
+function SlotCell({ slot, highlightMoldId, onMoldClick, onEmptySlotClick }: Pick<Props, 'highlightMoldId' | 'onMoldClick' | 'onEmptySlotClick'> & { slot?: RackSlot }) {
   if (!slot || !slot.active) {
     const reason = slot?.blocking_reason || (slot ? '禁放' : '未启用')
     return (
@@ -27,8 +28,11 @@ function SlotCell({ slot, highlightMoldId, onMoldClick }: Pick<Props, 'highlight
     <button
       type="button"
       className={`rack-slot ${occupied ? 'occupied' : 'empty'} ${highlighted ? 'highlighted' : ''}`}
-      onClick={() => occupied && slot.mold && onMoldClick?.(slot.mold.id)}
-      disabled={!occupied}
+      onClick={() => {
+        if (occupied && slot.mold) onMoldClick?.(slot.mold.id)
+        else onEmptySlotClick?.(slot)
+      }}
+      disabled={occupied ? !onMoldClick : !onEmptySlotClick}
       aria-label={`${slot.display_code}${occupied ? ` ${slot.mold?.asset_code}` : ' 空位'}`}
     >
       <span className="slot-code">{slot.display_code}</span>
@@ -37,12 +41,12 @@ function SlotCell({ slot, highlightMoldId, onMoldClick }: Pick<Props, 'highlight
           <strong>{slot.mold?.asset_code}</strong>
           <span>{slot.mold?.model_code || slot.mold?.product_name || '已占用'}</span>
         </>
-      ) : <span className="empty-label">空位</span>}
+      ) : <span className="empty-label">空位 · 点击放入</span>}
     </button>
   )
 }
 
-function ZoneCells({ zone, highlightMoldId, onMoldClick }: { zone: RackZone } & Pick<Props, 'highlightMoldId' | 'onMoldClick'>) {
+function ZoneCells({ zone, highlightMoldId, onMoldClick, onEmptySlotClick }: { zone: RackZone } & Pick<Props, 'highlightMoldId' | 'onMoldClick' | 'onEmptySlotClick'>) {
   const positions = Array.from({ length: zone.current_capacity }, (_, index) => index + 1)
   const stacks = zone.supports_stacking && zone.stacking_enabled ? 2 : 1
   return (
@@ -51,7 +55,7 @@ function ZoneCells({ zone, highlightMoldId, onMoldClick }: { zone: RackZone } & 
         <div className={`slot-stack stack-${stacks}`} key={position}>
           {Array.from({ length: stacks }, (_, index) => stacks - index).map((stackLevel) => {
             const slot = zone.slots.find((item) => item.position_no === position && item.stack_level === stackLevel)
-            return <SlotCell key={stackLevel} slot={slot} highlightMoldId={highlightMoldId} onMoldClick={onMoldClick} />
+            return <SlotCell key={stackLevel} slot={slot} highlightMoldId={highlightMoldId} onMoldClick={onMoldClick} onEmptySlotClick={onEmptySlotClick} />
           })}
         </div>
       ))}
@@ -72,7 +76,7 @@ function InactiveZone({ zone }: { zone: RackZone }) {
   )
 }
 
-export function RackDiagram({ layout, loading, highlightMoldId, onMoldClick, onCapacityChange, onStackingChange }: Props) {
+export function RackDiagram({ layout, loading, highlightMoldId, onMoldClick, onEmptySlotClick, onCapacityChange, onStackingChange }: Props) {
   if (loading) return <Skeleton active paragraph={{ rows: 8 }} />
   if (!layout || !layout.levels?.length) {
     return <Empty description="此货架还没有配置结构" />
@@ -137,7 +141,7 @@ export function RackDiagram({ layout, loading, highlightMoldId, onMoldClick, onC
                   </div>
                   {zone.is_active === false
                     ? <InactiveZone zone={zone} />
-                    : <ZoneCells zone={zone} highlightMoldId={highlightMoldId} onMoldClick={onMoldClick} />}
+                    : <ZoneCells zone={zone} highlightMoldId={highlightMoldId} onMoldClick={onMoldClick} onEmptySlotClick={onEmptySlotClick} />}
                 </section>
               ))}
             </div>

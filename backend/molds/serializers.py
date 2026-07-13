@@ -1,3 +1,5 @@
+import re
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -116,15 +118,29 @@ class SlotSerializer(serializers.ModelSerializer):
 
 
 class MoldAssetSerializer(serializers.ModelSerializer):
+    asset_code = serializers.CharField(required=False, allow_blank=True, max_length=100)
     mold_model = MoldModelSerializer(read_only=True)
     mold_model_id = serializers.PrimaryKeyRelatedField(
-        source="mold_model", queryset=MoldModel.objects.filter(is_active=True), write_only=True
+        source="mold_model",
+        queryset=MoldModel.objects.filter(is_active=True),
+        write_only=True,
+        required=False,
     )
+    model_code = serializers.CharField(write_only=True, required=False, max_length=100)
+    product_name = serializers.CharField(write_only=True, required=False, allow_blank=True, max_length=200)
     slot = SlotSerializer(source="current_slot", read_only=True)
     machine = MachineSerializer(source="current_machine", read_only=True)
     processor = ProcessorSerializer(source="current_processor", read_only=True)
     slot_id = serializers.PrimaryKeyRelatedField(
         source="initial_slot", queryset=RackSlot.objects.select_related("zone__level__rack"), write_only=True, required=False
+    )
+    machine_id = serializers.PrimaryKeyRelatedField(
+        source="initial_machine", queryset=Machine.objects.all(), write_only=True, required=False
+    )
+    initial_status = serializers.ChoiceField(
+        choices=MoldAsset.Status.choices,
+        write_only=True,
+        required=False,
     )
     image = serializers.ImageField(source="main_image", required=False, allow_null=True)
     can_stack = serializers.BooleanField(source="allows_stacking", required=False)
@@ -140,12 +156,16 @@ class MoldAssetSerializer(serializers.ModelSerializer):
             "asset_code",
             "mold_model",
             "mold_model_id",
+            "model_code",
+            "product_name",
             "image",
             "status",
             "status_label",
             "slot",
             "slot_id",
             "machine",
+            "machine_id",
+            "initial_status",
             "processor",
             "location_text",
             "can_stack",
@@ -163,51 +183,158 @@ class MoldAssetSerializer(serializers.ModelSerializer):
             return obj.current_slot.display_code
         if obj.status == MoldAsset.Status.ON_MACHINE and obj.current_machine:
             return f"{obj.current_machine.code} - {obj.current_machine.name}"
-        if obj.status == MoldAsset.Status.OUTSOURCED and obj.current_processor:
-            return f"{obj.current_processor.code} - {obj.current_processor.name}"
+        if obj.status == MoldAsset.Status.OUTSOURCED:
+            return "客户收回"
         return ""
 
     def validate(self, attrs):
-        if self.instance and "initial_slot" in attrs:
-            raise serializers.ValidationError({"slot_id": "修改位置请使用归位或移库操作。"})
-        if not self.instance and "initial_slot" not in attrs:
-            raise serializers.ValidationError({"slot_id": "新建模具必须选择初始库位。"})
+        model = attrs.get("mold_model")
+        model_code = attrs.get("model_code", "").strip()
+        product_name = attrs.get("product_name", "").strip()
+        asset_code = attrs.get("asset_code", "").strip()
+        if model_code:
+            attrs["model_code"] = model_code
+        if "product_name" in attrs:
+            attrs["product_name"] = product_name
+        if "asset_code" in attrs:
+            attrs["asset_code"] = asset_code
+        if self.instance and "asset_code" in attrs and not asset_code:
+            raise serializers.ValidationError({"asset_code": "模具编号不能为空。"})
+        if self.instance and "asset_code" in attrs and asset_code != self.instance.asset_code:
+            raise serializers.ValidationError({"asset_code": "模具编号创建后不可直接修改。"})
+        if asset_code and MoldAsset.objects.filter(asset_code=asset_code).exclude(
+            pk=self.instance.pk if self.instance else None
+        ).exists():
+            raise serializers.ValidationError({"asset_code": "该模具编号已存在。"})
+        if not self.instance and not model and not model_code:
+            raise serializers.ValidationError({"model_code": "请输入模具型号。"})
+        if model and model_code and model.code.casefold() != model_code.casefold():
+            raise serializers.ValidationError({"model_code": "模具型号与所选型号不一致。"})
+        if self.instance and any(key in attrs for key in ("initial_slot", "initial_machine", "initial_status")):
+            raise serializers.ValidationError({"status": "修改状态或位置请使用对应的状态操作。"})
+        if not self.instance:
+            initial_status = attrs.get("initial_status", MoldAsset.Status.IN_STOCK)
+            if initial_status == MoldAsset.Status.IN_STOCK:
+                if "initial_slot" not in attrs:
+                    raise serializers.ValidationError({"slot_id": "在库模具必须选择初始库位。"})
+                if "initial_machine" in attrs:
+                    raise serializers.ValidationError({"machine_id": "在库模具不能选择机台。"})
+            elif initial_status == MoldAsset.Status.ON_MACHINE:
+                if "initial_machine" not in attrs:
+                    raise serializers.ValidationError({"machine_id": "上机模具必须选择机台。"})
+                if "initial_slot" in attrs:
+                    raise serializers.ValidationError({"slot_id": "上机模具不能选择库位。"})
+            elif "initial_slot" in attrs or "initial_machine" in attrs:
+                raise serializers.ValidationError({"initial_status": "客户收回状态不能选择库位或机台。"})
         return attrs
+
+    @staticmethod
+    def _resolve_model(mold_model, model_code, product_name):
+        if mold_model:
+            if product_name and mold_model.product_name != product_name:
+                mold_model.product_name = product_name
+                mold_model.save(update_fields=["product_name", "updated_at"])
+            return mold_model
+        model = MoldModel.objects.filter(code__iexact=model_code).order_by("id").first()
+        if model:
+            if product_name and model.product_name != product_name:
+                model.product_name = product_name
+                model.save(update_fields=["product_name", "updated_at"])
+            return model
+        try:
+            with transaction.atomic():
+                return MoldModel.objects.create(
+                    code=model_code,
+                    product_name=product_name or model_code,
+                )
+        except IntegrityError:
+            model = MoldModel.objects.filter(code__iexact=model_code).order_by("id").first()
+            if not model:
+                raise
+            if product_name and model.product_name != product_name:
+                model.product_name = product_name
+                model.save(update_fields=["product_name", "updated_at"])
+            return model
+
+    @staticmethod
+    def _next_asset_code(model_code):
+        prefix = re.sub(r"[^\w-]+", "-", model_code, flags=re.UNICODE).strip("-_").upper() or "MOLD"
+        index = 1
+        while True:
+            suffix = f"-{index:02d}"
+            candidate = f"{prefix[: 100 - len(suffix)]}{suffix}"
+            if not MoldAsset.objects.filter(asset_code=candidate).exists():
+                return candidate
+            index += 1
 
     @transaction.atomic
     def create(self, validated_data):
         confirm_warnings = validated_data.pop("confirm_warnings", False)
-        slot = validated_data.pop("initial_slot")
-        slot = RackSlot.objects.select_for_update().select_related("zone__level__rack").get(pk=slot.pk)
-        try:
-            validate_slot(slot)
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError({"slot_id": exc.messages})
+        initial_status = validated_data.pop("initial_status", MoldAsset.Status.IN_STOCK)
+        slot = validated_data.pop("initial_slot", None)
+        machine = validated_data.pop("initial_machine", None)
+        model_code = validated_data.pop("model_code", "")
+        product_name = validated_data.pop("product_name", "")
+        mold_model = self._resolve_model(validated_data.pop("mold_model", None), model_code, product_name)
+        asset_code = validated_data.pop("asset_code", "")
+        generated_asset_code = not asset_code
+        asset_code = asset_code or self._next_asset_code(mold_model.code)
+        if slot:
+            slot = RackSlot.objects.select_for_update().select_related("zone__level__rack").get(pk=slot.pk)
+            try:
+                validate_slot(slot)
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError({"slot_id": exc.messages})
+        if machine:
+            machine = Machine.objects.select_for_update().get(pk=machine.pk)
+            if not machine.is_active:
+                raise serializers.ValidationError({"machine_id": "所选机台已停用。"})
         mold = MoldAsset(
-            status=MoldAsset.Status.IN_STOCK,
+            asset_code=asset_code,
+            mold_model=mold_model,
+            status=initial_status,
             current_slot=slot,
+            current_machine=machine,
             status_changed_at=timezone.now(),
             **validated_data,
         )
-        try:
-            warnings = stacking_warnings(mold, target_slot=slot)
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError({"slot_id": exc.messages}) from exc
+        warnings = []
+        if slot:
+            try:
+                warnings = stacking_warnings(mold, target_slot=slot)
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError({"slot_id": exc.messages}) from exc
         if warnings and not confirm_warnings:
             raise ConfirmationRequired(warnings)
-        try:
-            mold.full_clean()
-            mold.save()
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
-        except IntegrityError as exc:
-            raise serializers.ValidationError({"slot_id": "目标库位已被占用。"}) from exc
-        Rack.objects.filter(pk=slot.zone.level.rack_id).update(structure_locked=True)
+        while True:
+            try:
+                mold.full_clean()
+                with transaction.atomic():
+                    mold.save()
+                break
+            except DjangoValidationError as exc:
+                errors = exc.message_dict if hasattr(exc, "message_dict") else {}
+                if generated_asset_code and errors and set(errors) == {"asset_code"}:
+                    mold.asset_code = self._next_asset_code(mold_model.code)
+                    continue
+                raise serializers.ValidationError(errors or exc.messages)
+            except IntegrityError as exc:
+                if slot and MoldAsset.objects.filter(current_slot=slot).exists():
+                    raise serializers.ValidationError({"slot_id": "目标库位已被占用。"}) from exc
+                if MoldAsset.objects.filter(asset_code=mold.asset_code).exists():
+                    if generated_asset_code:
+                        mold.asset_code = self._next_asset_code(mold_model.code)
+                        continue
+                    raise serializers.ValidationError({"asset_code": "该模具编号已存在。"}) from exc
+                raise serializers.ValidationError({"non_field_errors": "模具保存失败，请重试。"}) from exc
+        if slot:
+            Rack.objects.filter(pk=slot.zone.level.rack_id).update(structure_locked=True)
         MoldMovement.objects.create(
             mold=mold,
             action=MoldMovement.Action.CREATE,
             to_status=mold.status,
             to_slot=slot,
+            to_machine=machine,
             note="新建模具",
             operator=self.context["request"].user,
         )
@@ -215,6 +342,15 @@ class MoldAssetSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         validated_data.pop("confirm_warnings", None)
+        validated_data.pop("initial_status", None)
+        validated_data.pop("initial_slot", None)
+        validated_data.pop("initial_machine", None)
+        model_code = validated_data.pop("model_code", "")
+        product_name = validated_data.pop("product_name", "")
+        if model_code:
+            validated_data["mold_model"] = self._resolve_model(
+                validated_data.get("mold_model"), model_code, product_name
+            )
         return super().update(instance, validated_data)
 
 

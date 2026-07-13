@@ -31,8 +31,8 @@ export function MoldDetailPage() {
   const image = mold.main_image || mold.image
 
   const actions = mold.status === 'IN_STOCK'
-    ? <><Button icon={<SwapOutlined />} onClick={() => setAction('move')}>移位</Button><Button icon={<ToolOutlined />} onClick={() => setAction('load-machine')}>上机</Button><Button icon={<ExportOutlined />} onClick={() => setAction('send-out')}>外出加工</Button></>
-    : <><Button type="primary" icon={<HomeOutlined />} onClick={() => setAction('putaway')}>归位入库</Button>{mold.status !== 'ON_MACHINE' && <Button icon={<ToolOutlined />} onClick={() => setAction('load-machine')}>上机</Button>}{mold.status !== 'OUTSOURCED' && <Button icon={<ExportOutlined />} onClick={() => setAction('send-out')}>外出加工</Button>}</>
+    ? <><Button icon={<SwapOutlined />} onClick={() => setAction('move')}>移位</Button><Button icon={<ToolOutlined />} onClick={() => setAction('load-machine')}>上机</Button><Button icon={<ExportOutlined />} onClick={() => setAction('send-out')}>客户收回</Button></>
+    : <><Button type="primary" icon={<HomeOutlined />} onClick={() => setAction('putaway')}>归位入库</Button>{mold.status !== 'ON_MACHINE' && <Button icon={<ToolOutlined />} onClick={() => setAction('load-machine')}>上机</Button>}{mold.status !== 'OUTSOURCED' && <Button icon={<ExportOutlined />} onClick={() => setAction('send-out')}>客户收回</Button>}</>
 
   return (
     <div className="page-container">

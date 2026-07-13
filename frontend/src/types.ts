@@ -568,7 +568,7 @@ export interface QualitySummary {
 export const STATUS_META: Record<MoldStatus, { text: string; color: string }> = {
   IN_STOCK: { text: '在库', color: 'success' },
   ON_MACHINE: { text: '上机', color: 'processing' },
-  OUTSOURCED: { text: '外出加工', color: 'warning' },
+  OUTSOURCED: { text: '客户收回', color: 'warning' },
 }
 
 export function moldCode(mold: MoldAsset) {
@@ -582,5 +582,5 @@ export function moldModelOf(mold: MoldAsset) {
 export function moldLocation(mold: MoldAsset) {
   if (mold.status === 'IN_STOCK') return mold.slot?.display_code || '在库，位置未设置'
   if (mold.status === 'ON_MACHINE') return mold.machine ? `${mold.machine.code} · ${mold.machine.name}` : '上机中'
-  return mold.processor ? `${mold.processor.code} · ${mold.processor.name}` : '外出加工中'
+  return '客户收回'
 }

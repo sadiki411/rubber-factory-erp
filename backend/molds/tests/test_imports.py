@@ -55,9 +55,11 @@ class StandardTemplateTests(TestCase):
             "position_no",
             "stack_level",
             "machine_code",
-            "processor_code",
         ]:
             self.assertIn(required, entity_headers)
+        self.assertNotIn("processor_code", entity_headers)
+        self.assertNotIn(None, entity_headers)
+        self.assertEqual(workbook["模具实体"].max_column, len(entity_headers))
         example = {
             header: workbook["模具实体"].cell(2, column_no + 1).value
             for column_no, header in enumerate(entity_headers)
@@ -66,6 +68,8 @@ class StandardTemplateTests(TestCase):
             (example["rack_code"], example["zone_code"], example["capacity_mode"]),
             ("J01", "A", 2),
         )
+        self.assertTrue(example["allows_stacking"])
+        self.assertEqual(example["notes"], "示例行，使用前请删除")
 
 
 class StandardImportTests(SeededRackMixin, TestCase):
@@ -83,7 +87,6 @@ class StandardImportTests(SeededRackMixin, TestCase):
                     "asset_code": "ABC-100-03",
                     "model_code": "ABC-100",
                     "status": "OUTSOURCED",
-                    "processor_code": "OUT-01",
                 },
             )
         )
@@ -97,7 +100,12 @@ class StandardImportTests(SeededRackMixin, TestCase):
         self.assertEqual(MoldAsset.objects.count(), 3)
         self.assertEqual(MoldMovement.objects.filter(action="CREATE").count(), 3)
         self.assertEqual(Machine.objects.get(code="MC-01").current_molds.count(), 1)
-        self.assertEqual(Processor.objects.get(code="OUT-01").current_molds.count(), 1)
+        returned = MoldAsset.objects.get(asset_code="ABC-100-03")
+        self.assertIsNone(returned.current_processor)
+        self.assertEqual(
+            MoldMovement.objects.get(mold=returned, action="CREATE").get_to_status_display(),
+            "客户收回",
+        )
         batch.refresh_from_db()
         self.assertEqual(batch.status, ImportBatch.Status.COMMITTED)
         self.assertIsNotNone(batch.committed_at)

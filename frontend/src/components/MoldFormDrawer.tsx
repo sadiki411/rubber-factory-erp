@@ -1,35 +1,37 @@
-import { App, Button, Drawer, Form, Input, Modal, Select, Space, Switch, Upload } from 'antd'
+import { App, Button, Drawer, Form, Input, Modal, Select, Space, Switch, Typography, Upload } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import type { UploadFile } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { ApiError, masterApi, moldApi, slotApi, toList } from '../api/client'
-import type { MoldAsset, MoldModel } from '../types'
+import type { Machine, MoldAsset, MoldStatus, RackSlot } from '../types'
 import { moldCode, moldModelOf } from '../types'
 
 interface Props {
   open: boolean
   mold?: MoldAsset
+  initialSlot?: RackSlot
   onClose: () => void
   onSuccess?: (mold: MoldAsset) => void
 }
 
-export function MoldFormDrawer({ open, mold, onClose, onSuccess }: Props) {
+export function MoldFormDrawer({ open, mold, initialSlot, onClose, onSuccess }: Props) {
   const [form] = Form.useForm()
   const [files, setFiles] = useState<UploadFile[]>([])
   const queryClient = useQueryClient()
   const { message } = App.useApp()
   const editing = !!mold
+  const initialStatus = Form.useWatch<MoldStatus>('initial_status', form)
 
-  const modelsQuery = useQuery({
-    queryKey: ['mold-models'],
-    queryFn: async () => toList(await masterApi<MoldModel>('mold-models').list()),
-    enabled: open,
-  })
   const slotsQuery = useQuery({
     queryKey: ['slots', 'available'],
     queryFn: async () => toList(await slotApi.list(true)),
-    enabled: open && !editing,
+    enabled: open && !editing && initialStatus === 'IN_STOCK' && !initialSlot,
+  })
+  const machinesQuery = useQuery({
+    queryKey: ['machines'],
+    queryFn: async () => toList(await masterApi<Machine>('machines').list()),
+    enabled: open && !editing && initialStatus === 'ON_MACHINE',
   })
 
   useEffect(() => {
@@ -38,7 +40,8 @@ export function MoldFormDrawer({ open, mold, onClose, onSuccess }: Props) {
     if (mold) {
       form.setFieldsValue({
         asset_code: moldCode(mold),
-        mold_model_id: moldModelOf(mold)?.id,
+        model_code: moldModelOf(mold)?.code,
+        product_name: moldModelOf(mold)?.product_name || moldModelOf(mold)?.name,
         note: mold.note,
         can_stack: mold.can_stack ?? false,
       })
@@ -48,10 +51,14 @@ export function MoldFormDrawer({ open, mold, onClose, onSuccess }: Props) {
       setFiles(image ? [{ uid: '-1', name: '模具照片', status: 'done', url: image }] : [])
     } else {
       form.resetFields()
-      form.setFieldValue('can_stack', false)
+      form.setFieldsValue({
+        can_stack: false,
+        initial_status: 'IN_STOCK',
+        slot_id: initialSlot?.id,
+      })
       setFiles([])
     }
-  }, [form, mold, open])
+  }, [form, initialSlot, mold, open])
 
   const mutation = useMutation({
     mutationFn: async ({ values, confirmWarnings }: { values: Record<string, any>; confirmWarnings: boolean }) => {
@@ -68,6 +75,8 @@ export function MoldFormDrawer({ open, mold, onClose, onSuccess }: Props) {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['molds'] }),
         queryClient.invalidateQueries({ queryKey: ['mold'] }),
+        queryClient.invalidateQueries({ queryKey: ['racks'] }),
+        queryClient.invalidateQueries({ queryKey: ['slots'] }),
       ])
       message.success(editing ? '模具资料已保存' : '模具已建档')
       onSuccess?.(result)
@@ -101,32 +110,67 @@ export function MoldFormDrawer({ open, mold, onClose, onSuccess }: Props) {
       open={open}
       onClose={onClose}
       size={520}
-      title={editing ? '编辑模具资料' : '新增模具'}
+      title={editing ? '编辑模具资料' : initialSlot ? `在 ${initialSlot.display_code} 放入模具` : '新增模具'}
       footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={mutation.isPending} onClick={() => submit()}>保存</Button></Space>}
     >
       <Form form={form} layout="vertical" requiredMark="optional">
-        <Form.Item name="asset_code" label="模具编号" rules={[{ required: true, message: '请输入模具编号' }, { max: 60 }]}>
-          <Input placeholder="例如 MJ-001" disabled={editing} />
+        <Form.Item
+          name="asset_code"
+          label="模具编号"
+          extra={editing ? undefined : '可留空，由系统根据型号自动生成唯一编号'}
+          rules={[{ max: 100, message: '模具编号最多100个字符' }]}
+        >
+          <Input placeholder="可选，例如 MJ-001" disabled={editing} />
         </Form.Item>
-        <Form.Item name="mold_model_id" label="型号" rules={[{ required: true, message: '请选择模具型号' }]}>
-          <Select
-            showSearch
-            optionFilterProp="label"
-            loading={modelsQuery.isLoading}
-            placeholder="选择型号"
-            options={(modelsQuery.data || []).filter((item) => item.active !== false).map((item) => ({ value: item.id, label: `${item.code} · ${item.product_name}` }))}
-          />
+        <Form.Item name="model_code" label="模具型号" rules={[{ required: true, whitespace: true, message: '请输入模具型号' }, { max: 100 }]}>
+          <Input placeholder="直接输入型号，例如 ABC-100" autoComplete="off" />
+        </Form.Item>
+        <Form.Item name="product_name" label="产品名称（可选）" rules={[{ max: 200 }]}>
+          <Input placeholder="例如 密封圈" autoComplete="off" />
         </Form.Item>
         {!editing && (
-          <Form.Item name="slot_id" label="初始库位" rules={[{ required: true, message: '请选择初始库位' }]}>
-            <Select
-              showSearch
-              optionFilterProp="label"
-              loading={slotsQuery.isLoading}
-              placeholder="选择空闲库位"
-              options={(slotsQuery.data || []).map((item) => ({ value: item.id, label: item.display_code }))}
-            />
-          </Form.Item>
+          <>
+            <Form.Item name="initial_status" label="当前位置" rules={[{ required: true, message: '请选择当前位置' }]}>
+              <Select
+                disabled={!!initialSlot}
+                options={[
+                  { value: 'IN_STOCK', label: '在库' },
+                  { value: 'ON_MACHINE', label: '上机' },
+                  { value: 'OUTSOURCED', label: '客户收回' },
+                ]}
+              />
+            </Form.Item>
+            {initialStatus === 'IN_STOCK' && (initialSlot ? (
+              <>
+                <Form.Item name="slot_id" hidden preserve><Input /></Form.Item>
+                <Form.Item label="在库位置"><Input value={initialSlot.display_code} disabled /></Form.Item>
+              </>
+            ) : (
+              <Form.Item name="slot_id" preserve={false} label="在库位置" rules={[{ required: true, message: '请选择在库位置' }]}>
+                <Select
+                  showSearch
+                  optionFilterProp="label"
+                  loading={slotsQuery.isLoading}
+                  placeholder="选择空闲库位"
+                  options={(slotsQuery.data || []).map((item) => ({ value: item.id, label: item.display_code }))}
+                />
+              </Form.Item>
+            ))}
+            {initialStatus === 'ON_MACHINE' && (
+              <Form.Item name="machine_id" preserve={false} label="具体机台" rules={[{ required: true, message: '请选择具体机台' }]}>
+              <Select
+                showSearch
+                optionFilterProp="label"
+                loading={machinesQuery.isLoading}
+                placeholder="选择模具所在机台"
+                options={(machinesQuery.data || []).filter((item) => item.active !== false).map((item) => ({ value: item.id, label: `${item.code} · ${item.name}` }))}
+              />
+              </Form.Item>
+            )}
+            {initialStatus === 'OUTSOURCED' && (
+              <Typography.Text type="secondary">客户已将模具收回，不需要填写库位或去向。</Typography.Text>
+            )}
+          </>
         )}
         <Form.Item name="can_stack" label="允许作为叠放下层" valuePropName="checked">
           <Switch checkedChildren="允许" unCheckedChildren="不允许" />

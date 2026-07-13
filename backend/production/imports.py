@@ -1515,7 +1515,7 @@ def _preflight_database(records, issues):
                     issues.append(
                         _issue(
                             "error",
-                            "待上机或生产中的订单不能关联外协模具。",
+                            "待上机或生产中的订单不能关联客户收回的模具。",
                             sheet=sheet,
                             row=2,
                             field="mold_code",

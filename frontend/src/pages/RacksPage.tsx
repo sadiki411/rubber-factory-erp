@@ -6,7 +6,8 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { moldApi, rackApi, toList } from '../api/client'
 import { PageTitle } from '../components/PageTitle'
 import { RackDiagram } from '../components/RackDiagram'
-import type { RackZone } from '../types'
+import { MoldFormDrawer } from '../components/MoldFormDrawer'
+import type { MoldAsset, RackSlot, RackZone } from '../types'
 import { moldCode, moldLocation } from '../types'
 
 export function RacksPage() {
@@ -18,6 +19,7 @@ export function RacksPage() {
   const [selectedId, setSelectedId] = useState<number>()
   const [highlightMoldId, setHighlightMoldId] = useState<number | undefined>(navigationState?.highlightMoldId)
   const [search, setSearch] = useState('')
+  const [targetSlot, setTargetSlot] = useState<RackSlot>()
   const racksQuery = useQuery({ queryKey: ['racks'], queryFn: async () => toList(await rackApi.list()) })
   const defaultRack = racksQuery.data?.find((rack) => rack.code === navigationState?.rackCode) || racksQuery.data?.[0]
   const effectiveSelectedId = selectedId ?? defaultRack?.id
@@ -118,6 +120,7 @@ export function RacksPage() {
             layout={layoutQuery.data}
             highlightMoldId={highlightMoldId}
             onMoldClick={(id) => navigate(`/molds/${id}`)}
+            onEmptySlotClick={setTargetSlot}
             onCapacityChange={(zone, capacity) => capacityMutation.mutate({ zone, capacity })}
             onStackingChange={(zone, enabled) => stackingMutation.mutate({ zone, enabled })}
           />
@@ -129,6 +132,15 @@ export function RacksPage() {
         <span><i className="legend-dot highlighted" />查找目标</span>
         <Typography.Text type="secondary">容量模式仅在对应区域完全为空时可切换；“叠放”关闭时隐藏S2上层。</Typography.Text>
       </Space>
+      <MoldFormDrawer
+        open={!!targetSlot}
+        initialSlot={targetSlot}
+        onClose={() => setTargetSlot(undefined)}
+        onSuccess={(mold: MoldAsset) => {
+          setHighlightMoldId(mold.id)
+          setTargetSlot(undefined)
+        }}
+      />
     </div>
   )
 }

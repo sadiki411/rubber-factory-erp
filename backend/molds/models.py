@@ -164,7 +164,7 @@ class MoldAsset(TimeStampedModel):
     class Status(models.TextChoices):
         IN_STOCK = "IN_STOCK", "在库"
         ON_MACHINE = "ON_MACHINE", "上机"
-        OUTSOURCED = "OUTSOURCED", "外出加工"
+        OUTSOURCED = "OUTSOURCED", "客户收回"
 
     asset_code = models.CharField("模具编号", max_length=100, unique=True)
     mold_model = models.ForeignKey(MoldModel, related_name="assets", on_delete=models.PROTECT)
@@ -203,7 +203,7 @@ class MoldAsset(TimeStampedModel):
                 condition=(
                     (Q(status="IN_STOCK") & Q(current_slot__isnull=False) & Q(current_machine__isnull=True) & Q(current_processor__isnull=True))
                     | (Q(status="ON_MACHINE") & Q(current_slot__isnull=True) & Q(current_machine__isnull=False) & Q(current_processor__isnull=True))
-                    | (Q(status="OUTSOURCED") & Q(current_slot__isnull=True) & Q(current_machine__isnull=True) & Q(current_processor__isnull=False))
+                    | (Q(status="OUTSOURCED") & Q(current_slot__isnull=True) & Q(current_machine__isnull=True) & Q(current_processor__isnull=True))
                 ),
                 name="mold_status_location_consistent",
             )
@@ -224,10 +224,8 @@ class MoldAsset(TimeStampedModel):
             if self.current_slot_id or self.current_processor_id:
                 errors["status"] = "上机状态不能同时设置库位或加工方。"
         elif self.status == self.Status.OUTSOURCED:
-            if not self.current_processor_id:
-                errors["current_processor"] = "外出加工模具必须选择加工方。"
-            if self.current_slot_id or self.current_machine_id:
-                errors["status"] = "外出加工状态不能同时设置库位或机台。"
+            if self.current_slot_id or self.current_machine_id or self.current_processor_id:
+                errors["status"] = "客户收回状态不能设置库位、机台或加工方。"
         if errors:
             raise ValidationError(errors)
 
@@ -241,7 +239,7 @@ class MoldMovement(models.Model):
         PUTAWAY = "PUTAWAY", "归位"
         MOVE = "MOVE", "移库"
         LOAD_MACHINE = "LOAD_MACHINE", "上机"
-        SEND_OUT = "SEND_OUT", "外出加工"
+        SEND_OUT = "SEND_OUT", "客户收回"
 
     mold = models.ForeignKey(MoldAsset, related_name="movements", on_delete=models.PROTECT)
     action = models.CharField("操作", max_length=20, choices=Action.choices)

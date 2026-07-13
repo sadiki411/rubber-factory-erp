@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import type { ReactNode } from 'react'
 import { ApiError, masterApi, moldApi, slotApi, toList } from '../api/client'
-import type { Machine, MoldAsset, Processor } from '../types'
+import type { Machine, MoldAsset } from '../types'
 import { moldCode } from '../types'
 
 export type MoldAction = 'putaway' | 'move' | 'load-machine' | 'send-out'
@@ -13,7 +13,7 @@ const actionMeta: Record<MoldAction, { title: string; submit: string; icon: Reac
   putaway: { title: '模具归位', submit: '确认归位', icon: <HomeOutlined /> },
   move: { title: '库内移位', submit: '确认移位', icon: <SwapOutlined /> },
   'load-machine': { title: '安排上机', submit: '确认上机', icon: <ToolOutlined /> },
-  'send-out': { title: '外出加工', submit: '确认外出', icon: <ExportOutlined /> },
+  'send-out': { title: '客户收回', submit: '确认客户收回', icon: <ExportOutlined /> },
 }
 
 interface Props {
@@ -44,12 +44,6 @@ export function OperationDrawer({ mold, action = 'putaway', open, onClose, onSuc
     queryFn: async () => toList(await masterApi<Machine>('machines').list()),
     enabled: open && action === 'load-machine',
   })
-  const processorsQuery = useQuery({
-    queryKey: ['processors'],
-    queryFn: async () => toList(await masterApi<Processor>('processors').list()),
-    enabled: open && action === 'send-out',
-  })
-
   const mutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) => moldApi.action(mold!.id, action, payload),
     onSuccess: async (result) => {
@@ -137,19 +131,9 @@ export function OperationDrawer({ mold, action = 'putaway', open, onClose, onSuc
             />
           </Form.Item>
         )}
-        {action === 'send-out' && (
-          <Form.Item name="processor_id" label="外加工方" rules={[{ required: true, message: '请选择外加工方' }]}>
-            <Select
-              showSearch
-              optionFilterProp="label"
-              loading={processorsQuery.isLoading}
-              placeholder="选择外加工方"
-              options={(processorsQuery.data || []).filter((item) => item.active !== false).map((item) => ({ value: item.id, label: `${item.code} · ${item.name}` }))}
-            />
-          </Form.Item>
-        )}
+        {action === 'send-out' && <Typography.Text type="secondary">该操作表示模具由客户收回，无需选择去向。</Typography.Text>}
         <Form.Item name="note" label="操作备注">
-          <Input.TextArea rows={4} maxLength={300} showCount placeholder="可填写换模原因、加工要求等" />
+          <Input.TextArea rows={4} maxLength={300} showCount placeholder="可填写操作原因或补充说明" />
         </Form.Item>
       </Form>
     </Drawer>

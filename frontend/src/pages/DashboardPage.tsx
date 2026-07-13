@@ -14,7 +14,7 @@ function StatusSummary({ molds }: { molds: MoldAsset[] }) {
   const items = [
     { status: 'IN_STOCK' as const, label: '在库模具', value: count('IN_STOCK'), icon: <HomeOutlined />, className: 'green' },
     { status: 'ON_MACHINE' as const, label: '上机中', value: count('ON_MACHINE'), icon: <ToolOutlined />, className: 'blue' },
-    { status: 'OUTSOURCED' as const, label: '外出加工', value: count('OUTSOURCED'), icon: <ExportOutlined />, className: 'amber' },
+    { status: 'OUTSOURCED' as const, label: '客户收回', value: count('OUTSOURCED'), icon: <ExportOutlined />, className: 'amber' },
   ]
   return (
     <Row gutter={[16, 16]}>
@@ -71,7 +71,7 @@ export function DashboardPage() {
         <div className="search-copy">
           <span className="eyebrow">快速定位</span>
           <Typography.Title level={2}>今天要找哪副模具？</Typography.Title>
-          <Typography.Paragraph>在库模具会显示精确库位，上机或外出的模具会显示当前去向。</Typography.Paragraph>
+          <Typography.Paragraph>在库模具显示精确库位，上机模具显示具体机台，客户收回的模具显示当前状态。</Typography.Paragraph>
         </div>
         <Input.Search
           value={query}

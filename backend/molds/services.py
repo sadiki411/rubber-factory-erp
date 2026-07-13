@@ -8,7 +8,6 @@ from .models import (
     Machine,
     MoldAsset,
     MoldMovement,
-    Processor,
     Rack,
     RackLevel,
     RackSlot,
@@ -513,7 +512,7 @@ def validate_active_production_assignment(
         )
     raise ValidationError(
         f"模具已关联{assignment}，只能上机到 {expected_machine.code}，"
-        "不能移库、归位、送外协或改到其他机台。"
+        "不能移库、归位、标记客户收回或改到其他机台。"
     )
 
 
@@ -562,14 +561,9 @@ def transition_mold(mold, action, operator, *, slot=None, machine=None, processo
         to_status = MoldAsset.Status.ON_MACHINE
         to_slot, to_machine, to_processor = None, machine, None
     elif action == MoldMovement.Action.SEND_OUT:
-        if not processor:
-            raise ValidationError("外出加工必须选择加工方。")
-        processor = Processor.objects.select_for_update().get(pk=processor.pk)
-        if not processor.is_active:
-            raise ValidationError("所选加工方已停用。")
         warnings.extend(stacking_warnings(mold, leaving_current=mold.status == MoldAsset.Status.IN_STOCK))
         to_status = MoldAsset.Status.OUTSOURCED
-        to_slot, to_machine, to_processor = None, None, processor
+        to_slot, to_machine, to_processor = None, None, None
     else:
         raise ValidationError("不支持的模具操作。")
 

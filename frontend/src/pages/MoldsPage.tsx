@@ -18,7 +18,7 @@ function actionItems(mold: MoldAsset) {
   if (mold.status === 'IN_STOCK') items.push({ key: 'move', label: '库内移位', icon: <SwapOutlined /> })
   else items.push({ key: 'putaway', label: '归位入库', icon: <HomeOutlined /> })
   if (mold.status !== 'ON_MACHINE') items.push({ key: 'load-machine', label: '安排上机', icon: <ToolOutlined /> })
-  if (mold.status !== 'OUTSOURCED') items.push({ key: 'send-out', label: '外出加工', icon: <ExportOutlined /> })
+  if (mold.status !== 'OUTSOURCED') items.push({ key: 'send-out', label: '客户收回', icon: <ExportOutlined /> })
   items.push({ key: 'edit', label: '编辑资料', icon: <EditOutlined /> })
   return items
 }
@@ -83,7 +83,7 @@ export function MoldsPage() {
               { value: '', label: '全部状态' },
               { value: 'IN_STOCK', label: '在库' },
               { value: 'ON_MACHINE', label: '上机' },
-              { value: 'OUTSOURCED', label: '外出加工' },
+              { value: 'OUTSOURCED', label: '客户收回' },
             ]}
           />
         </div>

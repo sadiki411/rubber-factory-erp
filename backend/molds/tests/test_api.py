@@ -192,21 +192,170 @@ class MoldApiTests(SeededRackMixin, TestCase):
         self.assertEqual(confirmed.status_code, 201)
         self.assertEqual(confirmed.json()["slot"]["id"], upper.pk)
 
+    def test_create_accepts_manual_model_code_and_generates_asset_code(self):
+        target = self.slot("J01", 1, zone="B", position=1)
+        response = self.client.post(
+            "/api/molds/",
+            {
+                "model_code": "MANUAL-200",
+                "product_name": "手工录入产品",
+                "slot_id": target.pk,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json()["asset_code"], "MANUAL-200-01")
+        self.assertEqual(response.json()["mold_model"]["code"], "MANUAL-200")
+        self.assertEqual(response.json()["slot"]["id"], target.pk)
+        mold = MoldAsset.objects.select_related("mold_model", "current_slot").get(
+            asset_code="MANUAL-200-01"
+        )
+        self.assertEqual(mold.mold_model.product_name, "手工录入产品")
+        self.assertEqual(mold.current_slot_id, target.pk)
+        movement = MoldMovement.objects.get(mold=mold, action=MoldMovement.Action.CREATE)
+        self.assertEqual(movement.to_slot_id, target.pk)
+        self.assertEqual(movement.operator, self.user)
+
+    def test_manual_model_reuses_existing_model_and_increments_asset_code(self):
+        existing = MoldModel.objects.create(code="REUSE-300", product_name="已有产品")
+        MoldAsset.objects.create(
+            asset_code="REUSE-300-01",
+            mold_model=existing,
+            status=MoldAsset.Status.IN_STOCK,
+            current_slot=self.slot("J01", 2, zone="A", position=1),
+        )
+        target = self.slot("J01", 2, zone="B", position=1)
+
+        response = self.client.post(
+            "/api/molds/",
+            {
+                "model_code": "reuse-300",
+                "product_name": "更新后的产品名",
+                "slot_id": target.pk,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json()["asset_code"], "REUSE-300-02")
+        self.assertEqual(MoldModel.objects.filter(code__iexact="REUSE-300").count(), 1)
+        created = MoldAsset.objects.get(asset_code="REUSE-300-02")
+        self.assertEqual(created.mold_model_id, existing.pk)
+        existing.refresh_from_db()
+        self.assertEqual(existing.product_name, "更新后的产品名")
+
+    def test_generated_asset_code_keeps_chinese_model_text_and_product_defaults_to_model(self):
+        target = self.slot("J01", 3, zone="B", position=1)
+        response = self.client.post(
+            "/api/molds/",
+            {"model_code": "密封圈 / 100", "slot_id": target.pk},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json()["asset_code"], "密封圈-100-01")
+        model = MoldModel.objects.get(code="密封圈 / 100")
+        self.assertEqual(model.product_name, "密封圈 / 100")
+
+    def test_create_requires_model_id_or_manual_model_code(self):
+        response = self.client.post(
+            "/api/molds/",
+            {"slot_id": self.slot("J01", 3, zone="A", position=1).pk},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("model_code", response.json())
+
+    def test_explicit_duplicate_asset_code_returns_asset_code_error(self):
+        response = self.client.post(
+            "/api/molds/",
+            {
+                "asset_code": self.stock.asset_code,
+                "model_code": "DUPLICATE-MODEL",
+                "slot_id": self.slot("J01", 4, zone="A", position=1).pk,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("asset_code", response.json())
+        self.assertNotIn("slot_id", response.json())
+
+    def test_asset_code_cannot_be_cleared_during_update(self):
+        response = self.client.patch(
+            f"/api/molds/{self.stock.pk}/",
+            {"asset_code": ""},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("asset_code", response.json())
+        self.stock.refresh_from_db()
+        self.assertEqual(self.stock.asset_code, "ABC-100-01")
+
+        changed = self.client.patch(
+            f"/api/molds/{self.stock.pk}/",
+            {"asset_code": "RENAMED-01"},
+            format="json",
+        )
+        self.assertEqual(changed.status_code, 400)
+        self.assertIn("asset_code", changed.json())
+
+    def test_create_supports_on_machine_and_customer_return_initial_states(self):
+        on_machine = self.client.post(
+            "/api/molds/",
+            {
+                "model_code": "INITIAL-MACHINE",
+                "initial_status": MoldAsset.Status.ON_MACHINE,
+                "machine_id": self.machine.pk,
+            },
+            format="json",
+        )
+        self.assertEqual(on_machine.status_code, 201, on_machine.json())
+        self.assertEqual(on_machine.json()["status"], MoldAsset.Status.ON_MACHINE)
+        self.assertEqual(on_machine.json()["machine"]["id"], self.machine.pk)
+        self.assertIsNone(on_machine.json()["slot"])
+
+        returned = self.client.post(
+            "/api/molds/",
+            {
+                "model_code": "INITIAL-RETURNED",
+                "initial_status": MoldAsset.Status.OUTSOURCED,
+            },
+            format="json",
+        )
+        self.assertEqual(returned.status_code, 201, returned.json())
+        self.assertEqual(returned.json()["status_label"], "客户收回")
+        self.assertEqual(returned.json()["location_text"], "客户收回")
+        self.assertIsNone(returned.json()["slot"])
+        self.assertIsNone(returned.json()["machine"])
+        self.assertIsNone(returned.json()["processor"])
+
+        for asset_code in (on_machine.json()["asset_code"], returned.json()["asset_code"]):
+            mold = MoldAsset.objects.get(asset_code=asset_code)
+            movement = MoldMovement.objects.get(mold=mold, action=MoldMovement.Action.CREATE)
+            self.assertEqual(movement.to_status, mold.status)
+            self.assertEqual(movement.to_machine_id, mold.current_machine_id)
+
     def test_history_endpoint_returns_location_changes(self):
-        processor = Processor.objects.create(code="OUT-01", name="外协一厂")
         response = self.client.post(
             f"/api/molds/{self.stock.pk}/actions/send-out/",
-            {"processor_id": processor.pk, "note": "外发修整"},
+            {"note": "客户收回"},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status_label"], "客户收回")
+        self.assertIsNone(response.json()["processor"])
         history = self.client.get(f"/api/molds/{self.stock.pk}/history/")
         self.assertEqual(history.status_code, 200)
         self.assertEqual(len(history.json()), 1)
         item = history.json()[0]
         self.assertEqual(item["action"], MoldMovement.Action.SEND_OUT)
         self.assertEqual(item["from_slot"]["id"], self.stock.current_slot_id)
-        self.assertEqual(item["to_processor"]["id"], processor.pk)
+        self.assertIsNone(item["to_processor"])
+        self.assertEqual(item["action_label"], "客户收回")
         self.assertEqual(item["operator_name"], "shared")
 
 

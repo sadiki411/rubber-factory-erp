@@ -8,7 +8,6 @@ import { LoginPage } from './pages/LoginPage'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage').then((module) => ({ default: module.DashboardPage })))
 const ImportPage = lazy(() => import('./pages/ImportPage').then((module) => ({ default: module.ImportPage })))
-const MasterDataPage = lazy(() => import('./pages/MasterDataPage').then((module) => ({ default: module.MasterDataPage })))
 const MoldDetailPage = lazy(() => import('./pages/MoldDetailPage').then((module) => ({ default: module.MoldDetailPage })))
 const MoldsPage = lazy(() => import('./pages/MoldsPage').then((module) => ({ default: module.MoldsPage })))
 const ProductionPage = lazy(() => import('./pages/ProductionPage').then((module) => ({ default: module.ProductionPage })))
@@ -62,7 +61,6 @@ export function App() {
           <Route path="molds" element={<MoldsPage />} />
           <Route path="molds/:id" element={<MoldDetailPage />} />
           <Route path="racks" element={<RacksPage />} />
-          <Route path="master-data" element={<MasterDataPage />} />
           <Route path="rack-config" element={<RackConfigPage />} />
           <Route path="imports" element={<ImportPage />} />
           <Route path="404" element={<Result status="404" title="页面不存在" extra={<Button type="primary" href="/">返回工作台</Button>} />} />

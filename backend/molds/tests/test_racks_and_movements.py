@@ -212,6 +212,25 @@ class MoldLocationConstraintTests(SeededRackMixin, TestCase):
                     current_slot=self.slot("J01", 1),
                 )
 
+        returned = MoldAsset.objects.create(
+            asset_code="RETURNED-VALID-01",
+            mold_model=model,
+            status=MoldAsset.Status.OUTSOURCED,
+        )
+        self.assertIsNone(returned.current_slot)
+        self.assertIsNone(returned.current_machine)
+        self.assertIsNone(returned.current_processor)
+
+        processor = Processor.objects.create(code="OLD-OUT", name="旧加工方")
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                MoldAsset.objects.create(
+                    asset_code="RETURNED-INVALID-01",
+                    mold_model=model,
+                    status=MoldAsset.Status.OUTSOURCED,
+                    current_processor=processor,
+                )
+
 
 class MoldTransitionTests(SeededRackMixin, TestCase):
     def setUp(self):
@@ -277,11 +296,10 @@ class MoldTransitionTests(SeededRackMixin, TestCase):
             putaway,
             MoldMovement.Action.SEND_OUT,
             self.user,
-            processor=self.processor,
-            note="维修",
+            note="客户收回",
         )
         self.assertEqual(outsourced.status, MoldAsset.Status.OUTSOURCED)
-        self.assertEqual(outsourced.current_processor, self.processor)
+        self.assertIsNone(outsourced.current_processor)
         self.assertIsNone(outsourced.current_slot)
         self.assertFalse(MoldAsset.objects.filter(current_slot=self.destination).exists())
 
@@ -292,7 +310,7 @@ class MoldTransitionTests(SeededRackMixin, TestCase):
         self.assertEqual(history[1].from_machine, self.machine)
         self.assertEqual(history[1].to_slot, self.destination)
         self.assertEqual(history[2].from_slot, self.destination)
-        self.assertEqual(history[2].to_processor, self.processor)
+        self.assertIsNone(history[2].to_processor)
         self.assertTrue(all(item.operator == self.user for item in history))
 
     def test_move_requires_in_stock_and_a_different_free_slot(self):
@@ -331,7 +349,7 @@ class MoldTransitionTests(SeededRackMixin, TestCase):
                 self.user,
                 slot=self.destination,
             )
-        with self.assertRaisesMessage(ValidationError, "不能移库、归位、送外协"):
+        with self.assertRaisesMessage(ValidationError, "不能移库、归位、标记客户收回"):
             transition_mold(
                 self.mold,
                 MoldMovement.Action.SEND_OUT,

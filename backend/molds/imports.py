@@ -69,7 +69,6 @@ def create_standard_template():
             "position_no",
             "stack_level",
             "machine_code",
-            "processor_code",
             "allows_stacking",
             "notes",
         ],
@@ -83,7 +82,7 @@ def create_standard_template():
         for col in range(1, len(headers) + 1):
             ws.column_dimensions[chr(64 + col) if col <= 26 else "A"].width = 18
     wb["模具实体"].append(
-        ["MJ-001", "ABC-100", "IN_STOCK", "J01", 1, "A", 2, 1, 1, "", "", True, "示例行，使用前请删除"]
+        ["MJ-001", "ABC-100", "IN_STOCK", "J01", 1, "A", 2, 1, 1, "", True, "示例行，使用前请删除"]
     )
     stream = io.BytesIO()
     wb.save(stream)
@@ -151,8 +150,6 @@ def _parse_standard(wb):
                 issues.append(_issue("error", "在库模具必须填写完整库位字段。", sheet="模具实体", row=row_no))
         elif record["status"] == MoldAsset.Status.ON_MACHINE and not record.get("machine_code"):
             issues.append(_issue("error", "上机模具必须填写machine_code。", sheet="模具实体", row=row_no))
-        elif record["status"] == MoldAsset.Status.OUTSOURCED and not record.get("processor_code"):
-            issues.append(_issue("error", "外出加工模具必须填写processor_code。", sheet="模具实体", row=row_no))
         rows.append(record)
 
     duplicate_codes = {code for code, count in Counter(row.get("asset_code") for row in rows).items() if code and count > 1}
@@ -822,10 +819,8 @@ def _validate_business_rules(result):
     if source_type == "standard":
         model_specs = {item["code"]: item for item in result["masters"]["models"]}
         machine_specs = {item["code"]: item for item in result["masters"]["machines"]}
-        processor_specs = {item["code"]: item for item in result["masters"]["processors"]}
         existing_models = {item.code: item for item in MoldModel.objects.all()}
         existing_machines = {item.code: item for item in Machine.objects.all()}
-        existing_processors = {item.code: item for item in Processor.objects.all()}
         for row in result["rows"]:
             sheet = row.get("sheet", "模具实体")
             row_no = row.get("row_no")
@@ -852,18 +847,6 @@ def _validate_business_rules(result):
                 elif (spec and not spec.get("is_active", True)) or (not spec and machine and not machine.is_active):
                     result["issues"].append(
                         _issue("error", f"机台已停用：{code}", sheet=sheet, row=row_no, field="machine_code")
-                    )
-            elif row.get("status") == MoldAsset.Status.OUTSOURCED:
-                code = row.get("processor_code")
-                spec = processor_specs.get(code)
-                processor = existing_processors.get(code)
-                if code and not spec and not processor:
-                    result["issues"].append(
-                        _issue("error", f"加工方不存在：{code}", sheet=sheet, row=row_no, field="processor_code")
-                    )
-                elif (spec and not spec.get("is_active", True)) or (not spec and processor and not processor.is_active):
-                    result["issues"].append(
-                        _issue("error", f"加工方已停用：{code}", sheet=sheet, row=row_no, field="processor_code")
                     )
 
 
@@ -935,7 +918,7 @@ def _row_location(row):
     if row.get("status") == MoldAsset.Status.ON_MACHINE:
         return row.get("machine_code", "")
     if row.get("status") == MoldAsset.Status.OUTSOURCED:
-        return row.get("processor_code", "")
+        return "客户收回"
     return ""
 
 
@@ -1070,8 +1053,6 @@ def commit_batch(batch, user, asset_code_updates=None):
             kwargs["current_slot"] = slot
         elif row["status"] == MoldAsset.Status.ON_MACHINE:
             kwargs["current_machine"] = Machine.objects.get(code=row["machine_code"])
-        else:
-            kwargs["current_processor"] = Processor.objects.get(code=row["processor_code"])
         mold = MoldAsset(**kwargs)
         mold.full_clean()
         mold.save()

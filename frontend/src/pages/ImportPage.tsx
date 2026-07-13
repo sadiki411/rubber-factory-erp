@@ -93,7 +93,7 @@ export function ImportPage() {
         <Col xs={24} lg={9}>
           <Card title="导入规则" className="import-card">
             <Space orientation="vertical" size="middle">
-              <span><CheckCircleOutlined className="success-icon" /> 标准模板支持在库、上机、外出加工三种状态</span>
+              <span><CheckCircleOutlined className="success-icon" /> 标准模板支持在库、上机、客户收回三种状态</span>
               <span><CheckCircleOutlined className="success-icon" /> 旧台账仅读取当前启用格位，统一作为在库导入</span>
               <span><WarningOutlined className="warning-icon" /> 重复编号、库位冲突等错误必须全部处理</span>
               <span><FileExcelOutlined /> 导入采用事务处理，不会出现只成功一部分</span>
