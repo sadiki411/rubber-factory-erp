@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+backend/.venv/
+.ruff_cache/
+.mypy_cache/
+
+# Django runtime
+backend/db.sqlite3
+backend/data/
+backend/media/
+backend/staticfiles/
+runtime/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+
+# Environment and IDE
+.env
+.env.local
+.idea/
+.vscode/
+.codex_tmp/
+.codex_work/
+outputs/
+.vite/
+*.log
+
+# Office temporary files
+~$*.xls*
+
+# 工作区根目录中的业务台账、订单、品检资料和预览图片仅保留在本机。
+/*.xls
+/*.xlsx
+/*.csv
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp

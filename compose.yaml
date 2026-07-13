@@ -1,0 +1,88 @@
+name: mold-erp
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  backend:
+    image: ${GHCR_BACKEND_IMAGE:?Set GHCR_BACKEND_IMAGE in .env}
+    pull_policy: always
+    env_file:
+      - .env
+    environment:
+      SQLITE_PATH: /app/data/db.sqlite3
+      MEDIA_ROOT: /app/media
+      STATIC_ROOT: /app/staticfiles
+      BACKUP_DIR: /app/backups
+      TZ: ${TZ:-Asia/Shanghai}
+      GUNICORN_THREADS: "${GUNICORN_THREADS:-4}"
+    volumes:
+      - ./runtime/data:/app/data
+      - ./runtime/media:/app/media
+      - ./runtime/backups:/app/backups
+      - static_files:/app/staticfiles
+    expose:
+      - "8000"
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 40s
+    logging: *default-logging
+    deploy:
+      replicas: 1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8000/api/health/', timeout=5); raise SystemExit(0 if r.status == 200 else 1)"]
+      interval: 20s
+      timeout: 8s
+      retries: 5
+      start_period: 40s
+
+  web:
+    image: ${GHCR_WEB_IMAGE:?Set GHCR_WEB_IMAGE in .env}
+    pull_policy: always
+    ports:
+      - "${APP_PORT:-8080}:80"
+    volumes:
+      - static_files:/srv/static:ro
+      - ./runtime/media:/srv/media:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  backup:
+    image: ${GHCR_BACKEND_IMAGE:?Set GHCR_BACKEND_IMAGE in .env}
+    pull_policy: always
+    env_file:
+      - .env
+    environment:
+      SQLITE_PATH: /app/data/db.sqlite3
+      MEDIA_ROOT: /app/media
+      BACKUP_DIR: /app/backups
+      BACKUP_RETENTION_COUNT: "${BACKUP_RETENTION_COUNT:-30}"
+      TZ: ${TZ:-Asia/Shanghai}
+    entrypoint: ["/bin/sh", "/app/deploy/backup-loop.sh"]
+    volumes:
+      - ./runtime/data:/app/data
+      - ./runtime/media:/app/media:ro
+      - ./runtime/backups:/app/backups
+    depends_on:
+      backend:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging: *default-logging
+
+volumes:
+  static_files:
