@@ -4,6 +4,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 
@@ -166,7 +167,7 @@ class MoldAsset(TimeStampedModel):
         ON_MACHINE = "ON_MACHINE", "上机"
         OUTSOURCED = "OUTSOURCED", "客户收回"
 
-    asset_code = models.CharField("模具编号", max_length=100, unique=True)
+    asset_code = models.CharField("模具编号", max_length=100)
     mold_model = models.ForeignKey(MoldModel, related_name="assets", on_delete=models.PROTECT)
     main_image = models.ImageField("主图", upload_to=mold_image_path, blank=True)
     status = models.CharField("当前状态", max_length=20, choices=Status.choices)
@@ -199,11 +200,27 @@ class MoldAsset(TimeStampedModel):
     class Meta:
         ordering = ["asset_code"]
         constraints = [
+            models.UniqueConstraint(
+                Lower("asset_code"),
+                condition=Q(is_active=True),
+                name="uniq_active_mold_asset_code_ci",
+            ),
             models.CheckConstraint(
                 condition=(
-                    (Q(status="IN_STOCK") & Q(current_slot__isnull=False) & Q(current_machine__isnull=True) & Q(current_processor__isnull=True))
-                    | (Q(status="ON_MACHINE") & Q(current_slot__isnull=True) & Q(current_machine__isnull=False) & Q(current_processor__isnull=True))
-                    | (Q(status="OUTSOURCED") & Q(current_slot__isnull=True) & Q(current_machine__isnull=True) & Q(current_processor__isnull=True))
+                    (
+                        Q(is_active=False)
+                        & Q(current_slot__isnull=True)
+                        & Q(current_machine__isnull=True)
+                        & Q(current_processor__isnull=True)
+                    )
+                    | (
+                        Q(is_active=True)
+                        & (
+                            (Q(status="IN_STOCK") & Q(current_slot__isnull=False) & Q(current_machine__isnull=True) & Q(current_processor__isnull=True))
+                            | (Q(status="ON_MACHINE") & Q(current_slot__isnull=True) & Q(current_machine__isnull=False) & Q(current_processor__isnull=True))
+                            | (Q(status="OUTSOURCED") & Q(current_slot__isnull=True) & Q(current_machine__isnull=True) & Q(current_processor__isnull=True))
+                        )
+                    )
                 ),
                 name="mold_status_location_consistent",
             )
@@ -211,6 +228,12 @@ class MoldAsset(TimeStampedModel):
 
     def clean(self):
         errors = {}
+        if not self.is_active:
+            if self.current_slot_id or self.current_machine_id or self.current_processor_id:
+                errors["is_active"] = "已删除模具不能保留当前库位、机台或加工方。"
+            if errors:
+                raise ValidationError(errors)
+            return
         if self.status == self.Status.IN_STOCK:
             if not self.current_slot_id:
                 errors["current_slot"] = "在库模具必须选择库位。"
@@ -240,6 +263,8 @@ class MoldMovement(models.Model):
         MOVE = "MOVE", "移库"
         LOAD_MACHINE = "LOAD_MACHINE", "上机"
         SEND_OUT = "SEND_OUT", "客户收回"
+        EDIT = "EDIT", "编辑"
+        DELETE = "DELETE", "删除"
 
     mold = models.ForeignKey(MoldAsset, related_name="movements", on_delete=models.PROTECT)
     action = models.CharField("操作", max_length=20, choices=Action.choices)

@@ -451,9 +451,16 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                     pk=instance.station_id
                 )
                 if instance.mold_id:
-                    instance.mold = MoldAsset.objects.select_for_update().get(
-                        pk=instance.mold_id
+                    locked_mold = (
+                        MoldAsset.objects.select_for_update()
+                        .filter(pk=instance.mold_id)
+                        .first()
                     )
+                    if locked_mold is None or not locked_mold.is_active:
+                        raise serializers.ValidationError(
+                            {"mold_id": "所选模具已删除，请刷新后重新选择。"}
+                        )
+                    instance.mold = locked_mold
                 instance.full_clean()
                 instance.save()
         except DjangoValidationError as exc:
@@ -498,14 +505,28 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                     for mold_id in [original_mold_id, instance.mold_id]
                     if mold_id
                 }
+                locked_molds = {}
                 if mold_ids:
-                    list(
-                        MoldAsset.objects.select_for_update()
+                    locked_molds = {
+                        mold.pk: mold
+                        for mold in MoldAsset.objects.select_for_update()
                         .filter(pk__in=mold_ids)
                         .order_by("pk")
-                    )
+                    }
                 if instance.mold_id:
-                    instance.mold = MoldAsset.objects.get(pk=instance.mold_id)
+                    locked_mold = locked_molds.get(instance.mold_id)
+                    if locked_mold is None:
+                        raise serializers.ValidationError(
+                            {"mold_id": "所选模具不存在，请刷新后重新选择。"}
+                        )
+                    instance.mold = locked_mold
+                    if not instance.mold.is_active and (
+                        instance.mold_id != original_mold_id
+                        or instance.status in ProductionRun.ACTIVE_STATUSES
+                    ):
+                        raise serializers.ValidationError(
+                            {"mold_id": "所选模具已删除，请刷新后重新选择。"}
+                        )
                 instance.full_clean()
                 instance.save()
         except DjangoValidationError as exc:

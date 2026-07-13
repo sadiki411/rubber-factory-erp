@@ -7,9 +7,12 @@ from django.test import TestCase
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from drf_spectacular.generators import SchemaGenerator
+from rest_framework import serializers as drf_serializers
 from rest_framework.test import APIClient
 
+from molds.services import archive_mold
 from production.models import ProductionDailyLog, ProductionRun, ProductionStation
+from production.serializers import ProductionRunSerializer
 
 from .helpers import ProductionTestMixin
 
@@ -173,6 +176,92 @@ class ProductionApiTests(ProductionTestMixin, TestCase):
         )
         self.assertEqual(same_mold.status_code, 400)
         self.assertIn("mold_id", same_mold.json())
+
+    def test_create_rechecks_mold_after_validation_before_saving(self):
+        mold = self.create_mold(asset_code="MOLD-CREATE-RACE")
+        serializer = ProductionRunSerializer(
+            data=self._payload(order_no="CREATE-RACE", mold_id=mold.pk)
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        archive_mold(mold, self.user)
+
+        with self.assertRaisesMessage(
+            drf_serializers.ValidationError,
+            "已删除",
+        ):
+            serializer.save(created_by=self.user)
+
+        self.assertFalse(ProductionRun.objects.filter(order_no="CREATE-RACE").exists())
+        mold.refresh_from_db()
+        candidate = ProductionRun(
+            station=ProductionStation.objects.get(code="1"),
+            order_no="MODEL-CLEAN-RACE",
+            specification="模型校验",
+            mold=mold,
+            order_quantity=100,
+            planned_mold_count=10,
+            status=ProductionRun.Status.PLANNED,
+            created_by=self.user,
+        )
+        with self.assertRaisesMessage(ValidationError, "已删除"):
+            candidate.full_clean()
+
+    def test_update_rechecks_new_mold_after_validation_before_saving(self):
+        run = ProductionRun.objects.create(
+            station=ProductionStation.objects.get(code="1"),
+            order_no="UPDATE-RACE",
+            specification="更新并发校验",
+            order_quantity=100,
+            planned_mold_count=10,
+            status=ProductionRun.Status.CANCELLED,
+            created_by=self.user,
+        )
+        mold = self.create_mold(asset_code="MOLD-UPDATE-RACE")
+        serializer = ProductionRunSerializer(
+            run,
+            data={"mold_id": mold.pk, "status": ProductionRun.Status.PLANNED},
+            partial=True,
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        archive_mold(mold, self.user)
+
+        with self.assertRaisesMessage(
+            drf_serializers.ValidationError,
+            "已删除",
+        ):
+            serializer.save()
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, ProductionRun.Status.CANCELLED)
+        self.assertIsNone(run.mold_id)
+
+    def test_completed_run_can_keep_archived_historical_mold_when_edited(self):
+        mold = self.create_mold(asset_code="MOLD-HISTORY-EDIT")
+        loaded_at = timezone.now() - timedelta(hours=1)
+        run = ProductionRun.objects.create(
+            station=ProductionStation.objects.get(code="1"),
+            order_no="HISTORY-EDIT",
+            specification="历史订单",
+            mold=mold,
+            order_quantity=100,
+            planned_mold_count=10,
+            loaded_at=loaded_at,
+            unloaded_at=timezone.now(),
+            status=ProductionRun.Status.COMPLETED,
+            created_by=self.user,
+        )
+        archive_mold(mold, self.user)
+
+        response = self.client.patch(
+            f"/api/production/runs/{run.pk}/",
+            {"notes": "保留已删除模具的历史关联"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        run.refresh_from_db()
+        self.assertEqual(run.mold_id, mold.pk)
+        self.assertEqual(run.notes, "保留已删除模具的历史关联")
 
     def test_daily_log_complete_board_and_summary(self):
         now = timezone.now()

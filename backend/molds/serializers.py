@@ -143,6 +143,7 @@ class MoldAssetSerializer(serializers.ModelSerializer):
         required=False,
     )
     image = serializers.ImageField(source="main_image", required=False, allow_null=True)
+    remove_image = serializers.BooleanField(write_only=True, required=False, default=False)
     can_stack = serializers.BooleanField(source="allows_stacking", required=False)
     note = serializers.CharField(source="notes", required=False, allow_blank=True)
     confirm_warnings = serializers.BooleanField(write_only=True, required=False, default=False)
@@ -159,6 +160,7 @@ class MoldAssetSerializer(serializers.ModelSerializer):
             "model_code",
             "product_name",
             "image",
+            "remove_image",
             "status",
             "status_label",
             "slot",
@@ -176,9 +178,17 @@ class MoldAssetSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["status", "status_changed_at", "created_at", "updated_at"]
+        read_only_fields = [
+            "status",
+            "is_active",
+            "status_changed_at",
+            "created_at",
+            "updated_at",
+        ]
 
     def get_location_text(self, obj) -> str:
+        if not obj.is_active:
+            return "已删除"
         if obj.status == MoldAsset.Status.IN_STOCK and obj.current_slot:
             return obj.current_slot.display_code
         if obj.status == MoldAsset.Status.ON_MACHINE and obj.current_machine:
@@ -198,14 +208,19 @@ class MoldAssetSerializer(serializers.ModelSerializer):
             attrs["product_name"] = product_name
         if "asset_code" in attrs:
             attrs["asset_code"] = asset_code
-        if self.instance and "asset_code" in attrs and not asset_code:
-            raise serializers.ValidationError({"asset_code": "模具编号不能为空。"})
-        if self.instance and "asset_code" in attrs and asset_code != self.instance.asset_code:
-            raise serializers.ValidationError({"asset_code": "模具编号创建后不可直接修改。"})
-        if asset_code and MoldAsset.objects.filter(asset_code=asset_code).exclude(
+        if asset_code and MoldAsset.objects.filter(
+            asset_code__iexact=asset_code,
+            is_active=True,
+        ).exclude(
             pk=self.instance.pk if self.instance else None
         ).exists():
             raise serializers.ValidationError({"asset_code": "该模具编号已存在。"})
+        if attrs.get("remove_image") and "main_image" in attrs:
+            raise serializers.ValidationError(
+                {"remove_image": "移除主图和上传新主图不能同时操作。"}
+            )
+        if not self.instance and attrs.get("remove_image"):
+            raise serializers.ValidationError({"remove_image": "新建模具无需移除主图。"})
         if not self.instance and not model and not model_code:
             raise serializers.ValidationError({"model_code": "请输入模具型号。"})
         if model and model_code and model.code.casefold() != model_code.casefold():
@@ -263,13 +278,17 @@ class MoldAssetSerializer(serializers.ModelSerializer):
         while True:
             suffix = f"-{index:02d}"
             candidate = f"{prefix[: 100 - len(suffix)]}{suffix}"
-            if not MoldAsset.objects.filter(asset_code=candidate).exists():
+            if not MoldAsset.objects.filter(
+                asset_code__iexact=candidate,
+                is_active=True,
+            ).exists():
                 return candidate
             index += 1
 
     @transaction.atomic
     def create(self, validated_data):
         confirm_warnings = validated_data.pop("confirm_warnings", False)
+        validated_data.pop("remove_image", False)
         initial_status = validated_data.pop("initial_status", MoldAsset.Status.IN_STOCK)
         slot = validated_data.pop("initial_slot", None)
         machine = validated_data.pop("initial_machine", None)
@@ -321,7 +340,10 @@ class MoldAssetSerializer(serializers.ModelSerializer):
             except IntegrityError as exc:
                 if slot and MoldAsset.objects.filter(current_slot=slot).exists():
                     raise serializers.ValidationError({"slot_id": "目标库位已被占用。"}) from exc
-                if MoldAsset.objects.filter(asset_code=mold.asset_code).exists():
+                if MoldAsset.objects.filter(
+                    asset_code__iexact=mold.asset_code,
+                    is_active=True,
+                ).exists():
                     if generated_asset_code:
                         mold.asset_code = self._next_asset_code(mold_model.code)
                         continue
@@ -340,18 +362,112 @@ class MoldAssetSerializer(serializers.ModelSerializer):
         )
         return mold
 
+    @transaction.atomic
     def update(self, instance, validated_data):
+        try:
+            instance = (
+                MoldAsset.objects.select_for_update()
+                .select_related(
+                    "mold_model",
+                    "current_slot__zone__level__rack",
+                    "current_machine",
+                    "current_processor",
+                )
+                .get(pk=instance.pk)
+            )
+        except MoldAsset.DoesNotExist as exc:
+            raise serializers.ValidationError(
+                {"detail": "该模具不存在或已被删除。"}
+            ) from exc
+        if not instance.is_active:
+            raise serializers.ValidationError(
+                {"detail": "该模具已删除，不能继续编辑。"}
+            )
+        original = {
+            "asset_code": instance.asset_code,
+            "model_code": instance.mold_model.code,
+            "product_name": instance.mold_model.product_name,
+            "allows_stacking": instance.allows_stacking,
+            "notes": instance.notes,
+            "image": instance.main_image.name if instance.main_image else "",
+        }
         validated_data.pop("confirm_warnings", None)
         validated_data.pop("initial_status", None)
         validated_data.pop("initial_slot", None)
         validated_data.pop("initial_machine", None)
+        remove_image = validated_data.pop("remove_image", False)
         model_code = validated_data.pop("model_code", "")
+        product_name_provided = "product_name" in validated_data
         product_name = validated_data.pop("product_name", "")
         if model_code:
             validated_data["mold_model"] = self._resolve_model(
                 validated_data.get("mold_model"), model_code, product_name
             )
-        return super().update(instance, validated_data)
+        target_model = validated_data.get("mold_model", instance.mold_model)
+        if product_name_provided:
+            desired_product_name = product_name or target_model.code
+            if target_model.product_name != desired_product_name:
+                target_model.product_name = desired_product_name
+                target_model.save(update_fields=["product_name", "updated_at"])
+            validated_data["mold_model"] = target_model
+
+        if "asset_code" in validated_data and not validated_data["asset_code"]:
+            target_model = validated_data.get("mold_model", instance.mold_model)
+            validated_data["asset_code"] = self._next_asset_code(target_model.code)
+
+        old_image_name = instance.main_image.name if instance.main_image else ""
+        old_image_storage = instance.main_image.storage if old_image_name else None
+        if remove_image:
+            validated_data["main_image"] = None
+
+        try:
+            with transaction.atomic():
+                updated = super().update(instance, validated_data)
+        except IntegrityError as exc:
+            raise serializers.ValidationError(
+                {"asset_code": "该模具编号已存在。"}
+            ) from exc
+
+        new_image_name = updated.main_image.name if updated.main_image else ""
+        if old_image_name and old_image_name != new_image_name:
+            transaction.on_commit(
+                lambda name=old_image_name, storage=old_image_storage: storage.delete(name)
+            )
+        changes = []
+        if original["asset_code"] != updated.asset_code:
+            changes.append(f"模具编号：{original['asset_code']} → {updated.asset_code}")
+        if original["model_code"] != updated.mold_model.code:
+            changes.append(f"模具型号：{original['model_code']} → {updated.mold_model.code}")
+        if original["product_name"] != updated.mold_model.product_name:
+            changes.append(
+                f"产品名称：{original['product_name']} → {updated.mold_model.product_name}"
+            )
+        if original["allows_stacking"] != updated.allows_stacking:
+            changes.append(
+                f"允许叠放：{'是' if original['allows_stacking'] else '否'} → "
+                f"{'是' if updated.allows_stacking else '否'}"
+            )
+        if original["notes"] != updated.notes:
+            changes.append("备注已修改")
+        if original["image"] != new_image_name:
+            changes.append("主图已移除" if not new_image_name else "主图已更新")
+        request = self.context.get("request")
+        if changes and request and request.user.is_authenticated:
+            MoldMovement.objects.create(
+                mold=updated,
+                action=MoldMovement.Action.EDIT,
+                from_status=updated.status,
+                to_status=updated.status,
+                from_slot=updated.current_slot,
+                to_slot=updated.current_slot,
+                from_machine=updated.current_machine,
+                to_machine=updated.current_machine,
+                from_processor=updated.current_processor,
+                to_processor=updated.current_processor,
+                note="；".join(changes),
+                operator=request.user,
+            )
+        return updated
 
 
 class MoldMovementSerializer(serializers.ModelSerializer):
@@ -445,6 +561,11 @@ class MoldActionSerializer(serializers.Serializer):
     processor_id = serializers.PrimaryKeyRelatedField(
         source="processor", queryset=Processor.objects.all(), required=False
     )
+    note = serializers.CharField(required=False, allow_blank=True, max_length=1000)
+    confirm_warnings = serializers.BooleanField(required=False, default=False)
+
+
+class MoldDeleteSerializer(serializers.Serializer):
     note = serializers.CharField(required=False, allow_blank=True, max_length=1000)
     confirm_warnings = serializers.BooleanField(required=False, default=False)
 

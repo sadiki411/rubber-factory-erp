@@ -413,10 +413,16 @@ class ProductionRun(TimeStampedModel):
                 else None
             )
             mold_state = MoldAsset.objects.filter(pk=self.mold_id).values_list(
-                "status", "current_machine_id"
+                "status", "current_machine_id", "is_active"
             ).first()
-            mold_status, mold_machine_id = mold_state or (None, None)
-            if mold_status == MoldAsset.Status.OUTSOURCED:
+            mold_status, mold_machine_id, mold_is_active = mold_state or (
+                None,
+                None,
+                False,
+            )
+            if not mold_is_active:
+                errors["mold"] = "待上机或生产中的订单不能关联已删除的模具。"
+            elif mold_status == MoldAsset.Status.OUTSOURCED:
                 errors["mold"] = "待上机或生产中的订单不能关联客户收回的模具。"
             elif self.status == self.Status.RUNNING:
                 if station_machine_id is None:

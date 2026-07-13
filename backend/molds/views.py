@@ -42,6 +42,7 @@ from .serializers import (
     MachineSerializer,
     MoldActionSerializer,
     MoldAssetSerializer,
+    MoldDeleteSerializer,
     MoldModelSerializer,
     MoldMovementSerializer,
     ProcessorSerializer,
@@ -52,6 +53,7 @@ from .serializers import (
 )
 from .services import (
     ConfirmationRequired,
+    archive_mold,
     build_rack_preview,
     configure_rack,
     switch_zone_capacity,
@@ -184,6 +186,7 @@ class MoldViewSet(
     mixins.RetrieveModelMixin,
     mixins.CreateModelMixin,
     mixins.UpdateModelMixin,
+    mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
     serializer_class = MoldAssetSerializer
@@ -196,6 +199,13 @@ class MoldViewSet(
             "current_machine",
             "current_processor",
         )
+        include_inactive = (
+            self.request.method in {"GET", "HEAD", "OPTIONS"}
+            and str(self.request.query_params.get("include_inactive", "")).lower()
+            in {"1", "true", "yes"}
+        )
+        if not include_inactive:
+            queryset = queryset.filter(is_active=True)
         keyword = str(self.request.query_params.get("q", "")).strip()
         if keyword:
             queryset = queryset.filter(
@@ -209,6 +219,18 @@ class MoldViewSet(
                 raise DRFValidationError({"status": "无效的模具状态。"})
             queryset = queryset.filter(status=mold_status)
         return queryset.order_by("asset_code")
+
+    @extend_schema(request=MoldDeleteSerializer, responses={204: None})
+    def destroy(self, request, *args, **kwargs):
+        serializer = MoldDeleteSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        archive_mold(
+            self.get_object(),
+            request.user,
+            note=serializer.validated_data.get("note", ""),
+            confirm_warnings=serializer.validated_data["confirm_warnings"],
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(responses=MoldMovementSerializer(many=True))
     @action(detail=True, methods=["get"], pagination_class=None)

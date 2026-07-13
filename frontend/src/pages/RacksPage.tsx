@@ -7,6 +7,9 @@ import { moldApi, rackApi, toList } from '../api/client'
 import { PageTitle } from '../components/PageTitle'
 import { RackDiagram } from '../components/RackDiagram'
 import { MoldFormDrawer } from '../components/MoldFormDrawer'
+import { OperationDrawer, type MoldAction } from '../components/OperationDrawer'
+import { RackMoldActionsDrawer } from '../components/RackMoldActionsDrawer'
+import { useMoldDeletion } from '../hooks/useMoldDeletion'
 import type { MoldAsset, RackSlot, RackZone } from '../types'
 import { moldCode, moldLocation } from '../types'
 
@@ -20,6 +23,10 @@ export function RacksPage() {
   const [highlightMoldId, setHighlightMoldId] = useState<number | undefined>(navigationState?.highlightMoldId)
   const [search, setSearch] = useState('')
   const [targetSlot, setTargetSlot] = useState<RackSlot>()
+  const [managedMoldId, setManagedMoldId] = useState<number>()
+  const [managedAction, setManagedAction] = useState<MoldAction>()
+  const [editingManagedMold, setEditingManagedMold] = useState(false)
+  const { confirmDelete, deleting } = useMoldDeletion()
   const racksQuery = useQuery({ queryKey: ['racks'], queryFn: async () => toList(await rackApi.list()) })
   const defaultRack = racksQuery.data?.find((rack) => rack.code === navigationState?.rackCode) || racksQuery.data?.[0]
   const effectiveSelectedId = selectedId ?? defaultRack?.id
@@ -28,6 +35,11 @@ export function RacksPage() {
     queryKey: ['racks', effectiveSelectedId, 'layout'],
     queryFn: () => rackApi.layout(effectiveSelectedId!),
     enabled: !!effectiveSelectedId,
+  })
+  const managedMoldQuery = useQuery({
+    queryKey: ['mold', managedMoldId],
+    queryFn: () => moldApi.detail(managedMoldId!),
+    enabled: !!managedMoldId,
   })
   const refreshRackData = async () => {
     await Promise.all([
@@ -119,7 +131,11 @@ export function RacksPage() {
           <RackDiagram
             layout={layoutQuery.data}
             highlightMoldId={highlightMoldId}
-            onMoldClick={(id) => navigate(`/molds/${id}`)}
+            onMoldClick={(id) => {
+              setManagedMoldId(id)
+              setManagedAction(undefined)
+              setEditingManagedMold(false)
+            }}
             onEmptySlotClick={setTargetSlot}
             onCapacityChange={(zone, capacity) => capacityMutation.mutate({ zone, capacity })}
             onStackingChange={(zone, enabled) => stackingMutation.mutate({ zone, enabled })}
@@ -139,6 +155,39 @@ export function RacksPage() {
         onSuccess={(mold: MoldAsset) => {
           setHighlightMoldId(mold.id)
           setTargetSlot(undefined)
+        }}
+      />
+      <RackMoldActionsDrawer
+        open={!!managedMoldId && !managedAction && !editingManagedMold}
+        mold={managedMoldQuery.data}
+        loading={managedMoldQuery.isLoading}
+        error={managedMoldQuery.error as Error | null}
+        deleting={deleting}
+        onClose={() => setManagedMoldId(undefined)}
+        onEdit={() => setEditingManagedMold(true)}
+        onMove={() => setManagedAction('move')}
+        onLoadMachine={() => setManagedAction('load-machine')}
+        onRelease={() => setManagedAction('send-out')}
+        onDelete={() => managedMoldQuery.data && confirmDelete(managedMoldQuery.data, { onSuccess: () => setManagedMoldId(undefined) })}
+        onViewDetails={() => managedMoldId && navigate(`/molds/${managedMoldId}`)}
+      />
+      <MoldFormDrawer
+        open={editingManagedMold}
+        mold={managedMoldQuery.data}
+        onClose={() => setEditingManagedMold(false)}
+        onSuccess={() => {
+          setEditingManagedMold(false)
+          setManagedMoldId(undefined)
+        }}
+      />
+      <OperationDrawer
+        open={!!managedAction}
+        mold={managedMoldQuery.data}
+        action={managedAction}
+        onClose={() => setManagedAction(undefined)}
+        onSuccess={() => {
+          setManagedAction(undefined)
+          setManagedMoldId(undefined)
         }}
       />
     </div>

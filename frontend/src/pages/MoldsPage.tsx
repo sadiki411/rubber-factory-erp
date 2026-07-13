@@ -1,8 +1,8 @@
-import { EditOutlined, ExportOutlined, HomeOutlined, MoreOutlined, PlusOutlined, SearchOutlined, SwapOutlined, ToolOutlined } from '@ant-design/icons'
+import { DeleteOutlined, EditOutlined, ExportOutlined, HomeOutlined, MoreOutlined, PlusOutlined, SearchOutlined, SwapOutlined, ToolOutlined } from '@ant-design/icons'
 import { Button, Card, Dropdown, Empty, Grid, Input, List, Select, Table, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { moldApi, toList } from '../api/client'
@@ -10,16 +10,18 @@ import { MoldFormDrawer } from '../components/MoldFormDrawer'
 import { OperationDrawer, type MoldAction } from '../components/OperationDrawer'
 import { PageTitle } from '../components/PageTitle'
 import { StatusTag } from '../components/StatusTag'
+import { useMoldDeletion } from '../hooks/useMoldDeletion'
 import type { MoldAsset, MoldStatus } from '../types'
 import { moldCode, moldLocation, moldModelOf } from '../types'
 
 function actionItems(mold: MoldAsset) {
-  const items: { key: MoldAction | 'edit'; label: string; icon: ReactNode }[] = []
+  const items: { key: MoldAction | 'edit' | 'delete'; label: string; icon: ReactNode; danger?: boolean }[] = []
   if (mold.status === 'IN_STOCK') items.push({ key: 'move', label: '库内移位', icon: <SwapOutlined /> })
   else items.push({ key: 'putaway', label: '归位入库', icon: <HomeOutlined /> })
-  if (mold.status !== 'ON_MACHINE') items.push({ key: 'load-machine', label: '安排上机', icon: <ToolOutlined /> })
+  items.push({ key: 'load-machine', label: mold.status === 'ON_MACHINE' ? '更换机台' : '安排上机', icon: <ToolOutlined /> })
   if (mold.status !== 'OUTSOURCED') items.push({ key: 'send-out', label: '客户收回', icon: <ExportOutlined /> })
   items.push({ key: 'edit', label: '编辑资料', icon: <EditOutlined /> })
+  items.push({ key: 'delete', label: '删除误录记录', icon: <DeleteOutlined />, danger: true })
   return items
 }
 
@@ -32,6 +34,7 @@ export function MoldsPage() {
   const [operation, setOperation] = useState<{ mold: MoldAsset; action: MoldAction }>()
   const [editing, setEditing] = useState<MoldAsset | undefined>()
   const [formOpen, setFormOpen] = useState(false)
+  const { confirmDelete } = useMoldDeletion()
   const moldsQuery = useQuery({
     queryKey: ['molds', { query, status }],
     queryFn: async () => toList(await moldApi.list({ q: query, status, page_size: 500 })),
@@ -41,10 +44,11 @@ export function MoldsPage() {
     if (key === 'edit') {
       setEditing(mold)
       setFormOpen(true)
-    } else setOperation({ mold, action: key as MoldAction })
+    } else if (key === 'delete') confirmDelete(mold)
+    else setOperation({ mold, action: key as MoldAction })
   }
 
-  const columns = useMemo<TableColumnsType<MoldAsset>>(() => [
+  const columns: TableColumnsType<MoldAsset> = [
     {
       title: '模具编号', dataIndex: 'asset_code', key: 'asset_code', fixed: 'left', width: 145,
       render: (_, record) => <Button type="link" className="table-primary-link" onClick={() => navigate(`/molds/${record.id}`)}>{moldCode(record)}</Button>,
@@ -58,7 +62,7 @@ export function MoldsPage() {
       title: '操作', key: 'actions', fixed: 'right', width: 80,
       render: (_, record) => <Dropdown trigger={['click']} menu={{ items: actionItems(record), onClick: ({ key }) => onMenu(record, key) }}><Button type="text" icon={<MoreOutlined />} aria-label="更多操作" /></Dropdown>,
     },
-  ], [navigate])
+  ]
 
   return (
     <div className="page-container">

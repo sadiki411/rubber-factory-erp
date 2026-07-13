@@ -1,4 +1,4 @@
-import { ArrowLeftOutlined, EditOutlined, ExportOutlined, HomeOutlined, SwapOutlined, ToolOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, DeleteOutlined, EditOutlined, ExportOutlined, HomeOutlined, SwapOutlined, ToolOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Col, Descriptions, Empty, Image, Row, Skeleton, Space, Timeline, Typography } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import dayjs from 'dayjs'
@@ -9,6 +9,7 @@ import { MoldFormDrawer } from '../components/MoldFormDrawer'
 import { OperationDrawer, type MoldAction } from '../components/OperationDrawer'
 import { PageTitle } from '../components/PageTitle'
 import { StatusTag } from '../components/StatusTag'
+import { useMoldDeletion } from '../hooks/useMoldDeletion'
 import type { MoldMovement } from '../types'
 import { moldCode, moldLocation, moldModelOf } from '../types'
 
@@ -21,6 +22,7 @@ export function MoldDetailPage() {
   const navigate = useNavigate()
   const [action, setAction] = useState<MoldAction>()
   const [editing, setEditing] = useState(false)
+  const { confirmDelete, deleting } = useMoldDeletion()
   const moldQuery = useQuery({ queryKey: ['mold', id], queryFn: () => moldApi.detail(id), enabled: !!id })
   const historyQuery = useQuery({ queryKey: ['mold', id, 'history'], queryFn: async () => toList(await moldApi.history(id)), enabled: !!id })
 
@@ -32,12 +34,16 @@ export function MoldDetailPage() {
 
   const actions = mold.status === 'IN_STOCK'
     ? <><Button icon={<SwapOutlined />} onClick={() => setAction('move')}>移位</Button><Button icon={<ToolOutlined />} onClick={() => setAction('load-machine')}>上机</Button><Button icon={<ExportOutlined />} onClick={() => setAction('send-out')}>客户收回</Button></>
-    : <><Button type="primary" icon={<HomeOutlined />} onClick={() => setAction('putaway')}>归位入库</Button>{mold.status !== 'ON_MACHINE' && <Button icon={<ToolOutlined />} onClick={() => setAction('load-machine')}>上机</Button>}{mold.status !== 'OUTSOURCED' && <Button icon={<ExportOutlined />} onClick={() => setAction('send-out')}>客户收回</Button>}</>
+    : <><Button type="primary" icon={<HomeOutlined />} onClick={() => setAction('putaway')}>归位入库</Button><Button icon={<ToolOutlined />} onClick={() => setAction('load-machine')}>{mold.status === 'ON_MACHINE' ? '更换机台' : '上机'}</Button>{mold.status !== 'OUTSOURCED' && <Button icon={<ExportOutlined />} onClick={() => setAction('send-out')}>客户收回</Button>}</>
 
   return (
     <div className="page-container">
       <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} className="back-button">返回</Button>
-      <PageTitle title={moldCode(mold)} description={`${model?.code || '-'} · ${model?.product_name || model?.name || '-'}`} extra={<Button icon={<EditOutlined />} onClick={() => setEditing(true)}>编辑资料</Button>} />
+      <PageTitle
+        title={moldCode(mold)}
+        description={`${model?.code || '-'} · ${model?.product_name || model?.name || '-'}`}
+        extra={<Space wrap><Button icon={<EditOutlined />} onClick={() => setEditing(true)}>编辑资料</Button><Button danger loading={deleting} icon={<DeleteOutlined />} onClick={() => confirmDelete(mold, { onSuccess: () => navigate('/molds', { replace: true }) })}>删除误录记录</Button></Space>}
+      />
 
       <Row gutter={[20, 20]}>
         <Col xs={24} lg={16}>

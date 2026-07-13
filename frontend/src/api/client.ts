@@ -199,6 +199,10 @@ export const moldApi = {
     apiFetch<ApiList<MoldMovement> | MoldMovement[]>(`/api/molds/${id}/history/`),
   create: (body: FormData) => apiFetch<MoldAsset>('/api/molds/', { method: 'POST', body }).then(normalizeMold),
   update: (id: number, body: FormData) => apiFetch<MoldAsset>(`/api/molds/${id}/`, { method: 'PATCH', body }).then(normalizeMold),
+  remove: (id: number, confirmWarnings = false) => apiFetch<void>(`/api/molds/${id}/`, {
+    method: 'DELETE',
+    body: JSON.stringify({ confirm_warnings: confirmWarnings }),
+  }),
   action: (id: number, action: string, body: Record<string, unknown>) =>
     apiFetch<MoldAsset>(`/api/molds/${id}/actions/${action}/`, {
       method: 'POST',

@@ -359,6 +359,7 @@ button, input, textarea, select { font: inherit; }
   .mobile-record-card .ant-btn { min-height: 44px; }
   .ant-drawer-content-wrapper { width: 100% !important; max-width: 100%; }
   .operation-drawer .ant-drawer-content-wrapper { height: 100% !important; }
+  .rack-mold-actions-drawer .rack-mold-action-buttons .ant-btn { min-height: 44px; }
   .current-status-block { min-height: 125px; padding: 18px; }
   .detail-actions .ant-space { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
   .detail-actions .ant-btn { min-height: 44px; }

@@ -30,6 +30,7 @@ const apiMocks = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
   listSlots: vi.fn(),
+  listMachines: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -39,6 +40,7 @@ vi.mock('../api/client', () => ({
   },
   moldApi: { create: apiMocks.create, update: apiMocks.update },
   slotApi: { list: apiMocks.listSlots },
+  masterApi: () => ({ list: apiMocks.listMachines }),
   toList: <T,>(payload: T[]) => payload,
 }))
 
@@ -50,12 +52,12 @@ const initialSlot: RackSlot = {
   active: true,
 }
 
-function renderDrawer() {
+function renderDrawer(props: { mold?: MoldAsset; initialSlot?: RackSlot } = { initialSlot }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <App>
-        <MoldFormDrawer open initialSlot={initialSlot} onClose={vi.fn()} />
+        <MoldFormDrawer open mold={props.mold} initialSlot={props.initialSlot} onClose={vi.fn()} />
       </App>
     </QueryClientProvider>,
   )
@@ -66,6 +68,7 @@ describe('MoldFormDrawer', () => {
     apiMocks.create.mockReset()
     apiMocks.update.mockReset()
     apiMocks.listSlots.mockReset().mockResolvedValue([])
+    apiMocks.listMachines.mockReset().mockResolvedValue([])
   })
 
   it('accepts a manually typed model and creates it in the selected rack slot', async () => {
@@ -92,5 +95,31 @@ describe('MoldFormDrawer', () => {
     expect(body.get('initial_status')).toBe('IN_STOCK')
     expect(body.get('slot_id')).toBe(String(initialSlot.id))
     expect(body.get('asset_code')).toBeNull()
+  })
+
+  it('allows correcting or clearing a generated code and removes an existing image', async () => {
+    const mold = {
+      id: 7,
+      asset_code: 'AUTO-100-01',
+      mold_model: { id: 2, code: 'AUTO-100', product_name: '自动编号模具' },
+      status: 'IN_STOCK',
+      slot: { id: initialSlot.id, display_code: initialSlot.display_code },
+      main_image: '/media/molds/old.jpg',
+    } satisfies MoldAsset
+    apiMocks.update.mockResolvedValue({ ...mold, asset_code: 'AUTO-100-02', main_image: null })
+    const user = userEvent.setup()
+    renderDrawer({ mold })
+
+    const codeInput = screen.getByLabelText(/模具编号/)
+    expect(codeInput).toBeEnabled()
+    await user.clear(codeInput)
+    await user.click(screen.getByTitle(/remove file|删除文件/i))
+    await user.click(screen.getByRole('button', { name: /保\s*存/ }))
+
+    await waitFor(() => expect(apiMocks.update).toHaveBeenCalledTimes(1))
+    const [id, body] = apiMocks.update.mock.calls[0] as [number, FormData]
+    expect(id).toBe(mold.id)
+    expect(body.get('asset_code')).toBe('')
+    expect(body.get('remove_image')).toBe('true')
   })
 })

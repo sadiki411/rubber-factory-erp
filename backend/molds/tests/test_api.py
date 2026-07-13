@@ -1,5 +1,11 @@
+import base64
+import os
+import tempfile
+
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
+from rest_framework import serializers as drf_serializers
 from rest_framework.test import APIClient
 
 from molds.models import (
@@ -11,7 +17,9 @@ from molds.models import (
     Rack,
     RackZone,
 )
-from molds.services import switch_zone_stacking
+from molds.serializers import MoldAssetSerializer
+from molds.services import archive_mold, switch_zone_stacking, transition_mold
+from production.models import ProductionRun, ProductionStation
 
 from .helpers import SeededRackMixin
 
@@ -283,10 +291,42 @@ class MoldApiTests(SeededRackMixin, TestCase):
         self.assertIn("asset_code", response.json())
         self.assertNotIn("slot_id", response.json())
 
-    def test_asset_code_cannot_be_cleared_during_update(self):
+    def test_asset_code_can_be_renamed_or_cleared_to_regenerate_with_edit_history(self):
+        renamed = self.client.patch(
+            f"/api/molds/{self.stock.pk}/",
+            {"asset_code": "RENAMED-01"},
+            format="json",
+        )
+        self.assertEqual(renamed.status_code, 200, renamed.json())
+        self.assertEqual(renamed.json()["asset_code"], "RENAMED-01")
+        rename_history = MoldMovement.objects.get(
+            mold=self.stock,
+            action=MoldMovement.Action.EDIT,
+        )
+        self.assertIn("ABC-100-01 → RENAMED-01", rename_history.note)
+
         response = self.client.patch(
             f"/api/molds/{self.stock.pk}/",
             {"asset_code": ""},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json()["asset_code"], "ABC-100-01")
+        self.stock.refresh_from_db()
+        self.assertEqual(self.stock.asset_code, "ABC-100-01")
+        self.assertEqual(
+            MoldMovement.objects.filter(
+                mold=self.stock,
+                action=MoldMovement.Action.EDIT,
+            ).count(),
+            2,
+        )
+
+    def test_asset_code_conflict_is_case_insensitive(self):
+        response = self.client.patch(
+            f"/api/molds/{self.stock.pk}/",
+            {"asset_code": "abc-100-02"},
             format="json",
         )
 
@@ -295,13 +335,233 @@ class MoldApiTests(SeededRackMixin, TestCase):
         self.stock.refresh_from_db()
         self.assertEqual(self.stock.asset_code, "ABC-100-01")
 
-        changed = self.client.patch(
+    def test_product_name_can_be_cleared_and_resets_to_model_code(self):
+        response = self.client.patch(
             f"/api/molds/{self.stock.pk}/",
-            {"asset_code": "RENAMED-01"},
+            {"product_name": ""},
             format="json",
         )
-        self.assertEqual(changed.status_code, 400)
-        self.assertIn("asset_code", changed.json())
+
+        self.assertEqual(response.status_code, 200, response.json())
+        self.model.refresh_from_db()
+        self.assertEqual(self.model.product_name, self.model.code)
+        movement = MoldMovement.objects.get(
+            mold=self.stock,
+            action=MoldMovement.Action.EDIT,
+        )
+        self.assertIn("产品名称：汽车密封圈 → ABC-100", movement.note)
+
+    def test_is_active_and_initial_location_cannot_bypass_domain_operations(self):
+        ignored = self.client.patch(
+            f"/api/molds/{self.stock.pk}/",
+            {"is_active": False},
+            format="json",
+        )
+        self.assertEqual(ignored.status_code, 200)
+        self.stock.refresh_from_db()
+        self.assertTrue(self.stock.is_active)
+        self.assertIsNotNone(self.stock.current_slot)
+        self.assertFalse(MoldMovement.objects.filter(mold=self.stock).exists())
+
+        rejected = self.client.patch(
+            f"/api/molds/{self.stock.pk}/",
+            {"slot_id": self.slot("J01", 2, zone="A", position=1).pk},
+            format="json",
+        )
+        self.assertEqual(rejected.status_code, 400)
+        self.assertIn("status", rejected.json())
+
+    def test_stale_edit_cannot_revive_a_concurrently_deleted_mold(self):
+        stale = MoldAsset.objects.select_related("mold_model").get(pk=self.stock.pk)
+        serializer = MoldAssetSerializer(
+            stale,
+            data={"note": "过期页面修改"},
+            partial=True,
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        archive_mold(self.stock, self.user)
+
+        with self.assertRaisesMessage(drf_serializers.ValidationError, "已删除"):
+            serializer.save()
+
+        self.stock.refresh_from_db()
+        self.assertFalse(self.stock.is_active)
+        self.assertIsNone(self.stock.current_slot)
+        self.assertEqual(
+            MoldMovement.objects.filter(
+                mold=self.stock,
+                action=MoldMovement.Action.DELETE,
+            ).count(),
+            1,
+        )
+
+    def test_stale_edit_preserves_a_concurrent_status_transition(self):
+        stale = MoldAsset.objects.select_related("mold_model").get(pk=self.stock.pk)
+        serializer = MoldAssetSerializer(
+            stale,
+            data={"note": "状态变化后补充备注"},
+            partial=True,
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        transition_mold(
+            self.stock,
+            MoldMovement.Action.LOAD_MACHINE,
+            self.user,
+            machine=self.machine,
+        )
+
+        updated = serializer.save()
+
+        updated.refresh_from_db()
+        self.assertEqual(updated.status, MoldAsset.Status.ON_MACHINE)
+        self.assertEqual(updated.current_machine_id, self.machine.pk)
+        self.assertIsNone(updated.current_slot)
+        self.assertEqual(updated.notes, "状态变化后补充备注")
+
+    def test_saved_main_image_can_be_cleared(self):
+        image_bytes = base64.b64decode(
+            "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+        )
+        with tempfile.TemporaryDirectory() as media_root, self.settings(MEDIA_ROOT=media_root):
+            uploaded = self.client.patch(
+                f"/api/molds/{self.stock.pk}/",
+                {
+                    "image": SimpleUploadedFile(
+                        "mold.gif", image_bytes, content_type="image/gif"
+                    )
+                },
+                format="multipart",
+            )
+            self.assertEqual(uploaded.status_code, 200, uploaded.json())
+            self.stock.refresh_from_db()
+            saved_path = self.stock.main_image.path
+            self.assertTrue(os.path.exists(saved_path))
+
+            with self.captureOnCommitCallbacks(execute=True):
+                cleared = self.client.patch(
+                    f"/api/molds/{self.stock.pk}/",
+                    {"remove_image": "true"},
+                    format="multipart",
+                )
+            self.assertEqual(cleared.status_code, 200, cleared.json())
+            self.stock.refresh_from_db()
+            self.assertFalse(self.stock.main_image)
+            self.assertFalse(os.path.exists(saved_path))
+
+    def test_delete_soft_deletes_releases_slot_and_allows_code_reuse(self):
+        original_slot_id = self.stock.current_slot_id
+        response = self.client.delete(
+            f"/api/molds/{self.stock.pk}/",
+            {"note": "货架误录，清空格位"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.stock.refresh_from_db()
+        self.assertFalse(self.stock.is_active)
+        self.assertIsNone(self.stock.current_slot)
+        self.assertIsNone(self.stock.current_machine)
+        self.assertIsNone(self.stock.current_processor)
+        movement = MoldMovement.objects.get(
+            mold=self.stock,
+            action=MoldMovement.Action.DELETE,
+        )
+        self.assertEqual(movement.from_slot_id, original_slot_id)
+        self.assertIsNone(movement.to_slot_id)
+        self.assertEqual(movement.note, "货架误录，清空格位")
+
+        self.assertEqual(
+            self.client.get(f"/api/molds/{self.stock.pk}/").status_code,
+            404,
+        )
+        archived = self.client.get(
+            f"/api/molds/{self.stock.pk}/", {"include_inactive": "true"}
+        )
+        self.assertEqual(archived.status_code, 200)
+        self.assertFalse(archived.json()["is_active"])
+        self.assertEqual(archived.json()["location_text"], "已删除")
+        history = self.client.get(
+            f"/api/molds/{self.stock.pk}/history/", {"include_inactive": "true"}
+        )
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual(history.json()[0]["action"], MoldMovement.Action.DELETE)
+
+        replacement = self.client.post(
+            "/api/molds/",
+            {
+                "asset_code": "abc-100-01",
+                "mold_model_id": self.model.pk,
+                "slot_id": original_slot_id,
+            },
+            format="json",
+        )
+        self.assertEqual(replacement.status_code, 201, replacement.json())
+        self.assertEqual(replacement.json()["slot"]["id"], original_slot_id)
+        self.assertEqual(
+            MoldAsset.objects.filter(asset_code__iexact="ABC-100-01").count(),
+            2,
+        )
+        self.assertEqual(
+            self.client.delete(
+                f"/api/molds/{self.stock.pk}/?include_inactive=true"
+            ).status_code,
+            404,
+        )
+
+    def test_delete_releases_machine_and_blocks_active_production(self):
+        deleted = self.client.delete(f"/api/molds/{self.machine_mold.pk}/")
+        self.assertEqual(deleted.status_code, 204)
+        self.machine_mold.refresh_from_db()
+        self.assertFalse(self.machine_mold.is_active)
+        self.assertIsNone(self.machine_mold.current_machine)
+
+        station = ProductionStation.objects.create(
+            code="1",
+            group=ProductionStation.Group.A,
+            position_no=1,
+            machine=self.machine,
+        )
+        ProductionRun.objects.create(
+            station=station,
+            order_no="ACTIVE-DELETE-01",
+            specification="测试规格",
+            mold=self.stock,
+            order_quantity=100,
+            planned_mold_count=10,
+            status=ProductionRun.Status.PLANNED,
+            created_by=self.user,
+        )
+        blocked = self.client.delete(f"/api/molds/{self.stock.pk}/")
+        self.assertEqual(blocked.status_code, 400)
+        self.assertIn("活动生产订单", str(blocked.json()))
+        self.stock.refresh_from_db()
+        self.assertTrue(self.stock.is_active)
+        self.assertIsNotNone(self.stock.current_slot)
+
+    def test_delete_lower_stack_requires_confirmation(self):
+        lower = self.slot("J05", 1, zone="A", capacity=2, position=1, stack=1)
+        upper = self.slot("J05", 1, zone="A", capacity=2, position=1, stack=2)
+        switch_zone_stacking(lower.zone, True)
+        lower_mold = self.create_mold("DELETE-LOWER-01", lower, allows_stacking=True)
+        upper_mold = self.create_mold("DELETE-UPPER-01", upper)
+
+        warning = self.client.delete(f"/api/molds/{lower_mold.pk}/")
+        self.assertEqual(warning.status_code, 409)
+        self.assertTrue(warning.json()["requires_confirmation"])
+        lower_mold.refresh_from_db()
+        self.assertTrue(lower_mold.is_active)
+        self.assertEqual(lower_mold.current_slot_id, lower.pk)
+
+        confirmed = self.client.delete(
+            f"/api/molds/{lower_mold.pk}/",
+            {"confirm_warnings": True},
+            format="json",
+        )
+        self.assertEqual(confirmed.status_code, 204)
+        lower_mold.refresh_from_db()
+        upper_mold.refresh_from_db()
+        self.assertFalse(lower_mold.is_active)
+        self.assertEqual(upper_mold.current_slot_id, upper.pk)
 
     def test_create_supports_on_machine_and_customer_return_initial_states(self):
         on_machine = self.client.post(
@@ -357,6 +617,46 @@ class MoldApiTests(SeededRackMixin, TestCase):
         self.assertIsNone(item["to_processor"])
         self.assertEqual(item["action_label"], "客户收回")
         self.assertEqual(item["operator_name"], "shared")
+
+    def test_noop_machine_and_customer_return_actions_are_rejected(self):
+        same_machine = self.client.post(
+            f"/api/molds/{self.machine_mold.pk}/actions/load-machine/",
+            {"machine_id": self.machine.pk},
+            format="json",
+        )
+        self.assertEqual(same_machine.status_code, 400)
+        self.assertIn("不能重复上机", str(same_machine.json()))
+        self.assertFalse(MoldMovement.objects.filter(mold=self.machine_mold).exists())
+
+        second_machine = Machine.objects.create(code="MC-02", name="二号机")
+        changed_machine = self.client.post(
+            f"/api/molds/{self.machine_mold.pk}/actions/load-machine/",
+            {"machine_id": second_machine.pk},
+            format="json",
+        )
+        self.assertEqual(changed_machine.status_code, 200, changed_machine.json())
+        self.assertEqual(changed_machine.json()["machine"]["id"], second_machine.pk)
+
+        first_return = self.client.post(
+            f"/api/molds/{self.stock.pk}/actions/send-out/",
+            {},
+            format="json",
+        )
+        self.assertEqual(first_return.status_code, 200)
+        repeated_return = self.client.post(
+            f"/api/molds/{self.stock.pk}/actions/send-out/",
+            {},
+            format="json",
+        )
+        self.assertEqual(repeated_return.status_code, 400)
+        self.assertIn("无需重复操作", str(repeated_return.json()))
+        self.assertEqual(
+            MoldMovement.objects.filter(
+                mold=self.stock,
+                action=MoldMovement.Action.SEND_OUT,
+            ).count(),
+            1,
+        )
 
 
 class RackLayoutApiTests(SeededRackMixin, TestCase):

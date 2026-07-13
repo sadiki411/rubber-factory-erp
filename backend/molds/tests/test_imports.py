@@ -111,7 +111,12 @@ class StandardImportTests(SeededRackMixin, TestCase):
         self.assertIsNotNone(batch.committed_at)
 
     def test_duplicate_asset_codes_inside_workbook_are_blocking(self):
-        upload = workbook_upload(standard_rows(stock_row(), stock_row(position_no=2)))
+        upload = workbook_upload(
+            standard_rows(
+                stock_row(),
+                stock_row("abc-100-01", position_no=2),
+            )
+        )
         preview = preview_workbook(upload, self.user)
         self.assertGreaterEqual(preview["error_count"], 2)
         self.assertTrue(any("模具编号重复" in issue["message"] for issue in preview["issues"]))
@@ -138,6 +143,41 @@ class StandardImportTests(SeededRackMixin, TestCase):
         )
         self.assertGreater(repeated["error_count"], 0)
         self.assertTrue(any("模具编号已存在" in issue["message"] for issue in repeated["issues"]))
+
+    def test_soft_deleted_asset_code_can_be_reused_by_import(self):
+        MoldAsset.objects.create(
+            asset_code="ABC-100-01",
+            mold_model=MoldModel.objects.create(
+                code="ARCHIVED-MODEL",
+                product_name="已删除记录",
+            ),
+            status=MoldAsset.Status.OUTSOURCED,
+            is_active=False,
+        )
+
+        preview = preview_workbook(
+            workbook_upload(
+                standard_rows(stock_row("abc-100-01")),
+                name="reuse-archived-code.xlsx",
+            ),
+            self.user,
+        )
+        self.assertEqual(preview["error_count"], 0, preview["issues"])
+        self.assertEqual(
+            commit_batch(ImportBatch.objects.get(pk=preview["token"]), self.user),
+            1,
+        )
+        self.assertEqual(
+            MoldAsset.objects.filter(asset_code__iexact="ABC-100-01").count(),
+            2,
+        )
+        self.assertEqual(
+            MoldAsset.objects.filter(
+                asset_code__iexact="ABC-100-01",
+                is_active=True,
+            ).count(),
+            1,
+        )
 
     def test_same_batch_cannot_be_committed_twice(self):
         preview = preview_workbook(workbook_upload(standard_rows(stock_row())), self.user)

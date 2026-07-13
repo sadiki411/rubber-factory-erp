@@ -21,6 +21,7 @@ export function MoldFormDrawer({ open, mold, initialSlot, onClose, onSuccess }: 
   const queryClient = useQueryClient()
   const { message } = App.useApp()
   const editing = !!mold
+  const existingImage = mold?.main_image || mold?.image
   const initialStatus = Form.useWatch<MoldStatus>('initial_status', form)
 
   const slotsQuery = useQuery({
@@ -68,6 +69,7 @@ export function MoldFormDrawer({ open, mold, initialSlot, onClose, onSuccess }: 
       })
       const original = files[0]?.originFileObj
       if (original) body.append('image', original)
+      if (editing && existingImage && files.length === 0) body.append('remove_image', 'true')
       if (!editing) body.append('confirm_warnings', String(confirmWarnings))
       return editing ? moldApi.update(mold.id, body) : moldApi.create(body)
     },
@@ -117,15 +119,15 @@ export function MoldFormDrawer({ open, mold, initialSlot, onClose, onSuccess }: 
         <Form.Item
           name="asset_code"
           label="模具编号"
-          extra={editing ? undefined : '可留空，由系统根据型号自动生成唯一编号'}
+          extra={editing ? '可直接修改；清空后系统会根据当前型号重新生成唯一编号' : '可留空，由系统根据型号自动生成唯一编号'}
           rules={[{ max: 100, message: '模具编号最多100个字符' }]}
         >
-          <Input placeholder="可选，例如 MJ-001" disabled={editing} />
+          <Input placeholder="可选，例如 MJ-001" />
         </Form.Item>
         <Form.Item name="model_code" label="模具型号" rules={[{ required: true, whitespace: true, message: '请输入模具型号' }, { max: 100 }]}>
           <Input placeholder="直接输入型号，例如 ABC-100" autoComplete="off" />
         </Form.Item>
-        <Form.Item name="product_name" label="产品名称（可选）" rules={[{ max: 200 }]}>
+        <Form.Item name="product_name" label="产品名称（可选）" extra="同一型号共用产品名称；清空后将恢复为型号名称" rules={[{ max: 200 }]}>
           <Input placeholder="例如 密封圈" autoComplete="off" />
         </Form.Item>
         {!editing && (

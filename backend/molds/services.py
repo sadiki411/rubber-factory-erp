@@ -521,6 +521,8 @@ def transition_mold(mold, action, operator, *, slot=None, machine=None, processo
     mold = MoldAsset.objects.select_for_update().select_related(
         "current_slot__zone__level__rack", "current_machine", "current_processor"
     ).get(pk=mold.pk)
+    if not mold.is_active:
+        raise ValidationError("已删除模具不能再进行状态或位置操作。")
     from_values = {
         "from_status": mold.status,
         "from_slot": mold.current_slot,
@@ -574,6 +576,18 @@ def transition_mold(mold, action, operator, *, slot=None, machine=None, processo
         to_machine=to_machine,
     )
 
+    if (
+        action == MoldMovement.Action.LOAD_MACHINE
+        and mold.status == MoldAsset.Status.ON_MACHINE
+        and mold.current_machine_id == to_machine.pk
+    ):
+        raise ValidationError("模具已在所选机台，不能重复上机。")
+    if (
+        action == MoldMovement.Action.SEND_OUT
+        and mold.status == MoldAsset.Status.OUTSOURCED
+    ):
+        raise ValidationError("模具已是客户收回状态，无需重复操作。")
+
     if warnings and not confirm_warnings:
         raise ConfirmationRequired(warnings)
 
@@ -610,6 +624,71 @@ def transition_mold(mold, action, operator, *, slot=None, machine=None, processo
         to_machine=to_machine,
         to_processor=to_processor,
         note=note,
+        operator=operator,
+        **from_values,
+    )
+    return mold, warnings
+
+
+@transaction.atomic
+def archive_mold(mold, operator, *, note="", confirm_warnings=False):
+    """Soft-delete an erroneous mold entry while preserving its audit trail."""
+
+    from production.models import ProductionRun
+
+    mold = MoldAsset.objects.select_for_update().select_related(
+        "current_slot__zone__level__rack", "current_machine", "current_processor"
+    ).get(pk=mold.pk)
+    if not mold.is_active:
+        raise ValidationError("该模具已经删除。")
+
+    active_run = (
+        ProductionRun.objects.select_for_update()
+        .select_related("station")
+        .filter(mold=mold, status__in=ProductionRun.ACTIVE_STATUSES)
+        .first()
+    )
+    if active_run:
+        raise ValidationError(
+            f"模具已关联活动生产订单 {active_run.order_no}（站位 {active_run.station.code}），"
+            "请先完成或取消生产任务后再删除。"
+        )
+
+    warnings = stacking_warnings(
+        mold,
+        leaving_current=mold.status == MoldAsset.Status.IN_STOCK,
+    )
+    if warnings and not confirm_warnings:
+        raise ConfirmationRequired(warnings)
+
+    from_values = {
+        "from_status": mold.status,
+        "from_slot": mold.current_slot,
+        "from_machine": mold.current_machine,
+        "from_processor": mold.current_processor,
+    }
+    mold.current_slot = None
+    mold.current_machine = None
+    mold.current_processor = None
+    mold.is_active = False
+    mold.status_changed_at = timezone.now()
+    mold.full_clean()
+    mold.save(
+        update_fields=[
+            "current_slot",
+            "current_machine",
+            "current_processor",
+            "is_active",
+            "status_changed_at",
+            "updated_at",
+        ]
+    )
+
+    MoldMovement.objects.create(
+        mold=mold,
+        action=MoldMovement.Action.DELETE,
+        to_status=mold.status,
+        note=str(note or "").strip() or "删除误录模具",
         operator=operator,
         **from_values,
     )

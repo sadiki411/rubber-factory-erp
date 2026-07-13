@@ -152,9 +152,17 @@ def _parse_standard(wb):
             issues.append(_issue("error", "上机模具必须填写machine_code。", sheet="模具实体", row=row_no))
         rows.append(record)
 
-    duplicate_codes = {code for code, count in Counter(row.get("asset_code") for row in rows).items() if code and count > 1}
+    duplicate_code_keys = {
+        code
+        for code, count in Counter(
+            row.get("asset_code", "").casefold()
+            for row in rows
+            if row.get("asset_code")
+        ).items()
+        if count > 1
+    }
     for row in rows:
-        if row.get("asset_code") in duplicate_codes:
+        if row.get("asset_code", "").casefold() in duplicate_code_keys:
             issues.append(_issue("error", f"模具编号重复：{row['asset_code']}", sheet="模具实体", row=row["row_no"]))
     capacity_modes, stacking_modes = _planned_modes_from_rows(
         rows,
@@ -308,7 +316,12 @@ def _parse_legacy(wb):
 
     active = [item for item in candidates if item["active"] and item["value"]]
     counters = defaultdict(int)
-    existing = set(MoldAsset.objects.values_list("asset_code", flat=True))
+    existing = {
+        code.casefold()
+        for code in MoldAsset.objects.filter(is_active=True).values_list(
+            "asset_code", flat=True
+        )
+    }
     rows = []
     by_physical = {}
     for item in active:
@@ -321,8 +334,8 @@ def _parse_legacy(wb):
         while True:
             counters[prefix] += 1
             asset_code = f"{prefix}-{counters[prefix]:02d}"
-            if asset_code not in existing:
-                existing.add(asset_code)
+            if asset_code.casefold() not in existing:
+                existing.add(asset_code.casefold())
                 break
         row = {
             **item,
@@ -683,13 +696,18 @@ def _validate_business_rules(result):
     source_type = result["source_type"]
     capacity_plans = _capacity_plan_map(result)
     stacking_plans = _stacking_plan_map(result)
-    existing_codes = set(MoldAsset.objects.values_list("asset_code", flat=True))
+    existing_codes = {
+        code.casefold()
+        for code in MoldAsset.objects.filter(is_active=True).values_list(
+            "asset_code", flat=True
+        )
+    }
     planned_locations = {}
     imported_rows_by_slot = {}
 
     for row in result["rows"]:
         code = row.get("asset_code")
-        if code and code in existing_codes:
+        if code and code.casefold() in existing_codes:
             result["issues"].append(
                 _issue(
                     "error",
@@ -967,16 +985,27 @@ def commit_batch(batch, user, asset_code_updates=None):
             for row in payload.get("rows", [])
             if row.get("asset_code")
         ]
+        duplicate_keys = {
+            code
+            for code, count in Counter(
+                item.casefold() for item in imported_codes
+            ).items()
+            if count > 1
+        }
         duplicates = {
-            code for code, count in Counter(imported_codes).items() if count > 1
+            code for code in imported_codes if code.casefold() in duplicate_keys
         }
         if duplicates:
             raise ValueError(f"模具编号重复：{', '.join(sorted(duplicates))}")
-        existing = set(
-            MoldAsset.objects.filter(asset_code__in=imported_codes).values_list(
+        existing_code_keys = {
+            code.casefold()
+            for code in MoldAsset.objects.filter(is_active=True).values_list(
                 "asset_code", flat=True
             )
-        )
+        }
+        existing = {
+            code for code in imported_codes if code.casefold() in existing_code_keys
+        }
         if existing:
             raise ValueError(f"模具编号已存在：{', '.join(sorted(existing))}")
         batch.payload = payload

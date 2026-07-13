@@ -28,7 +28,9 @@ export function OperationDrawer({ mold, action = 'putaway', open, onClose, onSuc
   const [form] = Form.useForm()
   const queryClient = useQueryClient()
   const { message } = App.useApp()
-  const meta = actionMeta[action]
+  const meta = action === 'load-machine' && mold?.status === 'ON_MACHINE'
+    ? { title: '更换机台', submit: '确认更换机台', icon: <ToolOutlined /> }
+    : actionMeta[action]
 
   useEffect(() => {
     if (open) form.resetFields()
@@ -126,8 +128,8 @@ export function OperationDrawer({ mold, action = 'putaway', open, onClose, onSuc
               showSearch
               optionFilterProp="label"
               loading={machinesQuery.isLoading}
-              placeholder="选择机台"
-              options={(machinesQuery.data || []).filter((item) => item.active !== false).map((item) => ({ value: item.id, label: `${item.code} · ${item.name}` }))}
+              placeholder={mold?.status === 'ON_MACHINE' ? '选择新的机台' : '选择机台'}
+              options={(machinesQuery.data || []).filter((item) => item.active !== false && item.id !== mold?.machine?.id).map((item) => ({ value: item.id, label: `${item.code} · ${item.name}` }))}
             />
           </Form.Item>
         )}
