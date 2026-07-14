@@ -51,6 +51,7 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
         mold_id: run.mold?.id,
         loaded_at: run.loaded_at ? dayjs(run.loaded_at) : undefined,
         expected_change_at: run.expected_change_at ? dayjs(run.expected_change_at) : undefined,
+        material_changed_at: run.material_changed_at ? dayjs(run.material_changed_at) : undefined,
         unloaded_at: run.unloaded_at ? dayjs(run.unloaded_at) : undefined,
       })
     } else {
@@ -77,7 +78,10 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
       ? productionApi.updateRun(run.id, payload)
       : productionApi.createRun(payload),
     onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: ['production'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['production'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+      ])
       if (run?.is_settled && !result.is_settled) message.warning('价格或生产资料已变化，原完工结算已撤销，请重新结算。')
       else message.success(run ? '生产记录已更新' : '生产记录已创建')
       onSuccess?.(result)
@@ -129,6 +133,7 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
       ...values,
       loaded_at: values.loaded_at ? values.loaded_at.toISOString() : null,
       expected_change_at: values.expected_change_at ? values.expected_change_at.toISOString() : null,
+      material_changed_at: values.material_changed_at ? values.material_changed_at.toISOString() : null,
       unloaded_at: values.unloaded_at ? values.unloaded_at.toISOString() : null,
       mold_id: values.mold_id || null,
     }
@@ -137,7 +142,7 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
 
   const handleStatusChange = (value: ProductionRun['status']) => {
     if (value === 'PLANNED') {
-      form.setFieldsValue({ loaded_at: undefined, expected_change_at: undefined, unloaded_at: undefined })
+      form.setFieldsValue({ loaded_at: undefined, expected_change_at: undefined, material_changed_at: undefined, unloaded_at: undefined })
       return
     }
     if (value === 'RUNNING') {
@@ -162,7 +167,7 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
     }
     if (value === 'CANCELLED') {
       if (!run) {
-        form.setFieldsValue({ loaded_at: undefined, expected_change_at: undefined, unloaded_at: undefined })
+        form.setFieldsValue({ loaded_at: undefined, expected_change_at: undefined, material_changed_at: undefined, unloaded_at: undefined })
         return
       }
       const loadedAt = form.getFieldValue('loaded_at') as Dayjs | undefined
@@ -273,15 +278,27 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
                 : Promise.resolve()
             },
           }]}><DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} /></Form.Item></Col>
-          {(selectedStatus === 'COMPLETED' || selectedStatus === 'CANCELLED') && <Col xs={24} sm={12}><Form.Item name="unloaded_at" label="下机时间" rules={[
-            { required: requiresProductionUnloadTime(selectedStatus, !!selectedLoadedAt), message: selectedStatus === 'CANCELLED' ? '已上模的取消记录必须填写下机时间' : '已完成记录必须填写下机时间' },
+          <Col xs={24} sm={12}><Form.Item name="material_changed_at" label="最近换料时间（可选）" dependencies={['loaded_at', 'unloaded_at']} rules={[{
+            validator: (_, value: Dayjs | null) => {
+              if (!value) return Promise.resolve()
+              const loadedAt = form.getFieldValue('loaded_at') as Dayjs | undefined
+              const unloadedAt = form.getFieldValue('unloaded_at') as Dayjs | undefined
+              if (!loadedAt) return Promise.reject(new Error('请先填写上模时间'))
+              if (value.isBefore(loadedAt)) return Promise.reject(new Error('换料时间不能早于上模时间'))
+              return unloadedAt && value.isAfter(unloadedAt)
+                ? Promise.reject(new Error('换料时间不能晚于停机时间'))
+                : Promise.resolve()
+            },
+          }]}><DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} /></Form.Item></Col>
+          {(selectedStatus === 'COMPLETED' || selectedStatus === 'CANCELLED') && <Col xs={24} sm={12}><Form.Item name="unloaded_at" label="停机 / 结束时间" rules={[
+            { required: requiresProductionUnloadTime(selectedStatus, !!selectedLoadedAt), message: selectedStatus === 'CANCELLED' ? '已上模的取消记录必须填写停机时间' : '已完成记录必须填写停机时间' },
             {
               validator: (_, value: Dayjs | null) => {
                 if (!value) return Promise.resolve()
                 const loadedAt = form.getFieldValue('loaded_at') as Dayjs | undefined
-                if (!loadedAt) return Promise.reject(new Error('填写下机时间前必须先填写上模时间'))
+                if (!loadedAt) return Promise.reject(new Error('填写停机时间前必须先填写上模时间'))
                 return value.isBefore(loadedAt)
-                  ? Promise.reject(new Error('下机时间不能早于上模时间'))
+                  ? Promise.reject(new Error('停机时间不能早于上模时间'))
                   : Promise.resolve()
               },
             },

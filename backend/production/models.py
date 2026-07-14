@@ -56,18 +56,18 @@ LEGACY_PRODUCTION_STATION_ALIASES.update(
 
 
 def canonical_production_station_code(group, position_no):
-    """Return the physical machine number for a group-local position."""
+    """Return the reserved code for one of the six built-in stations."""
 
     normalized_group = str(group or "").strip().upper()
     normalized_position = int(position_no or 0)
     for layout_group, layout_position, code, _ in PRODUCTION_STATION_LAYOUT:
         if (normalized_group, normalized_position) == (layout_group, layout_position):
             return code
-    raise ValueError("有效机台必须是第一组1/2、第二组3/4或第三组5/6。")
+    raise ValueError("该分组和组内编号不属于默认六台机台。")
 
 
 def normalize_production_station_code(value):
-    """Normalize current 1-6 codes and the six valid legacy A01-style aliases."""
+    """Normalize station codes while retaining arbitrary custom identifiers."""
 
     text = str(value or "").strip().upper().replace(" ", "")
     if text in LEGACY_PRODUCTION_STATION_ALIASES:
@@ -83,9 +83,9 @@ class ProductionStation(TimeStampedModel):
         B = "B", "二组"
         C = "C", "三组"
 
-    code = models.CharField("机台编号", max_length=3, unique=True)
-    group = models.CharField("机台组", max_length=1, choices=Group.choices)
-    position_no = models.PositiveSmallIntegerField("组内编号")
+    code = models.CharField("机台编号", max_length=50, unique=True)
+    group = models.CharField("机台组", max_length=20)
+    position_no = models.PositiveIntegerField("组内编号")
     machine = models.OneToOneField(
         Machine,
         verbose_name="关联机台",
@@ -103,33 +103,25 @@ class ProductionStation(TimeStampedModel):
                 fields=["group", "position_no"], name="uniq_production_group_position"
             ),
             models.CheckConstraint(
-                condition=(
-                    Q(is_active=True, position_no__gte=1, position_no__lte=2)
-                    | Q(is_active=False, position_no__gte=1, position_no__lte=6)
-                ),
+                condition=Q(position_no__gte=1),
                 name="production_station_position_valid",
             ),
         ]
 
     def clean(self):
         self.group = str(self.group or "").strip().upper()
-        if self.group not in self.Group.values:
-            raise ValidationError({"group": "机台组必须为A、B或C。"})
+        self.code = str(self.code or "").strip().upper()
+        if not self.group:
+            raise ValidationError({"group": "机台组不能为空。"})
+        if not self.code:
+            raise ValidationError({"code": "机台编号不能为空。"})
         position_no = int(self.position_no or 0)
-        if not 1 <= position_no <= 6:
-            raise ValidationError({"position_no": "组内编号必须为1至6。"})
-        if self.is_active and position_no > 2:
-            raise ValidationError({"position_no": "每组只有两台机台，组内编号必须为1或2。"})
-        if self.is_active:
-            expected_code = canonical_production_station_code(self.group, position_no)
-            if self.code and normalize_production_station_code(self.code) != expected_code:
-                raise ValidationError({"code": f"机台编号应为{expected_code}。"})
-            self.code = expected_code
+        if position_no < 1:
+            raise ValidationError({"position_no": "组内编号必须大于0。"})
 
     def save(self, *args, **kwargs):
         self.group = str(self.group or "").strip().upper()
-        if self.is_active:
-            self.code = canonical_production_station_code(self.group, self.position_no)
+        self.code = str(self.code or "").strip().upper()
         return super().save(*args, **kwargs)
 
     def __str__(self):
@@ -201,6 +193,9 @@ class ProductionRun(TimeStampedModel):
     loaded_at = models.DateTimeField("上模时间", null=True, blank=True, db_index=True)
     expected_change_at = models.DateTimeField(
         "预计换模时间", null=True, blank=True, db_index=True
+    )
+    material_changed_at = models.DateTimeField(
+        "换料时间", null=True, blank=True, db_index=True
     )
     unloaded_at = models.DateTimeField("下机时间", null=True, blank=True)
     status = models.CharField(
@@ -403,7 +398,16 @@ class ProductionRun(TimeStampedModel):
             errors["unloaded_at"] = "下机时间不能早于上模时间。"
         if self.loaded_at and self.expected_change_at and self.expected_change_at < self.loaded_at:
             errors["expected_change_at"] = "预计换模时间不能早于上模时间。"
+        if self.material_changed_at:
+            if not self.loaded_at:
+                errors["material_changed_at"] = "未上模的生产记录不能填写换料时间。"
+            elif self.material_changed_at < self.loaded_at:
+                errors["material_changed_at"] = "换料时间不能早于上模时间。"
+            elif self.unloaded_at and self.material_changed_at > self.unloaded_at:
+                errors["material_changed_at"] = "换料时间不能晚于生产结束时间。"
 
+        if self.status == self.Status.RUNNING and not self.mold_id:
+            errors["mold"] = "生产中的订单必须关联模具。"
         if self.status in self.ACTIVE_STATUSES and self.mold_id:
             station_machine_id = (
                 ProductionStation.objects.filter(pk=self.station_id)

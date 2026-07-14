@@ -41,6 +41,7 @@ const apiMocks = vi.hoisted(() => {
     ApiError: MockApiError,
     startRun: vi.fn(),
     completeRun: vi.fn(),
+    updateRun: vi.fn(),
     addLog: vi.fn(),
     updateLog: vi.fn(),
     settleRun: vi.fn(),
@@ -52,6 +53,7 @@ vi.mock('../api/client', () => ({
   productionApi: {
     startRun: apiMocks.startRun,
     completeRun: apiMocks.completeRun,
+    updateRun: apiMocks.updateRun,
     addLog: apiMocks.addLog,
     updateLog: apiMocks.updateLog,
     settleRun: apiMocks.settleRun,
@@ -84,14 +86,14 @@ const plannedRun = {
   remaining_mold_count: 258,
 } as ProductionRun
 
-function renderDrawer(run = plannedRun) {
+function renderDrawer(run = plannedRun, onRequestCompleteAndPutaway?: (result: ProductionRun) => void) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
   const onRunChange = vi.fn()
   render(
     <QueryClientProvider client={queryClient}>
       <App>
-        <ProductionLogDrawer open run={run} onClose={vi.fn()} onEdit={vi.fn()} onRunChange={onRunChange} />
+        <ProductionLogDrawer open run={run} onClose={vi.fn()} onEdit={vi.fn()} onRunChange={onRunChange} onRequestCompleteAndPutaway={onRequestCompleteAndPutaway} />
       </App>
     </QueryClientProvider>,
   )
@@ -108,6 +110,7 @@ describe('ProductionLogDrawer planned start', () => {
   beforeEach(() => {
     apiMocks.startRun.mockReset()
     apiMocks.completeRun.mockReset()
+    apiMocks.updateRun.mockReset()
     apiMocks.addLog.mockReset()
     apiMocks.updateLog.mockReset()
     apiMocks.settleRun.mockReset()
@@ -129,7 +132,7 @@ describe('ProductionLogDrawer planned start', () => {
     expect(apiMocks.startRun.mock.calls[0][1].loaded_at).toEqual(expect.any(String))
     expect(onRunChange).toHaveBeenCalledWith(running)
     const refreshedKeys = invalidateSpy.mock.calls.map(([filters]) => filters?.queryKey?.[0])
-    expect(refreshedKeys).toEqual(expect.arrayContaining(['production', 'molds', 'mold', 'racks', 'slots', 'machines']))
+    expect(refreshedKeys).toEqual(expect.arrayContaining(['production', 'molds', 'mold', 'racks', 'slots', 'machines', 'analytics']))
   })
 
   it('requires a second confirmation when leaving a stacked rack position', async () => {
@@ -155,5 +158,33 @@ describe('ProductionLogDrawer planned start', () => {
     renderDrawer({ ...plannedRun, mold: null })
     expect(screen.getByText('请先编辑资料并关联模具')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /确认上机/ })).toBeDisabled()
+  })
+
+  it('records a material change without confusing it with stopping or putting the mold away', async () => {
+    const running = { ...plannedRun, status: 'RUNNING' as const, loaded_at: new Date().toISOString(), mold: { ...plannedRun.mold!, status: 'ON_MACHINE' as const } }
+    const changed = { ...running, material_changed_at: new Date().toISOString() }
+    apiMocks.updateRun.mockResolvedValue(changed)
+    const user = userEvent.setup()
+    const { invalidateSpy, onRunChange } = renderDrawer(running)
+
+    expect(screen.getByRole('button', { name: /停机 \/ 结束生产/ })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /记录当前换料时间/ }))
+
+    await waitFor(() => expect(apiMocks.updateRun).toHaveBeenCalledWith(running.id, { material_changed_at: expect.any(String) }))
+    expect(onRunChange).toHaveBeenCalledWith(changed)
+    const refreshedKeys = invalidateSpy.mock.calls.map(([filters]) => filters?.queryKey?.[0])
+    expect(refreshedKeys).toEqual(expect.arrayContaining(['production', 'analytics']))
+  })
+
+  it('opens the atomic finish-and-putaway flow without first completing the run', async () => {
+    const running = { ...plannedRun, status: 'RUNNING' as const, loaded_at: new Date().toISOString(), mold: { ...plannedRun.mold!, status: 'ON_MACHINE' as const } }
+    const onRequestCompleteAndPutaway = vi.fn()
+    const user = userEvent.setup()
+    const { onRunChange } = renderDrawer(running, onRequestCompleteAndPutaway)
+
+    await user.click(screen.getByRole('button', { name: /结束生产并下机归位/ }))
+    expect(onRequestCompleteAndPutaway).toHaveBeenCalledWith(running)
+    expect(apiMocks.completeRun).not.toHaveBeenCalled()
+    expect(onRunChange).not.toHaveBeenCalled()
   })
 })

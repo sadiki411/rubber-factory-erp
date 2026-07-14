@@ -34,7 +34,7 @@ export function MoldDetailPage() {
 
   const actions = mold.status === 'IN_STOCK'
     ? <><Button icon={<SwapOutlined />} onClick={() => setAction('move')}>移位</Button><Button icon={<ToolOutlined />} onClick={() => setAction('load-machine')}>上机</Button><Button icon={<ExportOutlined />} onClick={() => setAction('send-out')}>客户收回</Button></>
-    : <><Button type="primary" icon={<HomeOutlined />} onClick={() => setAction('putaway')}>归位入库</Button><Button icon={<ToolOutlined />} onClick={() => setAction('load-machine')}>{mold.status === 'ON_MACHINE' ? '更换机台' : '上机'}</Button>{mold.status !== 'OUTSOURCED' && <Button icon={<ExportOutlined />} onClick={() => setAction('send-out')}>客户收回</Button>}</>
+    : <><Button type="primary" icon={<HomeOutlined />} onClick={() => setAction('putaway')}>{mold.status === 'ON_MACHINE' ? '下机并归位' : '归位入库'}</Button><Button icon={<ToolOutlined />} onClick={() => setAction('load-machine')}>{mold.status === 'ON_MACHINE' ? '更换机台' : '上机'}</Button>{mold.status !== 'OUTSOURCED' && <Button icon={<ExportOutlined />} onClick={() => setAction('send-out')}>客户收回</Button>}</>
 
   return (
     <div className="page-container">

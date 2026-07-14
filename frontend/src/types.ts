@@ -194,8 +194,8 @@ export interface RackConfigInput {
 
 export type ProductionRunStatus = 'PLANNED' | 'RUNNING' | 'COMPLETED' | 'CANCELLED'
 export type ProductionReminderStatus = 'IDLE' | 'MOUNTED' | 'PLANNED' | 'NORMAL' | 'DUE_SOON' | 'OVERDUE'
-export type ProductionStationGroup = 'A' | 'B' | 'C'
-export type ProductionStationPosition = 1 | 2 | 3 | 4 | 5 | 6
+export type ProductionStationGroup = string
+export type ProductionStationPosition = number
 
 export interface ProductionStation {
   id: number
@@ -254,6 +254,7 @@ export interface ProductionRun {
   estimated_hours: number | string
   loaded_at?: string | null
   expected_change_at?: string | null
+  material_changed_at?: string | null
   unloaded_at?: string | null
   status: ProductionRunStatus
   status_display?: string
@@ -309,6 +310,7 @@ export interface ProductionBoardRun {
   status: ProductionRunStatus
   loaded_at?: string | null
   expected_change_at?: string | null
+  material_changed_at?: string | null
   estimated_hours: number | string
 }
 
@@ -578,6 +580,256 @@ export interface QualitySummary {
   daily_trend: QualityDailyTrend[]
   order_stats: QualityOrderStatistics[]
   employee_stats: QualityEmployeeStatistics[]
+}
+
+export type AnalyticsSource = 'AUTOMATIC' | 'MANUAL' | 'COMBINED'
+export type ManualPerformanceEntryType = 'PRODUCTION' | 'QUALITY' | 'REWORK'
+
+export interface AnalyticsFinanceMetrics {
+  revenue: number | string
+  material_cost: number | string
+  labor_cost: number | string
+  energy_cost: number | string
+  other_cost: number | string
+  total_cost: number | string
+  profit: number | string
+  profit_margin?: number | string | null
+}
+
+export interface AnalyticsProductionMetrics {
+  produced_mold_count: number
+  theoretical_output_quantity: number
+  automatic_equivalent_hours: number | string
+  automatic_actual_machine_hours: number | string
+  manual_reported_hours: number | string
+  molds_per_equivalent_hour?: number | string | null
+  molds_per_reported_hour?: number | string | null
+  efficiency_percent?: number | string | null
+}
+
+export interface AnalyticsQualityMetrics {
+  inspection_quantity: number
+  qualified_quantity: number
+  defective_quantity: number
+  shipped_quantity: number
+  returned_quantity: number
+  reworked_quantity: number
+  recovered_quantity: number
+  scrap_quantity: number
+  first_pass_rate?: number | string | null
+  return_rate?: number | string | null
+  rework_pass_rate?: number | string | null
+}
+
+export interface AnalyticsDailyTrend extends AnalyticsQualityMetrics, AnalyticsFinanceMetrics {
+  date: string
+  automatic_produced_mold_count: number
+  manual_produced_mold_count: number
+  produced_mold_count: number
+  theoretical_output_quantity: number
+  automatic_equivalent_hours: number | string
+  manual_reported_hours: number | string
+  automatic_revenue: number | string
+  manual_revenue: number | string
+  automatic_total_cost: number | string
+  manual_total_cost: number | string
+  automatic_profit: number | string
+  manual_profit: number | string
+}
+
+export interface AnalyticsOperatorPerformance {
+  operator: string
+  automatic_mold_count: number
+  manual_mold_count: number
+  total_mold_count: number
+  theoretical_output_quantity: number
+  automatic_equivalent_hours: number | string
+  manual_reported_hours: number | string
+  automatic_molds_per_equivalent_hour?: number | string | null
+  manual_molds_per_reported_hour?: number | string | null
+  average_daily_mold_count?: number | string | null
+  production_days: number
+  participated_run_count: number
+  automatic_record_count: number
+  manual_record_count: number
+  source: AnalyticsSource
+}
+
+export interface AnalyticsStationPerformance extends AnalyticsFinanceMetrics {
+  machine_id?: number | null
+  machine_code: string
+  machine_name: string
+  station_id?: number | null
+  station_code: string
+  group?: string | null
+  automatic_mold_count: number
+  manual_mold_count: number
+  total_mold_count: number
+  theoretical_output_quantity: number
+  automatic_equivalent_hours: number | string
+  automatic_actual_machine_hours: number | string
+  manual_reported_hours: number | string
+  automatic_molds_per_equivalent_hour?: number | string | null
+  manual_molds_per_reported_hour?: number | string | null
+  automatic_efficiency_percent?: number | string | null
+  run_count: number
+  automatic_record_count: number
+  manual_record_count: number
+  source: AnalyticsSource
+}
+
+export interface AnalyticsQualityEmployeePerformance extends AnalyticsQualityMetrics {
+  employee_id?: number | null
+  employee_no: string
+  name: string
+  team: string
+  role?: QualityEmployeeRole | null
+  responsible_return_quantity: number
+  handled_returned_quantity: number
+  rework_hours: number | string
+  inspection_days: number
+  automatic_record_count: number
+  manual_record_count: number
+  source: AnalyticsSource
+}
+
+export interface AnalyticsDefectReason {
+  reason_category: string
+  reason_category_display: string
+  returned_quantity: number
+  reworked_quantity: number
+  recovered_quantity: number
+  scrap_quantity: number
+  rework_hours: number | string
+  share_of_returns?: number | string | null
+  rework_pass_rate?: number | string | null
+  automatic_record_count: number
+  manual_record_count: number
+  source: AnalyticsSource
+}
+
+export interface AnalyticsOrderPerformance extends AnalyticsQualityMetrics, AnalyticsFinanceMetrics {
+  order_no: string
+  product_name: string
+  specification: string
+  material: string
+  automatic_produced_mold_count: number
+  manual_produced_mold_count: number
+  produced_mold_count: number
+  theoretical_output_quantity: number
+  production_run_count: number
+  automatic_record_count: number
+  manual_record_count: number
+  source: AnalyticsSource
+}
+
+export interface ManualPerformanceEntry {
+  id: number
+  entry_date: string
+  entry_type: ManualPerformanceEntryType
+  entry_type_display?: string
+  staff_name: string
+  order_no?: string
+  machine?: Machine | null
+  machine_id?: number | null
+  quality_employee?: QualityEmployee | null
+  quality_employee_id?: number | null
+  produced_mold_count: number
+  production_hours: number | string
+  inspection_quantity: number
+  qualified_quantity: number
+  defective_quantity: number
+  shipped_quantity: number
+  returned_quantity: number
+  reason_category?: string
+  reason_category_display?: string
+  reworked_quantity: number
+  recovered_quantity: number
+  scrap_quantity: number
+  rework_hours: number | string
+  notes?: string
+  created_by_name?: string
+  voided_at?: string | null
+  voided_by_name?: string | null
+  void_reason?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface ManualFinancialEntry {
+  id: number
+  occurred_on: string
+  direction: 'INCOME' | 'EXPENSE'
+  category: 'SALES' | 'MATERIAL' | 'LABOR' | 'ENERGY' | 'OTHER' | 'ADJUSTMENT'
+  direction_display?: string
+  category_display?: string
+  amount: number | string
+  profit_effect?: number | string
+  order_no?: string
+  machine?: Machine | null
+  machine_id?: number | null
+  staff_name?: string
+  description?: string
+  notes?: string
+  created_by_name?: string
+  voided_at?: string | null
+  voided_by_name?: string | null
+  void_reason?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface AnalyticsDashboard {
+  period: { date_from: string; date_to: string; month?: string | null; group?: string | null; machine_id?: number | null }
+  data_basis: {
+    production_quantity_date: string
+    automatic_production_hours: string
+    automatic_actual_machine_hours: string
+    manual_production_hours: string
+    automatic_finance_date: string
+    manual_finance_date: string
+    quality_date: string
+    rework_date: string
+    order_link: string
+    quality_filter_scope: string
+    zero_denominator_rate: null
+  }
+  sources: Record<string, { automatic: number; manual: number; total: number; [key: string]: number }>
+  production: {
+    automatic: AnalyticsProductionMetrics
+    manual: AnalyticsProductionMetrics
+    total: AnalyticsProductionMetrics
+    production_days: number
+    operator_count: number
+    run_count: number
+    settled_run_count: number
+    unsettled_completed_run_count: number
+    status_counts: Record<ProductionRunStatus, number>
+    settled_good_quantity: number
+    settled_defective_quantity: number
+    settled_defect_rate?: number | string | null
+  }
+  finance?: {
+    automatic: AnalyticsFinanceMetrics
+    manual: AnalyticsFinanceMetrics
+    total: AnalyticsFinanceMetrics
+    combined?: AnalyticsFinanceMetrics
+  }
+  quality: {
+    automatic: AnalyticsQualityMetrics
+    manual: AnalyticsQualityMetrics
+    total: AnalyticsQualityMetrics
+    shipment_count: number
+    rework_count: number
+  }
+  daily_trend: AnalyticsDailyTrend[]
+  operator_performance: AnalyticsOperatorPerformance[]
+  station_performance: AnalyticsStationPerformance[]
+  quality_employee_performance: AnalyticsQualityEmployeePerformance[]
+  defect_reason_breakdown: AnalyticsDefectReason[]
+  order_performance: AnalyticsOrderPerformance[]
+  manual_entries?: ManualPerformanceEntry[]
+  manual_financial_entries?: ManualFinancialEntry[]
 }
 
 export const STATUS_META: Record<MoldStatus, { text: string; color: string }> = {

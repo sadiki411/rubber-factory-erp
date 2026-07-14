@@ -3,7 +3,7 @@ from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
-from molds.models import Machine, MoldAsset, MoldMovement
+from molds.models import Machine, MoldAsset, MoldMovement, RackSlot
 from molds.services import transition_mold
 
 from .models import (
@@ -12,13 +12,6 @@ from .models import (
     ProductionSettlementRevision,
     ProductionStation,
 )
-
-
-LEGACY_DEFAULT_MACHINE_CODES = {
-    f"{group}{position_no:02d}"
-    for group in ProductionStation.Group.values
-    for position_no in range(1, 7)
-}
 
 
 @transaction.atomic
@@ -106,6 +99,85 @@ def start_production_run(
     return run
 
 
+@transaction.atomic
+def complete_and_putaway_production_run(
+    run,
+    user,
+    *,
+    slot,
+    unloaded_at=None,
+    note="",
+    confirm_warnings=False,
+):
+    """Atomically finish a running production order and return its mold.
+
+    The mold, production order and destination slot are locked in that order,
+    matching the lower-level mold transition lock order.
+    Mold validation and confirmable stacking warnings are delegated to the
+    regular mold transition service.  Any failure therefore rolls the whole
+    operation back, leaving both the order and mold in their original states.
+    """
+
+    expected_mold_id = run.mold_id
+    mold = None
+    if expected_mold_id is not None:
+        mold = (
+            MoldAsset.objects.select_for_update()
+            .select_related("current_machine", "mold_model")
+            .get(pk=expected_mold_id)
+        )
+
+    run = (
+        ProductionRun.objects.select_for_update()
+        .select_related("station__machine", "mold__mold_model")
+        .get(pk=run.pk)
+    )
+    if run.status != ProductionRun.Status.RUNNING or not run.loaded_at:
+        raise ValidationError("只有生产中的订单可以结束并归位模具。")
+    if run.mold_id is None:
+        raise ValidationError("该生产订单没有关联模具，不能执行结束并归位。")
+    if mold is None or mold.pk != run.mold_id:
+        raise ValidationError("生产订单关联的模具状态已变化，请刷新后重试。")
+    machine = run.station.machine
+    if machine is None:
+        raise ValidationError("该生产站位未关联模具台账机台，不能执行结束并归位。")
+    if not mold.is_active:
+        raise ValidationError("该生产订单关联的模具已删除，不能执行结束并归位。")
+    if (
+        mold.status != MoldAsset.Status.ON_MACHINE
+        or mold.current_machine_id != machine.pk
+    ):
+        raise ValidationError(
+            f"模具 {mold.asset_code} 当前不在生产站位关联的机台 {machine.code}，"
+            "请刷新并检查模具台账后重试。"
+        )
+
+    locked_slot = (
+        RackSlot.objects.select_for_update()
+        .select_related("zone__level__rack")
+        .get(pk=slot.pk)
+    )
+    completed_at = unloaded_at or timezone.now()
+    if completed_at < run.loaded_at:
+        raise ValidationError({"unloaded_at": "下机时间不能早于上模时间。"})
+
+    run.status = ProductionRun.Status.COMPLETED
+    run.unloaded_at = completed_at
+    run.save(update_fields=["status", "unloaded_at", "updated_at"])
+
+    movement_note = str(note or "").strip() or f"生产订单 {run.order_no} 结束并归位"
+    mold, _warnings = transition_mold(
+        mold,
+        MoldMovement.Action.PUTAWAY,
+        user,
+        slot=locked_slot,
+        note=movement_note,
+        confirm_warnings=confirm_warnings,
+    )
+    run.mold = mold
+    return run
+
+
 def _next_settlement_revision(run):
     current = run.settlement_revisions.aggregate(value=Max("revision_no"))["value"]
     return (current or 0) + 1
@@ -151,57 +223,40 @@ def invalidate_settlement(run, user):
 
 @transaction.atomic
 def seed_default_stations():
-    """Ensure the physical 1-6 machine layout and retire obsolete defaults safely."""
+    """Ensure the default three groups/six stations without touching custom rows.
 
-    def retire_default_machine(machine_id):
-        if not machine_id:
-            return
-        machine = Machine.objects.filter(pk=machine_id).first()
-        if machine is None or machine.code not in LEGACY_DEFAULT_MACHINE_CODES:
-            return
-        referenced = (
-            ProductionStation.objects.filter(machine_id=machine.pk).exists()
-            or machine.current_molds.exists()
-            or machine.movements_from.exists()
-            or machine.movements_to.exists()
-        )
-        if referenced:
-            if machine.is_active:
-                Machine.objects.filter(pk=machine.pk).update(is_active=False)
-        else:
-            machine.delete()
-
-    legacy_machine_ids = []
-    obsolete_stations = ProductionStation.objects.filter(
-        group__in=ProductionStation.Group.values,
-        position_no__gt=2,
-    ).select_related("machine")
-    for station in obsolete_stations:
-        if station.runs.exists():
-            if station.is_active:
-                ProductionStation.objects.filter(pk=station.pk).update(is_active=False)
-            if station.machine_id:
-                Machine.objects.filter(pk=station.machine_id).update(is_active=False)
-        else:
-            legacy_machine_ids.append(station.machine_id)
-            station.delete()
+    The built-in layout remains the out-of-box configuration.  Additional groups,
+    positions and linked machines are user data and are deliberately left active
+    and unchanged on every idempotent initialization run.
+    """
 
     stations = []
     for group, position_no, code, legacy_code in PRODUCTION_STATION_LAYOUT:
-        station = ProductionStation.objects.filter(
-            group=group, position_no=position_no
+        station = (
+            ProductionStation.objects.select_related("machine")
+            .filter(group=group, position_no=position_no)
+            .first()
+        )
+        code_owner = ProductionStation.objects.filter(code=code).exclude(
+            pk=station.pk if station else None
         ).first()
-        previous_machine_id = station.machine_id if station else None
+        if code_owner is not None:
+            raise ValidationError(
+                f"默认机台编号{code}已被{code_owner.group}组第"
+                f"{code_owner.position_no}台占用，请先修正机台资料。"
+            )
 
         machine = Machine.objects.filter(code=code).first()
         if machine is None:
-            legacy_machine = Machine.objects.filter(code=legacy_code).first()
-            if (
-                station
-                and station.machine_id
-                and station.machine.code == legacy_code
-            ):
+            legacy_machine = None
+            if station and station.machine_id and station.machine.code == legacy_code:
                 legacy_machine = station.machine
+            else:
+                candidate = Machine.objects.filter(code=legacy_code).first()
+                if candidate and not ProductionStation.objects.filter(
+                    machine=candidate
+                ).exists():
+                    legacy_machine = candidate
             if legacy_machine:
                 legacy_machine.code = code
                 legacy_machine.name = f"{code}号机台"
@@ -216,6 +271,15 @@ def seed_default_stations():
             Machine.objects.filter(pk=machine.pk).update(is_active=True)
             machine.is_active = True
 
+        machine_owner = ProductionStation.objects.filter(machine=machine).exclude(
+            pk=station.pk if station else None
+        ).first()
+        if machine_owner is not None:
+            raise ValidationError(
+                f"默认机台{code}关联的标准机台已被{machine_owner.code}占用，"
+                "请先修正机台资料。"
+            )
+
         if station is None:
             station = ProductionStation.objects.create(
                 group=group,
@@ -225,9 +289,6 @@ def seed_default_stations():
                 is_active=True,
             )
         else:
-            ProductionStation.objects.filter(machine_id=machine.pk).exclude(
-                pk=station.pk
-            ).update(machine=None, is_active=False)
             station.code = code
             station.machine = machine
             station.is_active = True
@@ -235,12 +296,4 @@ def seed_default_stations():
                 update_fields=["code", "machine", "is_active", "updated_at"]
             )
         stations.append(station)
-
-        if previous_machine_id and previous_machine_id != machine.pk:
-            legacy_machine_ids.append(previous_machine_id)
-
-    for machine_id in legacy_machine_ids:
-        retire_default_machine(machine_id)
-    for machine in list(Machine.objects.filter(code__in=LEGACY_DEFAULT_MACHINE_CODES)):
-        retire_default_machine(machine.pk)
     return stations

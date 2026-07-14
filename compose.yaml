@@ -17,6 +17,8 @@ services:
       MEDIA_ROOT: /app/media
       STATIC_ROOT: /app/staticfiles
       BACKUP_DIR: /app/backups
+      BACKUP_BEFORE_MIGRATE: ${BACKUP_BEFORE_MIGRATE:-1}
+      BACKUP_RETENTION_COUNT: ${BACKUP_RETENTION_COUNT:-30}
       TZ: ${TZ:-Asia/Shanghai}
       GUNICORN_THREADS: "${GUNICORN_THREADS:-4}"
     volumes:

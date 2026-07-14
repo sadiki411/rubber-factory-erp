@@ -339,8 +339,8 @@ class MoldTransitionTests(SeededRackMixin, TestCase):
         self.assertEqual(self.mold.status_changed_at, before_changed_at)
         self.assertFalse(MoldMovement.objects.filter(mold=self.mold).exists())
 
-    def test_planned_production_blocks_inconsistent_movements(self):
-        self.create_production_run(ProductionRun.Status.PLANNED)
+    def test_planned_production_allows_trial_putaway_but_blocks_inconsistent_movements(self):
+        run = self.create_production_run(ProductionRun.Status.PLANNED)
 
         with self.assertRaisesMessage(ValidationError, "已关联活动生产订单"):
             transition_mold(
@@ -349,7 +349,7 @@ class MoldTransitionTests(SeededRackMixin, TestCase):
                 self.user,
                 slot=self.destination,
             )
-        with self.assertRaisesMessage(ValidationError, "不能移库、归位、标记客户收回"):
+        with self.assertRaisesMessage(ValidationError, "不能移库、标记客户收回"):
             transition_mold(
                 self.mold,
                 MoldMovement.Action.SEND_OUT,
@@ -379,7 +379,20 @@ class MoldTransitionTests(SeededRackMixin, TestCase):
                 self.user,
                 machine=self.production_machine,
             )
-        self.assertEqual(MoldMovement.objects.filter(mold=self.mold).count(), 1)
+
+        putaway, _ = transition_mold(
+            loaded,
+            MoldMovement.Action.PUTAWAY,
+            self.user,
+            slot=self.destination,
+            note="试模结束归位",
+        )
+        run.refresh_from_db()
+        self.assertEqual(run.status, ProductionRun.Status.PLANNED)
+        self.assertEqual(putaway.status, MoldAsset.Status.IN_STOCK)
+        self.assertEqual(putaway.current_slot, self.destination)
+        self.assertIsNone(putaway.current_machine)
+        self.assertEqual(MoldMovement.objects.filter(mold=self.mold).count(), 2)
 
     def test_machine_reserved_by_another_active_run_rejects_loading(self):
         self.create_production_run(ProductionRun.Status.PLANNED)

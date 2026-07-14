@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     "molds.apps.MoldsConfig",
     "production.apps.ProductionConfig",
     "quality.apps.QualityConfig",
+    "analytics.apps.AnalyticsConfig",
 ]
 
 MIDDLEWARE = [

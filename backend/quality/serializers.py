@@ -83,7 +83,7 @@ class QualityOrderSerializer(ValidatedModelSerializer):
         ]
         read_only_fields = ["created_by_name", "created_at", "updated_at"]
 
-    def get_created_by_name(self, obj):
+    def get_created_by_name(self, obj) -> str:
         return obj.created_by.get_full_name() or obj.created_by.get_username()
 
 
@@ -133,7 +133,7 @@ class QualityShipmentSerializer(ValidatedModelSerializer):
             "updated_at",
         ]
 
-    def get_created_by_name(self, obj):
+    def get_created_by_name(self, obj) -> str:
         return obj.created_by.get_full_name() or obj.created_by.get_username()
 
 
@@ -195,7 +195,7 @@ class ReturnReworkSerializer(ValidatedModelSerializer):
         ]
         read_only_fields = ["order_id", "created_by_name", "created_at", "updated_at"]
 
-    def get_created_by_name(self, obj):
+    def get_created_by_name(self, obj) -> str:
         return obj.created_by.get_full_name() or obj.created_by.get_username()
 
     def validate(self, attrs):

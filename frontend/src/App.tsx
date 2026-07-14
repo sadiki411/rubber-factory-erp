@@ -7,6 +7,7 @@ import { AppShell } from './components/AppShell'
 import { LoginPage } from './pages/LoginPage'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage').then((module) => ({ default: module.DashboardPage })))
+const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage').then((module) => ({ default: module.AnalyticsPage })))
 const ImportPage = lazy(() => import('./pages/ImportPage').then((module) => ({ default: module.ImportPage })))
 const MoldDetailPage = lazy(() => import('./pages/MoldDetailPage').then((module) => ({ default: module.MoldDetailPage })))
 const MoldsPage = lazy(() => import('./pages/MoldsPage').then((module) => ({ default: module.MoldsPage })))
@@ -58,6 +59,7 @@ export function App() {
           <Route index element={<DashboardPage />} />
           <Route path="production" element={<ProductionPage />} />
           <Route path="quality" element={<QualityPage />} />
+          <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="molds" element={<MoldsPage />} />
           <Route path="molds/:id" element={<MoldDetailPage />} />
           <Route path="racks" element={<RacksPage />} />

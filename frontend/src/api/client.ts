@@ -1,7 +1,10 @@
 import type {
   ApiList,
+  AnalyticsDashboard,
   ImportPreview,
   Machine,
+  ManualFinancialEntry,
+  ManualPerformanceEntry,
   MoldAsset,
   MoldModel,
   MoldMovement,
@@ -331,6 +334,10 @@ export const productionApi = {
     method: 'POST',
     body: JSON.stringify(body),
   }),
+  completeAndPutaway: (id: number, body: Record<string, unknown>) => apiFetch<ProductionRun>(`/api/production/runs/${id}/complete-and-putaway/`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
   settleRun: (id: number, body: ProductionSettlementInput) => apiFetch<ProductionRun>(`/api/production/runs/${id}/settlement/`, {
     method: 'POST',
     body: JSON.stringify(body),
@@ -417,4 +424,49 @@ export const qualityApi = {
 
   summary: (filters: Pick<QualityListFilters, 'date_from' | 'date_to'>) =>
     apiFetch<QualitySummary>(`/api/quality/summary/${queryString(filters)}`),
+}
+
+export interface AnalyticsFilters {
+  month?: string
+  date_from?: string
+  date_to?: string
+  group?: string
+  machine_id?: number
+}
+
+export interface AnalyticsEntryFilters extends AnalyticsFilters {
+  entry_type?: string
+  direction?: string
+  include_voided?: boolean
+  page?: number
+  page_size?: number
+}
+
+export const analyticsApi = {
+  dashboard: (filters: AnalyticsFilters = {}) =>
+    apiFetch<AnalyticsDashboard>(`/api/analytics/dashboard/${queryString(filters)}`),
+  listManualEntries: (filters: AnalyticsEntryFilters = {}) =>
+    apiFetch<ApiList<ManualPerformanceEntry> | ManualPerformanceEntry[]>(`/api/analytics/manual-entries/${queryString(filters)}`),
+  createManualEntry: (body: Record<string, unknown>) => apiFetch<ManualPerformanceEntry>('/api/analytics/manual-entries/', {
+    method: 'POST', body: JSON.stringify(body),
+  }),
+  updateManualEntry: (id: number, body: Record<string, unknown>) => apiFetch<ManualPerformanceEntry>(`/api/analytics/manual-entries/${id}/`, {
+    method: 'PATCH', body: JSON.stringify(body),
+  }),
+  voidManualEntry: (id: number, reason = '用户作废') => apiFetch<ManualPerformanceEntry>(`/api/analytics/manual-entries/${id}/void/`, {
+    method: 'POST', body: JSON.stringify({ void_reason: reason }),
+  }),
+  restoreManualEntry: (id: number) => apiFetch<ManualPerformanceEntry>(`/api/analytics/manual-entries/${id}/restore/`, { method: 'POST', body: JSON.stringify({}) }),
+  listFinancialEntries: (filters: AnalyticsEntryFilters = {}) =>
+    apiFetch<ApiList<ManualFinancialEntry> | ManualFinancialEntry[]>(`/api/analytics/financial-entries/${queryString(filters)}`),
+  createFinancialEntry: (body: Record<string, unknown>) => apiFetch<ManualFinancialEntry>('/api/analytics/financial-entries/', {
+    method: 'POST', body: JSON.stringify(body),
+  }),
+  updateFinancialEntry: (id: number, body: Record<string, unknown>) => apiFetch<ManualFinancialEntry>(`/api/analytics/financial-entries/${id}/`, {
+    method: 'PATCH', body: JSON.stringify(body),
+  }),
+  voidFinancialEntry: (id: number, reason = '用户作废') => apiFetch<ManualFinancialEntry>(`/api/analytics/financial-entries/${id}/void/`, {
+    method: 'POST', body: JSON.stringify({ void_reason: reason }),
+  }),
+  restoreFinancialEntry: (id: number) => apiFetch<ManualFinancialEntry>(`/api/analytics/financial-entries/${id}/restore/`, { method: 'POST', body: JSON.stringify({}) }),
 }

@@ -2,11 +2,8 @@ import { ClockCircleOutlined, LinkOutlined, PlusOutlined, ToolOutlined } from '@
 import { Card, Tag, Typography } from 'antd'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
-import { formatProductionDate, productionStationNumber } from '../production'
-import type { ProductionBoard as ProductionBoardData, ProductionBoardStation, ProductionReminderStatus, ProductionStationGroup } from '../types'
-
-const GROUP_LABELS: Record<ProductionStationGroup, string> = { A: '一组机台', B: '二组机台', C: '三组机台' }
-const MACHINES_PER_GROUP = 2
+import { formatProductionDate, productionStationGroupLabel, productionStationNumber } from '../production'
+import type { ProductionBoard as ProductionBoardData, ProductionBoardStation, ProductionReminderStatus } from '../types'
 
 const REMINDER_META: Record<ProductionReminderStatus, { label: string; color: string }> = {
   IDLE: { label: '空闲', color: 'default' },
@@ -30,26 +27,30 @@ function remainingText(station: ProductionBoardStation, now: dayjs.Dayjs) {
 }
 
 function StationCard({ station, now, onClick }: { station: ProductionBoardStation; now: dayjs.Dayjs; onClick: () => void }) {
-  const run = station.run
+  // 待上机计划在独立计划看板展示，不占用实时机台卡片。
+  const hasPlan = station.run?.status === 'PLANNED'
+  const run = station.run?.status === 'PLANNED' ? undefined : station.run
   const mountedMolds = station.mounted_molds || []
-  const reminder = station.reminder_status || (run ? 'NORMAL' : mountedMolds.length ? 'MOUNTED' : 'IDLE')
+  const reminder = run
+    ? station.reminder_status || 'NORMAL'
+    : mountedMolds.length
+      ? 'MOUNTED'
+      : 'IDLE'
   const meta = REMINDER_META[reminder]
   const machineNumber = productionStationNumber(station)
-  const plannedRun = run?.status === 'PLANNED'
-  const runMoldIsMounted = !!run?.mold_id && mountedMolds.some((mold) => mold.id === run.mold_id)
-  const visibleMountedMolds = plannedRun && run?.mold_id
-    ? mountedMolds.filter((mold) => mold.id !== run.mold_id)
-    : mountedMolds
+  const groupLabel = `${productionStationGroupLabel(station.group)}机台`
   const ariaState = run
     ? `${run.order_no}，${meta.label}`
     : mountedMolds.length
-      ? `${meta.label}，模具型号 ${mountedMolds.map((mold) => mold.model_code).join('、')}，登记生产信息`
-      : `${meta.label}，登记上机`
+      ? `${meta.label}，模具型号 ${mountedMolds.map((mold) => mold.model_code).join('、')}，管理生产或下机`
+      : hasPlan
+        ? `${meta.label}，已有待上机计划`
+        : `${meta.label}，选择上机方式`
   return (
     <button
       type="button"
       className={`production-station ${reminder.toLowerCase()}`}
-      aria-label={`${GROUP_LABELS[station.group]} ${machineNumber}号机台，${ariaState}`}
+      aria-label={`${groupLabel} ${machineNumber}号机台，${ariaState}`}
       onClick={onClick}
     >
       <div className="production-station-head">
@@ -61,19 +62,13 @@ function StationCard({ station, now, onClick }: { station: ProductionBoardStatio
           <strong className="station-order">{run.order_no}</strong>
           {(mountedMolds.length > 0 || run.mold_model_code) && (
             <div className="station-mold-list">
-              {plannedRun && run.mold_model_code && (
-                <span className="station-mold">
-                  <b>{run.mold_model_code}</b>
-                  <small>{run.mold_code} · {run.mold_product_name} · {runMoldIsMounted ? '已在机台，待确认' : '计划模具'}</small>
-                </span>
-              )}
-              {visibleMountedMolds.map((mold) => (
+              {mountedMolds.map((mold) => (
                 <span className="station-mold" key={mold.id}>
                   <b>{mold.model_code}</b>
-                  <small>{plannedRun ? '现场：' : ''}{mold.asset_code} · {mold.product_name}</small>
+                  <small>{mold.asset_code} · {mold.product_name}</small>
                 </span>
               ))}
-              {!plannedRun && mountedMolds.length === 0 && run.mold_model_code && (
+              {mountedMolds.length === 0 && run.mold_model_code && (
                 <span className="station-mold">
                   <b>{run.mold_model_code}</b>
                   <small>{run.mold_code} · {run.mold_product_name}</small>
@@ -85,6 +80,7 @@ function StationCard({ station, now, onClick }: { station: ProductionBoardStatio
           <div className="station-time-grid">
             <span>上模</span><b>{formatProductionDate(run.loaded_at, 'MM-DD HH:mm')}</b>
             <span>换模</span><b>{formatProductionDate(run.expected_change_at, 'MM-DD HH:mm')}</b>
+            <span>换料</span><b>{formatProductionDate(run.material_changed_at, 'MM-DD HH:mm')}</b>
           </div>
           <div className="station-countdown"><ClockCircleOutlined /> {remainingText(station, now)}</div>
         </>
@@ -99,12 +95,12 @@ function StationCard({ station, now, onClick }: { station: ProductionBoardStatio
               </span>
             ))}
           </div>
-          <span className="station-mounted-action"><ToolOutlined /> 点击登记生产信息</span>
+          <span className="station-mounted-action"><ToolOutlined /> 点击管理生产 / 下机</span>
         </div>
       ) : (
         <div className="station-empty">
           <PlusOutlined />
-          <span>登记上机</span>
+          <span>{hasPlan ? '机台空闲 · 已有待上机计划' : '选择上机方式'}</span>
         </div>
       )}
     </button>
@@ -129,28 +125,30 @@ export function ProductionBoard({ board, loading, onStationClick }: Props) {
     <Card
       className="production-board-card"
       loading={loading}
-      title={<span><ToolOutlined /> 三组双联机台实时看板</span>}
-      extra={<Typography.Text type="secondary">每组2台，共6台；台账上机后会同步显示模具型号</Typography.Text>}
+      title={<span><ToolOutlined /> 机台实时看板</span>}
+      extra={<Typography.Text type="secondary">当前 {groups.length} 个分组、共 {groups.reduce((sum, group) => sum + group.stations.length, 0)} 台；台账上机后同步显示模具型号</Typography.Text>}
     >
       <div className="production-board-scroll">
         <div className="production-board">
           {groups.map((group) => {
             const stations = [...group.stations].sort((left, right) => left.position_no - right.position_no)
-            const pairLabel = stations.map((station) => `${productionStationNumber(station)}号机台`).join('与')
+            const stationLabels = stations.map((station) => `${productionStationNumber(station)}号机台`)
+            const groupLabel = `${productionStationGroupLabel(group.group)}机台`
+            const topologyLabel = stations.length === 2 ? `${stationLabels[0]}与${stationLabels[1]}相连` : `共${stations.length}台：${stationLabels.join('、')}`
             return (
               <section className="production-group" key={group.group}>
                 <header>
                   <div>
-                    <Typography.Title level={4}>{GROUP_LABELS[group.group]}</Typography.Title>
-                    <Typography.Text type="secondary" className="production-group-topology"><LinkOutlined /> {pairLabel}相连</Typography.Text>
+                    <Typography.Title level={4}>{groupLabel}</Typography.Title>
+                    <Typography.Text type="secondary" className="production-group-topology"><LinkOutlined /> {topologyLabel}</Typography.Text>
                   </div>
-                  <span className="group-running-count">占用 {stations.filter((station) => (station.mounted_molds?.length || 0) > 0 || station.run?.status === 'RUNNING').length} / {MACHINES_PER_GROUP} 台</span>
+                  <span className="group-running-count">占用 {stations.filter((station) => (station.mounted_molds?.length || 0) > 0 || station.run?.status === 'RUNNING').length} / {stations.length} 台</span>
                 </header>
-                <div className="production-station-pair" role="group" aria-label={`${GROUP_LABELS[group.group]}双联设备：${pairLabel}`}>
+                <div className={`production-station-pair ${stations.length === 2 ? 'paired' : 'multi'}`} role="group" aria-label={`${groupLabel}设备：${stationLabels.join('、')}`}>
                   {stations.map((station) => (
                     <StationCard key={station.id} station={station} now={now} onClick={() => onStationClick(station)} />
                   ))}
-                  <span className="station-pair-connector" aria-hidden="true"><span>联</span></span>
+                  {stations.length === 2 && <span className="station-pair-connector" aria-hidden="true"><span>联</span></span>}
                 </div>
               </section>
             )

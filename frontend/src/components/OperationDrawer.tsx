@@ -30,6 +30,8 @@ export function OperationDrawer({ mold, action = 'putaway', open, onClose, onSuc
   const { message } = App.useApp()
   const meta = action === 'load-machine' && mold?.status === 'ON_MACHINE'
     ? { title: '更换机台', submit: '确认更换机台', icon: <ToolOutlined /> }
+    : action === 'putaway' && mold?.status === 'ON_MACHINE'
+      ? { title: '模具下机并归位', submit: '确认下机并归位', icon: <HomeOutlined /> }
     : actionMeta[action]
 
   useEffect(() => {
@@ -56,6 +58,7 @@ export function OperationDrawer({ mold, action = 'putaway', open, onClose, onSuc
         queryClient.invalidateQueries({ queryKey: ['slots'] }),
         queryClient.invalidateQueries({ queryKey: ['machines'] }),
         queryClient.invalidateQueries({ queryKey: ['production'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
       ])
       message.success(`${meta.title}成功`)
       onSuccess?.(result)

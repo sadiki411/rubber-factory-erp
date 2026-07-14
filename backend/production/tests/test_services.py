@@ -94,7 +94,7 @@ class ProductionStationSeedTests(TestCase):
             ProductionStation.objects.filter(code="1", machine__code="1").exists()
         )
 
-    def test_seed_reuses_valid_legacy_rows_and_prunes_unused_obsolete_stations(self):
+    def test_seed_reuses_valid_legacy_rows_and_preserves_custom_stations(self):
         legacy_machine = Machine.objects.create(
             code="A01", name="A组1号机台", is_active=True
         )
@@ -109,15 +109,15 @@ class ProductionStationSeedTests(TestCase):
                 )
             ]
         )
-        obsolete_machine = Machine.objects.create(
-            code="A03", name="错误的A组3号机台", is_active=False
+        custom_machine = Machine.objects.create(
+            code="D01", name="D组1号机台", is_active=True
         )
-        obsolete_station = ProductionStation.objects.create(
-            code="A03",
-            group="A",
-            position_no=3,
-            machine=obsolete_machine,
-            is_active=False,
+        custom_station = ProductionStation.objects.create(
+            code="D01",
+            group="D",
+            position_no=1,
+            machine=custom_machine,
+            is_active=True,
         )
 
         seed_default_stations()
@@ -127,21 +127,24 @@ class ProductionStationSeedTests(TestCase):
         self.assertEqual(canonical.machine_id, legacy_machine.pk)
         legacy_machine.refresh_from_db()
         self.assertEqual(legacy_machine.code, "1")
-        self.assertFalse(
-            ProductionStation.objects.filter(pk=obsolete_station.pk).exists()
-        )
-        self.assertFalse(Machine.objects.filter(pk=obsolete_machine.pk).exists())
+        custom_station.refresh_from_db()
+        custom_machine.refresh_from_db()
+        self.assertTrue(custom_station.is_active)
+        self.assertTrue(custom_machine.is_active)
+        self.assertEqual(custom_station.code, "D01")
+        self.assertEqual(custom_station.machine_id, custom_machine.pk)
+        self.assertEqual(ProductionStation.objects.count(), 7)
 
-    def test_seed_keeps_referenced_obsolete_history_inactive(self):
+    def test_seed_keeps_referenced_extra_position_active(self):
         machine = Machine.objects.create(
-            code="A03", name="历史A组3号机台", is_active=False
+            code="A03", name="A组扩展3号机台", is_active=True
         )
         station = ProductionStation.objects.create(
             code="A03",
             group="A",
             position_no=3,
             machine=machine,
-            is_active=False,
+            is_active=True,
         )
         now = timezone.now()
         run = ProductionRun.objects.create(
@@ -162,8 +165,8 @@ class ProductionStationSeedTests(TestCase):
         station.refresh_from_db()
         machine.refresh_from_db()
         run.refresh_from_db()
-        self.assertFalse(station.is_active)
-        self.assertFalse(machine.is_active)
+        self.assertTrue(station.is_active)
+        self.assertTrue(machine.is_active)
         self.assertEqual(run.station_id, station.pk)
 
     def test_only_six_current_and_legacy_alias_codes_are_normalized(self):

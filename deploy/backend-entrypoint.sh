@@ -31,6 +31,13 @@ if [ "$#" -gt 0 ]; then
   exec "$@"
 fi
 
+if [ "${BACKUP_BEFORE_MIGRATE:-1}" = "1" ] && [ -s "$SQLITE_PATH" ]; then
+  echo "检测到现有数据库，迁移前先创建一致性备份。"
+  python manage.py backup_erp \
+    --output "$BACKUP_DIR" \
+    --retention-count "${BACKUP_RETENTION_COUNT:-30}"
+fi
+
 python manage.py migrate --noinput
 python manage.py collectstatic --noinput --clear
 python manage.py init_erp

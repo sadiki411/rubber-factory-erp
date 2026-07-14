@@ -17,7 +17,7 @@ import { moldCode, moldLocation, moldModelOf } from '../types'
 function actionItems(mold: MoldAsset) {
   const items: { key: MoldAction | 'edit' | 'delete'; label: string; icon: ReactNode; danger?: boolean }[] = []
   if (mold.status === 'IN_STOCK') items.push({ key: 'move', label: '库内移位', icon: <SwapOutlined /> })
-  else items.push({ key: 'putaway', label: '归位入库', icon: <HomeOutlined /> })
+  else items.push({ key: 'putaway', label: mold.status === 'ON_MACHINE' ? '下机并归位' : '归位入库', icon: <HomeOutlined /> })
   items.push({ key: 'load-machine', label: mold.status === 'ON_MACHINE' ? '更换机台' : '安排上机', icon: <ToolOutlined /> })
   if (mold.status !== 'OUTSOURCED') items.push({ key: 'send-out', label: '客户收回', icon: <ExportOutlined /> })
   items.push({ key: 'edit', label: '编辑资料', icon: <EditOutlined /> })

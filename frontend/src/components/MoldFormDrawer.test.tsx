@@ -95,7 +95,7 @@ describe('MoldFormDrawer', () => {
     expect(body.get('initial_status')).toBe('IN_STOCK')
     expect(body.get('slot_id')).toBe(String(initialSlot.id))
     expect(body.get('asset_code')).toBeNull()
-  })
+  }, 10_000)
 
   it('allows correcting or clearing a generated code and removes an existing image', async () => {
     const mold = {

@@ -1,4 +1,4 @@
-import { CheckCircleOutlined, EditOutlined, FieldTimeOutlined, PlusOutlined, ToolOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, EditOutlined, FieldTimeOutlined, HomeOutlined, PlusOutlined, ToolOutlined } from '@ant-design/icons'
 import { Alert, App, Button, Col, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Popconfirm, Progress, Row, Space, Table, Tag, Tooltip, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -27,9 +27,10 @@ interface Props {
   onClose: () => void
   onRunChange: (run: ProductionRun) => void
   onEdit: (run: ProductionRun) => void
+  onRequestCompleteAndPutaway?: (run: ProductionRun) => void
 }
 
-export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit }: Props) {
+export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, onRequestCompleteAndPutaway }: Props) {
   const [form] = Form.useForm()
   const { message, modal } = App.useApp()
   const queryClient = useQueryClient()
@@ -61,7 +62,10 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit }:
         : productionApi.addLog(run!.id, payload)
     },
     onSuccess: async (result, values) => {
-      await queryClient.invalidateQueries({ queryKey: ['production'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['production'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+      ])
       const wasEditing = !!editingLog
       const invalidatedSettlement = !!run?.is_settled && !result.is_settled
       setEditingLog(undefined)
@@ -76,9 +80,24 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit }:
   const completeMutation = useMutation({
     mutationFn: () => productionApi.completeRun(run!.id, { unloaded_at: dayjs().toISOString() }),
     onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: ['production'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['production'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+      ])
       onRunChange(result)
-      message.success('已记录下机时间；模具仍保持上机状态，归位后机台才会释放')
+      message.success('生产已停止；模具仍在机台，请在看板或模具台账执行“下机并归位”')
+    },
+    onError: (error: Error) => message.error(error.message),
+  })
+  const materialChangeMutation = useMutation({
+    mutationFn: () => productionApi.updateRun(run!.id, { material_changed_at: dayjs().toISOString() }),
+    onSuccess: async (result) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['production'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+      ])
+      onRunChange(result)
+      message.success('已记录当前换料时间')
     },
     onError: (error: Error) => message.error(error.message),
   })
@@ -95,6 +114,7 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit }:
         queryClient.invalidateQueries({ queryKey: ['racks'] }),
         queryClient.invalidateQueries({ queryKey: ['slots'] }),
         queryClient.invalidateQueries({ queryKey: ['machines'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
       ])
       onRunChange(result)
       message.success(`模具 ${result.mold?.model_code || result.mold?.asset_code || ''} 已确认上机，生产已开始`)
@@ -170,9 +190,15 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit }:
             </>
           ))}
           {run.status === 'RUNNING' && (
-            <Popconfirm title="确认下机并完成本次生产？" description="系统将记录当前下机时间；模具仍保持上机状态，需要之后在模具台账归位或标记客户收回。" okText="确认下机" cancelText="取消" onConfirm={() => completeMutation.mutate()}>
-              <Button type="primary" icon={<CheckCircleOutlined />} loading={completeMutation.isPending}>下机完成</Button>
-            </Popconfirm>
+            <>
+              <Button icon={<FieldTimeOutlined />} loading={materialChangeMutation.isPending} onClick={() => materialChangeMutation.mutate()}>记录当前换料时间</Button>
+              <Popconfirm title="确认停机并结束本次生产？" description="系统只结束本次生产并记录停机时间，模具仍保持上机状态；释放机台还需另行执行“下机并归位”。" okText="确认停机" cancelText="取消" onConfirm={() => completeMutation.mutate()}>
+                <Button type="primary" icon={<CheckCircleOutlined />} loading={completeMutation.isPending}>停机 / 结束生产</Button>
+              </Popconfirm>
+              {run.mold && onRequestCompleteAndPutaway && (
+                <Button icon={<HomeOutlined />} onClick={() => onRequestCompleteAndPutaway(run)}>结束生产并下机归位</Button>
+              )}
+            </>
           )}
         </Space>
       )}
@@ -189,7 +215,8 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit }:
               <Descriptions.Item label="模具编号">{run.mold?.asset_code || '-'}</Descriptions.Item>
               <Descriptions.Item label="上模时间">{formatProductionDate(run.loaded_at)}</Descriptions.Item>
               <Descriptions.Item label="预计换模">{formatProductionDate(run.expected_change_at)}</Descriptions.Item>
-              <Descriptions.Item label="下机时间">{formatProductionDate(run.unloaded_at)}</Descriptions.Item>
+              <Descriptions.Item label="最近换料">{formatProductionDate(run.material_changed_at)}</Descriptions.Item>
+              <Descriptions.Item label="停机时间">{formatProductionDate(run.unloaded_at)}</Descriptions.Item>
               <Descriptions.Item label="计划模数">{numberText(run.planned_mold_count, 0)}</Descriptions.Item>
               <Descriptions.Item label="已产模数">{numberText(run.produced_mold_count, 0)}</Descriptions.Item>
               <Descriptions.Item label="欠模数">{numberText(run.remaining_mold_count, 0)}</Descriptions.Item>

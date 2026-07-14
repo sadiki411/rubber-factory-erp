@@ -9,6 +9,7 @@ from django.utils import timezone
 from openpyxl import Workbook, load_workbook
 from rest_framework.test import APIClient
 
+from molds.models import Machine
 from production.imports import (
     DAILY_HEADERS,
     FIELD_CELLS,
@@ -28,13 +29,14 @@ class ProductionTemplateTests(TestCase):
         self.assertEqual(sheet.title, "订单卡-001")
         self.assertIn("生产订单统计表", sheet["A1"].value)
         self.assertEqual(sheet["A2"].value, "机台编号")
-        self.assertEqual(sheet["I3"].value, "机台1–6（双联1/2、3/4、5/6）")
+        self.assertEqual(sheet["I3"].value, "填写系统中已启用的机台编号")
         station_validation = next(
             validation
             for validation in sheet.data_validations.dataValidation
             if "B2" in validation.sqref
         )
-        self.assertEqual(station_validation.formula1, '"1,2,3,4,5,6"')
+        self.assertEqual(station_validation.type, "custom")
+        self.assertEqual(station_validation.formula1, "=LEN(TRIM(B2))>0")
         self.assertEqual(sheet["A6"].value, "上模时间")
         self.assertEqual(sheet["C6"].value, "预计换模时间")
         self.assertEqual(sheet["E6"].value, "下机时间")
@@ -137,6 +139,44 @@ class ProductionImportTests(ProductionTestMixin, TestCase):
         )
         self.assertEqual(repeated.status_code, 400)
 
+    def test_preview_and_commit_accept_active_custom_station_code(self):
+        machine = Machine.objects.create(
+            code="D01", name="D组1号机台", is_active=True
+        )
+        station = ProductionStation.objects.create(
+            code="D01",
+            group="D",
+            position_no=1,
+            machine=machine,
+            is_active=True,
+        )
+        preview = self.client.post(
+            "/api/production/imports/preview/",
+            {
+                "file": production_workbook_upload(
+                    [
+                        {
+                            "station_code": "d01",
+                            "order_no": "CUSTOM-STATION-IMPORT",
+                            "status": "PLANNED",
+                        }
+                    ]
+                )
+            },
+            format="multipart",
+        )
+        self.assertEqual(preview.status_code, 200, preview.content)
+        self.assertEqual(preview.json()["error_count"], 0, preview.json()["issues"])
+
+        committed = self.client.post(
+            "/api/production/imports/commit/",
+            {"token": preview.json()["token"]},
+            format="json",
+        )
+        self.assertEqual(committed.status_code, 200, committed.content)
+        run = ProductionRun.objects.get(order_no="CUSTOM-STATION-IMPORT")
+        self.assertEqual(run.station_id, station.pk)
+
     def test_preview_reports_station_and_active_resource_conflicts_and_exports_report(self):
         ProductionRun.objects.create(
             station=ProductionStation.objects.get(code="1"),
@@ -159,7 +199,7 @@ class ProductionImportTests(ProductionTestMixin, TestCase):
                             "status": "PLANNED",
                         },
                         {
-                            "station_code": "D01",
+                            "station_code": "MISSING-01",
                             "order_no": "BAD-STATION",
                             "status": "COMPLETED",
                             "loaded_at": timezone.now() - timedelta(hours=2),
@@ -195,6 +235,10 @@ class ProductionImportTests(ProductionTestMixin, TestCase):
 
     def test_new_template_allows_multiple_operators_on_same_day(self):
         now = timezone.now().replace(microsecond=0)
+        mold = self.create_mold(
+            asset_code="MULTI-OP-IMPORT-MOLD",
+            machine_code="5",
+        )
         preview = self.client.post(
             "/api/production/imports/preview/",
             {
@@ -204,6 +248,7 @@ class ProductionImportTests(ProductionTestMixin, TestCase):
                             "station_code": "5",
                             "order_no": "MULTI-OP-IMPORT",
                             "status": "RUNNING",
+                            "mold_code": mold.asset_code,
                             "loaded_at": now - timedelta(hours=1),
                             "daily_logs": [
                                 {

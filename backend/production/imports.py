@@ -251,7 +251,7 @@ def _apply_card_style(ws):
     ws.merge_cells("F7:H7")
     guide_rows = [
         (2, "导入规则"),
-        (3, "机台1–6（双联1/2、3/4、5/6）"),
+        (3, "填写系统中已启用的机台编号"),
         (4, "时间:年-月-日 时:分"),
         (5, "状态可留空自动判断"),
         (6, "每页一张订单"),
@@ -392,10 +392,13 @@ def _apply_card_style(ws):
     ws.add_data_validation(status_validation)
     status_validation.add(ws["F2"])
     station_validation = DataValidation(
-        type="list",
-        formula1='"1,2,3,4,5,6"',
+        type="custom",
+        formula1='=LEN(TRIM(B2))>0',
         allow_blank=False,
     )
+    station_validation.error = "请填写系统中已启用的机台编号。"
+    station_validation.errorTitle = "机台编号不能为空"
+    station_validation.showErrorMessage = True
     ws.add_data_validation(station_validation)
     station_validation.add(ws["B2"])
     nonnegative = DataValidation(
@@ -428,8 +431,8 @@ def _apply_card_style(ws):
     positive_molds.add("C14:C43")
 
     ws["B2"].comment = Comment(
-        "必填。第一组为1/2，第二组为3/4，第三组为5/6；"
-        "旧编号A01/A02/B01/B02/C01/C02也可兼容导入。",
+        "必填。填写系统中当前已启用的机台编号；默认机台为1至6，"
+        "也支持D01等自定义编号。旧编号A01/A02/B01/B02/C01/C02仍可兼容导入。",
         "ERP",
     )
     ws["D2"].comment = Comment("必填，建议使用业务订单号且不要重复导入。", "ERP")

@@ -10,6 +10,7 @@ describe('production helpers', () => {
     expect(productionStationGroupLabel('A')).toBe('一组')
     expect(productionStationGroupLabel('B')).toBe('二组')
     expect(productionStationGroupLabel('C')).toBe('三组')
+    expect(productionStationGroupLabel('D')).toBe('D组')
   })
 
   it('never renders invalid or missing timestamps as Invalid Date', () => {

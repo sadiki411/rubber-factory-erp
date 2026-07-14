@@ -506,13 +506,25 @@ def validate_active_production_assignment(
             )
         return
 
+    if (
+        action == MoldMovement.Action.PUTAWAY
+        and to_status == MoldAsset.Status.IN_STOCK
+        and expected_machine is not None
+        and mold.status == MoldAsset.Status.ON_MACHINE
+        and mold.current_machine_id == expected_machine.pk
+    ):
+        # A planned mold may be mounted temporarily for a trial without
+        # starting the production order. Returning it to stock keeps the plan
+        # intact and lets the operator complete the trial workflow safely.
+        return
+
     if expected_machine is None:
         raise ValidationError(
             f"模具已关联{assignment}，但该站位未关联机台，暂不能变更模具位置。"
         )
     raise ValidationError(
         f"模具已关联{assignment}，只能上机到 {expected_machine.code}，"
-        "不能移库、归位、标记客户收回或改到其他机台。"
+        "试模后仅可从该机台归位；不能移库、标记客户收回或改到其他机台。"
     )
 
 

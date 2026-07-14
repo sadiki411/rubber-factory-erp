@@ -39,7 +39,10 @@ export function QualityShipmentDrawer({ open, shipment, orders, employees, onClo
       return shipment ? qualityApi.updateShipment(shipment.id, body) : qualityApi.createShipment(body)
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['quality'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['quality'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+      ])
       message.success(shipment ? '出货记录已更新' : '出货记录已保存')
       onClose()
     },
@@ -144,7 +147,10 @@ export function QualityOrderDrawer({ open, order, onClose }: OrderDrawerProps) {
       return order ? qualityApi.updateOrder(order.id, body) : qualityApi.createOrder(body)
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['quality'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['quality'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+      ])
       message.success(order ? '订单资料已更新' : '订单批次已创建')
       onClose()
     },
@@ -193,7 +199,10 @@ export function QualityEmployeeDrawer({ open, employee, onClose }: EmployeeDrawe
   const mutation = useMutation({
     mutationFn: (values: Record<string, any>) => employee ? qualityApi.updateEmployee(employee.id, values) : qualityApi.createEmployee(values),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['quality'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['quality'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+      ])
       message.success(employee ? '员工档案已更新' : '员工档案已创建')
       onClose()
     },
@@ -252,7 +261,10 @@ export function QualityReworkDrawer({ open, rework, shipments, employees, onClos
       return rework ? qualityApi.updateRework(rework.id, body) : qualityApi.createRework(body)
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['quality'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['quality'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+      ])
       message.success(rework ? '退货返工记录已更新' : '退货返工记录已保存')
       onClose()
     },

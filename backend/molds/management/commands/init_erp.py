@@ -10,7 +10,7 @@ from production.services import seed_default_stations
 
 
 class Command(BaseCommand):
-    help = "幂等初始化J01-J07货架、1-6号生产机台和共享登录账号。"
+    help = "幂等初始化J01-J07货架、默认1-6号生产机台和共享登录账号。"
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -45,7 +45,7 @@ class Command(BaseCommand):
         for warning in rack_warnings:
             self.stdout.write(self.style.WARNING(f"货架布局升级警告：{warning}"))
         seed_default_stations()
-        self.stdout.write(self.style.SUCCESS("1-6号生产机台初始化完成。"))
+        self.stdout.write(self.style.SUCCESS("默认1-6号生产机台初始化完成，扩展机台保持不变。"))
 
         # journal_mode is persistent; the connection signal also applies busy_timeout.
         if connection.vendor == "sqlite" and connection.settings_dict["NAME"] != ":memory:":

@@ -26,6 +26,8 @@ COPY backend/production/*.py /app/backend/production/
 COPY backend/production/migrations/*.py /app/backend/production/migrations/
 COPY backend/quality/*.py /app/backend/quality/
 COPY backend/quality/migrations/*.py /app/backend/quality/migrations/
+COPY backend/analytics/*.py /app/backend/analytics/
+COPY backend/analytics/migrations/*.py /app/backend/analytics/migrations/
 COPY deploy/ /app/deploy/
 
 RUN chmod +x /app/deploy/backend-entrypoint.sh /app/deploy/backup-loop.sh

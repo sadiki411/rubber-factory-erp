@@ -53,6 +53,9 @@ if not any("/app/data" in str(value) for value in backend.get("volumes", [])):
 backup_env = services["backup"].get("environment", {})
 if "BACKUP_RETENTION_COUNT" not in backup_env:
     raise SystemExit("backup is missing count-based retention")
+backend_env = backend.get("environment", {})
+if "BACKUP_BEFORE_MIGRATE" not in backend_env:
+    raise SystemExit("backend is missing pre-migration backup protection")
 
 for name in required:
     service = services.get(name) or {}
@@ -81,7 +84,9 @@ foreach ($requiredCopy in @(
     'COPY backend/production/*.py /app/backend/production/',
     'COPY backend/production/migrations/*.py /app/backend/production/migrations/',
     'COPY backend/quality/*.py /app/backend/quality/',
-    'COPY backend/quality/migrations/*.py /app/backend/quality/migrations/'
+    'COPY backend/quality/migrations/*.py /app/backend/quality/migrations/',
+    'COPY backend/analytics/*.py /app/backend/analytics/',
+    'COPY backend/analytics/migrations/*.py /app/backend/analytics/migrations/'
 )) {
     if ($backendDockerfile -notmatch [regex]::Escape($requiredCopy)) {
         throw "backend.Dockerfile is missing required Django application source: $requiredCopy"
@@ -95,6 +100,11 @@ if ($requirements -notmatch '(?m)^gunicorn==') {
     throw 'backend requirements must pin Gunicorn.'
 }
 Write-Host 'Dockerfile source and runtime version checks passed.'
+
+$entrypoint = Get-Content -Raw -LiteralPath (Join-Path $root 'deploy\backend-entrypoint.sh')
+if ($entrypoint -notmatch 'backup_erp' -or $entrypoint -notmatch 'BACKUP_BEFORE_MIGRATE') {
+    throw 'backend entrypoint must create a backup before running migrations.'
+}
 
 $workflow = Get-Content -Raw -LiteralPath $workflowPath
 foreach ($requiredText in @(

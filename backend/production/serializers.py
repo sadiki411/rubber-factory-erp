@@ -8,7 +8,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework import serializers
 
-from molds.models import MoldAsset
+from molds.models import MoldAsset, RackSlot
 from molds.serializers import MachineSerializer
 
 from .models import (
@@ -196,6 +196,7 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "estimated_hours",
             "loaded_at",
             "expected_change_at",
+            "material_changed_at",
             "unloaded_at",
             "status",
             "operator",
@@ -247,6 +248,7 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "planned_mold_count": {"required": False},
             "estimated_hours": {"required": False},
             "expected_change_at": {"required": False, "allow_null": True},
+            "material_changed_at": {"required": False, "allow_null": True},
         }
 
     def get_created_by_name(self, obj) -> str:
@@ -264,6 +266,61 @@ class ProductionRunSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         instance = self.instance
+
+        if instance:
+            requested_status = attrs.get("status", instance.status)
+            allowed_status_changes = {
+                (
+                    ProductionRun.Status.PLANNED,
+                    ProductionRun.Status.CANCELLED,
+                ),
+                (
+                    ProductionRun.Status.RUNNING,
+                    ProductionRun.Status.COMPLETED,
+                ),
+                (
+                    ProductionRun.Status.RUNNING,
+                    ProductionRun.Status.CANCELLED,
+                ),
+            }
+            if (
+                requested_status != instance.status
+                and (instance.status, requested_status) not in allowed_status_changes
+            ):
+                raise serializers.ValidationError(
+                    {
+                        "status": (
+                            "不允许通过普通编辑执行该状态变化；已开始或已结束的"
+                            "订单不能退回待上机。"
+                        )
+                    }
+                )
+            if instance.status != ProductionRun.Status.PLANNED:
+                if (
+                    "station" in attrs
+                    and attrs["station"].pk != instance.station_id
+                ):
+                    raise serializers.ValidationError(
+                        {"station_id": "订单开始生产后不能更换机台。"}
+                    )
+                requested_mold = attrs.get("mold", instance.mold)
+                requested_mold_id = requested_mold.pk if requested_mold else None
+                if "mold" in attrs and requested_mold_id != instance.mold_id:
+                    raise serializers.ValidationError(
+                        {"mold_id": "订单开始生产后不能更换模具。"}
+                    )
+            if (
+                instance.status == ProductionRun.Status.PLANNED
+                and attrs.get("loaded_at") is not None
+            ):
+                raise serializers.ValidationError(
+                    {
+                        "loaded_at": (
+                            "待上机订单不能通过普通编辑填写上模时间，"
+                            "请使用“确认上机”操作。"
+                        )
+                    }
+                )
 
         def current(name, default=None):
             if name in attrs:
@@ -327,11 +384,22 @@ class ProductionRunSerializer(serializers.ModelSerializer):
         unloaded_at = current("unloaded_at")
         status_value = current("status", ProductionRun.Status.PLANNED)
         if "status" not in attrs:
-            if unloaded_at:
+            if not instance and unloaded_at:
                 status_value = ProductionRun.Status.COMPLETED
                 attrs["status"] = status_value
-            elif loaded_at and (not instance or instance.status == ProductionRun.Status.PLANNED):
+            elif (
+                not instance
+                and loaded_at
+            ):
                 status_value = ProductionRun.Status.RUNNING
+                attrs["status"] = status_value
+            elif (
+                instance
+                and instance.status == ProductionRun.Status.RUNNING
+                and "unloaded_at" in attrs
+                and unloaded_at
+            ):
+                status_value = ProductionRun.Status.COMPLETED
                 attrs["status"] = status_value
 
         if (
@@ -402,6 +470,7 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "estimated_hours",
             "loaded_at",
             "expected_change_at",
+            "material_changed_at",
             "unloaded_at",
             "status",
             "operator",
@@ -563,6 +632,16 @@ class StartProductionRunSerializer(serializers.Serializer):
 
 class CompleteProductionRunSerializer(serializers.Serializer):
     unloaded_at = serializers.DateTimeField(required=False)
+
+
+class CompleteAndPutawayProductionRunSerializer(serializers.Serializer):
+    slot_id = serializers.PrimaryKeyRelatedField(
+        source="slot",
+        queryset=RackSlot.objects.select_related("zone__level__rack"),
+    )
+    unloaded_at = serializers.DateTimeField(required=False)
+    note = serializers.CharField(required=False, allow_blank=True, max_length=1000)
+    confirm_warnings = serializers.BooleanField(required=False, default=False)
 
 
 class ProductionSettlementSerializer(serializers.Serializer):

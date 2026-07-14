@@ -26,7 +26,6 @@ import type {
   QualityDailyTrend,
   QualityEmployee,
   QualityEmployeeRole,
-  QualityEmployeeStatistics,
   QualityOrder,
   QualityOrderStatistics,
   QualityShipment,
@@ -154,7 +153,6 @@ export function QualityPage() {
   const keyword = query.trim().toLowerCase()
 
   const filteredEmployees = useMemo(() => employees.filter((item) => !keyword || [item.employee_no, item.name, item.team, item.role_display].some((value) => String(value || '').toLowerCase().includes(keyword))), [employees, keyword])
-  const performanceRows = useMemo(() => (summary?.employee_stats || []).filter((item) => !keyword || [item.employee_no, item.name, item.team].some((value) => String(value || '').toLowerCase().includes(keyword))), [keyword, summary?.employee_stats])
   const orderRows = useMemo<OrderRow[]>(() => {
     const stats = new Map((summary?.order_stats || []).map((item) => [item.order_id, item]))
     return orders
@@ -205,20 +203,6 @@ export function QualityPage() {
     { title: '操作', key: 'action', fixed: 'right', width: 76, render: (_, row) => <Button type="link" icon={<EditOutlined />} onClick={() => setOrderForm({ order: row.order })}>编辑</Button> },
   ]
 
-  const performanceColumns: TableColumnsType<QualityEmployeeStatistics> = [
-    { title: '员工', key: 'employee', fixed: 'left', width: 145, render: (_, row) => <span><strong>{row.name}</strong><br /><Typography.Text type="secondary">{row.employee_no}{row.team ? ` · ${row.team}` : ''}</Typography.Text></span> },
-    { title: '岗位', dataIndex: 'role', width: 115, render: (value: QualityEmployeeRole) => <Tag color={ROLE_META[value]?.color}>{ROLE_META[value]?.text || value}</Tag> },
-    { title: '质检数量', dataIndex: 'inspection_quantity', width: 110, sorter: (a, b) => a.inspection_quantity - b.inspection_quantity, render: (value) => <strong>{qualityNumber(value)}</strong> },
-    { title: '质检天数', dataIndex: 'inspection_days', width: 105, render: (value) => `${qualityNumber(value)} 天` },
-    { title: '参与出货', dataIndex: 'shipment_count', width: 105, render: (value) => `${qualityNumber(value)} 批` },
-    { title: '责任退货数量', dataIndex: 'responsible_return_quantity', width: 130, sorter: (a, b) => a.responsible_return_quantity - b.responsible_return_quantity, render: (value) => <strong className={value ? 'quality-danger-text' : ''}>{qualityNumber(value)}</strong> },
-    { title: '返工处理数量', dataIndex: 'reworked_quantity', width: 130, sorter: (a, b) => a.reworked_quantity - b.reworked_quantity, render: (value) => <strong className="quality-rework-text">{qualityNumber(value)}</strong> },
-    { title: '返工合格 / 报废', key: 'rework_result', width: 145, render: (_, row) => `${qualityNumber(row.recovered_quantity)} / ${qualityNumber(row.scrap_quantity)}` },
-    { title: '一次合格率', dataIndex: 'first_pass_rate', width: 120, render: (value) => rateText(value) },
-    { title: '责任退货率', dataIndex: 'return_rate', width: 120, render: (value) => <span className={Number(value || 0) > 0 ? 'quality-danger-text' : ''}>{rateText(value)}</span> },
-    { title: '返工通过率', dataIndex: 'rework_pass_rate', width: 120, render: (value) => rateText(value) },
-  ]
-
   const employeeColumns: TableColumnsType<QualityEmployee> = [
     { title: '工号', dataIndex: 'employee_no', fixed: 'left', width: 130, render: (value) => <strong>{value}</strong> },
     { title: '姓名', dataIndex: 'name', width: 130 },
@@ -263,14 +247,6 @@ export function QualityPage() {
       </div>,
     },
     {
-      key: 'performance',
-      label: '员工绩效',
-      children: <div className="quality-tab-content">
-        <div className="section-heading"><div><Typography.Title level={3}>员工绩效依据</Typography.Title><Typography.Text type="secondary">默认按本月统计；可调整上方日期范围。责任退货量与返工处理量分列展示。</Typography.Text></div></div>
-        {tableCard(performanceRows, performanceColumns, summaryQuery.isLoading, 'employee_id', 1420, '所选日期暂无员工绩效记录')}
-      </div>,
-    },
-    {
       key: 'employees',
       label: '员工档案',
       children: <div className="quality-tab-content">
@@ -286,7 +262,7 @@ export function QualityPage() {
     <div className="page-container quality-page">
       <PageTitle
         title="品检出货与退货返工"
-        description="记录每日质检与出货、每次退货返工、订单批次统计和员工绩效，为橡胶制品品质管理提供可追溯依据。"
+        description="记录每日质检与出货、每次退货返工和订单批次；员工绩效与跨模块趋势统一在“数据分析”查看。"
         extra={<Space wrap><Button icon={<ToolOutlined />} onClick={() => setReworkForm({})}>登记退货返工</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => setShipmentForm({})}>新增出货</Button></Space>}
       />
 

@@ -47,7 +47,8 @@ export function productionStationNumber(station: Pick<ProductionStation, 'code' 
 }
 
 export function productionStationGroupLabel(group: ProductionStationGroup) {
-  return ({ A: '一组', B: '二组', C: '三组' } as const)[group]
+  const code = String(group || '').trim()
+  return ({ A: '一组', B: '二组', C: '三组' } as Record<string, string>)[code] || (code ? `${code}组` : '未分组')
 }
 
 export function productionReminderKey(run: ReminderRun, status: ProductionReminderStatus) {

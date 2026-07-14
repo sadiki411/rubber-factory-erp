@@ -25,7 +25,10 @@ export function ProductionImportDrawer({ open, onClose }: Props) {
   const commitMutation = useMutation({
     mutationFn: (token: string) => productionImportApi.commit(token),
     onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: ['production'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['production'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+      ])
       message.success(`已导入 ${result.imported_count} 张生产订单、${result.log_count} 条人员模数记录${result.settled_count ? `、${result.settled_count} 张完工结算` : ''}`)
       setPreview(undefined)
       setFiles([])
@@ -65,7 +68,7 @@ export function ProductionImportDrawer({ open, onClose }: Props) {
     { title: '预计工时', dataIndex: 'estimated_hours', width: 100, render: (value) => value === null || value === undefined || value === '' ? '-' : `${value} 小时` },
     { title: '上模时间', dataIndex: 'loaded_at', width: 145, render: (value) => formatProductionDate(value, 'MM-DD HH:mm') },
     { title: '预计换模', dataIndex: 'expected_change_at', width: 145, render: (value) => formatProductionDate(value, 'MM-DD HH:mm') },
-    { title: '下机时间', dataIndex: 'unloaded_at', width: 145, render: (value) => formatProductionDate(value, 'MM-DD HH:mm') },
+    { title: '停机时间', dataIndex: 'unloaded_at', width: 145, render: (value) => formatProductionDate(value, 'MM-DD HH:mm') },
     { title: '人员模数记录', dataIndex: 'daily_log_count', width: 115, render: (value) => value ?? 0 },
     { title: '完工结算', dataIndex: 'is_settled', width: 95, render: (value) => <Tag color={value ? 'success' : 'default'}>{value ? '已填写' : '待结算'}</Tag> },
     { title: '实际良品', dataIndex: 'actual_good_quantity', width: 95, render: (value) => value ?? '-' },

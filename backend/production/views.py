@@ -31,7 +31,6 @@ from .imports import (
     preview_production_workbook,
 )
 from .models import (
-    PRODUCTION_STATION_CODES,
     ProductionDailyLog,
     ProductionImportBatch,
     ProductionRun,
@@ -40,6 +39,7 @@ from .models import (
     normalize_production_station_code,
 )
 from .serializers import (
+    CompleteAndPutawayProductionRunSerializer,
     CompleteProductionRunSerializer,
     ProductionDailyLogSerializer,
     ProductionMoldSerializer,
@@ -51,6 +51,7 @@ from .serializers import (
     StartProductionRunSerializer,
 )
 from .services import (
+    complete_and_putaway_production_run,
     invalidate_settlement,
     record_settlement_revision,
     start_production_run,
@@ -80,8 +81,6 @@ class ProductionStationViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = queryset.filter(is_active=True)
         group = str(self.request.query_params.get("group", "")).strip().upper()
         if group:
-            if group not in ProductionStation.Group.values:
-                raise DRFValidationError({"group": "机台组必须为A、B或C。"})
             queryset = queryset.filter(group=group)
         return queryset.order_by("group", "position_no")
 
@@ -117,17 +116,18 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
         station = str(params.get("station", "")).strip()
         if station:
             normalized_station = normalize_production_station_code(station)
-            if normalized_station in PRODUCTION_STATION_CODES:
-                queryset = queryset.filter(station__code=normalized_station)
+            station_record = ProductionStation.objects.filter(
+                code__iexact=normalized_station
+            ).first()
+            if station_record is not None:
+                queryset = queryset.filter(station=station_record)
             elif station.isdigit():
                 queryset = queryset.filter(station_id=int(station))
             else:
-                queryset = queryset.filter(station__code__iexact=station)
+                queryset = queryset.none()
 
         group = str(params.get("group", "")).strip().upper()
         if group:
-            if group not in ProductionStation.Group.values:
-                raise DRFValidationError({"group": "机台组必须为A、B或C。"})
             queryset = queryset.filter(station__group=group)
 
         mold = str(params.get("mold", "")).strip()
@@ -366,6 +366,38 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
         return Response(ProductionRunSerializer(refreshed, context={"request": request}).data)
 
     @extend_schema(
+        request=CompleteAndPutawayProductionRunSerializer,
+        responses=ProductionRunSerializer,
+    )
+    @action(detail=True, methods=["post"], url_path="complete-and-putaway")
+    def complete_and_putaway(self, request, pk=None):
+        input_serializer = CompleteAndPutawayProductionRunSerializer(
+            data=request.data or {}
+        )
+        input_serializer.is_valid(raise_exception=True)
+        try:
+            run = complete_and_putaway_production_run(
+                self.get_object(),
+                request.user,
+                **input_serializer.validated_data,
+            )
+            refreshed = _run_queryset().get(pk=run.pk)
+        except OperationalError as exc:
+            raise DRFValidationError(
+                {
+                    "detail": (
+                        "数据库正忙，结束生产并归位未执行，请稍后刷新后重试。"
+                    )
+                }
+            ) from exc
+        return Response(
+            ProductionRunSerializer(
+                refreshed,
+                context={"request": request},
+            ).data
+        )
+
+    @extend_schema(
         methods=["GET"],
         responses=ProductionSettlementDetailSerializer,
     )
@@ -478,6 +510,7 @@ class BoardRunSerializer(serializers.ModelSerializer):
             "status",
             "loaded_at",
             "expected_change_at",
+            "material_changed_at",
             "estimated_hours",
         ]
 
@@ -515,9 +548,12 @@ class ProductionBoardView(APIView):
         threshold = now + timedelta(minutes=reminder_minutes)
         counts = Counter()
         groups = []
-        for group_code in ProductionStation.Group.values:
+        stations_by_group = {}
+        for station in stations:
+            stations_by_group.setdefault(station.group, []).append(station)
+        for group_code, group_stations in stations_by_group.items():
             station_payloads = []
-            for station in [item for item in stations if item.group == group_code]:
+            for station in group_stations:
                 runs = list(station.active_board_runs)
                 run = runs[0] if runs else None
                 station_molds = (
@@ -608,8 +644,6 @@ class ProductionSummaryView(APIView):
         date_from = str(params.get("date_from", "")).strip()
         date_to = str(params.get("date_to", "")).strip()
         group = str(params.get("group", "")).strip().upper()
-        if group and group not in ProductionStation.Group.values:
-            raise DRFValidationError({"group": "机台组必须为A、B或C。"})
 
         parsed_from = parse_date(date_from) if date_from else None
         parsed_to = parse_date(date_to) if date_to else None
@@ -798,7 +832,7 @@ class ProductionMonthlyPerformanceView(APIView):
                 type=str,
                 location=OpenApiParameter.QUERY,
                 required=False,
-                description="可选机台组A、B或C",
+                description="可选机台组编号，例如A、B、C或自定义分组",
             ),
         ],
     )
@@ -816,8 +850,6 @@ class ProductionMonthlyPerformanceView(APIView):
             else month_start.replace(month=month_start.month + 1)
         )
         group = str(request.query_params.get("group", "")).strip().upper()
-        if group and group not in ProductionStation.Group.values:
-            raise DRFValidationError({"group": "机台组必须为A、B或C。"})
 
         logs = ProductionDailyLog.objects.filter(
             production_date__gte=month_start,

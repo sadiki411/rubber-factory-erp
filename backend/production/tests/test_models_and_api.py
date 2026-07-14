@@ -10,7 +10,7 @@ from drf_spectacular.generators import SchemaGenerator
 from rest_framework import serializers as drf_serializers
 from rest_framework.test import APIClient
 
-from molds.models import MoldAsset, MoldModel, MoldMovement, RackSlot
+from molds.models import Machine, MoldAsset, MoldModel, MoldMovement, RackSlot
 from molds.services import (
     archive_mold,
     seed_default_racks,
@@ -128,6 +128,22 @@ class ProductionApiTests(ProductionTestMixin, TestCase):
             "material_unit_price": "10.0000",
         }
         payload.update(overrides)
+        candidate_status = payload.get("status")
+        requires_running_mold = (
+            candidate_status == ProductionRun.Status.RUNNING
+            or (
+                candidate_status is None
+                and payload.get("loaded_at")
+                and not payload.get("unloaded_at")
+            )
+        )
+        if payload.get("mold_id") is None and requires_running_mold:
+            suffix = MoldAsset.objects.count() + 1
+            automatic_mold = self.create_mold(
+                asset_code=f"AUTO-{order_no}-{suffix}",
+                machine_code=station,
+            )
+            payload["mold_id"] = automatic_mold.pk
         return payload
 
     def _create_stock_mold(
@@ -178,6 +194,81 @@ class ProductionApiTests(ProductionTestMixin, TestCase):
                 ("C", 2, "6"),
             ],
         )
+
+    def test_custom_group_and_extra_group_position_are_listed_filtered_and_boarded(self):
+        d_machine = Machine.objects.create(
+            code="D01", name="D组1号机台", is_active=True
+        )
+        d_station = ProductionStation.objects.create(
+            code="d01",
+            group="d",
+            position_no=1,
+            machine=d_machine,
+            is_active=True,
+        )
+        extra_machine = Machine.objects.create(
+            code="A03", name="A组扩展3号机台", is_active=True
+        )
+        extra_station = ProductionStation.objects.create(
+            code="A03",
+            group="A",
+            position_no=3,
+            machine=extra_machine,
+            is_active=True,
+        )
+        self.assertEqual((d_station.group, d_station.code), ("D", "D01"))
+
+        for station, order_no in (
+            (d_station, "CUSTOM-D-001"),
+            (extra_station, "CUSTOM-A3-001"),
+        ):
+            ProductionRun.objects.create(
+                station=station,
+                order_no=order_no,
+                specification="扩展机台验证",
+                order_quantity=6,
+                cavities=6,
+                planned_mold_count=1,
+                status=ProductionRun.Status.PLANNED,
+                created_by=self.user,
+            )
+
+        station_list = self.client.get("/api/production/stations/")
+        self.assertEqual(station_list.status_code, 200, station_list.content)
+        self.assertEqual(len(station_list.json()), 8)
+        d_group = self.client.get("/api/production/stations/", {"group": "d"})
+        self.assertEqual(d_group.status_code, 200, d_group.content)
+        self.assertEqual([item["code"] for item in d_group.json()], ["D01"])
+
+        for params, expected_order in (
+            ({"group": "D"}, "CUSTOM-D-001"),
+            ({"station": "D01"}, "CUSTOM-D-001"),
+            ({"station": "A03"}, "CUSTOM-A3-001"),
+        ):
+            with self.subTest(params=params):
+                response = self.client.get("/api/production/runs/", params)
+                self.assertEqual(response.status_code, 200, response.content)
+                self.assertEqual(
+                    [item["order_no"] for item in response.json()["results"]],
+                    [expected_order],
+                )
+
+        board = self.client.get("/api/production/board/")
+        self.assertEqual(board.status_code, 200, board.content)
+        groups = {item["group"]: item["stations"] for item in board.json()["groups"]}
+        self.assertEqual([item["code"] for item in groups["A"]], ["1", "2", "A03"])
+        self.assertEqual([item["code"] for item in groups["D"]], ["D01"])
+        self.assertEqual(board.json()["counts"]["total"], 8)
+
+        summary = self.client.get("/api/production/summary/", {"group": "d"})
+        self.assertEqual(summary.status_code, 200, summary.content)
+        self.assertEqual(summary.json()["run_count"], 1)
+        performance = self.client.get(
+            "/api/production/performance/monthly/",
+            {"month": timezone.localdate().strftime("%Y-%m"), "group": "D"},
+        )
+        self.assertEqual(performance.status_code, 200, performance.content)
+        self.assertEqual(performance.json()["group"], "D")
 
     def test_board_shows_every_mounted_mold_even_without_a_production_run(self):
         first = self.create_mold(asset_code="MOUNTED-001", machine_code="1")
@@ -552,13 +643,13 @@ class ProductionApiTests(ProductionTestMixin, TestCase):
             specification="更新并发校验",
             order_quantity=100,
             planned_mold_count=10,
-            status=ProductionRun.Status.CANCELLED,
+            status=ProductionRun.Status.PLANNED,
             created_by=self.user,
         )
         mold = self.create_mold(asset_code="MOLD-UPDATE-RACE")
         serializer = ProductionRunSerializer(
             run,
-            data={"mold_id": mold.pk, "status": ProductionRun.Status.PLANNED},
+            data={"mold_id": mold.pk},
             partial=True,
         )
         self.assertTrue(serializer.is_valid(), serializer.errors)
@@ -571,7 +662,7 @@ class ProductionApiTests(ProductionTestMixin, TestCase):
             serializer.save()
 
         run.refresh_from_db()
-        self.assertEqual(run.status, ProductionRun.Status.CANCELLED)
+        self.assertEqual(run.status, ProductionRun.Status.PLANNED)
         self.assertIsNone(run.mold_id)
 
     def test_completed_run_can_keep_archived_historical_mold_when_edited(self):

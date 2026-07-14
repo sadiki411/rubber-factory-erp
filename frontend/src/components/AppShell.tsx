@@ -1,5 +1,6 @@
 import {
   AppstoreOutlined,
+  BarChartOutlined,
   FileExcelOutlined,
   HomeOutlined,
   LogoutOutlined,
@@ -20,6 +21,7 @@ const menuItems = [
   { key: '/', icon: <HomeOutlined />, label: '工作台' },
   { key: '/production', icon: <ScheduleOutlined />, label: '前端生产' },
   { key: '/quality', icon: <SafetyCertificateOutlined />, label: '品检出货' },
+  { key: '/analytics', icon: <BarChartOutlined />, label: '数据分析' },
   { key: '/molds', icon: <ToolOutlined />, label: '模具台账' },
   { key: '/racks', icon: <AppstoreOutlined />, label: '货架总览' },
   { key: '/rack-config', icon: <SettingOutlined />, label: '货架配置' },

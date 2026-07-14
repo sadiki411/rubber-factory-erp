@@ -4,15 +4,21 @@ import type { TableColumnsType } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { productionApi, productionImportApi, toList } from '../api/client'
+import { moldApi, productionApi, productionImportApi, toList } from '../api/client'
+import { CompleteAndPutawayDrawer } from '../components/CompleteAndPutawayDrawer'
+import { MountedMoldActionsDrawer } from '../components/MountedMoldActionsDrawer'
+import { OperationDrawer, type MoldAction } from '../components/OperationDrawer'
 import { PageTitle } from '../components/PageTitle'
 import { ProductionBoard } from '../components/ProductionBoard'
 import { ProductionImportDrawer } from '../components/ProductionImportDrawer'
 import { ProductionLogDrawer } from '../components/ProductionLogDrawer'
-import { ProductionPerformance } from '../components/ProductionPerformance'
+import { ProductionPlanBoard } from '../components/ProductionPlanBoard'
 import { ProductionRunDrawer } from '../components/ProductionRunDrawer'
+import { QuickMountDrawer } from '../components/QuickMountDrawer'
+import { StationStartDrawer } from '../components/StationStartDrawer'
 import { formatProductionDate, isKeyboardActivationKey, productionReminderKey, productionStationGroupLabel, productionStationNumber } from '../production'
-import type { ApiList, ProductionBoardStation, ProductionMold, ProductionRun, ProductionRunStatus, ProductionStation } from '../types'
+import type { ApiList, MoldAsset, ProductionBoardStation, ProductionMold, ProductionRun, ProductionRunStatus, ProductionStation } from '../types'
+import { moldModelOf } from '../types'
 
 const STATUS_META: Record<ProductionRunStatus, { text: string; color: string }> = {
   PLANNED: { text: '待上机', color: 'blue' },
@@ -50,6 +56,11 @@ export function ProductionPage() {
   const [pageSize, setPageSize] = useState(20)
   const [formTarget, setFormTarget] = useState<{ run?: ProductionRun; station?: ProductionStation; mold?: ProductionMold; initialStatus?: ProductionRunStatus }>()
   const [selectedRun, setSelectedRun] = useState<ProductionRun>()
+  const [completePutawayRun, setCompletePutawayRun] = useState<ProductionRun>()
+  const [mountedStation, setMountedStation] = useState<ProductionBoardStation>()
+  const [startStation, setStartStation] = useState<ProductionBoardStation>()
+  const [quickMount, setQuickMount] = useState<{ station: ProductionBoardStation; continueToProduction: boolean; open: boolean }>()
+  const [moldOperation, setMoldOperation] = useState<{ mold: MoldAsset; action: MoldAction }>()
   const [importOpen, setImportOpen] = useState(false)
   const notified = useRef(new Set<string>())
   const dateText = date.format('YYYY-MM-DD')
@@ -106,11 +117,30 @@ export function ProductionPage() {
   }
 
   const openStation = (station: ProductionBoardStation) => {
-    if (station.run) void showRun(station.run)
-    else setFormTarget({
-      station,
-      mold: station.mounted_molds?.length === 1 ? station.mounted_molds[0] : undefined,
-    })
+    if (station.run?.status === 'RUNNING') void showRun(station.run)
+    else if (station.mounted_molds?.length) setMountedStation(station)
+    else setStartStation(station)
+  }
+
+  const operateMountedMold = async (mold: ProductionMold, action: 'putaway' | 'send-out') => {
+    try {
+      const detail = await moldApi.detail(mold.id)
+      setMountedStation(undefined)
+      setMoldOperation({ mold: detail, action })
+    } catch (error) {
+      message.error((error as Error).message)
+    }
+  }
+
+  const continueWithProduction = (mold: MoldAsset): ProductionMold => {
+    const model = moldModelOf(mold)
+    return {
+      id: mold.id,
+      asset_code: mold.asset_code,
+      model_code: model?.code || '-',
+      product_name: model?.product_name || '',
+      status: mold.status,
+    }
   }
 
   const columns: TableColumnsType<ProductionRun> = [
@@ -143,7 +173,7 @@ export function ProductionPage() {
     <div className="page-container production-page">
       <PageTitle
         title="前端生产管理"
-        description="三组联体机台，每组2台，共6台（孔=台）；模具台账登记上机后会同步显示型号，生产订单结束后仍需人工归位。"
+        description="按当前启用机台展示实时生产、换模提醒和待上机计划；可跳过订单直接试模，也可原子完成生产并下机归位。"
         extra={<Space wrap><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入统计表</Button><Button icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'PLANNED' })}>新增待上机计划</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'RUNNING' })}>登记已上机生产</Button></Space>}
       />
 
@@ -167,6 +197,7 @@ export function ProductionPage() {
       </Row>
 
       <ProductionBoard board={boardQuery.data} loading={boardQuery.isLoading} onStationClick={openStation} />
+      <ProductionPlanBoard board={boardQuery.data} loading={boardQuery.isLoading} onPlanClick={(station) => station.run && void showRun(station.run)} />
 
       <section className="production-record-section">
         <div className="section-heading">
@@ -227,8 +258,6 @@ export function ProductionPage() {
         )}
       </section>
 
-      <ProductionPerformance mobile={mobile} />
-
       <ProductionRunDrawer open={!!formTarget} run={formTarget?.run} station={formTarget?.station} mountedMold={formTarget?.mold} initialStatus={formTarget?.initialStatus} onClose={() => setFormTarget(undefined)} onSuccess={(result) => setSelectedRun(result)} />
       <ProductionLogDrawer
         open={!!selectedRun}
@@ -236,7 +265,67 @@ export function ProductionPage() {
         onClose={() => setSelectedRun(undefined)}
         onRunChange={setSelectedRun}
         onEdit={(run) => { setSelectedRun(undefined); setFormTarget({ run }) }}
+        onRequestCompleteAndPutaway={(run) => {
+          setSelectedRun(undefined)
+          setCompletePutawayRun(run)
+        }}
       />
+      <MountedMoldActionsDrawer
+        open={!!mountedStation}
+        station={mountedStation}
+        onClose={() => setMountedStation(undefined)}
+        onCreateProduction={(mold) => {
+          setMountedStation(undefined)
+          setFormTarget({ station: mountedStation, mold, initialStatus: 'RUNNING' })
+        }}
+        onViewPlan={(run) => {
+          setMountedStation(undefined)
+          void showRun(run)
+        }}
+        onPutaway={(mold) => void operateMountedMold(mold, 'putaway')}
+        onSendOut={(mold) => void operateMountedMold(mold, 'send-out')}
+      />
+      <StationStartDrawer
+        open={!!startStation}
+        station={startStation}
+        onClose={() => setStartStation(undefined)}
+        onQuickMount={(continueToProduction) => {
+          if (!startStation) return
+          setQuickMount({ station: startStation, continueToProduction, open: true })
+          setStartStation(undefined)
+        }}
+        onCreatePlan={() => {
+          if (!startStation) return
+          if (startStation.run?.status === 'PLANNED') void showRun(startStation.run)
+          else setFormTarget({ station: startStation, initialStatus: 'PLANNED' })
+          setStartStation(undefined)
+        }}
+      />
+      <QuickMountDrawer
+        open={quickMount?.open || false}
+        station={quickMount?.station}
+        continueToProduction={quickMount?.continueToProduction}
+        onClose={() => setQuickMount((current) => current ? { ...current, open: false } : current)}
+        onAfterOpenChange={(isOpen) => {
+          if (!isOpen) setQuickMount(undefined)
+        }}
+        onSuccess={(mold) => {
+          const target = quickMount
+          if (target?.continueToProduction) {
+            setFormTarget({
+              station: target.station,
+              mold: continueWithProduction(mold),
+              initialStatus: 'RUNNING',
+            })
+          }
+        }}
+      />
+      <CompleteAndPutawayDrawer
+        open={!!completePutawayRun}
+        run={completePutawayRun}
+        onClose={() => setCompletePutawayRun(undefined)}
+      />
+      <OperationDrawer open={!!moldOperation} mold={moldOperation?.mold} action={moldOperation?.action} onClose={() => setMoldOperation(undefined)} />
       <ProductionImportDrawer open={importOpen} onClose={() => setImportOpen(false)} />
     </div>
   )

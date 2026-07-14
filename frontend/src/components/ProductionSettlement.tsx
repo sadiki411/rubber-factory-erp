@@ -62,7 +62,10 @@ export function ProductionSettlement({ run, onRunChange }: Props) {
   const mutation = useMutation({
     mutationFn: (payload: ProductionSettlementInput) => productionApi.settleRun(run.id, payload),
     onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: ['production'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['production'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+      ])
       dirtyRef.current = false
       onRunChange(result)
       message.success(run.is_settled ? '完工结算已更新' : '完工结算已保存')
