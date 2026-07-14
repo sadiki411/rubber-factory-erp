@@ -19,6 +19,8 @@ export function useMoldDeletion() {
         queryClient.invalidateQueries({ queryKey: ['mold'] }),
         queryClient.invalidateQueries({ queryKey: ['racks'] }),
         queryClient.invalidateQueries({ queryKey: ['slots'] }),
+        queryClient.invalidateQueries({ queryKey: ['machines'] }),
+        queryClient.invalidateQueries({ queryKey: ['production'] }),
       ])
       message.success('误录模具已删除，原库位已释放')
     },

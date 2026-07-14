@@ -3,8 +3,8 @@ import { App, Button, Drawer, Form, Input, Modal, Select, Space, Typography } fr
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import type { ReactNode } from 'react'
-import { ApiError, masterApi, moldApi, slotApi, toList } from '../api/client'
-import type { Machine, MoldAsset } from '../types'
+import { ApiError, moldApi, productionApi, slotApi, toList } from '../api/client'
+import type { MoldAsset } from '../types'
 import { moldCode } from '../types'
 
 export type MoldAction = 'putaway' | 'move' | 'load-machine' | 'send-out'
@@ -41,9 +41,9 @@ export function OperationDrawer({ mold, action = 'putaway', open, onClose, onSuc
     queryFn: async () => toList(await slotApi.list(true)),
     enabled: open && (action === 'putaway' || action === 'move'),
   })
-  const machinesQuery = useQuery({
-    queryKey: ['machines'],
-    queryFn: async () => toList(await masterApi<Machine>('machines').list()),
+  const stationsQuery = useQuery({
+    queryKey: ['production', 'stations'],
+    queryFn: async () => toList(await productionApi.stations()),
     enabled: open && action === 'load-machine',
   })
   const mutation = useMutation({
@@ -54,6 +54,8 @@ export function OperationDrawer({ mold, action = 'putaway', open, onClose, onSuc
         queryClient.invalidateQueries({ queryKey: ['mold'] }),
         queryClient.invalidateQueries({ queryKey: ['racks'] }),
         queryClient.invalidateQueries({ queryKey: ['slots'] }),
+        queryClient.invalidateQueries({ queryKey: ['machines'] }),
+        queryClient.invalidateQueries({ queryKey: ['production'] }),
       ])
       message.success(`${meta.title}成功`)
       onSuccess?.(result)
@@ -127,9 +129,9 @@ export function OperationDrawer({ mold, action = 'putaway', open, onClose, onSuc
             <Select
               showSearch
               optionFilterProp="label"
-              loading={machinesQuery.isLoading}
+              loading={stationsQuery.isLoading}
               placeholder={mold?.status === 'ON_MACHINE' ? '选择新的机台' : '选择机台'}
-              options={(machinesQuery.data || []).filter((item) => item.active !== false && item.id !== mold?.machine?.id).map((item) => ({ value: item.id, label: `${item.code} · ${item.name}` }))}
+              options={(stationsQuery.data || []).filter((item) => item.is_active && item.machine && item.machine.is_active !== false && item.machine.id !== mold?.machine?.id).map((item) => ({ value: item.machine!.id, label: `${item.code}号机台 · ${item.machine!.name}` }))}
             />
           </Form.Item>
         )}

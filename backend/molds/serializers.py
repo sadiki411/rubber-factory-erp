@@ -15,7 +15,12 @@ from .models import (
     RackSlot,
     RackZone,
 )
-from .services import ConfirmationRequired, stacking_warnings, validate_slot
+from .services import (
+    ConfirmationRequired,
+    stacking_warnings,
+    validate_slot,
+    validate_target_machine_assignment,
+)
 
 
 class MoldModelSerializer(serializers.ModelSerializer):
@@ -308,6 +313,10 @@ class MoldAssetSerializer(serializers.ModelSerializer):
             machine = Machine.objects.select_for_update().get(pk=machine.pk)
             if not machine.is_active:
                 raise serializers.ValidationError({"machine_id": "所选机台已停用。"})
+            try:
+                validate_target_machine_assignment(machine)
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError({"machine_id": exc.messages}) from exc
         mold = MoldAsset(
             asset_code=asset_code,
             mold_model=mold_model,

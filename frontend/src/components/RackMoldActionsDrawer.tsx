@@ -53,7 +53,7 @@ export function RackMoldActionsDrawer({ open, mold, loading, error, deleting, on
             <Button size="large" block danger icon={<DeleteOutlined />} loading={deleting} onClick={onDelete}>删除误录记录并清空库位</Button>
             <Button type="link" block icon={<EyeOutlined />} onClick={onViewDetails}>查看完整资料和操作历史</Button>
           </Space>
-          <Typography.Text type="secondary">以上操作完成后，货架总览和模具台账会同步更新。</Typography.Text>
+          <Typography.Text type="secondary">以上操作完成后，货架总览、模具台账和上机看板会同步更新。</Typography.Text>
         </Space>
       )}
     </Drawer>

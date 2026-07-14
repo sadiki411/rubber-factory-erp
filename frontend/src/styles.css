@@ -225,6 +225,7 @@ button, input, textarea, select { font: inherit; }
 .station-pair-connector { pointer-events: none; position: absolute; z-index: 5; left: 50%; top: 33px; bottom: 33px; width: 5px; transform: translateX(-50%); border: 1px solid #234b41; border-radius: 999px; background: linear-gradient(180deg, #47776b, #244f45); box-shadow: 0 0 0 3px rgba(229,238,235,.9), 0 5px 12px rgba(27,78,65,.18); }
 .station-pair-connector > span { position: absolute; left: 50%; top: 50%; width: 25px; height: 25px; transform: translate(-50%, -50%); border: 2px solid #e5eeeb; border-radius: 50%; background: #315f54; color: #fff; display: grid; place-items: center; font-size: 10px; font-weight: 800; box-shadow: 0 3px 8px rgba(24,68,57,.2); }
 .production-station.idle { background: #fbfdfc; }
+.production-station.mounted { background: linear-gradient(145deg, #edf9fb, #dff1f4); box-shadow: inset 0 0 0 2px #61aab7; }
 .production-station.planned { background: linear-gradient(145deg, #f0f6fb, #e5eff8); }
 .production-station.normal { background: linear-gradient(145deg, #e7f6ef, #d7eee3); }
 .production-station.due_soon { background: linear-gradient(145deg, #fff8e5, #faedc7); box-shadow: inset 0 0 0 2px #e3a72e; }
@@ -235,6 +236,12 @@ button, input, textarea, select { font: inherit; }
 .station-number small { font-size: 9px; font-weight: 700; }
 .production-station .ant-tag { margin: 0; font-size: 11px; }
 .station-order { color: #123f34; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.station-mold-list { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.station-mold { display: flex; flex-direction: column; min-width: 0; padding: 5px 7px; border-radius: 7px; background: rgba(255,255,255,.68); border: 1px solid rgba(72, 128, 116, .18); }
+.station-mold b { color: #174f43; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.station-mold small { color: #668078; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.station-mounted { flex: 1; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.station-mounted-action { margin-top: auto; padding-top: 6px; border-top: 1px solid rgba(75, 107, 99, .16); color: #286a76; font-size: 11px; font-weight: 700; }
 .station-product { color: #607871; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .station-time-grid { display: grid; grid-template-columns: 30px 1fr; column-gap: 5px; row-gap: 2px; margin-top: 2px; font-size: 11px; color: #718680; }
 .station-time-grid b { color: #35584f; font-weight: 600; }
@@ -357,6 +364,7 @@ button, input, textarea, select { font: inherit; }
   .production-filter-row { grid-template-columns: 1fr; }
   .filter-row .ant-input-affix-wrapper, .filter-row .ant-select, .rack-toolbar .ant-select, .rack-toolbar .ant-input-search { min-height: 44px; }
   .mobile-record-card .ant-btn { min-height: 44px; }
+  .drawer-footer-actions .ant-btn { min-height: 44px; }
   .ant-drawer-content-wrapper { width: 100% !important; max-width: 100%; }
   .operation-drawer .ant-drawer-content-wrapper { height: 100% !important; }
   .rack-mold-actions-drawer .rack-mold-action-buttons .ant-btn { min-height: 44px; }

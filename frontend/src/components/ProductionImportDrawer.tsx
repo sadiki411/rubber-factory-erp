@@ -77,7 +77,7 @@ export function ProductionImportDrawer({ open, onClose }: Props) {
     { title: '结算备注', dataIndex: 'settlement_notes', width: 180, ellipsis: true, render: (value) => value || '-' },
     {
       title: '状态', dataIndex: 'status', width: 90,
-      render: (value) => ({ PLANNED: '待上模', RUNNING: '生产中', COMPLETED: '已完成', CANCELLED: '已取消' })[value as string] || value || '-',
+      render: (value) => ({ PLANNED: '待上机', RUNNING: '生产中', COMPLETED: '已完成', CANCELLED: '已取消' })[value as string] || value || '-',
     },
     {
       title: '校验', key: 'valid', width: 80,

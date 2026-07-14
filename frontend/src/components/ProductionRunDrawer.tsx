@@ -5,13 +5,15 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { useEffect } from 'react'
 import { moldApi, productionApi, toList } from '../api/client'
 import { productionStationGroupLabel, productionStationNumber, requiresProductionUnloadTime } from '../production'
-import type { ProductionRun, ProductionStation } from '../types'
+import type { ProductionMold, ProductionRun, ProductionRunStatus, ProductionStation } from '../types'
 import { moldCode, moldLocation, moldModelOf } from '../types'
 
 interface Props {
   open: boolean
   run?: ProductionRun
   station?: ProductionStation
+  mountedMold?: ProductionMold
+  initialStatus?: ProductionRunStatus
   onClose: () => void
   onSuccess?: (run: ProductionRun) => void
 }
@@ -21,9 +23,10 @@ function asNumber(value: unknown, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-export function ProductionRunDrawer({ open, run, station, onClose, onSuccess }: Props) {
+export function ProductionRunDrawer({ open, run, station, mountedMold, initialStatus = 'RUNNING', onClose, onSuccess }: Props) {
   const [form] = Form.useForm()
   const selectedStatus = Form.useWatch('status', form)
+  const selectedStationId = Form.useWatch<number>('station_id', form)
   const selectedLoadedAt = Form.useWatch('loaded_at', form)
   const { message } = App.useApp()
   const queryClient = useQueryClient()
@@ -52,19 +55,22 @@ export function ProductionRunDrawer({ open, run, station, onClose, onSuccess }: 
       })
     } else {
       const loadedAt = dayjs().second(0)
+      const planned = initialStatus === 'PLANNED'
       form.resetFields()
       form.setFieldsValue({
         station_id: station?.id,
+        mold_id: mountedMold?.id,
+        specification: mountedMold?.product_name || mountedMold?.model_code,
         cavities: 1,
         estimated_defect_rate: 3,
         curing_seconds: 60,
         estimated_hours: 8,
-        loaded_at: loadedAt,
-        expected_change_at: loadedAt.add(8, 'hour'),
-        status: 'RUNNING',
+        loaded_at: planned ? undefined : loadedAt,
+        expected_change_at: planned ? undefined : loadedAt.add(8, 'hour'),
+        status: initialStatus,
       })
     }
-  }, [form, open, run, station?.id])
+  }, [form, initialStatus, mountedMold?.id, mountedMold?.model_code, mountedMold?.product_name, open, run, station?.id])
 
   const mutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) => run
@@ -78,6 +84,20 @@ export function ProductionRunDrawer({ open, run, station, onClose, onSuccess }: 
       onClose()
     },
     onError: (error: Error) => message.error(error.message),
+  })
+
+  const selectedStation = stationsQuery.data?.find((item) => item.id === selectedStationId)
+  const selectableMolds = (moldsQuery.data || []).filter((mold) => {
+    if (selectedStatus === 'RUNNING') {
+      return mold.status === 'ON_MACHINE' && (!selectedStation?.machine || mold.machine?.id === selectedStation.machine.id)
+    }
+    if (selectedStatus === 'PLANNED') {
+      return mold.status === 'IN_STOCK' || (
+        mold.status === 'ON_MACHINE'
+        && (!selectedStation?.machine || mold.machine?.id === selectedStation.machine.id)
+      )
+    }
+    return true
   })
 
   const recalculate = (changedValues: Record<string, unknown>, allValues: Record<string, unknown>) => {
@@ -122,7 +142,14 @@ export function ProductionRunDrawer({ open, run, station, onClose, onSuccess }: 
     }
     if (value === 'RUNNING') {
       const loadedAt = form.getFieldValue('loaded_at') as Dayjs | undefined
-      form.setFieldsValue({ loaded_at: loadedAt || dayjs().second(0), unloaded_at: undefined })
+      const selectedMold = moldsQuery.data?.find((mold) => mold.id === form.getFieldValue('mold_id'))
+      const station = stationsQuery.data?.find((item) => item.id === form.getFieldValue('station_id'))
+      const validMountedMold = selectedMold?.status === 'ON_MACHINE' && (!station?.machine || selectedMold.machine?.id === station.machine.id)
+      form.setFieldsValue({
+        loaded_at: loadedAt || dayjs().second(0),
+        unloaded_at: undefined,
+        ...(!validMountedMold ? { mold_id: undefined } : {}),
+      })
       return
     }
     if (value === 'COMPLETED') {
@@ -150,10 +177,15 @@ export function ProductionRunDrawer({ open, run, station, onClose, onSuccess }: 
       open={open}
       onClose={onClose}
       size={680}
-      title={run ? `编辑生产记录 · ${run.order_no}` : '新增生产记录'}
-      footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={mutation.isPending} onClick={submit}>{run ? '保存修改' : selectedStatus === 'PLANNED' ? '保存待上模' : selectedStatus === 'COMPLETED' ? '保存已完成记录' : selectedStatus === 'CANCELLED' ? '保存已取消记录' : '确认上模'}</Button></Space>}
+      title={run ? `编辑生产记录 · ${run.order_no}` : initialStatus === 'PLANNED' ? '新增待上机计划' : mountedMold ? `登记生产 · ${mountedMold.model_code}` : '新增生产记录'}
+      footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={mutation.isPending} onClick={submit}>{run ? '保存修改' : selectedStatus === 'PLANNED' ? '保存待上机计划' : selectedStatus === 'COMPLETED' ? '保存已完成记录' : selectedStatus === 'CANCELLED' ? '保存已取消记录' : '确认上机'}</Button></Space>}
     >
-      <Alert type="info" showIcon icon={<ClockCircleOutlined />} title="预计换模时间可以留空，系统会按上模时间与预计工时自动计算；也可以人工校正。" />
+      <Alert
+        type="info"
+        showIcon
+        icon={<ClockCircleOutlined />}
+        title={run?.status === 'PLANNED' ? '待上机计划请在此维护资料，实际开始时请回到详情点击“确认上机”。' : '预计换模时间可以留空，系统会按上模时间与预计工时自动计算；也可以人工校正。'}
+      />
       <Form form={form} layout="vertical" requiredMark="optional" onValuesChange={recalculate} className="production-form">
         <Row gutter={14}>
           <Col xs={24} sm={12}>
@@ -163,6 +195,12 @@ export function ProductionRunDrawer({ open, run, station, onClose, onSuccess }: 
                 optionFilterProp="label"
                 loading={stationsQuery.isLoading}
                 placeholder="例如 一组 · 1号机台"
+                onChange={(stationId) => {
+                  if (selectedStatus !== 'RUNNING') return
+                  const selectedMold = moldsQuery.data?.find((mold) => mold.id === form.getFieldValue('mold_id'))
+                  const nextStation = stationsQuery.data?.find((item) => item.id === stationId)
+                  if (selectedMold && nextStation?.machine && selectedMold.machine?.id !== nextStation.machine.id) form.setFieldValue('mold_id', undefined)
+                }}
                 options={(stationsQuery.data || []).filter((item) => item.is_active).map((item) => ({ value: item.id, label: `${productionStationGroupLabel(item.group)} · ${productionStationNumber(item)}号机台` }))}
               />
             </Form.Item>
@@ -170,9 +208,17 @@ export function ProductionRunDrawer({ open, run, station, onClose, onSuccess }: 
           <Col xs={24} sm={12}>
             <Form.Item name="status" label="生产状态" rules={[{ required: true }]}>
               <Select onChange={handleStatusChange} options={[
-                { value: 'PLANNED', label: '待上模' },
-                { value: 'RUNNING', label: '生产中' },
-                { value: 'COMPLETED', label: '已完成' },
+                { value: 'PLANNED', label: '待上机' },
+                {
+                  value: 'RUNNING',
+                  label: run && run.status !== 'RUNNING' ? '生产中（请通过确认上机进入）' : '生产中',
+                  disabled: !!run && run.status !== 'RUNNING',
+                },
+                {
+                  value: 'COMPLETED',
+                  label: run?.status === 'PLANNED' ? '已完成（需先确认上机）' : '已完成',
+                  disabled: run?.status === 'PLANNED',
+                },
                 { value: 'CANCELLED', label: '已取消' },
               ]} />
             </Form.Item>
@@ -186,14 +232,19 @@ export function ProductionRunDrawer({ open, run, station, onClose, onSuccess }: 
           <Col xs={24} sm={12}><Form.Item name="material" label="材质 / 胶料配方" rules={[{ required: true, message: '请输入材质' }]}><Input placeholder="例如 N7200" /></Form.Item></Col>
         </Row>
 
-        <Form.Item name="mold_id" label="关联模具（可选）">
+        <Form.Item
+          name="mold_id"
+          label="关联模具"
+          rules={[{ required: selectedStatus === 'PLANNED' || selectedStatus === 'RUNNING', message: '待上机计划或生产中记录必须关联具体模具' }]}
+          extra={selectedStatus === 'PLANNED' ? '确认上机时，系统会将该模具同步移出货架并登记到所选机台。' : undefined}
+        >
           <Select
             allowClear
             showSearch
             optionFilterProp="label"
             loading={moldsQuery.isLoading}
-            placeholder="按模具编号、型号或产品名称搜索"
-            options={(moldsQuery.data || []).map((mold) => ({
+            placeholder={selectedStatus === 'RUNNING' ? '选择已在该机台上机的模具' : '按模具编号、型号或产品名称搜索'}
+            options={selectableMolds.map((mold) => ({
               value: mold.id,
               label: `${moldCode(mold)} · ${moldModelOf(mold)?.code || '-'} · ${moldLocation(mold)}`,
             }))}

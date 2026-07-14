@@ -1,16 +1,72 @@
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError
 from django.test import TestCase
 from django.utils import timezone
 
-from molds.models import Machine
+from molds.models import Machine, MoldAsset, MoldModel, MoldMovement, RackSlot
+from molds.services import seed_default_racks
 from production.models import (
     ProductionRun,
     ProductionStation,
     normalize_production_station_code,
 )
-from production.services import seed_default_stations
+from production.services import seed_default_stations, start_production_run
+
+
+class StartProductionRunServiceTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="start-service-user")
+        seed_default_racks()
+        seed_default_stations()
+        self.slot = RackSlot.objects.get(
+            zone__level__rack__code="J01",
+            zone__level__level_no=1,
+            zone__code="A",
+            capacity_mode=2,
+            position_no=1,
+            stack_level=1,
+        )
+        model = MoldModel.objects.create(
+            code="START-ROLLBACK-MODEL",
+            product_name="原子回滚测试",
+        )
+        self.mold = MoldAsset.objects.create(
+            asset_code="START-ROLLBACK-001",
+            mold_model=model,
+            status=MoldAsset.Status.IN_STOCK,
+            current_slot=self.slot,
+        )
+        self.run = ProductionRun.objects.create(
+            station=ProductionStation.objects.get(code="1"),
+            order_no="START-ROLLBACK-ORDER",
+            specification="原子回滚测试",
+            mold=self.mold,
+            order_quantity=6,
+            cavities=6,
+            planned_mold_count=1,
+            status=ProductionRun.Status.PLANNED,
+            created_by=self.user,
+        )
+
+    def test_run_save_failure_rolls_back_mold_transition_and_history(self):
+        with patch(
+            "production.services.ProductionRun.save",
+            side_effect=IntegrityError("forced start failure"),
+        ):
+            with self.assertRaises(IntegrityError):
+                start_production_run(self.run, self.user)
+
+        self.run.refresh_from_db()
+        self.mold.refresh_from_db()
+        self.assertEqual(self.run.status, ProductionRun.Status.PLANNED)
+        self.assertIsNone(self.run.loaded_at)
+        self.assertEqual(self.mold.status, MoldAsset.Status.IN_STOCK)
+        self.assertEqual(self.mold.current_slot_id, self.slot.pk)
+        self.assertIsNone(self.mold.current_machine_id)
+        self.assertFalse(MoldMovement.objects.filter(mold=self.mold).exists())
 
 
 class ProductionStationSeedTests(TestCase):

@@ -22,6 +22,8 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from molds.models import MoldAsset
+
 from .imports import (
     commit_production_batch,
     create_production_template,
@@ -40,13 +42,19 @@ from .models import (
 from .serializers import (
     CompleteProductionRunSerializer,
     ProductionDailyLogSerializer,
+    ProductionMoldSerializer,
     ProductionRunSerializer,
     ProductionSettlementDetailSerializer,
     ProductionSettlementRevisionSerializer,
     ProductionSettlementSerializer,
     ProductionStationSerializer,
+    StartProductionRunSerializer,
 )
-from .services import invalidate_settlement, record_settlement_revision
+from .services import (
+    invalidate_settlement,
+    record_settlement_revision,
+    start_production_run,
+)
 
 
 class ProductionPagination(PageNumberPagination):
@@ -278,6 +286,32 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
             ProductionRunSerializer(refreshed, context={"request": request}).data
         )
 
+    @extend_schema(
+        request=StartProductionRunSerializer,
+        responses=ProductionRunSerializer,
+    )
+    @action(detail=True, methods=["post"])
+    def start(self, request, pk=None):
+        input_serializer = StartProductionRunSerializer(data=request.data or {})
+        input_serializer.is_valid(raise_exception=True)
+        try:
+            run = start_production_run(
+                self.get_object(),
+                request.user,
+                **input_serializer.validated_data,
+            )
+            refreshed = _run_queryset().get(pk=run.pk)
+        except OperationalError as exc:
+            raise DRFValidationError(
+                {"detail": "数据库正忙，确认上机未执行，请稍后重试。"}
+            ) from exc
+        return Response(
+            ProductionRunSerializer(
+                refreshed,
+                context={"request": request},
+            ).data
+        )
+
     @extend_schema(request=CompleteProductionRunSerializer, responses=ProductionRunSerializer)
     @action(detail=True, methods=["post"])
     def complete(self, request, pk=None):
@@ -412,6 +446,10 @@ class BoardRunSerializer(serializers.ModelSerializer):
     station_code = serializers.CharField(source="station.code")
     mold_id = serializers.IntegerField(allow_null=True)
     mold_code = serializers.CharField(source="mold.asset_code", allow_null=True)
+    mold_model_code = serializers.CharField(source="mold.mold_model.code", allow_null=True)
+    mold_product_name = serializers.CharField(
+        source="mold.mold_model.product_name", allow_null=True
+    )
     produced_mold_count = serializers.IntegerField(read_only=True)
     good_quantity = serializers.IntegerField(read_only=True)
     progress_percent = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
@@ -426,6 +464,8 @@ class BoardRunSerializer(serializers.ModelSerializer):
             "station_code",
             "mold_id",
             "mold_code",
+            "mold_model_code",
+            "mold_product_name",
             "specification",
             "material",
             "order_quantity",
@@ -457,10 +497,19 @@ class ProductionBoardView(APIView):
             )
 
         active_runs = _run_queryset().filter(status__in=ProductionRun.ACTIVE_STATUSES)
+        mounted_molds = MoldAsset.objects.filter(
+            is_active=True,
+            status=MoldAsset.Status.ON_MACHINE,
+        ).select_related("mold_model").order_by("asset_code")
         stations = ProductionStation.objects.filter(is_active=True).select_related(
             "machine"
         ).prefetch_related(
-            Prefetch("runs", queryset=active_runs, to_attr="active_board_runs")
+            Prefetch("runs", queryset=active_runs, to_attr="active_board_runs"),
+            Prefetch(
+                "machine__current_molds",
+                queryset=mounted_molds,
+                to_attr="board_mounted_molds",
+            ),
         ).order_by("group", "position_no")
         now = timezone.now()
         threshold = now + timedelta(minutes=reminder_minutes)
@@ -471,10 +520,18 @@ class ProductionBoardView(APIView):
             for station in [item for item in stations if item.group == group_code]:
                 runs = list(station.active_board_runs)
                 run = runs[0] if runs else None
+                station_molds = (
+                    list(getattr(station.machine, "board_mounted_molds", []))
+                    if station.machine
+                    else []
+                )
                 minutes_to_change = None
                 if run is None:
-                    reminder_status = "IDLE"
-                    counts["idle"] += 1
+                    if station_molds:
+                        reminder_status = "MOUNTED"
+                    else:
+                        reminder_status = "IDLE"
+                        counts["idle"] += 1
                 elif run.status == ProductionRun.Status.PLANNED:
                     reminder_status = "PLANNED"
                     counts["planned"] += 1
@@ -497,11 +554,20 @@ class ProductionBoardView(APIView):
                 station_data.update(
                     {
                         "run": BoardRunSerializer(run).data if run else None,
+                        "mounted_molds": ProductionMoldSerializer(
+                            station_molds, many=True
+                        ).data,
                         "reminder_status": reminder_status,
                         "minutes_to_change": minutes_to_change,
                     }
                 )
                 station_payloads.append(station_data)
+                if station_molds:
+                    counts["mounted"] += 1
+                if station_molds or (
+                    run is not None and run.status == ProductionRun.Status.RUNNING
+                ):
+                    counts["occupied"] += 1
             groups.append({"group": group_code, "stations": station_payloads})
         counts["total"] = sum(len(group["stations"]) for group in groups)
         return Response(
@@ -513,6 +579,8 @@ class ProductionBoardView(APIView):
                     for key in [
                         "total",
                         "idle",
+                        "occupied",
+                        "mounted",
                         "planned",
                         "running",
                         "normal",

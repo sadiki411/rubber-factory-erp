@@ -17,7 +17,12 @@ from .models import (
     RackSlot,
     RackZone,
 )
-from .services import switch_zone_capacity, switch_zone_stacking, validate_slot
+from .services import (
+    switch_zone_capacity,
+    switch_zone_stacking,
+    validate_slot,
+    validate_target_machine_assignment,
+)
 
 
 STANDARD_SHEETS = {"机台", "加工方", "模具型号", "模具实体"}
@@ -1081,7 +1086,12 @@ def commit_batch(batch, user, asset_code_updates=None):
             validate_slot(slot)
             kwargs["current_slot"] = slot
         elif row["status"] == MoldAsset.Status.ON_MACHINE:
-            kwargs["current_machine"] = Machine.objects.get(code=row["machine_code"])
+            machine = Machine.objects.select_for_update().get(code=row["machine_code"])
+            try:
+                validate_target_machine_assignment(machine)
+            except ValidationError as exc:
+                raise ValueError("；".join(exc.messages)) from exc
+            kwargs["current_machine"] = machine
         mold = MoldAsset(**kwargs)
         mold.full_clean()
         mold.save()

@@ -315,6 +315,10 @@ export const productionApi = {
     method: 'PATCH',
     body: JSON.stringify(body),
   }),
+  startRun: (id: number, body: Record<string, unknown> = {}) => apiFetch<ProductionRun>(`/api/production/runs/${id}/start/`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
   addLog: (id: number, body: Partial<ProductionDailyLog>) => apiFetch<ProductionRun>(`/api/production/runs/${id}/daily-logs/`, {
     method: 'POST',
     body: JSON.stringify(body),

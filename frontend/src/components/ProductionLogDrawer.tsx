@@ -1,16 +1,16 @@
-import { CheckCircleOutlined, EditOutlined, FieldTimeOutlined, PlusOutlined } from '@ant-design/icons'
-import { Alert, App, Button, Col, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Popconfirm, Progress, Row, Space, Table, Tag, Typography } from 'antd'
+import { CheckCircleOutlined, EditOutlined, FieldTimeOutlined, PlusOutlined, ToolOutlined } from '@ant-design/icons'
+import { Alert, App, Button, Col, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Popconfirm, Progress, Row, Space, Table, Tag, Tooltip, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import dayjs from 'dayjs'
 import { useEffect, useState } from 'react'
-import { productionApi } from '../api/client'
+import { ApiError, productionApi } from '../api/client'
 import { canCreateProductionDailyLog, canSettleProductionRun, defaultProductionLogDate, formatProductionDate, isProductionLogDateAllowed, productionStationGroupLabel, productionStationNumber } from '../production'
 import type { ProductionDailyLog, ProductionRun } from '../types'
 import { ProductionSettlement } from './ProductionSettlement'
 
 const STATUS_META = {
-  PLANNED: { text: '待上模', color: 'blue' },
+  PLANNED: { text: '待上机', color: 'blue' },
   RUNNING: { text: '生产中', color: 'processing' },
   COMPLETED: { text: '已完成', color: 'success' },
   CANCELLED: { text: '已取消', color: 'default' },
@@ -31,7 +31,7 @@ interface Props {
 
 export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit }: Props) {
   const [form] = Form.useForm()
-  const { message } = App.useApp()
+  const { message, modal } = App.useApp()
   const queryClient = useQueryClient()
   const [editingLog, setEditingLog] = useState<ProductionDailyLog>()
   const enteredMoldCount = Form.useWatch('produced_mold_count', form)
@@ -78,10 +78,47 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit }:
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: ['production'] })
       onRunChange(result)
-      message.success('已记录下机时间，机台已释放')
+      message.success('已记录下机时间；模具仍保持上机状态，归位后机台才会释放')
     },
     onError: (error: Error) => message.error(error.message),
   })
+  const startMutation = useMutation({
+    mutationFn: ({ loadedAt, confirmWarnings }: { loadedAt: string; confirmWarnings: boolean }) => productionApi.startRun(run!.id, {
+      loaded_at: loadedAt,
+      confirm_warnings: confirmWarnings,
+    }),
+    onSuccess: async (result) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['production'] }),
+        queryClient.invalidateQueries({ queryKey: ['molds'] }),
+        queryClient.invalidateQueries({ queryKey: ['mold'] }),
+        queryClient.invalidateQueries({ queryKey: ['racks'] }),
+        queryClient.invalidateQueries({ queryKey: ['slots'] }),
+        queryClient.invalidateQueries({ queryKey: ['machines'] }),
+      ])
+      onRunChange(result)
+      message.success(`模具 ${result.mold?.model_code || result.mold?.asset_code || ''} 已确认上机，生产已开始`)
+    },
+  })
+
+  const startProduction = async (confirmWarnings = false, loadedAt = dayjs().toISOString()) => {
+    try {
+      await startMutation.mutateAsync({ loadedAt, confirmWarnings })
+    } catch (error) {
+      const warnings = error instanceof ApiError ? error.data?.warnings : undefined
+      if (!confirmWarnings && error instanceof ApiError && error.status === 409 && Array.isArray(warnings) && warnings.length) {
+        modal.confirm({
+          title: '确认叠放风险后上机？',
+          content: <div>{warnings.map((warning: string) => <Typography.Paragraph key={warning}>{warning}</Typography.Paragraph>)}</div>,
+          okText: '已检查叠放风险，确认上机',
+          cancelText: '返回检查',
+          onOk: () => startProduction(true, loadedAt),
+        })
+      } else {
+        message.error((error as Error).message)
+      }
+    }
+  }
 
   const columns: TableColumnsType<ProductionDailyLog> = [
     { title: '日期', dataIndex: 'date', width: 105 },
@@ -114,8 +151,26 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit }:
       footer={run && (
         <Space className="drawer-footer-actions">
           <Button onClick={closeDrawer}>关闭</Button>
+          {run.status === 'PLANNED' && (run.mold ? (
+            <Popconfirm
+              title="确认该模具上机并开始生产？"
+              description={`模具 ${run.mold.model_code} 将上到 ${productionStationNumber(run.station)}号机台，并以当前时间记录上机时间。`}
+              okText="确认上机"
+              cancelText="取消"
+              onConfirm={() => startProduction()}
+            >
+              <Button type="primary" icon={<ToolOutlined />} loading={startMutation.isPending}>确认上机</Button>
+            </Popconfirm>
+          ) : (
+            <>
+              <Typography.Text type="danger">请先编辑资料并关联模具</Typography.Text>
+              <Tooltip title="待上机计划必须关联具体模具">
+                <span><Button type="primary" icon={<ToolOutlined />} disabled>确认上机</Button></span>
+              </Tooltip>
+            </>
+          ))}
           {run.status === 'RUNNING' && (
-            <Popconfirm title="确认下机并完成本次生产？" description="系统将以当前时间记录下机时间并释放该机台。" okText="确认下机" cancelText="取消" onConfirm={() => completeMutation.mutate()}>
+            <Popconfirm title="确认下机并完成本次生产？" description="系统将记录当前下机时间；模具仍保持上机状态，需要之后在模具台账归位或标记客户收回。" okText="确认下机" cancelText="取消" onConfirm={() => completeMutation.mutate()}>
               <Button type="primary" icon={<CheckCircleOutlined />} loading={completeMutation.isPending}>下机完成</Button>
             </Popconfirm>
           )}
@@ -130,6 +185,8 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit }:
               <Tag color={status.color}>{status.text}</Tag>
             </div>
             <Descriptions size="small" column={{ xs: 2, sm: 3 }}>
+              <Descriptions.Item label="模具型号">{run.mold?.model_code || '-'}</Descriptions.Item>
+              <Descriptions.Item label="模具编号">{run.mold?.asset_code || '-'}</Descriptions.Item>
               <Descriptions.Item label="上模时间">{formatProductionDate(run.loaded_at)}</Descriptions.Item>
               <Descriptions.Item label="预计换模">{formatProductionDate(run.expected_change_at)}</Descriptions.Item>
               <Descriptions.Item label="下机时间">{formatProductionDate(run.unloaded_at)}</Descriptions.Item>

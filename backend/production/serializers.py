@@ -334,6 +334,23 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                 status_value = ProductionRun.Status.RUNNING
                 attrs["status"] = status_value
 
+        if (
+            instance
+            and instance.status != ProductionRun.Status.RUNNING
+            and status_value == ProductionRun.Status.RUNNING
+        ):
+            raise serializers.ValidationError(
+                {"status": "订单不能通过编辑直接改为生产中；待上机订单请使用“确认上机”操作。"}
+            )
+        if (
+            instance
+            and instance.status == ProductionRun.Status.PLANNED
+            and status_value == ProductionRun.Status.COMPLETED
+        ):
+            raise serializers.ValidationError(
+                {"status": "待上机订单必须先确认上机，不能直接标记为已完成。"}
+            )
+
         estimated_hours = attrs.get(
             "estimated_hours", current("estimated_hours", Decimal("0"))
         ) or Decimal("0")
@@ -536,6 +553,12 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                 {"detail": "生产记录与现有机台、模具或订单发生冲突，请刷新后重试。"}
             ) from exc
         return instance
+
+
+class StartProductionRunSerializer(serializers.Serializer):
+    loaded_at = serializers.DateTimeField(required=False, allow_null=True)
+    note = serializers.CharField(required=False, allow_blank=True, max_length=1000)
+    confirm_warnings = serializers.BooleanField(required=False, default=False)
 
 
 class CompleteProductionRunSerializer(serializers.Serializer):

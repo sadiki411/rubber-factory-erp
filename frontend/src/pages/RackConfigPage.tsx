@@ -66,7 +66,13 @@ export function RackConfigPage() {
 
   const configureMutation = useMutation({
     mutationFn: (body: RackConfigInput) => rackApi.configure(selectedId!, body),
-    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['racks'] }); message.success('货架结构已保存') },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['racks'] }),
+        queryClient.invalidateQueries({ queryKey: ['slots'] }),
+      ])
+      message.success('货架结构已保存')
+    },
     onError: (error: Error) => message.error(error.message),
   })
   const createMutation = useMutation({

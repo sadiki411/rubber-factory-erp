@@ -3,8 +3,8 @@ import { PlusOutlined } from '@ant-design/icons'
 import type { UploadFile } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { ApiError, masterApi, moldApi, slotApi, toList } from '../api/client'
-import type { Machine, MoldAsset, MoldStatus, RackSlot } from '../types'
+import { ApiError, moldApi, productionApi, slotApi, toList } from '../api/client'
+import type { MoldAsset, MoldStatus, RackSlot } from '../types'
 import { moldCode, moldModelOf } from '../types'
 
 interface Props {
@@ -29,9 +29,9 @@ export function MoldFormDrawer({ open, mold, initialSlot, onClose, onSuccess }: 
     queryFn: async () => toList(await slotApi.list(true)),
     enabled: open && !editing && initialStatus === 'IN_STOCK' && !initialSlot,
   })
-  const machinesQuery = useQuery({
-    queryKey: ['machines'],
-    queryFn: async () => toList(await masterApi<Machine>('machines').list()),
+  const stationsQuery = useQuery({
+    queryKey: ['production', 'stations'],
+    queryFn: async () => toList(await productionApi.stations()),
     enabled: open && !editing && initialStatus === 'ON_MACHINE',
   })
 
@@ -79,6 +79,8 @@ export function MoldFormDrawer({ open, mold, initialSlot, onClose, onSuccess }: 
         queryClient.invalidateQueries({ queryKey: ['mold'] }),
         queryClient.invalidateQueries({ queryKey: ['racks'] }),
         queryClient.invalidateQueries({ queryKey: ['slots'] }),
+        queryClient.invalidateQueries({ queryKey: ['machines'] }),
+        queryClient.invalidateQueries({ queryKey: ['production'] }),
       ])
       message.success(editing ? '模具资料已保存' : '模具已建档')
       onSuccess?.(result)
@@ -163,9 +165,9 @@ export function MoldFormDrawer({ open, mold, initialSlot, onClose, onSuccess }: 
               <Select
                 showSearch
                 optionFilterProp="label"
-                loading={machinesQuery.isLoading}
+                loading={stationsQuery.isLoading}
                 placeholder="选择模具所在机台"
-                options={(machinesQuery.data || []).filter((item) => item.active !== false).map((item) => ({ value: item.id, label: `${item.code} · ${item.name}` }))}
+                options={(stationsQuery.data || []).filter((item) => item.is_active && item.machine && item.machine.is_active !== false).map((item) => ({ value: item.machine!.id, label: `${item.code}号机台 · ${item.machine!.name}` }))}
               />
               </Form.Item>
             )}

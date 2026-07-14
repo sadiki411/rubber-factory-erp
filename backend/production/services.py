@@ -1,8 +1,10 @@
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
-from molds.models import Machine
+from molds.models import Machine, MoldAsset, MoldMovement
+from molds.services import transition_mold
 
 from .models import (
     PRODUCTION_STATION_LAYOUT,
@@ -17,6 +19,91 @@ LEGACY_DEFAULT_MACHINE_CODES = {
     for group in ProductionStation.Group.values
     for position_no in range(1, 7)
 }
+
+
+@transaction.atomic
+def start_production_run(
+    run,
+    user,
+    *,
+    loaded_at=None,
+    note="",
+    confirm_warnings=False,
+):
+    """Atomically mount the planned mold and start production.
+
+    A repeated request is idempotent once the same mold is already running on
+    the station's linked machine.  Mold stacking warnings deliberately bubble
+    up as ``ConfirmationRequired`` so the API can reuse the existing 409
+    confirmation contract.
+    """
+
+    run = (
+        ProductionRun.objects.select_for_update()
+        .select_related("station__machine", "mold__mold_model")
+        .get(pk=run.pk)
+    )
+    station = run.station
+    machine = station.machine
+    mold = run.mold
+
+    if run.status == ProductionRun.Status.RUNNING:
+        if (
+            run.loaded_at
+            and machine is not None
+            and mold is not None
+            and mold.is_active
+            and mold.status == MoldAsset.Status.ON_MACHINE
+            and mold.current_machine_id == machine.pk
+        ):
+            return run
+        raise ValidationError("生产订单已是生产中，但模具与机台状态不一致，请先检查台账。")
+
+    if run.status != ProductionRun.Status.PLANNED:
+        raise ValidationError("只有待上机订单可以执行确认上机。")
+    if not station.is_active:
+        raise ValidationError("该生产机台已停用，不能确认上机。")
+    if machine is None:
+        raise ValidationError("该生产机台尚未关联模具台账机台，不能确认上机。")
+    if not machine.is_active:
+        raise ValidationError("该生产机台关联的模具台账机台已停用，不能确认上机。")
+    if mold is None:
+        raise ValidationError("确认上机前必须为生产订单选择模具。")
+    if not mold.is_active:
+        raise ValidationError("所选模具已删除，不能确认上机。")
+
+    already_mounted = (
+        mold.status == MoldAsset.Status.ON_MACHINE
+        and mold.current_machine_id == machine.pk
+    )
+    if not already_mounted:
+        if mold.status != MoldAsset.Status.IN_STOCK:
+            raise ValidationError("确认上机时模具必须在库，或已经位于该订单机台。")
+        movement_note = str(note or "").strip() or f"生产订单 {run.order_no} 确认上机"
+        mold, _warnings = transition_mold(
+            mold,
+            MoldMovement.Action.LOAD_MACHINE,
+            user,
+            machine=machine,
+            note=movement_note,
+            confirm_warnings=confirm_warnings,
+        )
+        run.mold = mold
+
+    run.status = ProductionRun.Status.RUNNING
+    run.loaded_at = loaded_at or timezone.now()
+    run.unloaded_at = None
+    run.expected_change_at = None
+    run.save(
+        update_fields=[
+            "status",
+            "loaded_at",
+            "unloaded_at",
+            "expected_change_at",
+            "updated_at",
+        ]
+    )
+    return run
 
 
 def _next_settlement_revision(run):

@@ -28,6 +28,7 @@ export interface Machine {
   active?: boolean
   is_active?: boolean
   note?: string
+  current_mold_count?: number
 }
 
 export interface Processor {
@@ -192,7 +193,7 @@ export interface RackConfigInput {
 }
 
 export type ProductionRunStatus = 'PLANNED' | 'RUNNING' | 'COMPLETED' | 'CANCELLED'
-export type ProductionReminderStatus = 'IDLE' | 'PLANNED' | 'NORMAL' | 'DUE_SOON' | 'OVERDUE'
+export type ProductionReminderStatus = 'IDLE' | 'MOUNTED' | 'PLANNED' | 'NORMAL' | 'DUE_SOON' | 'OVERDUE'
 export type ProductionStationGroup = 'A' | 'B' | 'C'
 export type ProductionStationPosition = 1 | 2 | 3 | 4 | 5 | 6
 
@@ -215,6 +216,14 @@ export interface ProductionDailyLog {
   updated_at?: string
 }
 
+export interface ProductionMold {
+  id: number
+  asset_code: string
+  model_code: string
+  product_name: string
+  status: MoldStatus
+}
+
 export interface ProductionSettlementInput {
   actual_good_quantity: number
   actual_defective_quantity: number
@@ -232,7 +241,7 @@ export interface ProductionRun {
   order_no: string
   specification: string
   material: string
-  mold?: MoldAsset | null
+  mold?: ProductionMold | null
   mold_id?: number | null
   order_quantity: number
   cavities: number
@@ -286,6 +295,8 @@ export interface ProductionBoardRun {
   station_code: string
   mold_id?: number | null
   mold_code?: string | null
+  mold_model_code?: string | null
+  mold_product_name?: string | null
   specification: string
   material: string
   order_quantity: number
@@ -303,6 +314,7 @@ export interface ProductionBoardRun {
 
 export interface ProductionBoardStation extends ProductionStation {
   run?: ProductionBoardRun | null
+  mounted_molds: ProductionMold[]
   reminder_status: ProductionReminderStatus
   minutes_to_change?: number | null
 }
@@ -358,8 +370,11 @@ export interface ProductionBoard {
   counts: {
     total: number
     idle: number
+    occupied: number
+    mounted: number
     planned: number
     running: number
+    normal: number
     due_soon: number
     overdue: number
   }

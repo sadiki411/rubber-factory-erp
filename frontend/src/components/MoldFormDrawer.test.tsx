@@ -30,7 +30,7 @@ const apiMocks = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
   listSlots: vi.fn(),
-  listMachines: vi.fn(),
+  listStations: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -40,7 +40,7 @@ vi.mock('../api/client', () => ({
   },
   moldApi: { create: apiMocks.create, update: apiMocks.update },
   slotApi: { list: apiMocks.listSlots },
-  masterApi: () => ({ list: apiMocks.listMachines }),
+  productionApi: { stations: apiMocks.listStations },
   toList: <T,>(payload: T[]) => payload,
 }))
 
@@ -68,7 +68,7 @@ describe('MoldFormDrawer', () => {
     apiMocks.create.mockReset()
     apiMocks.update.mockReset()
     apiMocks.listSlots.mockReset().mockResolvedValue([])
-    apiMocks.listMachines.mockReset().mockResolvedValue([])
+    apiMocks.listStations.mockReset().mockResolvedValue([])
   })
 
   it('accepts a manually typed model and creates it in the selected rack slot', async () => {

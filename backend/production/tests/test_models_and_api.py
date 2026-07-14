@@ -10,7 +10,12 @@ from drf_spectacular.generators import SchemaGenerator
 from rest_framework import serializers as drf_serializers
 from rest_framework.test import APIClient
 
-from molds.services import archive_mold
+from molds.models import MoldAsset, MoldModel, MoldMovement, RackSlot
+from molds.services import (
+    archive_mold,
+    seed_default_racks,
+    switch_zone_stacking,
+)
 from production.models import ProductionDailyLog, ProductionRun, ProductionStation
 from production.serializers import ProductionRunSerializer
 
@@ -86,6 +91,20 @@ class ProductionSchemaTests(TestCase):
         ]
         self.assertEqual(set(detail_schema["properties"]), {"run", "revisions"})
 
+    def test_start_action_uses_dedicated_request_and_run_response_schemas(self):
+        schema = SchemaGenerator().get_schema(request=None, public=True)
+        start_post = schema["paths"]["/api/production/runs/{id}/start/"]["post"]
+        self.assertEqual(
+            start_post["requestBody"]["content"]["application/json"]["schema"],
+            {"$ref": "#/components/schemas/StartProductionRun"},
+        )
+        self.assertEqual(
+            start_post["responses"]["200"]["content"]["application/json"][
+                "schema"
+            ],
+            {"$ref": "#/components/schemas/ProductionRun"},
+        )
+
 
 class ProductionApiTests(ProductionTestMixin, TestCase):
     def setUp(self):
@@ -111,6 +130,36 @@ class ProductionApiTests(ProductionTestMixin, TestCase):
         payload.update(overrides)
         return payload
 
+    def _create_stock_mold(
+        self,
+        asset_code="STOCK-MOLD-001",
+        *,
+        slot=None,
+        allows_stacking=False,
+    ):
+        if not RackSlot.objects.exists():
+            seed_default_racks()
+        slot = slot or RackSlot.objects.select_related("zone__level__rack").get(
+            zone__level__rack__code="J01",
+            zone__level__level_no=1,
+            zone__code="A",
+            capacity_mode=2,
+            position_no=1,
+            stack_level=1,
+        )
+        model = MoldModel.objects.create(
+            code=f"MODEL-{asset_code}",
+            product_name=f"产品 {asset_code}",
+        )
+        mold = MoldAsset.objects.create(
+            asset_code=asset_code,
+            mold_model=model,
+            status=MoldAsset.Status.IN_STOCK,
+            current_slot=slot,
+            allows_stacking=allows_stacking,
+        )
+        return mold, slot
+
     def test_station_list_has_three_groups_with_two_linked_machines_each(self):
         response = self.client.get("/api/production/stations/")
         self.assertEqual(response.status_code, 200)
@@ -129,6 +178,296 @@ class ProductionApiTests(ProductionTestMixin, TestCase):
                 ("C", 2, "6"),
             ],
         )
+
+    def test_board_shows_every_mounted_mold_even_without_a_production_run(self):
+        first = self.create_mold(asset_code="MOUNTED-001", machine_code="1")
+        second = self.create_mold(asset_code="MOUNTED-002", machine_code="1")
+
+        response = self.client.get("/api/production/board/")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        station = response.json()["groups"][0]["stations"][0]
+        self.assertEqual(station["reminder_status"], "MOUNTED")
+        self.assertIsNone(station["run"])
+        self.assertEqual(
+            [item["asset_code"] for item in station["mounted_molds"]],
+            [first.asset_code, second.asset_code],
+        )
+        self.assertEqual(
+            station["mounted_molds"][0]["model_code"],
+            f"MODEL-{first.asset_code}",
+        )
+        self.assertEqual(
+            station["mounted_molds"][0]["product_name"],
+            f"产品 {first.asset_code}",
+        )
+        self.assertEqual(response.json()["counts"]["mounted"], 1)
+        self.assertEqual(response.json()["counts"]["occupied"], 1)
+        self.assertEqual(response.json()["counts"]["idle"], 5)
+
+    def test_board_keeps_the_mounted_mold_after_the_production_run_completes(self):
+        mold = self.create_mold(asset_code="RUN-MOLD-001", machine_code="1")
+        created = self.client.post(
+            "/api/production/runs/",
+            self._payload(mold_id=mold.pk),
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.content)
+
+        running_board = self.client.get("/api/production/board/").json()
+        running_station = running_board["groups"][0]["stations"][0]
+        self.assertEqual(
+            running_station["run"]["mold_model_code"],
+            f"MODEL-{mold.asset_code}",
+        )
+        self.assertEqual(
+            running_station["run"]["mold_product_name"],
+            f"产品 {mold.asset_code}",
+        )
+        self.assertEqual(
+            running_station["mounted_molds"][0]["asset_code"], mold.asset_code
+        )
+
+        completed = self.client.post(
+            f"/api/production/runs/{created.json()['id']}/complete/",
+            {},
+            format="json",
+        )
+        self.assertEqual(completed.status_code, 200, completed.content)
+
+        completed_board = self.client.get("/api/production/board/").json()
+        completed_station = completed_board["groups"][0]["stations"][0]
+        self.assertIsNone(completed_station["run"])
+        self.assertEqual(completed_station["reminder_status"], "MOUNTED")
+        self.assertEqual(
+            completed_station["mounted_molds"][0]["asset_code"], mold.asset_code
+        )
+
+    def test_planned_run_start_atomically_mounts_mold_and_is_idempotent(self):
+        mold, original_slot = self._create_stock_mold()
+        planned = self.client.post(
+            "/api/production/runs/",
+            self._payload(
+                order_no="PLAN-START-001",
+                mold_id=mold.pk,
+                status=ProductionRun.Status.PLANNED,
+                loaded_at=None,
+            ),
+            format="json",
+        )
+        self.assertEqual(planned.status_code, 201, planned.content)
+
+        planned_board = self.client.get("/api/production/board/").json()
+        self.assertEqual(planned_board["counts"]["planned"], 1)
+        self.assertEqual(planned_board["counts"]["occupied"], 0)
+        self.assertEqual(planned_board["groups"][0]["stations"][0]["mounted_molds"], [])
+
+        loaded_at = timezone.now().replace(microsecond=0)
+        started = self.client.post(
+            f"/api/production/runs/{planned.json()['id']}/start/",
+            {
+                "loaded_at": loaded_at.isoformat(),
+                "note": "生产计划确认上机",
+            },
+            format="json",
+        )
+        self.assertEqual(started.status_code, 200, started.content)
+        self.assertEqual(started.json()["status"], ProductionRun.Status.RUNNING)
+        self.assertEqual(parse_datetime(started.json()["loaded_at"]), loaded_at)
+        self.assertIsNotNone(started.json()["expected_change_at"])
+
+        mold.refresh_from_db()
+        self.assertEqual(mold.status, MoldAsset.Status.ON_MACHINE)
+        self.assertEqual(mold.current_machine.code, "1")
+        self.assertIsNone(mold.current_slot_id)
+        self.assertFalse(MoldAsset.objects.filter(current_slot=original_slot).exists())
+        movement = MoldMovement.objects.get(
+            mold=mold,
+            action=MoldMovement.Action.LOAD_MACHINE,
+        )
+        self.assertEqual(movement.from_slot_id, original_slot.pk)
+        self.assertEqual(movement.to_machine.code, "1")
+        self.assertEqual(movement.note, "生产计划确认上机")
+        self.assertEqual(movement.operator, self.user)
+
+        repeated = self.client.post(
+            f"/api/production/runs/{planned.json()['id']}/start/",
+            {"loaded_at": (loaded_at + timedelta(hours=1)).isoformat()},
+            format="json",
+        )
+        self.assertEqual(repeated.status_code, 200, repeated.content)
+        self.assertEqual(parse_datetime(repeated.json()["loaded_at"]), loaded_at)
+        self.assertEqual(
+            MoldMovement.objects.filter(
+                mold=mold,
+                action=MoldMovement.Action.LOAD_MACHINE,
+            ).count(),
+            1,
+        )
+
+        running_board = self.client.get("/api/production/board/").json()
+        self.assertEqual(running_board["counts"]["running"], 1)
+        self.assertEqual(running_board["counts"]["occupied"], 1)
+        self.assertEqual(
+            running_board["groups"][0]["stations"][0]["mounted_molds"][0][
+                "asset_code"
+            ],
+            mold.asset_code,
+        )
+
+    def test_start_requires_stacking_confirmation_and_rolls_back_before_retry(self):
+        seed_default_racks()
+        lower_slot = RackSlot.objects.select_related("zone__level__rack").get(
+            zone__level__rack__code="J05",
+            zone__level__level_no=1,
+            zone__code="A",
+            capacity_mode=2,
+            position_no=1,
+            stack_level=1,
+        )
+        upper_slot = RackSlot.objects.select_related("zone__level__rack").get(
+            zone=lower_slot.zone,
+            capacity_mode=2,
+            position_no=1,
+            stack_level=2,
+        )
+        switch_zone_stacking(lower_slot.zone, True)
+        lower, _ = self._create_stock_mold(
+            "STACK-LOWER-START",
+            slot=lower_slot,
+            allows_stacking=True,
+        )
+        upper, _ = self._create_stock_mold(
+            "STACK-UPPER-START",
+            slot=upper_slot,
+        )
+        planned = self.client.post(
+            "/api/production/runs/",
+            self._payload(
+                order_no="PLAN-STACK-001",
+                mold_id=lower.pk,
+                status=ProductionRun.Status.PLANNED,
+                loaded_at=None,
+            ),
+            format="json",
+        )
+        self.assertEqual(planned.status_code, 201, planned.content)
+
+        warning = self.client.post(
+            f"/api/production/runs/{planned.json()['id']}/start/",
+            {},
+            format="json",
+        )
+        self.assertEqual(warning.status_code, 409, warning.content)
+        self.assertTrue(warning.json()["requires_confirmation"])
+        self.assertTrue(any("上叠位置仍有模具" in item for item in warning.json()["warnings"]))
+
+        lower.refresh_from_db()
+        upper.refresh_from_db()
+        run = ProductionRun.objects.get(pk=planned.json()["id"])
+        self.assertEqual(run.status, ProductionRun.Status.PLANNED)
+        self.assertIsNone(run.loaded_at)
+        self.assertEqual(lower.current_slot_id, lower_slot.pk)
+        self.assertEqual(upper.current_slot_id, upper_slot.pk)
+        self.assertFalse(MoldMovement.objects.filter(mold=lower).exists())
+
+        confirmed = self.client.post(
+            f"/api/production/runs/{planned.json()['id']}/start/",
+            {"confirm_warnings": True},
+            format="json",
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        lower.refresh_from_db()
+        self.assertEqual(lower.status, MoldAsset.Status.ON_MACHINE)
+        self.assertEqual(
+            MoldMovement.objects.filter(
+                mold=lower,
+                action=MoldMovement.Action.LOAD_MACHINE,
+            ).count(),
+            1,
+        )
+
+    def test_generic_patch_cannot_bypass_planned_start_action(self):
+        mold, original_slot = self._create_stock_mold("PATCH-BYPASS-001")
+        planned = self.client.post(
+            "/api/production/runs/",
+            self._payload(
+                order_no="PLAN-PATCH-001",
+                mold_id=mold.pk,
+                status=ProductionRun.Status.PLANNED,
+                loaded_at=None,
+            ),
+            format="json",
+        )
+        self.assertEqual(planned.status_code, 201, planned.content)
+
+        bypass = self.client.patch(
+            f"/api/production/runs/{planned.json()['id']}/",
+            {"loaded_at": timezone.now().isoformat()},
+            format="json",
+        )
+        self.assertEqual(bypass.status_code, 400, bypass.content)
+        self.assertIn("确认上机", str(bypass.json()))
+
+        run = ProductionRun.objects.get(pk=planned.json()["id"])
+        mold.refresh_from_db()
+        self.assertEqual(run.status, ProductionRun.Status.PLANNED)
+        self.assertIsNone(run.loaded_at)
+        self.assertEqual(mold.status, MoldAsset.Status.IN_STOCK)
+        self.assertEqual(mold.current_slot_id, original_slot.pk)
+        self.assertFalse(MoldMovement.objects.filter(mold=mold).exists())
+
+    def test_start_requires_a_mold_and_accepts_one_already_on_the_correct_machine(self):
+        missing_mold = self.client.post(
+            "/api/production/runs/",
+            self._payload(
+                order_no="PLAN-NO-MOLD-001",
+                status=ProductionRun.Status.PLANNED,
+                loaded_at=None,
+            ),
+            format="json",
+        )
+        self.assertEqual(missing_mold.status_code, 201, missing_mold.content)
+        rejected = self.client.post(
+            f"/api/production/runs/{missing_mold.json()['id']}/start/",
+            {},
+            format="json",
+        )
+        self.assertEqual(rejected.status_code, 400, rejected.content)
+        self.assertIn("选择模具", str(rejected.json()))
+
+        ProductionRun.objects.filter(pk=missing_mold.json()["id"]).update(
+            status=ProductionRun.Status.CANCELLED,
+            updated_at=timezone.now(),
+        )
+        cancelled_start = self.client.post(
+            f"/api/production/runs/{missing_mold.json()['id']}/start/",
+            {},
+            format="json",
+        )
+        self.assertEqual(cancelled_start.status_code, 400, cancelled_start.content)
+        self.assertIn("只有待上机订单", str(cancelled_start.json()))
+
+        mounted = self.create_mold(asset_code="ALREADY-MOUNTED-001", machine_code="1")
+        planned = self.client.post(
+            "/api/production/runs/",
+            self._payload(
+                order_no="PLAN-MOUNTED-001",
+                mold_id=mounted.pk,
+                status=ProductionRun.Status.PLANNED,
+                loaded_at=None,
+            ),
+            format="json",
+        )
+        self.assertEqual(planned.status_code, 201, planned.content)
+        started = self.client.post(
+            f"/api/production/runs/{planned.json()['id']}/start/",
+            {},
+            format="json",
+        )
+        self.assertEqual(started.status_code, 200, started.content)
+        self.assertEqual(started.json()["status"], ProductionRun.Status.RUNNING)
+        self.assertFalse(MoldMovement.objects.filter(mold=mounted).exists())
 
     def test_run_filter_accepts_numeric_machine_code_and_valid_legacy_alias(self):
         created = self.client.post(

@@ -12,10 +12,10 @@ import { ProductionLogDrawer } from '../components/ProductionLogDrawer'
 import { ProductionPerformance } from '../components/ProductionPerformance'
 import { ProductionRunDrawer } from '../components/ProductionRunDrawer'
 import { formatProductionDate, isKeyboardActivationKey, productionReminderKey, productionStationGroupLabel, productionStationNumber } from '../production'
-import type { ApiList, ProductionBoardStation, ProductionRun, ProductionRunStatus, ProductionStation } from '../types'
+import type { ApiList, ProductionBoardStation, ProductionMold, ProductionRun, ProductionRunStatus, ProductionStation } from '../types'
 
 const STATUS_META: Record<ProductionRunStatus, { text: string; color: string }> = {
-  PLANNED: { text: '待上模', color: 'blue' },
+  PLANNED: { text: '待上机', color: 'blue' },
   RUNNING: { text: '生产中', color: 'processing' },
   COMPLETED: { text: '已完成', color: 'success' },
   CANCELLED: { text: '已取消', color: 'default' },
@@ -48,7 +48,7 @@ export function ProductionPage() {
   const [status, setStatus] = useState<ProductionRunStatus | ''>('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
-  const [formTarget, setFormTarget] = useState<{ run?: ProductionRun; station?: ProductionStation }>()
+  const [formTarget, setFormTarget] = useState<{ run?: ProductionRun; station?: ProductionStation; mold?: ProductionMold; initialStatus?: ProductionRunStatus }>()
   const [selectedRun, setSelectedRun] = useState<ProductionRun>()
   const [importOpen, setImportOpen] = useState(false)
   const notified = useRef(new Set<string>())
@@ -107,13 +107,16 @@ export function ProductionPage() {
 
   const openStation = (station: ProductionBoardStation) => {
     if (station.run) void showRun(station.run)
-    else setFormTarget({ station })
+    else setFormTarget({
+      station,
+      mold: station.mounted_molds?.length === 1 ? station.mounted_molds[0] : undefined,
+    })
   }
 
   const columns: TableColumnsType<ProductionRun> = [
     { title: '机台', key: 'station', fixed: 'left', width: 105, render: (_, record) => <strong>{productionStationGroupLabel(record.station.group)}-{productionStationNumber(record.station)}号</strong> },
     { title: '订单编号', dataIndex: 'order_no', fixed: 'left', width: 185, render: (value, record) => <Button type="link" className="table-primary-link" onClick={() => void showRun(record)}>{value}</Button> },
-    { title: '规格 / 材质', key: 'product', width: 180, render: (_, record) => <span>{record.specification}<br /><Typography.Text type="secondary">{record.material}</Typography.Text></span> },
+    { title: '规格 / 材质', key: 'product', width: 210, render: (_, record) => <span>{record.specification}<br /><Typography.Text type="secondary">{record.material}</Typography.Text>{record.mold && <><br /><Typography.Text type="secondary">模具 {record.mold.model_code} · {record.mold.asset_code}</Typography.Text></>}</span> },
     { title: '状态', dataIndex: 'status', width: 95, render: statusTag },
     { title: '上模时间', dataIndex: 'loaded_at', width: 145, render: (value) => formatProductionDate(value, 'MM-DD HH:mm') },
     { title: '预计换模', dataIndex: 'expected_change_at', width: 145, render: (value) => formatProductionDate(value, 'MM-DD HH:mm') },
@@ -140,8 +143,8 @@ export function ProductionPage() {
     <div className="page-container production-page">
       <PageTitle
         title="前端生产管理"
-        description="三组联体机台，每组2台，共6台（孔=台）；每天登记每位作业员模数，订单结束统一结算成本与利润，并按月查看绩效。"
-        extra={<Space wrap><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入统计表</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => setFormTarget({})}>新增生产</Button></Space>}
+        description="三组联体机台，每组2台，共6台（孔=台）；模具台账登记上机后会同步显示型号，生产订单结束后仍需人工归位。"
+        extra={<Space wrap><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入统计表</Button><Button icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'PLANNED' })}>新增待上机计划</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'RUNNING' })}>登记已上机生产</Button></Space>}
       />
 
       {boardQuery.isError && <Alert type="error" showIcon title="实时机台看板读取失败" description={(boardQuery.error as Error).message} />}
@@ -157,7 +160,7 @@ export function ProductionPage() {
       )}
 
       <Row gutter={[14, 14]} className="production-kpis">
-        <Col xs={12} md={6}><Card className="production-kpi running"><Statistic title="正在生产" value={boardCounts?.running || 0} suffix="台" prefix={<ToolOutlined />} /></Card></Col>
+        <Col xs={12} md={6}><Card className="production-kpi running"><Statistic title="机台占用" value={boardCounts?.occupied || 0} suffix="台" prefix={<ToolOutlined />} /></Card></Col>
         <Col xs={12} md={6}><Card className="production-kpi warning"><Statistic title="1小时内换模" value={boardCounts?.due_soon || 0} suffix="台" prefix={<ClockCircleOutlined />} /></Card></Col>
         <Col xs={12} md={6}><Card className="production-kpi overdue"><Statistic title="已超时" value={boardCounts?.overdue || 0} suffix="台" prefix={<AlertOutlined />} /></Card></Col>
         <Col xs={12} md={6}><Card className="production-kpi profit"><Statistic title={`${date.format('M月D日')}生产模数`} value={summary?.produced_mold_count || 0} suffix="模" /></Card></Col>
@@ -176,7 +179,7 @@ export function ProductionPage() {
             <Input allowClear prefix={<SearchOutlined />} placeholder="搜索订单、规格、材质或模具" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1) }} />
             <Select value={status} onChange={(value) => { setStatus(value); setPage(1) }} options={[
               { value: '', label: '全部状态' },
-              { value: 'PLANNED', label: '待上模' },
+              { value: 'PLANNED', label: '待上机' },
               { value: 'RUNNING', label: '生产中' },
               { value: 'COMPLETED', label: '已完成' },
               { value: 'CANCELLED', label: '已取消' },
@@ -202,6 +205,7 @@ export function ProductionPage() {
               >
                 <div className="record-card-heading"><Typography.Title level={4}>{record.order_no}</Typography.Title>{statusTag(record.status)}</div>
                 <Typography.Text>{productionStationGroupLabel(record.station.group)}-{productionStationNumber(record.station)}号机台 · {record.specification} · {record.material}</Typography.Text>
+                {record.mold && <Typography.Text type="secondary">模具 {record.mold.model_code} · {record.mold.asset_code}</Typography.Text>}
                 <div className="mobile-production-times"><span>上模 {formatProductionDate(record.loaded_at, 'MM-DD HH:mm')}</span><span>换模 {formatProductionDate(record.expected_change_at, 'MM-DD HH:mm')}</span></div>
                 <Progress percent={Math.round(Number(record.progress_percent || 0))} size="small" />
                 <div className="mobile-production-footer"><span>累计模数 {numberText(record.produced_mold_count, 0)}/{numberText(record.planned_mold_count, 0)}</span><span>{settlementProfit(record)}</span></div>
@@ -225,7 +229,7 @@ export function ProductionPage() {
 
       <ProductionPerformance mobile={mobile} />
 
-      <ProductionRunDrawer open={!!formTarget} run={formTarget?.run} station={formTarget?.station} onClose={() => setFormTarget(undefined)} onSuccess={(result) => setSelectedRun(result)} />
+      <ProductionRunDrawer open={!!formTarget} run={formTarget?.run} station={formTarget?.station} mountedMold={formTarget?.mold} initialStatus={formTarget?.initialStatus} onClose={() => setFormTarget(undefined)} onSuccess={(result) => setSelectedRun(result)} />
       <ProductionLogDrawer
         open={!!selectedRun}
         run={selectedRun}

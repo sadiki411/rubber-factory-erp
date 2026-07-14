@@ -79,7 +79,7 @@ describe('useMoldDeletion', () => {
     await waitFor(() => expect(apiMocks.remove).toHaveBeenCalledWith(mold.id, false))
     await waitFor(() => expect(onDeleted).toHaveBeenCalledOnce())
     const refreshedKeys = invalidateSpy.mock.calls.map(([filters]) => filters?.queryKey?.[0])
-    expect(refreshedKeys).toEqual(expect.arrayContaining(['molds', 'mold', 'racks', 'slots']))
+    expect(refreshedKeys).toEqual(expect.arrayContaining(['molds', 'mold', 'racks', 'slots', 'machines', 'production']))
   })
 
   it('asks for a second confirmation and retries when deleting a stacked lower mold', async () => {

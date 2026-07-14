@@ -381,6 +381,26 @@ class MoldTransitionTests(SeededRackMixin, TestCase):
             )
         self.assertEqual(MoldMovement.objects.filter(mold=self.mold).count(), 1)
 
+    def test_machine_reserved_by_another_active_run_rejects_loading(self):
+        self.create_production_run(ProductionRun.Status.PLANNED)
+        other = self.create_mold(
+            "FLOW-RESERVED",
+            self.slot("J01", 2, zone="A", position=1),
+        )
+
+        with self.assertRaisesMessage(ValidationError, "预留给模具 FLOW-001"):
+            transition_mold(
+                other,
+                MoldMovement.Action.LOAD_MACHINE,
+                self.user,
+                machine=self.production_machine,
+            )
+
+        other.refresh_from_db()
+        self.assertEqual(other.status, MoldAsset.Status.IN_STOCK)
+        self.assertIsNotNone(other.current_slot_id)
+        self.assertFalse(MoldMovement.objects.filter(mold=other).exists())
+
     def test_running_production_blocks_putaway_and_outsourcing(self):
         on_machine, _ = transition_mold(
             self.mold,

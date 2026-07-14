@@ -516,6 +516,32 @@ def validate_active_production_assignment(
     )
 
 
+def validate_target_machine_assignment(machine, mold=None):
+    """Prevent a mold from occupying a machine reserved by another active run."""
+
+    from production.models import ProductionRun
+
+    active_run = (
+        ProductionRun.objects.select_for_update()
+        .select_related("mold__mold_model", "station")
+        .filter(
+            station__machine=machine,
+            status__in=ProductionRun.ACTIVE_STATUSES,
+            mold__isnull=False,
+        )
+        .first()
+    )
+    if not active_run or (mold and active_run.mold_id == mold.pk):
+        return
+
+    assigned_mold = active_run.mold
+    raise ValidationError(
+        f"机台 {machine.code} 已由活动生产订单 {active_run.order_no} "
+        f"预留给模具 {assigned_mold.asset_code}（型号 {assigned_mold.mold_model.code}），"
+        "不能安排其他模具上机。"
+    )
+
+
 @transaction.atomic
 def transition_mold(mold, action, operator, *, slot=None, machine=None, processor=None, note="", confirm_warnings=False):
     mold = MoldAsset.objects.select_for_update().select_related(
@@ -559,6 +585,7 @@ def transition_mold(mold, action, operator, *, slot=None, machine=None, processo
         machine = Machine.objects.select_for_update().get(pk=machine.pk)
         if not machine.is_active:
             raise ValidationError("所选机台已停用。")
+        validate_target_machine_assignment(machine, mold)
         warnings.extend(stacking_warnings(mold, leaving_current=mold.status == MoldAsset.Status.IN_STOCK))
         to_status = MoldAsset.Status.ON_MACHINE
         to_slot, to_machine, to_processor = None, machine, None
