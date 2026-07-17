@@ -1,8 +1,11 @@
 from datetime import timedelta
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
+from orders.models import ProductSpecification
 from quality.models import (
     QualityEmployee,
     QualityOrder,
@@ -170,6 +173,55 @@ class QualityCrudApiTests(QualityTestMixin, TestCase):
             ),
             shipment.shipped_quantity,
         )
+
+    def test_nested_order_product_specification_does_not_add_per_row_queries(self):
+        product = ProductSpecification.objects.create(
+            product_name="品检查询产品",
+            specification="QC-QUERY-SPEC",
+            material="NBR",
+        )
+        self.order.product_specification = product
+        self.order.save(update_fields=["product_specification", "updated_at"])
+        shipments = [self.create_shipment(shipment_no="SHP-QUERY-001")]
+
+        with CaptureQueriesContext(connection) as single_shipment_queries:
+            response = self.client.get("/api/quality/shipments/", {"page_size": 100})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            response_results(response)[0]["order"]["product_specification"]["id"],
+            product.pk,
+        )
+
+        for index in range(2, 6):
+            shipments.append(
+                self.create_shipment(shipment_no=f"SHP-QUERY-{index:03d}")
+            )
+        with CaptureQueriesContext(connection) as many_shipment_queries:
+            response = self.client.get("/api/quality/shipments/", {"page_size": 100})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertLessEqual(
+            len(many_shipment_queries), len(single_shipment_queries) + 1
+        )
+
+        self.create_rework(shipments[0])
+        with CaptureQueriesContext(connection) as single_rework_queries:
+            response = self.client.get("/api/quality/reworks/", {"page_size": 100})
+        self.assertEqual(response.status_code, 200, response.content)
+        rework_row = response_results(response)[0]
+        self.assertEqual(
+            rework_row["shipment"]["order"]["product_specification"]["id"],
+            product.pk,
+        )
+
+        for index, shipment in enumerate(shipments[1:], 2):
+            self.create_rework(
+                shipment,
+                reason=f"查询验证-{index}",
+            )
+        with CaptureQueriesContext(connection) as many_rework_queries:
+            response = self.client.get("/api/quality/reworks/", {"page_size": 100})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertLessEqual(len(many_rework_queries), len(single_rework_queries) + 1)
 
 
 class QualityFilterApiTests(QualityTestMixin, TestCase):

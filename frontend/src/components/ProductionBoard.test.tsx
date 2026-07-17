@@ -45,7 +45,7 @@ const board: ProductionBoardData = {
             mold_model_code: 'MODEL-018',
             mold_product_name: '密封圈模具',
             specification: '20×2',
-            material: 'N7200',
+            material: 'TEST-RUBBER',
             order_quantity: 600,
             planned_mold_count: 100,
             produced_mold_count: 80,

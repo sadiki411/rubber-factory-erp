@@ -49,23 +49,73 @@ class QualityOrder(TimeStampedModel):
         CANCELLED = "CANCELLED", "已取消"
 
     order_no = models.CharField("订单号", max_length=100, db_index=True)
-    # Empty string is intentionally used instead of SQL NULL so the composite
-    # uniqueness rule remains effective for orders without a batch number.
+    item_no = models.CharField("项次", max_length=100, blank=True, default="", db_index=True)
+    # Empty string keeps imported and manually entered rows consistent when no
+    # customer batch number is supplied.
     batch_no = models.CharField("批次号", max_length=100, blank=True, default="")
     product_code = models.CharField("产品编号", max_length=100, blank=True)
-    product_name = models.CharField("产品名称", max_length=200)
+    product_name = models.CharField("产品名称", max_length=200, blank=True, default="")
     specification = models.CharField("规格", max_length=200)
-    material = models.CharField("材质/胶料", max_length=100)
+    material = models.CharField("材质/胶料", max_length=100, blank=True, default="")
+    product_specification = models.ForeignKey(
+        "orders.ProductSpecification",
+        verbose_name="产品规格资料",
+        related_name="orders",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
     order_quantity = models.PositiveIntegerField(
         "订单数量", validators=[MinValueValidator(1)]
     )
-    order_date = models.DateField("下单日期", db_index=True)
+    order_date = models.DateField("下单日期", null=True, blank=True, db_index=True)
     due_date = models.DateField("交期", null=True, blank=True, db_index=True)
     mold_size = models.CharField("模具尺寸", max_length=100, blank=True)
+    forming_hours = models.DecimalField(
+        "成型工时",
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    production_required = models.BooleanField("是否生产", null=True, blank=True)
+    legacy_shipment_text = models.TextField("原出货信息", blank=True, default="")
+    required_material_kg = models.DecimalField(
+        "所需胶料(kg)",
+        max_digits=14,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    manual_received_material_kg = models.DecimalField(
+        "手工已发胶料(kg)",
+        max_digits=14,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    process_card_count = models.PositiveIntegerField("流程卡张数", null=True, blank=True)
+    process_card_covered_quantity = models.PositiveIntegerField(
+        "流程卡覆盖订单数量", null=True, blank=True
+    )
     status = models.CharField(
         "状态", max_length=20, choices=Status.choices, default=Status.OPEN, db_index=True
     )
     notes = models.TextField("备注", blank=True)
+    source_batch = models.ForeignKey(
+        "orders.BusinessImportBatch",
+        related_name="orders",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    source_sheet = models.CharField(max_length=100, blank=True, default="")
+    source_row = models.PositiveIntegerField(null=True, blank=True)
+    source_key = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    raw_data = models.JSONField(default=dict, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         verbose_name="创建人",
@@ -80,9 +130,24 @@ class QualityOrder(TimeStampedModel):
                 condition=Q(order_quantity__gt=0),
                 name="quality_order_quantity_gt_zero_ck",
             ),
+            models.CheckConstraint(
+                condition=Q(forming_hours__isnull=True) | Q(forming_hours__gte=0),
+                name="quality_order_forming_hours_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(required_material_kg__isnull=True)
+                | Q(required_material_kg__gte=0),
+                name="quality_order_required_material_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(manual_received_material_kg__isnull=True)
+                | Q(manual_received_material_kg__gte=0),
+                name="quality_order_received_material_nonnegative",
+            ),
             models.UniqueConstraint(
-                fields=["order_no", "batch_no", "specification", "material"],
-                name="uniq_quality_order_batch_spec_material",
+                fields=["source_key"],
+                condition=~Q(source_key=""),
+                name="uniq_quality_order_source_key",
             ),
         ]
 
@@ -90,26 +155,35 @@ class QualityOrder(TimeStampedModel):
         errors = {}
         for field_name in (
             "order_no",
+            "item_no",
             "batch_no",
             "product_code",
             "product_name",
             "specification",
             "material",
             "mold_size",
+            "legacy_shipment_text",
+            "source_sheet",
+            "source_key",
         ):
             setattr(self, field_name, str(getattr(self, field_name, "") or "").strip())
         if not self.order_no:
             errors["order_no"] = "订单号不能为空。"
-        if not self.product_name:
-            errors["product_name"] = "产品名称不能为空。"
         if not self.specification:
             errors["specification"] = "规格不能为空。"
-        if not self.material:
-            errors["material"] = "材质不能为空。"
         if not self.order_quantity or self.order_quantity < 1:
             errors["order_quantity"] = "订单数量必须大于0。"
-        if self.order_date and self.due_date and self.due_date < self.order_date:
+        if (
+            not self.source_batch_id
+            and self.order_date
+            and self.due_date
+            and self.due_date < self.order_date
+        ):
             errors["due_date"] = "交期不能早于下单日期。"
+        for field_name in ("forming_hours", "required_material_kg", "manual_received_material_kg"):
+            value = getattr(self, field_name)
+            if value is not None and value < 0:
+                errors[field_name] = "数值不能小于0。"
         if errors:
             raise ValidationError(errors)
 

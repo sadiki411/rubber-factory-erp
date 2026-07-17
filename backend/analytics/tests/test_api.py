@@ -53,6 +53,7 @@ class AnalyticsApiTests(TestCase):
         loaded_at = timezone.make_aware(datetime.combine(day, datetime.min.time()), tz) + timedelta(hours=8)
         run = ProductionRun.objects.create(
             station=self.stations[0],
+            order=self.order,
             order_no=self.order.order_no,
             specification=self.order.specification,
             material=self.order.material,
@@ -226,13 +227,76 @@ class AnalyticsApiTests(TestCase):
         self.assertEqual(quality["return_rate"], "12.50")
 
         self.assertEqual(payload["data_basis"]["manual_finance_date"], "ManualFinancialEntry.occurred_on")
-        self.assertIn("仅按order_no", payload["data_basis"]["order_link"])
+        self.assertIn("按order_id归集", payload["data_basis"]["order_link"])
         self.assertEqual(len(payload["manual_entries"]), 3)
         self.assertEqual(len(payload["manual_financial_entries"]), 2)
-        order = next(item for item in payload["order_performance"] if item["order_no"] == self.order.order_no)
-        self.assertEqual(order["produced_mold_count"], 15)
-        self.assertEqual(order["inspection_quantity"], 150)
-        self.assertEqual(order["profit"], "230.00")
+        linked_order = next(
+            item
+            for item in payload["order_performance"]
+            if item["order_id"] == self.order.pk
+        )
+        self.assertEqual(linked_order["row_key"], f"order:{self.order.pk}")
+        self.assertEqual(linked_order["link_type"], "ORDER")
+        self.assertEqual(linked_order["produced_mold_count"], 10)
+        self.assertEqual(linked_order["inspection_quantity"], 100)
+        self.assertEqual(linked_order["profit"], "150.00")
+
+        legacy_order = next(
+            item
+            for item in payload["order_performance"]
+            if item["link_type"] == "LEGACY"
+            and item["order_no"] == self.order.order_no
+        )
+        self.assertEqual(legacy_order["row_key"], f"legacy:{self.order.order_no}")
+        self.assertIsNone(legacy_order["order_id"])
+        self.assertEqual(legacy_order["produced_mold_count"], 5)
+        self.assertEqual(legacy_order["inspection_quantity"], 50)
+        self.assertEqual(legacy_order["profit"], "80.00")
+
+    def test_same_order_number_with_distinct_order_ids_is_not_merged(self):
+        day = timezone.localdate()
+        self.create_automatic_records(day)
+        second_order = QualityOrder.objects.create(
+            order_no=self.order.order_no,
+            item_no="002",
+            product_name="油封",
+            specification="40x50",
+            material="FKM",
+            order_quantity=500,
+            order_date=day,
+            created_by=self.user,
+        )
+        QualityShipment.objects.create(
+            shipment_no="SHP-ANALYTICS-SECOND",
+            shipment_date=day,
+            order=second_order,
+            inspector=self.inspector,
+            inspection_quantity=30,
+            qualified_quantity=30,
+            defective_quantity=0,
+            shipped_quantity=30,
+            created_by=self.user,
+        )
+
+        payload = self.client.get(
+            "/api/analytics/dashboard/",
+            {"date_from": day.isoformat(), "date_to": day.isoformat()},
+        ).json()
+        rows = [
+            item
+            for item in payload["order_performance"]
+            if item["order_no"] == self.order.order_no
+            and item["link_type"] == "ORDER"
+        ]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            {item["row_key"] for item in rows},
+            {f"order:{self.order.pk}", f"order:{second_order.pk}"},
+        )
+        self.assertEqual(
+            {item["order_id"] for item in rows},
+            {self.order.pk, second_order.pk},
+        )
 
     def test_manual_crud_soft_void_restore_and_validation(self):
         day = timezone.localdate()

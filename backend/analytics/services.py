@@ -152,8 +152,20 @@ def _daily_row(day):
     }
 
 
-def _order_row(order_no, *, product_name="", specification="", material=""):
+def _order_row(
+    order_no,
+    *,
+    row_key,
+    order_id=None,
+    link_type="LEGACY",
+    product_name="",
+    specification="",
+    material="",
+):
     return {
+        "row_key": row_key,
+        "order_id": order_id,
+        "link_type": link_type,
         "order_no": order_no,
         "product_name": product_name or "",
         "specification": specification or "",
@@ -172,6 +184,69 @@ def _order_row(order_no, *, product_name="", specification="", material=""):
 
 def _order_key(order_no):
     return str(order_no or "").strip().upper()
+
+
+def _order_row_key(order_id, order_no):
+    if order_id:
+        return f"order:{order_id}"
+    normalized = _order_key(order_no)
+    return f"legacy:{normalized}" if normalized else ""
+
+
+def _ensure_order_row(
+    orders,
+    *,
+    order_id=None,
+    order_no="",
+    product_name="",
+    specification="",
+    material="",
+):
+    row_key = _order_row_key(order_id, order_no)
+    if not row_key:
+        return None
+    normalized_order_no = _order_key(order_no)
+    row = orders.setdefault(
+        row_key,
+        _order_row(
+            normalized_order_no,
+            row_key=row_key,
+            order_id=order_id,
+            link_type="ORDER" if order_id else "LEGACY",
+            product_name=product_name,
+            specification=specification,
+            material=material,
+        ),
+    )
+    for field, value in (
+        ("product_name", product_name),
+        ("specification", specification),
+        ("material", material),
+    ):
+        if not row[field] and value:
+            row[field] = value
+    return row
+
+
+def _production_order_reference(run):
+    fallback_product_name = (
+        run.mold.mold_model.product_name if run.mold_id else ""
+    )
+    if run.order_id:
+        return {
+            "order_id": run.order_id,
+            "order_no": run.order.order_no,
+            "product_name": run.order.product_name or fallback_product_name,
+            "specification": run.order.specification or run.specification,
+            "material": run.order.material or run.material,
+        }
+    return {
+        "order_id": None,
+        "order_no": run.order_no,
+        "product_name": fallback_product_name,
+        "specification": run.specification,
+        "material": run.material,
+    }
 
 
 def _employee_row(employee=None, staff_name=""):
@@ -326,7 +401,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         production_date__gte=date_from,
         production_date__lte=date_to,
     ).select_related(
-        "run__station__machine", "run__mold__mold_model"
+        "run__station__machine", "run__mold__mold_model", "run__order"
     )
     logs_qs = _filter_production(
         logs_qs, group=group, machine_id=machine_id, prefix="run__"
@@ -361,7 +436,9 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
     settled_qs = ProductionRun.objects.filter(
         settled_at__gte=period_start,
         settled_at__lt=period_end,
-    ).select_related("station__machine", "mold__mold_model").prefetch_related(
+    ).select_related(
+        "station__machine", "mold__mold_model", "order"
+    ).prefetch_related(
         "daily_logs"
     )
     settled_qs = _filter_production(
@@ -473,18 +550,11 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         machine_row["run_ids"].add(run.pk)
         machine_row["automatic_record_count"] += 1
 
-        order_no = _order_key(run.order_no)
-        if order_no:
-            product_name = run.mold.mold_model.product_name if run.mold_id else ""
-            row = orders.setdefault(
-                order_no,
-                _order_row(
-                    order_no,
-                    product_name=product_name,
-                    specification=run.specification,
-                    material=run.material,
-                ),
-            )
+        row = _ensure_order_row(
+            orders,
+            **_production_order_reference(run),
+        )
+        if row is not None:
             row["automatic_produced_mold_count"] += molds
             row["produced_mold_count"] += molds
             row["theoretical_output_quantity"] += output
@@ -509,18 +579,11 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         machine_row = machines.setdefault(machine_key, _machine_row(machine, run.station))
         _add_finance(machine_row, finance)
 
-        order_no = _order_key(run.order_no)
-        if order_no:
-            product_name = run.mold.mold_model.product_name if run.mold_id else ""
-            row = orders.setdefault(
-                order_no,
-                _order_row(
-                    order_no,
-                    product_name=product_name,
-                    specification=run.specification,
-                    material=run.material,
-                ),
-            )
+        row = _ensure_order_row(
+            orders,
+            **_production_order_reference(run),
+        )
+        if row is not None:
             _add_finance(row, finance)
             row["_run_ids"].add(run.pk)
 
@@ -549,15 +612,13 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         employee["automatic_record_count"] += 1
 
         order = shipment.order
-        order_no = _order_key(order.order_no)
-        row = orders.setdefault(
-            order_no,
-            _order_row(
-                order_no,
-                product_name=order.product_name,
-                specification=order.specification,
-                material=order.material,
-            ),
+        row = _ensure_order_row(
+            orders,
+            order_id=order.pk,
+            order_no=order.order_no,
+            product_name=order.product_name,
+            specification=order.specification,
+            material=order.material,
         )
         _add_quality(row, values)
         row["automatic_record_count"] += 1
@@ -607,15 +668,13 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         reason["automatic_record_count"] += 1
 
         order = rework.shipment.order
-        order_no = _order_key(order.order_no)
-        row = orders.setdefault(
-            order_no,
-            _order_row(
-                order_no,
-                product_name=order.product_name,
-                specification=order.specification,
-                material=order.material,
-            ),
+        row = _ensure_order_row(
+            orders,
+            order_id=order.pk,
+            order_no=order.order_no,
+            product_name=order.product_name,
+            specification=order.specification,
+            material=order.material,
         )
         _add_quality(row, values)
         row["automatic_record_count"] += 1
@@ -623,10 +682,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
     manual_counts = Counter(entry.entry_type for entry in manual_entries)
     for entry in manual_entries:
         day = daily[entry.entry_date]
-        order_no = _order_key(entry.order_no)
-        order_row = (
-            orders.setdefault(order_no, _order_row(order_no)) if order_no else None
-        )
+        order_row = _ensure_order_row(orders, order_no=entry.order_no)
         if entry.entry_type == ManualPerformanceEntry.EntryType.PRODUCTION:
             molds = int(entry.produced_mold_count or 0)
             reported_hours = _decimal(entry.production_hours)
@@ -733,9 +789,8 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             )
             _add_finance(machine_row, finance)
             machine_row["manual_record_count"] += 1
-        order_no = _order_key(entry.order_no)
-        if order_no:
-            order_row = orders.setdefault(order_no, _order_row(order_no))
+        order_row = _ensure_order_row(orders, order_no=entry.order_no)
+        if order_row is not None:
             _add_finance(order_row, finance)
             order_row["manual_record_count"] += 1
 
@@ -857,7 +912,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             row["automatic_record_count"], row["manual_record_count"]
         )
         order_payload.append(row)
-    order_payload.sort(key=lambda item: item["order_no"])
+    order_payload.sort(key=lambda item: (item["order_no"], item["row_key"]))
 
     daily_payload = []
     for row in daily.values():
@@ -950,7 +1005,10 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         "manual_finance_date": "ManualFinancialEntry.occurred_on",
         "quality_date": "QualityShipment.shipment_date",
         "rework_date": "ReturnRework.rework_date",
-        "order_link": "仅按order_no文本匹配，不代表数据库外键关联",
+        "order_link": (
+            "已关联生产、品检和出货记录按order_id归集；"
+            "未关联历史及手工补录按legacy:规范化订单号单独归集"
+        ),
         "quality_filter_scope": "品检与返工数据仅按日期筛选；无机台关联，machine/group筛选不作用于品质数据",
         "zero_denominator_rate": None,
     }

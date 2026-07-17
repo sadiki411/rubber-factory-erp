@@ -1,13 +1,17 @@
 import type {
   ApiList,
   AnalyticsDashboard,
+  BusinessImportCommitResult,
+  BusinessImportPreview,
   ImportPreview,
   Machine,
+  MaterialReceipt,
   ManualFinancialEntry,
   ManualPerformanceEntry,
   MoldAsset,
   MoldModel,
   MoldMovement,
+  Order,
   Processor,
   ProductionBoard,
   ProductionDailyLog,
@@ -17,8 +21,8 @@ import type {
   ProductionSettlementInput,
   ProductionStation,
   ProductionSummary,
+  ProductSpecification,
   QualityEmployee,
-  QualityOrder,
   QualityShipment,
   QualitySummary,
   RackConfigInput,
@@ -285,6 +289,81 @@ export const importApi = {
   errorReportUrl: (token: string) => `/api/imports/${token}/errors/`,
 }
 
+export interface ProductSpecificationFilters {
+  q?: string
+  active?: boolean
+  page?: number
+  page_size?: number
+}
+
+export const productSpecificationApi = {
+  list: (filters: ProductSpecificationFilters = {}) =>
+    apiFetch<ApiList<ProductSpecification> | ProductSpecification[]>(`/api/orders/product-specifications/${queryString(filters)}`),
+  detail: (id: number | string) => apiFetch<ProductSpecification>(`/api/orders/product-specifications/${id}/`),
+  create: (body: Partial<ProductSpecification>) => apiFetch<ProductSpecification>('/api/orders/product-specifications/', {
+    method: 'POST', body: JSON.stringify(body),
+  }),
+  update: (id: number, body: Partial<ProductSpecification>) => apiFetch<ProductSpecification>(`/api/orders/product-specifications/${id}/`, {
+    method: 'PATCH', body: JSON.stringify(body),
+  }),
+}
+
+export interface OrderFilters {
+  q?: string
+  status?: string
+  production_required?: boolean
+  material_status?: string
+  page?: number
+  page_size?: number
+}
+
+export const orderApi = {
+  list: (filters: OrderFilters = {}) => apiFetch<ApiList<Order> | Order[]>(`/api/orders/orders/${queryString(filters)}`),
+  detail: (id: number | string) => apiFetch<Order>(`/api/orders/orders/${id}/`),
+  create: (body: Partial<Order>) => apiFetch<Order>('/api/orders/orders/', {
+    method: 'POST', body: JSON.stringify(body),
+  }),
+  update: (id: number, body: Partial<Order>) => apiFetch<Order>(`/api/orders/orders/${id}/`, {
+    method: 'PATCH', body: JSON.stringify(body),
+  }),
+}
+
+export interface MaterialReceiptFilters {
+  q?: string
+  order_id?: number
+  order_no?: string
+  batch_no?: string
+  date_from?: string
+  date_to?: string
+  linked?: boolean
+  page?: number
+  page_size?: number
+}
+
+export const materialReceiptApi = {
+  list: (filters: MaterialReceiptFilters = {}) => apiFetch<ApiList<MaterialReceipt> | MaterialReceipt[]>(`/api/orders/material-receipts/${queryString(filters)}`),
+  detail: (id: number | string) => apiFetch<MaterialReceipt>(`/api/orders/material-receipts/${id}/`),
+  create: (body: Partial<MaterialReceipt>) => apiFetch<MaterialReceipt>('/api/orders/material-receipts/', {
+    method: 'POST', body: JSON.stringify(body),
+  }),
+  update: (id: number, body: Partial<MaterialReceipt>) => apiFetch<MaterialReceipt>(`/api/orders/material-receipts/${id}/`, {
+    method: 'PATCH', body: JSON.stringify(body),
+  }),
+}
+
+export const businessImportApi = {
+  preview: (file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return apiFetch<BusinessImportPreview>('/api/orders/imports/preview/', { method: 'POST', body })
+  },
+  commit: (token: string) => apiFetch<BusinessImportCommitResult>('/api/orders/imports/commit/', {
+    method: 'POST', body: JSON.stringify({ token }),
+  }),
+  templateUrl: (type: 'orders' | 'product_specifications') => `/api/orders/imports/template/${queryString({ type })}`,
+  errorReportUrl: (token: string) => `/api/orders/imports/${token}/errors/`,
+}
+
 export interface ProductionRunFilters {
   q?: string
   status?: string
@@ -385,17 +464,6 @@ export const qualityApi = {
     body: JSON.stringify(body),
   }),
   updateEmployee: (id: number, body: Record<string, unknown>) => apiFetch<QualityEmployee>(`/api/quality/employees/${id}/`, {
-    method: 'PATCH',
-    body: JSON.stringify(body),
-  }),
-
-  listOrders: (filters: QualityListFilters = {}) =>
-    apiFetch<ApiList<QualityOrder> | QualityOrder[]>(`/api/quality/orders/${queryString(filters)}`),
-  createOrder: (body: Record<string, unknown>) => apiFetch<QualityOrder>('/api/quality/orders/', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  }),
-  updateOrder: (id: number, body: Record<string, unknown>) => apiFetch<QualityOrder>(`/api/quality/orders/${id}/`, {
     method: 'PATCH',
     body: JSON.stringify(body),
   }),

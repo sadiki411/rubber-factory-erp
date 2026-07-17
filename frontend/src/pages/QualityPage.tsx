@@ -13,10 +13,10 @@ import type { TableColumnsType } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useMemo, useState } from 'react'
-import { qualityApi, toList } from '../api/client'
+import { useNavigate } from 'react-router-dom'
+import { orderApi, qualityApi, toList } from '../api/client'
 import {
   QualityEmployeeDrawer,
-  QualityOrderDrawer,
   QualityReworkDrawer,
   QualityShipmentDrawer,
 } from '../components/QualityFormDrawers'
@@ -108,12 +108,12 @@ function DailyTrend({ rows, loading }: { rows: QualityDailyTrend[]; loading: boo
 type OrderRow = { order: QualityOrder; stats?: QualityOrderStatistics }
 
 export function QualityPage() {
+  const navigate = useNavigate()
   const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs().startOf('month'), dayjs().endOf('month')])
   const [query, setQuery] = useState('')
   const [activeTab, setActiveTab] = useState('daily')
   const [shipmentForm, setShipmentForm] = useState<{ shipment?: QualityShipment }>()
   const [reworkForm, setReworkForm] = useState<{ rework?: ReturnRework }>()
-  const [orderForm, setOrderForm] = useState<{ order?: QualityOrder }>()
   const [employeeForm, setEmployeeForm] = useState<{ employee?: QualityEmployee }>()
   const dateFrom = range[0].format('YYYY-MM-DD')
   const dateTo = range[1].format('YYYY-MM-DD')
@@ -127,8 +127,8 @@ export function QualityPage() {
     queryFn: async () => toList(await qualityApi.listEmployees({ page_size: 1000 })),
   })
   const ordersQuery = useQuery({
-    queryKey: ['quality', 'orders'],
-    queryFn: async () => toList(await qualityApi.listOrders({ page_size: 1000 })),
+    queryKey: ['orders', 'quality-options'],
+    queryFn: async () => toList(await orderApi.list({ page_size: 1000 })),
   })
   const shipmentsQuery = useQuery({
     queryKey: ['quality', 'shipments', { dateFrom, dateTo, query }],
@@ -200,7 +200,7 @@ export function QualityPage() {
     { title: '退货率', key: 'return_rate', width: 100, render: (_, row) => <span className={Number(row.stats?.return_rate || 0) > 0 ? 'quality-danger-text' : ''}>{rateText(row.stats?.return_rate)}</span> },
     { title: '返工通过率', key: 'rework_pass', width: 120, render: (_, row) => rateText(row.stats?.rework_pass_rate) },
     { title: '返工次数', key: 'rework_count', width: 110, render: (_, row) => reworkCountTag(row.stats?.rework_count || 0) },
-    { title: '操作', key: 'action', fixed: 'right', width: 76, render: (_, row) => <Button type="link" icon={<EditOutlined />} onClick={() => setOrderForm({ order: row.order })}>编辑</Button> },
+    { title: '操作', key: 'action', fixed: 'right', width: 100, render: () => <Button type="link" onClick={() => navigate('/orders')}>订单管理</Button> },
   ]
 
   const employeeColumns: TableColumnsType<QualityEmployee> = [
@@ -242,7 +242,7 @@ export function QualityPage() {
       key: 'orders',
       label: '订单统计',
       children: <div className="quality-tab-content">
-        <div className="section-heading"><div><Typography.Title level={3}>订单批次统计</Typography.Title><Typography.Text type="secondary">汇总每批订单的质检、出货、退货和返工表现。</Typography.Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => setOrderForm({})}>新增订单批次</Button></div>
+        <div className="section-heading"><div><Typography.Title level={3}>订单质量表现</Typography.Title><Typography.Text type="secondary">订单基础资料统一在“订单管理”维护，本页只汇总质检、出货、退货和返工表现。</Typography.Text></div><Button type="primary" onClick={() => navigate('/orders')}>前往订单管理</Button></div>
         {tableCard(orderRows, orderColumns, ordersQuery.isLoading || summaryQuery.isLoading, (row) => row.order.id, 1510, '暂无订单批次')}
       </div>,
     },
@@ -289,7 +289,6 @@ export function QualityPage() {
 
       <QualityShipmentDrawer open={!!shipmentForm} shipment={shipmentForm?.shipment} orders={orders} employees={employees} onClose={() => setShipmentForm(undefined)} />
       <QualityReworkDrawer open={!!reworkForm} rework={reworkForm?.rework} shipments={shipmentOptions} employees={employees} onClose={() => setReworkForm(undefined)} />
-      <QualityOrderDrawer open={!!orderForm} order={orderForm?.order} onClose={() => setOrderForm(undefined)} />
       <QualityEmployeeDrawer open={!!employeeForm} employee={employeeForm?.employee} onClose={() => setEmployeeForm(undefined)} />
     </div>
   )

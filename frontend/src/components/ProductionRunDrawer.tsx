@@ -3,9 +3,9 @@ import { Alert, App, Button, Col, DatePicker, Drawer, Form, Input, InputNumber, 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useEffect } from 'react'
-import { moldApi, productionApi, toList } from '../api/client'
+import { moldApi, orderApi, productionApi, productSpecificationApi, toList } from '../api/client'
 import { productionStationGroupLabel, productionStationNumber, requiresProductionUnloadTime } from '../production'
-import type { ProductionMold, ProductionRun, ProductionRunStatus, ProductionStation } from '../types'
+import type { ProductSpecification, ProductionMold, ProductionRun, ProductionRunStatus, ProductionStation } from '../types'
 import { moldCode, moldLocation, moldModelOf } from '../types'
 
 interface Props {
@@ -23,10 +23,37 @@ function asNumber(value: unknown, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+function plainNumber(value: unknown) {
+  const text = String(value ?? '').trim()
+  if (!/^\d+(?:\.\d+)?$/.test(text)) return undefined
+  const parsed = Number(text)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function plainInteger(value: unknown) {
+  const parsed = plainNumber(value)
+  return parsed !== undefined && Number.isInteger(parsed) ? parsed : undefined
+}
+
+function curingSeconds(value: unknown) {
+  const text = String(value ?? '').trim()
+  const explicit = text.match(/(\d+(?:\.\d+)?)\s*(?:秒|s(?:ec(?:ond)?s?)?)/i)
+  return explicit ? Number(explicit[1]) : plainNumber(text)
+}
+
+function weightKg(value: unknown) {
+  const text = String(value ?? '').trim()
+  const kg = text.match(/(\d+(?:\.\d+)?)\s*kg\b/i)
+  if (kg) return Number(kg[1])
+  const grams = text.match(/(\d+(?:\.\d+)?)\s*(?:g\b|克)/i)
+  return grams ? Number(grams[1]) / 1000 : undefined
+}
+
 export function ProductionRunDrawer({ open, run, station, mountedMold, initialStatus = 'RUNNING', onClose, onSuccess }: Props) {
   const [form] = Form.useForm()
   const selectedStatus = Form.useWatch('status', form)
   const selectedStationId = Form.useWatch<number>('station_id', form)
+  const selectedProductSpecificationId = Form.useWatch<number>('product_specification_id', form)
   const selectedLoadedAt = Form.useWatch('loaded_at', form)
   const { message } = App.useApp()
   const queryClient = useQueryClient()
@@ -40,6 +67,16 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
     queryFn: async () => toList(await moldApi.list({ page_size: 1000 })),
     enabled: open,
   })
+  const ordersQuery = useQuery({
+    queryKey: ['orders', 'production-select'],
+    queryFn: async () => toList(await orderApi.list({ page_size: 1000 })),
+    enabled: open,
+  })
+  const productSpecificationsQuery = useQuery({
+    queryKey: ['product-specifications', 'production-select'],
+    queryFn: async () => toList(await productSpecificationApi.list({ page_size: 1000 })),
+    enabled: open,
+  })
 
   useEffect(() => {
     if (!open) return
@@ -49,6 +86,8 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
         ...run,
         station_id: run.station?.id,
         mold_id: run.mold?.id,
+        order_id: run.order_id || run.order?.id,
+        product_specification_id: run.product_specification_id || run.product_specification?.id,
         loaded_at: run.loaded_at ? dayjs(run.loaded_at) : undefined,
         expected_change_at: run.expected_change_at ? dayjs(run.expected_change_at) : undefined,
         material_changed_at: run.material_changed_at ? dayjs(run.material_changed_at) : undefined,
@@ -90,7 +129,49 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
     onError: (error: Error) => message.error(error.message),
   })
 
+  const applyProductSpecification = (specification?: ProductSpecification) => {
+    if (!specification) return
+    const cavities = plainInteger(specification.effective_cavities) ?? plainInteger(specification.total_cavities)
+    const strips = plainInteger(specification.strip_count)
+    const seconds = curingSeconds(specification.primary_curing)
+    const stripWeight = weightKg(specification.cut_weight)
+    const standardHours = plainNumber(specification.standard_hours)
+    form.setFieldsValue({
+      specification: specification.specification || specification.product_name || form.getFieldValue('specification'),
+      material: specification.material || form.getFieldValue('material'),
+      compound_size: specification.material_length || form.getFieldValue('compound_size'),
+      ...(cavities !== undefined ? { cavities } : {}),
+      ...(strips !== undefined ? { strips_per_batch: strips } : {}),
+      ...(seconds !== undefined ? { curing_seconds: seconds } : {}),
+      ...(stripWeight !== undefined ? { strip_weight_kg: stripWeight } : {}),
+      ...(standardHours !== undefined ? { estimated_hours: standardHours } : {}),
+    })
+  }
+
+  const selectOrder = (orderId?: number) => {
+    const order = ordersQuery.data?.find((item) => item.id === orderId)
+    if (!order) return
+    const linkedSpecification = order.product_specification
+      || productSpecificationsQuery.data?.find((item) => item.id === order.product_specification_id)
+    applyProductSpecification(linkedSpecification)
+    form.setFieldsValue({
+      order_no: order.order_no,
+      order_quantity: order.order_quantity,
+      specification: order.specification || linkedSpecification?.specification || linkedSpecification?.product_name,
+      material: order.material || linkedSpecification?.material,
+      product_specification_id: linkedSpecification?.id || order.product_specification_id,
+      ...(plainNumber(order.forming_hours) !== undefined ? { estimated_hours: plainNumber(order.forming_hours) } : {}),
+    })
+  }
+
+  const selectProductSpecification = (id?: number) => {
+    applyProductSpecification(productSpecificationsQuery.data?.find((item) => item.id === id))
+  }
+
   const selectedStation = stationsQuery.data?.find((item) => item.id === selectedStationId)
+  const selectedProductSpecification = productSpecificationsQuery.data?.find((item) => item.id === selectedProductSpecificationId)
+    || (run && run.product_specification?.id === selectedProductSpecificationId ? run.product_specification : undefined)
+  const linksLocked = !!run && run.status !== 'PLANNED'
   const selectableMolds = (moldsQuery.data || []).filter((mold) => {
     if (selectedStatus === 'RUNNING') {
       return mold.status === 'ON_MACHINE' && (!selectedStation?.machine || mold.machine?.id === selectedStation.machine.id)
@@ -136,6 +217,8 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
       material_changed_at: values.material_changed_at ? values.material_changed_at.toISOString() : null,
       unloaded_at: values.unloaded_at ? values.unloaded_at.toISOString() : null,
       mold_id: values.mold_id || null,
+      order_id: values.order_id || null,
+      product_specification_id: values.product_specification_id || null,
     }
     mutation.mutate(payload)
   }
@@ -230,11 +313,52 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
           </Col>
         </Row>
 
+        <div className="production-form-section">订单与产品规格</div>
         <Row gutter={14}>
-          <Col xs={24} sm={12}><Form.Item name="order_no" label="订单编号" rules={[{ required: true, message: '请输入订单编号' }]}><Input placeholder="例如 04-A001-2604100001" /></Form.Item></Col>
+          <Col xs={24} sm={12}>
+            <Form.Item name="order_id" label="关联订单（可选）" extra={linksLocked ? '订单开始生产后关联不可更换。' : '选择后带入订单编号、数量、规格、材质及成型工时，仍可按本次生产调整。'}>
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                disabled={linksLocked}
+                loading={ordersQuery.isLoading}
+                onChange={selectOrder}
+                placeholder="无订单试模可留空"
+                options={(ordersQuery.data || []).map((item) => ({ value: item.id, label: [item.order_no, item.item_no, item.product_name, item.specification].filter(Boolean).join(' · ') }))}
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={12}>
+            <Form.Item name="product_specification_id" label="关联产品规格（可选）" extra={linksLocked ? '开始生产后产品规格关联不可更换。' : '原始工艺参数会显示为参考；只有能无歧义转换的数字才自动带入生产字段。'}>
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                disabled={linksLocked}
+                loading={productSpecificationsQuery.isLoading}
+                onChange={selectProductSpecification}
+                placeholder="按产品名称、客户编号或规格搜索"
+                options={(productSpecificationsQuery.data || []).map((item) => ({ value: item.id, label: [item.customer_product_no, item.product_name, item.specification].filter(Boolean).join(' · '), disabled: !item.is_active }))}
+              />
+            </Form.Item>
+          </Col>
+        </Row>
+        {selectedProductSpecification && (
+          <Alert
+            className="production-specification-reference"
+            type="info"
+            showIcon
+            title={`工艺参考 · ${selectedProductSpecification.product_name}`}
+            description={<div className="production-specification-reference-grid"><span>胶料尺寸：{selectedProductSpecification.material_length || '-'}</span><span>裁重：{selectedProductSpecification.cut_weight || '-'}</span><span>条数：{selectedProductSpecification.strip_count || '-'}</span><span>一次硫化：{selectedProductSpecification.primary_curing || '-'}</span><span>二烤：{selectedProductSpecification.secondary_curing || '-'}</span><span>孔数：{selectedProductSpecification.effective_cavities || '-'} / {selectedProductSpecification.total_cavities || '-'}</span></div>}
+          />
+        )}
+
+        <Row gutter={14}>
+          <Col xs={24} sm={12}><Form.Item name="order_no" label="订单编号" rules={[{ required: true, message: '请输入订单编号' }]}><Input placeholder="例如 ORD-2026-001" /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="operator" label="默认作业员（可选）"><Input placeholder="录入日报时可自动带出，仍可修改" /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="specification" label="规格" rules={[{ required: true, message: '请输入产品规格' }]}><Input /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="material" label="材质 / 胶料配方" rules={[{ required: true, message: '请输入材质' }]}><Input placeholder="例如 N7200" /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="material" label="材质 / 胶料配方" rules={[{ required: true, message: '请输入材质' }]}><Input placeholder="例如 配方A" /></Form.Item></Col>
         </Row>
 
         <Form.Item
@@ -307,7 +431,7 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
 
         <div className="production-form-section">胶料与结算单价</div>
         <Row gutter={14}>
-          <Col xs={24} sm={12}><Form.Item name="compound_size" label="胶料尺寸"><Input placeholder="例如 450×5" /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="compound_size" label="胶料尺寸"><Input placeholder="例如 长300×厚4" /></Form.Item></Col>
           <Col xs={12} sm={6}><Form.Item name="strip_weight_kg" label="条重(kg)"><InputNumber min={0} precision={3} style={{ width: '100%' }} /></Form.Item></Col>
           <Col xs={12} sm={6}><Form.Item name="strips_per_batch" label="每批条数"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
           <Col xs={12}><Form.Item name="unit_price" label="成品单价(元/件)"><InputNumber min={0} precision={4} style={{ width: '100%' }} /></Form.Item></Col>

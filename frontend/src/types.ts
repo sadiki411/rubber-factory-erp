@@ -181,6 +181,144 @@ export interface ImportPreview {
   issues: ImportIssue[]
 }
 
+export type OrderStatus = 'OPEN' | 'COMPLETED' | 'CANCELLED'
+export type OrderMaterialStatus = 'UNKNOWN' | 'NOT_RECEIVED' | 'PARTIAL' | 'SUFFICIENT' | 'OVER'
+export type OrderProcessCardStatus = 'NOT_RECEIVED' | 'PARTIAL' | 'RECEIVED'
+
+export interface ProductSpecification {
+  id: number
+  product_name: string
+  customer_product_no?: string
+  specification?: string
+  material?: string
+  material_length?: string
+  cut_weight?: string
+  strip_count?: string
+  primary_curing?: string
+  secondary_curing?: string
+  total_cavities?: string
+  effective_cavities?: string
+  mold_in_stock?: string
+  mold_no?: string
+  mold_size?: string
+  standard_hours?: string
+  notes?: string
+  normalized_key?: string
+  is_active: boolean
+  source_sheet?: string
+  source_row?: number | null
+  source_key?: string
+  raw_data?: Record<string, unknown>
+  created_at?: string
+  updated_at?: string
+}
+
+export interface Order {
+  id: number
+  order_no: string
+  item_no?: string
+  batch_no: string
+  product_code: string
+  product_name: string
+  specification: string
+  material: string
+  order_quantity: number
+  order_date: string | null
+  due_date?: string | null
+  mold_size?: string
+  status: OrderStatus
+  status_display?: string
+  product_specification?: ProductSpecification | null
+  product_specification_id?: number | null
+  forming_hours?: number | string | null
+  production_required?: boolean | null
+  legacy_shipment_text?: string
+  required_material_kg?: number | string | null
+  manual_received_material_kg?: number | string | null
+  imported_received_material_kg?: number | string | null
+  received_material_kg?: number | string | null
+  material_gap_kg?: number | string | null
+  material_status?: OrderMaterialStatus
+  process_card_count?: number | null
+  process_card_covered_quantity?: number | null
+  process_card_status?: OrderProcessCardStatus
+  notes?: string
+  source_sheet?: string
+  source_row?: number | null
+  source_key?: string
+  raw_data?: Record<string, unknown>
+  created_by_name?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export type QualityOrder = Order
+
+export interface MaterialReceipt {
+  id: number
+  order?: Pick<Order, 'id' | 'order_no' | 'item_no' | 'specification' | 'material' | 'order_quantity'> | null
+  order_id?: number | null
+  order_no: string
+  item_no?: string
+  finished_product_name?: string
+  specification?: string
+  material?: string
+  batch_no?: string
+  sheet_size?: string
+  weight_kg: number | string
+  manufactured_on?: string | null
+  source_sheet?: string
+  source_row?: number | null
+  source_key?: string
+  raw_data?: Record<string, unknown>
+  created_at?: string
+  updated_at?: string
+}
+
+export type BusinessImportRecordType = 'PRODUCT_SPECIFICATION' | 'ORDER' | 'MATERIAL_RECEIPT' | 'INSPECTION_CRITERION' | string
+
+export interface BusinessImportCounts {
+  product_specifications: number
+  orders: number
+  material_receipts: number
+  inspection_criteria: number
+}
+
+export interface BusinessImportPreviewRow {
+  row_key: string
+  record_type: BusinessImportRecordType
+  sheet?: string
+  row?: number
+  action?: 'CREATE' | 'UPDATE' | 'SKIP' | string
+  order_no?: string
+  item_no?: string
+  specification?: string
+  material?: string
+  summary?: string
+  valid?: boolean
+  [key: string]: unknown
+}
+
+export interface BusinessImportPreview {
+  token: string
+  source_type?: string
+  total_rows: number
+  counts: BusinessImportCounts
+  error_count: number
+  warning_count: number
+  rows: BusinessImportPreviewRow[]
+  issues: ImportIssue[]
+}
+
+export interface BusinessImportCommitResult {
+  imported?: Partial<BusinessImportCounts>
+  skipped?: Partial<BusinessImportCounts>
+  counts?: Partial<BusinessImportCounts>
+  imported_count?: number
+  skipped_count?: number
+  [key: string]: unknown
+}
+
 export interface RackConfigInput {
   code: string
   name: string
@@ -238,6 +376,10 @@ export interface ProductionRun {
   id: number
   station: ProductionStation
   station_id?: number
+  order?: Order | null
+  order_id?: number | null
+  product_specification?: ProductSpecification | null
+  product_specification_id?: number | null
   order_no: string
   specification: string
   material: string
@@ -433,7 +575,7 @@ export interface ProductionImportPreview {
 }
 
 export type QualityEmployeeRole = 'INSPECTOR' | 'REWORKER' | 'BOTH'
-export type QualityOrderStatus = 'OPEN' | 'COMPLETED' | 'CANCELLED'
+export type QualityOrderStatus = OrderStatus
 export type ReturnReworkStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED'
 export type ReturnReasonCategory = 'APPEARANCE' | 'DIMENSION' | 'MATERIAL' | 'MIXED' | 'PACKAGING' | 'OTHER'
 
@@ -445,23 +587,6 @@ export interface QualityEmployee {
   role: QualityEmployeeRole
   role_display?: string
   is_active: boolean
-  notes?: string
-}
-
-export interface QualityOrder {
-  id: number
-  order_no: string
-  batch_no: string
-  product_code: string
-  product_name: string
-  specification: string
-  material: string
-  order_quantity: number
-  order_date: string
-  due_date?: string | null
-  mold_size?: string
-  status: QualityOrderStatus
-  status_display?: string
   notes?: string
 }
 
@@ -709,6 +834,8 @@ export interface AnalyticsDefectReason {
 }
 
 export interface AnalyticsOrderPerformance extends AnalyticsQualityMetrics, AnalyticsFinanceMetrics {
+  row_key: string
+  order_id?: number | null
   order_no: string
   product_name: string
   specification: string
@@ -721,6 +848,7 @@ export interface AnalyticsOrderPerformance extends AnalyticsQualityMetrics, Anal
   automatic_record_count: number
   manual_record_count: number
   source: AnalyticsSource
+  link_type?: 'ORDER' | 'LEGACY' | string
 }
 
 export interface ManualPerformanceEntry {

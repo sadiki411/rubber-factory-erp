@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "drf_spectacular",
     "molds.apps.MoldsConfig",
+    "orders.apps.OrdersConfig",
     "production.apps.ProductionConfig",
     "quality.apps.QualityConfig",
     "analytics.apps.AnalyticsConfig",
@@ -107,12 +108,15 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "橡胶工厂 ERP API",
-    "DESCRIPTION": "模具位置、货架配置、生产订单、日报、换模提醒及Excel导入接口",
+    "DESCRIPTION": "模具位置、产品规格、订单、生产、品检、绩效及Excel导入接口",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "ENUM_NAME_OVERRIDES": {
         "MoldStatusEnum": "molds.models.MoldAsset.Status",
         "ProductionRunStatusEnum": "production.models.ProductionRun.Status",
+        "QualityOrderStatusEnum": "quality.models.QualityOrder.Status",
+        "ReturnReworkStatusEnum": "quality.models.ReturnRework.Status",
+        "BusinessImportStatusEnum": "orders.models.BusinessImportBatch.Status",
     },
 }
 

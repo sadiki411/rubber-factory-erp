@@ -10,6 +10,8 @@ from rest_framework import serializers
 
 from molds.models import MoldAsset, RackSlot
 from molds.serializers import MachineSerializer
+from orders.models import ProductSpecification
+from quality.models import QualityOrder
 
 from .models import (
     ProductionDailyLog,
@@ -150,6 +152,18 @@ class ProductionRunSerializer(serializers.ModelSerializer):
         allow_null=True,
         required=False,
     )
+    order_id = serializers.PrimaryKeyRelatedField(
+        source="order",
+        queryset=QualityOrder.objects.all(),
+        allow_null=True,
+        required=False,
+    )
+    product_specification_id = serializers.PrimaryKeyRelatedField(
+        source="product_specification",
+        queryset=ProductSpecification.objects.all(),
+        allow_null=True,
+        required=False,
+    )
     daily_logs = ProductionDailyLogSerializer(many=True, read_only=True)
     produced_mold_count = serializers.IntegerField(read_only=True)
     good_quantity = serializers.IntegerField(read_only=True)
@@ -182,6 +196,8 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "station_id",
             "mold",
             "mold_id",
+            "order_id",
+            "product_specification_id",
             "order_no",
             "specification",
             "material",
@@ -308,6 +324,25 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                 if "mold" in attrs and requested_mold_id != instance.mold_id:
                     raise serializers.ValidationError(
                         {"mold_id": "订单开始生产后不能更换模具。"}
+                    )
+                requested_order = attrs.get("order", instance.order)
+                requested_order_id = requested_order.pk if requested_order else None
+                if "order" in attrs and requested_order_id != instance.order_id:
+                    raise serializers.ValidationError(
+                        {"order_id": "订单开始生产后不能更换关联订单明细。"}
+                    )
+                requested_specification = attrs.get(
+                    "product_specification", instance.product_specification
+                )
+                requested_specification_id = (
+                    requested_specification.pk if requested_specification else None
+                )
+                if (
+                    "product_specification" in attrs
+                    and requested_specification_id != instance.product_specification_id
+                ):
+                    raise serializers.ValidationError(
+                        {"product_specification_id": "订单开始生产后不能更换关联产品规格。"}
                     )
             if (
                 instance.status == ProductionRun.Status.PLANNED
@@ -456,6 +491,8 @@ class ProductionRunSerializer(serializers.ModelSerializer):
         for field_name in [
             "station",
             "mold",
+            "order",
+            "product_specification",
             "order_no",
             "specification",
             "material",

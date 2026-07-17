@@ -34,6 +34,9 @@ button, input, textarea, select { font: inherit; }
   position: fixed !important;
   inset: 0 auto 0 0;
   height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   z-index: 10;
   border-right: 1px solid #e3ebe8;
   box-shadow: 5px 0 22px rgba(34, 70, 61, .035);
@@ -46,7 +49,8 @@ button, input, textarea, select { font: inherit; }
 .brand-mark.small { display: inline-grid; width: 30px; height: 30px; border-radius: 9px; font-size: 15px; margin-right: 8px; }
 .app-sider .ant-menu { border-inline-end: 0 !important; padding: 4px 12px; }
 .app-sider .ant-menu-item { margin-block: 5px; font-weight: 500; }
-.sider-footer { position: absolute; bottom: 20px; left: 24px; color: #8a9c97; font-size: 12px; }
+.sider-menu-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.sider-footer { flex: 0 0 auto; padding: 12px 24px 20px; color: #8a9c97; font-size: 12px; }
 .mobile-drawer-title { display: flex; align-items: center; }
 .ant-drawer .ant-menu { border: 0; padding: 10px; }
 
@@ -199,6 +203,36 @@ button, input, textarea, select { font: inherit; }
 .import-preview-card { margin-top: 20px; }
 .import-preview-card .ant-progress { margin: 12px 0 20px; }
 .import-commit-bar { display: flex; align-items: center; justify-content: space-between; gap: 18px; background: #f3f8f6; border-radius: 12px; padding: 16px; margin-top: 18px; }
+
+.business-filter-row { display: grid; gap: 12px; }
+.product-specification-filter-row { grid-template-columns: minmax(280px, 1fr) 180px; }
+.order-filter-row { grid-template-columns: minmax(300px, 1fr) 150px 150px 150px; }
+.receipt-filter-row { grid-template-columns: minmax(300px, 1fr) 180px; }
+.business-page-tabs { margin-bottom: 14px; }
+.business-page-tabs .ant-tabs-nav { margin-bottom: 0; }
+.business-page-tabs .ant-tabs-tab { min-height: 44px; font-weight: 600; }
+.business-page-alert { margin-bottom: 16px; }
+.business-source-alert, .business-form-hint { margin-bottom: 18px; }
+.business-form-section { margin: 8px 0 15px; padding: 9px 12px; border-radius: 9px; background: #eef5f2; color: #28584c; font-weight: 700; }
+.business-mobile-list { display: grid; gap: 12px; }
+.business-mobile-card .ant-card-body { display: grid; gap: 8px; }
+.business-mobile-card .record-card-heading { align-items: flex-start; }
+.business-mobile-card .record-card-heading h4 { min-width: 0; overflow-wrap: anywhere; }
+.business-mobile-card[role="button"]:focus-visible { outline: 3px solid rgba(47, 123, 104, .28); outline-offset: 2px; }
+.business-mobile-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0; }
+.business-mobile-grid span { min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 9px; border-radius: 9px; background: #f4f8f6; }
+.business-mobile-grid small { color: #728680; }
+.business-mobile-grid b { color: #244f45; overflow-wrap: anywhere; }
+.order-mobile-statuses { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 5px; }
+.order-mobile-statuses span { display: flex; align-items: center; gap: 5px; }
+.order-mobile-statuses small { color: #728680; }
+.order-balance-summary { margin-bottom: 18px; }
+.business-import-upload { display: grid; gap: 12px; margin-top: 18px; }
+.business-import-preview { margin-top: 24px; }
+.business-import-preview .ant-progress { margin: 10px 0 18px; }
+.business-import-table { margin-top: 16px; }
+.production-specification-reference { margin-bottom: 18px; }
+.production-specification-reference-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 14px; }
 
 .changeover-alert { margin-bottom: 16px; }
 .production-kpis { margin-bottom: 16px; }
@@ -439,8 +473,9 @@ button, input, textarea, select { font: inherit; }
   .dashboard-section { margin-top: 24px; }
   .result-grid { grid-template-columns: 1fr; }
   .filter-row, .rack-toolbar { grid-template-columns: 1fr; }
+  .business-filter-row { grid-template-columns: 1fr; }
   .production-filter-row { grid-template-columns: 1fr; }
-  .filter-row .ant-input-affix-wrapper, .filter-row .ant-select, .rack-toolbar .ant-select, .rack-toolbar .ant-input-search { min-height: 44px; }
+  .filter-row .ant-input-affix-wrapper, .filter-row .ant-select, .business-filter-row .ant-input-affix-wrapper, .business-filter-row .ant-select, .rack-toolbar .ant-select, .rack-toolbar .ant-input-search { min-height: 44px; }
   .mobile-record-card .ant-btn { min-height: 44px; }
   .drawer-footer-actions .ant-btn { min-height: 44px; }
   .drawer-footer-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -461,6 +496,19 @@ button, input, textarea, select { font: inherit; }
   .panel-actions .ant-btn { min-height: 44px; }
   .import-commit-bar { align-items: stretch; flex-direction: column; position: sticky; bottom: 8px; z-index: 2; box-shadow: 0 8px 25px rgba(22,69,58,.16); }
   .import-commit-bar .ant-btn { min-height: 48px; }
+  .business-import-drawer .ant-drawer-header { align-items: flex-start; }
+  .business-import-drawer .ant-drawer-extra .ant-btn { min-height: 44px; }
+  .business-page-tabs .ant-tabs-nav-wrap { overflow-x: auto; }
+  .business-page-tabs .ant-tabs-tab { padding-inline: 8px; }
+  .business-page-tabs .ant-tag { margin-inline: 4px 0; }
+  .business-data-drawer .ant-drawer-body { padding: 16px 14px; }
+  .business-data-drawer .ant-drawer-footer { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+  .business-data-drawer .ant-input,
+  .business-data-drawer .ant-picker,
+  .business-data-drawer .ant-select-single { min-height: 44px; }
+  .business-data-drawer .ant-select-single .ant-select-selector { min-height: 44px; align-items: center; }
+  .business-mobile-grid { grid-template-columns: 1fr; }
+  .production-specification-reference-grid { grid-template-columns: 1fr; }
   .production-kpi .ant-card-body { padding: 14px; }
   .production-kpi .ant-statistic-title { font-size: 12px; }
   .production-kpi .ant-statistic-content { font-size: 21px; }
@@ -523,6 +571,7 @@ button, input, textarea, select { font: inherit; }
 @media (max-width: 420px) {
   .page-title-row { flex-direction: column; }
   .page-title-extra, .page-title-extra .ant-btn { width: 100%; }
+  .page-title-extra > .ant-space { display: grid; width: 100%; }
   .quick-links { grid-template-columns: 1fr; }
   .result-card-top { flex-direction: column; }
 }

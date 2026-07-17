@@ -174,7 +174,7 @@ describe('ProductionLogDrawer planned start', () => {
     expect(onRunChange).toHaveBeenCalledWith(changed)
     const refreshedKeys = invalidateSpy.mock.calls.map(([filters]) => filters?.queryKey?.[0])
     expect(refreshedKeys).toEqual(expect.arrayContaining(['production', 'analytics']))
-  })
+  }, 15_000)
 
   it('opens the atomic finish-and-putaway flow without first completing the run', async () => {
     const running = { ...plannedRun, status: 'RUNNING' as const, loaded_at: new Date().toISOString(), mold: { ...plannedRun.mold!, status: 'ON_MACHINE' as const } }

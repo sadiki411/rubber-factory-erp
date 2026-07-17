@@ -2,6 +2,9 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
+from orders.models import BusinessRecordRevision, ProductSpecification
+from orders.services import model_snapshot, record_revision
+
 from .models import QualityEmployee, QualityOrder, QualityShipment, ReturnRework
 
 
@@ -57,34 +60,105 @@ class QualityEmployeeSerializer(ValidatedModelSerializer):
 
 
 class QualityOrderSerializer(ValidatedModelSerializer):
+    source_batch_id = serializers.UUIDField(read_only=True)
     created_by_name = serializers.SerializerMethodField()
     status_display = serializers.CharField(source="get_status_display", read_only=True)
+    product_specification = serializers.SerializerMethodField()
+    product_specification_id = serializers.PrimaryKeyRelatedField(
+        source="product_specification",
+        queryset=ProductSpecification.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+    )
 
     class Meta:
         model = QualityOrder
         fields = [
             "id",
             "order_no",
+            "item_no",
             "batch_no",
             "product_code",
             "product_name",
             "specification",
             "material",
+            "product_specification",
+            "product_specification_id",
             "order_quantity",
             "order_date",
             "due_date",
             "mold_size",
+            "forming_hours",
+            "production_required",
+            "legacy_shipment_text",
+            "required_material_kg",
+            "manual_received_material_kg",
+            "process_card_count",
+            "process_card_covered_quantity",
             "status",
             "status_display",
             "notes",
+            "source_batch_id",
+            "source_sheet",
+            "source_row",
+            "source_key",
+            "raw_data",
             "created_by_name",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["created_by_name", "created_at", "updated_at"]
+        read_only_fields = [
+            "source_sheet",
+            "source_row",
+            "source_key",
+            "raw_data",
+            "created_by_name",
+            "created_at",
+            "updated_at",
+        ]
 
     def get_created_by_name(self, obj) -> str:
         return obj.created_by.get_full_name() or obj.created_by.get_username()
+
+    def get_product_specification(self, obj) -> dict | None:
+        product = obj.product_specification
+        if not product:
+            return None
+        return {
+            "id": product.pk,
+            "product_name": product.product_name,
+            "customer_product_no": product.customer_product_no,
+            "specification": product.specification,
+            "material": product.material,
+            "mold_no": product.mold_no,
+            "mold_size": product.mold_size,
+            "is_active": product.is_active,
+        }
+
+    def create(self, validated_data):
+        with transaction.atomic():
+            instance = super().create(validated_data)
+            request = self.context.get("request")
+            record_revision(
+                instance,
+                request.user,
+                BusinessRecordRevision.Action.CREATE,
+            )
+            return instance
+
+    def update(self, instance, validated_data):
+        with transaction.atomic():
+            locked = QualityOrder.objects.select_for_update().get(pk=instance.pk)
+            before = model_snapshot(locked)
+            updated = super().update(locked, validated_data)
+            request = self.context.get("request")
+            record_revision(
+                updated,
+                request.user,
+                BusinessRecordRevision.Action.UPDATE,
+                before=before,
+            )
+            return updated
 
 
 class QualityShipmentSerializer(ValidatedModelSerializer):

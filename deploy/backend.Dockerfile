@@ -22,6 +22,8 @@ COPY backend/molds/*.py /app/backend/molds/
 COPY backend/molds/migrations/*.py /app/backend/molds/migrations/
 COPY backend/molds/management/*.py /app/backend/molds/management/
 COPY backend/molds/management/commands/*.py /app/backend/molds/management/commands/
+COPY backend/orders/*.py /app/backend/orders/
+COPY backend/orders/migrations/*.py /app/backend/orders/migrations/
 COPY backend/production/*.py /app/backend/production/
 COPY backend/production/migrations/*.py /app/backend/production/migrations/
 COPY backend/quality/*.py /app/backend/quality/

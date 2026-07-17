@@ -81,6 +81,8 @@ if ($backendDockerfile -match 'COPY\s+backend/\s') {
     throw 'backend.Dockerfile must not copy local databases or media with a broad backend COPY.'
 }
 foreach ($requiredCopy in @(
+    'COPY backend/orders/*.py /app/backend/orders/',
+    'COPY backend/orders/migrations/*.py /app/backend/orders/migrations/',
     'COPY backend/production/*.py /app/backend/production/',
     'COPY backend/production/migrations/*.py /app/backend/production/migrations/',
     'COPY backend/quality/*.py /app/backend/quality/',
@@ -104,6 +106,17 @@ Write-Host 'Dockerfile source and runtime version checks passed.'
 $entrypoint = Get-Content -Raw -LiteralPath (Join-Path $root 'deploy\backend-entrypoint.sh')
 if ($entrypoint -notmatch 'backup_erp' -or $entrypoint -notmatch 'BACKUP_BEFORE_MIGRATE') {
     throw 'backend entrypoint must create a backup before running migrations.'
+}
+$nginxConfig = Get-Content -Raw -LiteralPath (Join-Path $root 'deploy\nginx.conf')
+$privateImportLocation = 'location ^~ /media/business-imports/'
+$publicMediaLocation = 'location /media/'
+$privateImportIndex = $nginxConfig.IndexOf($privateImportLocation)
+$publicMediaIndex = $nginxConfig.IndexOf($publicMediaLocation)
+if ($privateImportIndex -lt 0 -or $nginxConfig -notmatch 'location \^~ /media/business-imports/\s*\{\s*return 404;') {
+    throw 'nginx must block public access to uploaded business import workbooks.'
+}
+if ($publicMediaIndex -lt 0 -or $privateImportIndex -gt $publicMediaIndex) {
+    throw 'the private business-imports location must appear before the general media location.'
 }
 
 $workflow = Get-Content -Raw -LiteralPath $workflowPath

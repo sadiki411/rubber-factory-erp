@@ -1,7 +1,7 @@
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
-from django.db.models import Count, IntegerField, Q, Sum, Value
+from django.db.models import Count, IntegerField, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -111,17 +111,19 @@ class QualityOrderViewSet(NoDeleteModelViewSet):
     serializer_class = QualityOrderSerializer
 
     def get_queryset(self):
-        queryset = QualityOrder.objects.select_related("created_by")
+        queryset = QualityOrder.objects.select_related("created_by", "product_specification")
         params = self.request.query_params
         q = str(params.get("q", "")).strip()
         if q:
             queryset = queryset.filter(
                 Q(order_no__icontains=q)
+                | Q(item_no__icontains=q)
                 | Q(batch_no__icontains=q)
                 | Q(product_code__icontains=q)
                 | Q(product_name__icontains=q)
                 | Q(specification__icontains=q)
                 | Q(material__icontains=q)
+                | Q(product_specification__customer_product_no__icontains=q)
             )
         status_value = str(params.get("status", "")).strip().upper()
         if status_value:
@@ -141,7 +143,12 @@ class QualityOrderViewSet(NoDeleteModelViewSet):
 
 def _shipment_queryset():
     return (
-        QualityShipment.objects.select_related("order__created_by", "inspector", "created_by")
+        QualityShipment.objects.select_related(
+            "order__created_by",
+            "order__product_specification",
+            "inspector",
+            "created_by",
+        )
         .annotate(
             rework_count_value=Count("reworks", distinct=True),
             returned_quantity_value=Coalesce(
@@ -192,13 +199,10 @@ class ReturnReworkViewSet(NoDeleteModelViewSet):
 
     def get_queryset(self):
         queryset = ReturnRework.objects.select_related(
-            "shipment__order__created_by",
-            "shipment__inspector",
-            "shipment__created_by",
             "responsible_inspector",
             "rework_employee",
             "created_by",
-        )
+        ).prefetch_related(Prefetch("shipment", queryset=_shipment_queryset()))
         params = self.request.query_params
         q = str(params.get("q", "")).strip()
         if q:

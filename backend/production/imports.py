@@ -19,6 +19,8 @@ from openpyxl.utils.cell import range_boundaries
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from molds.models import MoldAsset
+from orders.models import ProductSpecification
+from quality.models import QualityOrder
 
 from .models import (
     ProductionDailyLog,
@@ -207,6 +209,94 @@ def _issue(level, message, *, sheet="", row=None, field=""):
         "field": field,
         "message": message,
     }
+
+
+def _normalized_order_match_value(value):
+    return str(value or "").strip().casefold()
+
+
+def _order_match_key(order_no, specification, material):
+    return (
+        _normalized_order_match_value(order_no),
+        _normalized_order_match_value(specification),
+        _normalized_order_match_value(material),
+    )
+
+
+def _resolve_order_links(records, issues, *, for_update=False):
+    """Attach only unambiguous order/specification references to import rows.
+
+    The production card values remain the authoritative historical snapshots.
+    A master record is used only as a reference and never overwrites those
+    imported values.
+    """
+
+    order_numbers = {
+        str(record.get("order_no") or "").strip()
+        for record in records
+        if str(record.get("order_no") or "").strip()
+    }
+    candidate_query = Q()
+    for order_no in order_numbers:
+        candidate_query |= Q(order_no__iexact=order_no)
+
+    candidates = QualityOrder.objects.none()
+    if candidate_query:
+        candidates = QualityOrder.objects.filter(candidate_query)
+        if for_update:
+            candidates = candidates.select_for_update()
+
+    by_key = {}
+    for order in candidates:
+        key = _order_match_key(order.order_no, order.specification, order.material)
+        by_key.setdefault(key, []).append(order)
+
+    for record in records:
+        record["order_id"] = None
+        record["product_specification_id"] = None
+        if not record.get("order_no") or not record.get("specification"):
+            continue
+        key = _order_match_key(
+            record.get("order_no"),
+            record.get("specification"),
+            record.get("material"),
+        )
+        matches = by_key.get(key, [])
+        if len(matches) == 1:
+            order = matches[0]
+            record["order_id"] = order.pk
+            record["product_specification_id"] = order.product_specification_id
+            if order.product_specification_id is None:
+                issues.append(
+                    _issue(
+                        "warning",
+                        "已唯一匹配订单明细，但该订单尚未关联产品规格，生产记录的产品规格关联将保持为空。",
+                        sheet=record.get("sheet", ""),
+                        row=2,
+                        field="product_specification_id",
+                    )
+                )
+            continue
+
+        if matches:
+            message = (
+                f"订单号、规格和材质匹配到{len(matches)}条订单明细，"
+                "无法唯一确定，生产记录将保持未关联。"
+            )
+        else:
+            message = (
+                "未找到订单号、规格和材质均匹配的订单明细，"
+                "生产记录将保持未关联。"
+            )
+        issues.append(
+            _issue(
+                "warning",
+                message,
+                sheet=record.get("sheet", ""),
+                row=2,
+                field="order_no",
+            )
+        )
 
 
 def _apply_card_style(ws):
@@ -1578,6 +1668,7 @@ def preview_production_workbook(uploaded_file, user):
         if record:
             records.append(record)
     workbook.close()
+    _resolve_order_links(records, issues)
     _preflight_database(records, issues)
     errors = [issue for issue in issues if issue["level"] == "error"]
     warnings = [issue for issue in issues if issue["level"] == "warning"]
@@ -1598,6 +1689,8 @@ def preview_production_workbook(uploaded_file, user):
                 "order_no",
                 "status",
                 "mold_code",
+                "order_id",
+                "product_specification_id",
                 "specification",
                 "material",
                 "order_quantity",
@@ -1663,6 +1756,23 @@ def commit_production_batch(batch, user):
             locked = ProductionImportBatch.objects.get(pk=batch.pk)
             records = locked.payload.get("rows", [])
             commit_issues = []
+            preview_links = [
+                (
+                    record.get("order_id"),
+                    record.get("product_specification_id"),
+                )
+                for record in records
+            ]
+            _resolve_order_links(records, commit_issues, for_update=True)
+            current_links = [
+                (
+                    record.get("order_id"),
+                    record.get("product_specification_id"),
+                )
+                for record in records
+            ]
+            if current_links != preview_links:
+                raise ValueError("订单主档匹配结果已变化，请重新上传并预检。")
             _preflight_database(records, commit_issues)
             commit_errors = [
                 issue for issue in commit_issues if issue["level"] == "error"
@@ -1675,6 +1785,22 @@ def commit_production_batch(batch, user):
             imported_count = 0
             log_count = 0
             settled_count = 0
+            order_ids = {record.get("order_id") for record in records if record.get("order_id")}
+            specification_ids = {
+                record.get("product_specification_id")
+                for record in records
+                if record.get("product_specification_id")
+            }
+            linked_orders = {
+                order.pk: order
+                for order in QualityOrder.objects.select_for_update().filter(pk__in=order_ids)
+            }
+            linked_specifications = {
+                specification.pk: specification
+                for specification in ProductSpecification.objects.select_for_update().filter(
+                    pk__in=specification_ids
+                )
+            }
             for record in records:
                 station = ProductionStation.objects.select_for_update().filter(
                     code=record["station_code"], is_active=True
@@ -1695,6 +1821,10 @@ def commit_production_batch(batch, user):
                 run = ProductionRun(
                     station=station,
                     mold=mold,
+                    order=linked_orders.get(record.get("order_id")),
+                    product_specification=linked_specifications.get(
+                        record.get("product_specification_id")
+                    ),
                     order_no=record["order_no"],
                     specification=record["specification"],
                     material=record.get("material", ""),

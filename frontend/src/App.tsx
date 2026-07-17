@@ -11,7 +11,9 @@ const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage').then((module) =
 const ImportPage = lazy(() => import('./pages/ImportPage').then((module) => ({ default: module.ImportPage })))
 const MoldDetailPage = lazy(() => import('./pages/MoldDetailPage').then((module) => ({ default: module.MoldDetailPage })))
 const MoldsPage = lazy(() => import('./pages/MoldsPage').then((module) => ({ default: module.MoldsPage })))
+const OrdersPage = lazy(() => import('./pages/OrdersPage').then((module) => ({ default: module.OrdersPage })))
 const ProductionPage = lazy(() => import('./pages/ProductionPage').then((module) => ({ default: module.ProductionPage })))
+const ProductSpecificationsPage = lazy(() => import('./pages/ProductSpecificationsPage').then((module) => ({ default: module.ProductSpecificationsPage })))
 const QualityPage = lazy(() => import('./pages/QualityPage').then((module) => ({ default: module.QualityPage })))
 const RackConfigPage = lazy(() => import('./pages/RackConfigPage').then((module) => ({ default: module.RackConfigPage })))
 const RacksPage = lazy(() => import('./pages/RacksPage').then((module) => ({ default: module.RacksPage })))
@@ -57,6 +59,8 @@ export function App() {
       <Routes>
         <Route element={<AppShell user={sessionQuery.data.user} onLogout={logout} />}>
           <Route index element={<DashboardPage />} />
+          <Route path="product-specifications" element={<ProductSpecificationsPage />} />
+          <Route path="orders" element={<OrdersPage />} />
           <Route path="production" element={<ProductionPage />} />
           <Route path="quality" element={<QualityPage />} />
           <Route path="analytics" element={<AnalyticsPage />} />

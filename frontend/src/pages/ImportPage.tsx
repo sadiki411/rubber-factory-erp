@@ -71,7 +71,7 @@ export function ImportPage() {
 
   return (
     <div className="page-container">
-      <PageTitle title="Excel 导入" description="先预检再整批导入；存在错误时不会写入任何数据。" extra={<Button icon={<DownloadOutlined />} href={importApi.templateUrl}>下载标准模板</Button>} />
+      <PageTitle title="模具 Excel 导入" description="先预检再整批导入模具资料；存在错误时不会写入任何数据。" extra={<Button icon={<DownloadOutlined />} href={importApi.templateUrl}>下载标准模板</Button>} />
 
       <Row gutter={[20, 20]}>
         <Col xs={24} lg={15}>

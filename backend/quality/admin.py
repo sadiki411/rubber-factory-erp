@@ -1,5 +1,8 @@
 from django.contrib import admin
 
+from orders.models import BusinessRecordRevision
+from orders.services import model_snapshot, record_revision
+
 from .models import QualityEmployee, QualityOrder, QualityShipment, ReturnRework
 
 
@@ -29,10 +32,12 @@ class QualityEmployeeAdmin(NoDeleteAdmin):
 class QualityOrderAdmin(AuditAdmin):
     list_display = (
         "order_no",
+        "item_no",
         "batch_no",
         "product_name",
         "specification",
         "material",
+        "production_required",
         "order_quantity",
         "order_date",
         "due_date",
@@ -41,6 +46,7 @@ class QualityOrderAdmin(AuditAdmin):
     list_filter = ("status", "order_date", "due_date", "material")
     search_fields = (
         "order_no",
+        "item_no",
         "batch_no",
         "product_code",
         "product_name",
@@ -48,6 +54,18 @@ class QualityOrderAdmin(AuditAdmin):
         "material",
     )
     date_hierarchy = "order_date"
+
+    def save_model(self, request, obj, form, change):
+        before = model_snapshot(QualityOrder.objects.get(pk=obj.pk)) if change else None
+        super().save_model(request, obj, form, change)
+        record_revision(
+            obj,
+            request.user,
+            BusinessRecordRevision.Action.UPDATE
+            if change
+            else BusinessRecordRevision.Action.CREATE,
+            before=before,
+        )
 
 
 @admin.register(QualityShipment)

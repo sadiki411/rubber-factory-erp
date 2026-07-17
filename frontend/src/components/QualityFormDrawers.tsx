@@ -118,69 +118,6 @@ export function QualityShipmentDrawer({ open, shipment, orders, employees, onClo
   )
 }
 
-interface OrderDrawerProps extends BaseDrawerProps {
-  order?: QualityOrder
-}
-
-export function QualityOrderDrawer({ open, order, onClose }: OrderDrawerProps) {
-  const [form] = Form.useForm<Record<string, any>>()
-  const queryClient = useQueryClient()
-  const { message } = App.useApp()
-
-  useEffect(() => {
-    if (!open) return
-    form.resetFields()
-    form.setFieldsValue(order ? {
-      ...order,
-      order_date: dayjs(order.order_date),
-      due_date: order.due_date ? dayjs(order.due_date) : undefined,
-    } : { order_date: dayjs(), status: 'OPEN' })
-  }, [form, open, order])
-
-  const mutation = useMutation({
-    mutationFn: (values: Record<string, any>) => {
-      const body = {
-        ...values,
-        order_date: (values.order_date as Dayjs).format('YYYY-MM-DD'),
-        due_date: values.due_date ? (values.due_date as Dayjs).format('YYYY-MM-DD') : null,
-      }
-      return order ? qualityApi.updateOrder(order.id, body) : qualityApi.createOrder(body)
-    },
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['quality'] }),
-        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
-      ])
-      message.success(order ? '订单资料已更新' : '订单批次已创建')
-      onClose()
-    },
-    onError: (error: Error) => message.error(error.message),
-  })
-
-  const submit = async () => mutation.mutate(await form.validateFields())
-
-  return (
-    <Drawer open={open} onClose={onClose} size={680} title={order ? `编辑订单 · ${order.order_no}` : '新增订单批次'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={mutation.isPending} onClick={() => void submit()}>保存</Button></Space>}>
-      <Form form={form} layout="vertical" requiredMark="optional">
-        <Row gutter={14}>
-          <Col xs={24} sm={12}><Form.Item name="order_no" label="订单编号" rules={[{ required: true, whitespace: true, message: '请输入订单编号' }]}><Input /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="batch_no" label="批次号"><Input placeholder="无批次号时可留空" /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="product_code" label="产品编码"><Input placeholder="可选" /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="product_name" label="产品名称" rules={[{ required: true, whitespace: true, message: '请输入产品名称' }]}><Input /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="specification" label="规格" rules={[{ required: true, whitespace: true, message: '请输入规格' }]}><Input /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="material" label="材质 / 胶料" rules={[{ required: true, whitespace: true, message: '请输入材质' }]}><Input /></Form.Item></Col>
-          <Col xs={12} sm={8}><Form.Item name="order_quantity" label="订单数量" rules={[{ required: true, message: '请输入订单数量' }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
-          <Col xs={12} sm={8}><Form.Item name="mold_size" label="模具尺寸"><Input /></Form.Item></Col>
-          <Col xs={24} sm={8}><Form.Item name="status" label="订单状态" rules={[{ required: true }]}><Select options={[{ value: 'OPEN', label: '进行中' }, { value: 'COMPLETED', label: '已完成' }, { value: 'CANCELLED', label: '已取消' }]} /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="order_date" label="订单日期" rules={[{ required: true, message: '请选择订单日期' }]}><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="due_date" label="交付日期"><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
-        </Row>
-        <Form.Item name="notes" label="备注"><Input.TextArea rows={3} maxLength={500} showCount /></Form.Item>
-      </Form>
-    </Drawer>
-  )
-}
-
 interface EmployeeDrawerProps extends BaseDrawerProps {
   employee?: QualityEmployee
 }

@@ -66,7 +66,12 @@ class ProductionPagination(PageNumberPagination):
 
 def _run_queryset():
     return ProductionRun.objects.select_related(
-        "station__machine", "mold__mold_model", "created_by", "settled_by"
+        "station__machine",
+        "mold__mold_model",
+        "order",
+        "product_specification",
+        "created_by",
+        "settled_by",
     ).prefetch_related("daily_logs")
 
 
@@ -103,6 +108,11 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
                 | Q(mold__asset_code__icontains=keyword)
                 | Q(mold__mold_model__code__icontains=keyword)
                 | Q(mold__mold_model__product_name__icontains=keyword)
+                | Q(order__order_no__icontains=keyword)
+                | Q(order__item_no__icontains=keyword)
+                | Q(order__product_name__icontains=keyword)
+                | Q(product_specification__customer_product_no__icontains=keyword)
+                | Q(product_specification__product_name__icontains=keyword)
             )
 
         run_status = str(params.get("status", "")).strip().upper()
@@ -136,6 +146,28 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
                 queryset = queryset.filter(mold_id=int(mold))
             else:
                 queryset = queryset.filter(mold__asset_code__iexact=mold)
+
+        order = str(params.get("order", params.get("order_id", ""))).strip()
+        if order:
+            if order.isdigit():
+                queryset = queryset.filter(order_id=int(order))
+            else:
+                queryset = queryset.filter(order__order_no__iexact=order)
+
+        product_specification = str(
+            params.get(
+                "product_specification",
+                params.get("product_specification_id", ""),
+            )
+        ).strip()
+        if product_specification:
+            if not product_specification.isdigit():
+                raise DRFValidationError(
+                    {"product_specification": "产品规格ID必须是整数。"}
+                )
+            queryset = queryset.filter(
+                product_specification_id=int(product_specification)
+            )
 
         date_from = str(params.get("date_from", "")).strip()
         date_to = str(params.get("date_to", "")).strip()
@@ -474,6 +506,8 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
 
 class BoardRunSerializer(serializers.ModelSerializer):
     order_no = serializers.CharField()
+    order_id = serializers.IntegerField(allow_null=True)
+    product_specification_id = serializers.IntegerField(allow_null=True)
     station_id = serializers.IntegerField()
     station_code = serializers.CharField(source="station.code")
     mold_id = serializers.IntegerField(allow_null=True)
@@ -492,6 +526,8 @@ class BoardRunSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "order_no",
+            "order_id",
+            "product_specification_id",
             "station_id",
             "station_code",
             "mold_id",
@@ -675,7 +711,11 @@ class ProductionSummaryView(APIView):
             log_queryset = log_queryset.filter(production_date__lte=parsed_to)
 
         queryset = ProductionRun.objects.select_related(
-            "station__machine", "mold__mold_model", "created_by"
+            "station__machine",
+            "mold__mold_model",
+            "order",
+            "product_specification",
+            "created_by",
         ).prefetch_related(
             Prefetch("daily_logs", queryset=log_queryset, to_attr="summary_logs")
         )

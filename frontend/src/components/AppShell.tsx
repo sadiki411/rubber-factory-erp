@@ -5,6 +5,8 @@ import {
   HomeOutlined,
   LogoutOutlined,
   MenuOutlined,
+  OrderedListOutlined,
+  ProfileOutlined,
   SafetyCertificateOutlined,
   ScheduleOutlined,
   SettingOutlined,
@@ -19,13 +21,15 @@ const { Header, Sider, Content } = Layout
 
 const menuItems = [
   { key: '/', icon: <HomeOutlined />, label: '工作台' },
+  { key: '/product-specifications', icon: <ProfileOutlined />, label: '产品规格资料' },
+  { key: '/orders', icon: <OrderedListOutlined />, label: '订单管理' },
   { key: '/production', icon: <ScheduleOutlined />, label: '前端生产' },
   { key: '/quality', icon: <SafetyCertificateOutlined />, label: '品检出货' },
   { key: '/analytics', icon: <BarChartOutlined />, label: '数据分析' },
   { key: '/molds', icon: <ToolOutlined />, label: '模具台账' },
   { key: '/racks', icon: <AppstoreOutlined />, label: '货架总览' },
   { key: '/rack-config', icon: <SettingOutlined />, label: '货架配置' },
-  { key: '/imports', icon: <FileExcelOutlined />, label: 'Excel 导入' },
+  { key: '/imports', icon: <FileExcelOutlined />, label: '模具 Excel 导入' },
 ]
 
 interface Props {
@@ -67,7 +71,7 @@ export function AppShell({ user, onLogout }: Props) {
               <Typography.Text type="secondary">生产 · 品检 · 模具</Typography.Text>
             </div>
           </div>
-          {menu}
+          <div className="sider-menu-scroll">{menu}</div>
           <div className="sider-footer">生产 · 品检 · 模具</div>
         </Sider>
       ) : (

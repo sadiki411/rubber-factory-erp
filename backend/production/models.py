@@ -143,6 +143,22 @@ class ProductionRun(TimeStampedModel):
         related_name="runs",
         on_delete=models.PROTECT,
     )
+    order = models.ForeignKey(
+        "quality.QualityOrder",
+        verbose_name="关联订单明细",
+        related_name="production_runs",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    product_specification = models.ForeignKey(
+        "orders.ProductSpecification",
+        verbose_name="关联产品规格",
+        related_name="production_runs",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
     order_no = models.CharField("订单号", max_length=100, db_index=True)
     specification = models.CharField("规格", max_length=200)
     material = models.CharField("材质", max_length=100, blank=True)
