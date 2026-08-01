@@ -3,6 +3,7 @@ import { Alert, Button, Card, Empty, Grid, Input, List, Select, Space, Table, Ta
 import type { TableColumnsType } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import dayjs from 'dayjs'
+import utc from 'dayjs/plugin/utc'
 import { useState } from 'react'
 import { materialReceiptApi, orderApi, toList } from '../api/client'
 import { BusinessImportDrawer } from '../components/BusinessImportDrawer'
@@ -10,6 +11,8 @@ import { MaterialReceiptDrawer } from '../components/MaterialReceiptDrawer'
 import { OrderFormDrawer } from '../components/OrderFormDrawer'
 import { PageTitle } from '../components/PageTitle'
 import type { MaterialReceipt, Order, OrderMaterialStatus, OrderProcessCardStatus, OrderStatus } from '../types'
+
+dayjs.extend(utc)
 
 const ORDER_STATUS_META: Record<OrderStatus, { text: string; color: string }> = {
   OPEN: { text: '进行中', color: 'processing' },
@@ -37,7 +40,7 @@ function exactOrderValue(value: unknown, suffix = '') {
 
 function formattedTimestamp(value?: string | null) {
   if (!value) return '未登记'
-  const parsed = dayjs(value)
+  const parsed = dayjs(value).utcOffset(8)
   return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm') : value
 }
 

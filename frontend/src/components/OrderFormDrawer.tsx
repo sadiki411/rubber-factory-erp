@@ -1,9 +1,12 @@
 import { Alert, App, Button, Col, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Row, Select, Space, Tag } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
+import utc from 'dayjs/plugin/utc'
 import { useEffect } from 'react'
 import { orderApi, productSpecificationApi, toList } from '../api/client'
 import type { Order, OrderMaterialStatus, OrderProcessCardStatus } from '../types'
+
+dayjs.extend(utc)
 
 interface Props {
   open: boolean
@@ -30,7 +33,7 @@ function exactValue(value: unknown, suffix = '') {
 }
 
 function formattedTimestamp(value?: string | null) {
-  return value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '未登记'
+  return value ? dayjs(value).utcOffset(8).format('YYYY-MM-DD HH:mm') : '未登记'
 }
 
 export function OrderFormDrawer({ open, order, onClose }: Props) {
