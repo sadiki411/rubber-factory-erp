@@ -31,6 +31,23 @@ def model_snapshot(instance):
     return json_safe(snapshot)
 
 
+def order_identity_exists(order_no, item_no, *, exclude_pk=None):
+    """Check the user-facing order number + item identity used by manual entry."""
+    from quality.models import QualityOrder
+
+    order_no = str(order_no or "").strip()
+    item_no = str(item_no or "").strip()
+    if not order_no:
+        return False
+    queryset = QualityOrder.objects.filter(
+        order_no__iexact=order_no,
+        item_no__iexact=item_no,
+    )
+    if exclude_pk is not None:
+        queryset = queryset.exclude(pk=exclude_pk)
+    return queryset.exists()
+
+
 def diff_snapshots(before, after):
     changes = {}
     for key in sorted(set(before) | set(after)):

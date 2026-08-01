@@ -1,6 +1,7 @@
 import io
 import tempfile
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -152,6 +153,7 @@ def factory_workbook(
     primary_curing="TEST-CURE-PRIMARY",
     criterion_lower=9.8,
     criterion_upper=10.2,
+    reference_hours=2.5,
 ):
     workbook = Workbook()
     first = workbook.active
@@ -199,7 +201,7 @@ def factory_workbook(
             specification,
             order_quantity,
             date(2026, 8, 10),
-            2.5,
+            reference_hours,
             required_material_kg,
             9.75,
             material_length,
@@ -576,6 +578,100 @@ class BusinessImportTests(TestCase):
             1,
         )
 
+    def test_factory_reference_hours_are_order_specific_and_items_are_distinct(self):
+        workbook = load_workbook(
+            io.BytesIO(factory_workbook(include_criteria=False))
+        )
+        sheet = workbook["sheet1"]
+        second_row = [cell.value for cell in sheet[4]]
+        second_row[1] = 2
+        second_row[6] = 3.75
+        sheet.append(second_row)
+
+        preview = self.preview(
+            "factory-same-order-different-items.xlsx", workbook_bytes(workbook)
+        )
+        self.assertEqual(preview["error_count"], 0, preview["issues"])
+        self.assertEqual(preview["counts"]["product_specifications"], 1)
+        self.assertEqual(preview["counts"]["orders"], 2)
+        self.commit(preview)
+
+        self.assertEqual(ProductSpecification.objects.count(), 1)
+        self.assertEqual(ProductSpecification.objects.get().standard_hours, "")
+        self.assertEqual(
+            list(
+                QualityOrder.objects.order_by("item_no").values_list(
+                    "item_no", "forming_hours"
+                )
+            ),
+            [("1", Decimal("2.50")), ("2", Decimal("3.75"))],
+        )
+
+    def test_factory_reference_hours_do_not_overwrite_existing_standard_hours(self):
+        product = ProductSpecification.objects.create(
+            customer_product_no=SYNTHETIC_PROJECT,
+            specification="TEST-SPEC-B",
+            material=SYNTHETIC_MATERIAL,
+            mold_no="TEST-MOLD-01",
+            standard_hours="MANUAL-STANDARD-HOURS",
+        )
+        preview = self.preview(
+            "factory-keeps-standard-hours.xlsx",
+            factory_workbook(reference_hours=4.5),
+        )
+        self.assertEqual(preview["error_count"], 0, preview["issues"])
+        self.commit(preview)
+
+        product.refresh_from_db()
+        order = QualityOrder.objects.get(order_no=SYNTHETIC_FACTORY_ORDER)
+        self.assertEqual(product.standard_hours, "MANUAL-STANDARD-HOURS")
+        self.assertEqual(order.product_specification_id, product.pk)
+        self.assertEqual(order.forming_hours, Decimal("4.50"))
+
+    def test_factory_repeated_headers_inside_data_are_skipped(self):
+        workbook = load_workbook(
+            io.BytesIO(factory_workbook(include_criteria=False))
+        )
+        sheet = workbook["sheet1"]
+        sheet.append([cell.value for cell in sheet[3]])
+        second_row = [cell.value for cell in sheet[4]]
+        second_row[1] = 2
+        sheet.append(second_row)
+
+        preview = self.preview(
+            "factory-repeated-header.xlsx", workbook_bytes(workbook)
+        )
+        self.assertEqual(preview["error_count"], 0, preview["issues"])
+        self.assertEqual(preview["counts"]["orders"], 2)
+        self.commit(preview)
+        self.assertEqual(
+            set(QualityOrder.objects.values_list("item_no", flat=True)), {"1", "2"}
+        )
+
+    def test_repeated_headers_are_skipped_in_criteria_and_material_sheets(self):
+        factory = load_workbook(io.BytesIO(factory_workbook()))
+        criteria_sheet = factory["Sheet2"]
+        criteria_sheet.append([cell.value for cell in criteria_sheet[2]])
+        factory_preview = self.preview(
+            "factory-repeated-criteria-header.xlsx", workbook_bytes(factory)
+        )
+        self.assertEqual(
+            factory_preview["error_count"], 0, factory_preview["issues"]
+        )
+        self.assertEqual(factory_preview["counts"]["inspection_criteria"], 1)
+        self.commit(factory_preview)
+
+        material = load_workbook(io.BytesIO(material_workbook()))
+        material_sheet = material["sheet1"]
+        material_sheet.append([cell.value for cell in material_sheet[3]])
+        material_preview = self.preview(
+            "material-repeated-header.xlsx", workbook_bytes(material)
+        )
+        self.assertEqual(
+            material_preview["error_count"], 0, material_preview["issues"]
+        )
+        self.assertEqual(material_preview["counts"]["material_receipts"], 1)
+
     def test_factory_batch_blocks_conflicting_process_for_same_product_identity(self):
         workbook = load_workbook(
             io.BytesIO(factory_workbook(include_criteria=False))
@@ -647,6 +743,39 @@ class BusinessImportTests(TestCase):
         order.refresh_from_db()
         self.assertEqual(order.updated_at, business_updated_at)
         self.assertGreaterEqual(order.last_imported_at, imported_at)
+
+    def test_factory_blocks_ambiguous_existing_order_number_and_item(self):
+        for source_key in ("legacy-duplicate-1", "legacy-duplicate-2"):
+            QualityOrder.objects.create(
+                order_no=SYNTHETIC_FACTORY_ORDER,
+                item_no="1",
+                specification="TEST-SPEC-B",
+                material=SYNTHETIC_MATERIAL,
+                order_quantity=2400,
+                source_system="INTERNAL_TOTAL",
+                source_key=source_key,
+                created_by=self.user,
+            )
+
+        preview = self.preview(
+            "factory-ambiguous-existing-order.xlsx",
+            factory_workbook(include_criteria=False),
+        )
+        order_row = next(
+            row for row in preview["rows"] if row["record_type"] == "ORDER"
+        )
+        self.assertGreater(preview["error_count"], 0)
+        self.assertEqual(order_row["action"], "SKIP")
+        self.assertTrue(
+            any(
+                issue.get("field") == "item_no"
+                and "多条旧订单" in issue["message"]
+                for issue in preview["issues"]
+            )
+        )
+        with self.assertRaises(ValueError):
+            self.commit(preview)
+        self.assertEqual(QualityOrder.objects.count(), 2)
 
     def test_older_factory_source_does_not_overwrite_newer_order(self):
         current = self.preview(

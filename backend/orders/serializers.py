@@ -14,7 +14,7 @@ from .models import (
     ProductInspectionCriterion,
     ProductSpecification,
 )
-from .services import model_snapshot, record_revision
+from .services import model_snapshot, order_identity_exists, record_revision
 
 
 ZERO = Decimal("0")
@@ -214,6 +214,20 @@ class BusinessOrderSerializer(AuditedModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        order_no = attrs.get("order_no", getattr(self.instance, "order_no", ""))
+        item_no = attrs.get("item_no", getattr(self.instance, "item_no", ""))
+        if order_identity_exists(
+            order_no,
+            item_no,
+            exclude_pk=getattr(self.instance, "pk", None),
+        ):
+            raise serializers.ValidationError(
+                {"item_no": "订单号和项次已存在；同一订单号可使用不同项次。"}
+            )
+        return attrs
 
     def get_created_by_name(self, obj) -> str:
         return obj.created_by.get_full_name() or obj.created_by.get_username()

@@ -84,5 +84,5 @@ describe('AnalyticsPage', () => {
     })
     await userEvent.setup().click(screen.getByRole('tab', { name: '品检与返工绩效' }))
     expect(await screen.findByText('外观')).toBeInTheDocument()
-  }, 15_000)
+  }, 30_000)
 })

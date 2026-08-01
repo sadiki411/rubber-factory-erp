@@ -168,9 +168,10 @@ class BusinessApiTests(APITestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(parse_datetime(response.json()["last_data_updated_at"]), newest)
 
-    def test_identical_order_lines_are_allowed_and_delete_is_disabled(self):
+    def test_order_number_and_item_must_be_unique_and_delete_is_disabled(self):
         payload = {
             "order_no": "DUP-100",
+            "item_no": "1",
             "batch_no": "",
             "product_code": "",
             "product_name": "",
@@ -181,9 +182,14 @@ class BusinessApiTests(APITestCase):
             "status": "OPEN",
         }
         first = self.client.post("/api/orders/orders/", payload, format="json")
-        second = self.client.post("/api/orders/orders/", payload, format="json")
         self.assertEqual(first.status_code, 201, first.content)
-        self.assertEqual(second.status_code, 201, second.content)
+        different_item = self.client.post(
+            "/api/orders/orders/", {**payload, "item_no": "2"}, format="json"
+        )
+        duplicate = self.client.post("/api/orders/orders/", payload, format="json")
+        self.assertEqual(different_item.status_code, 201, different_item.content)
+        self.assertEqual(duplicate.status_code, 400, duplicate.content)
+        self.assertIn("item_no", duplicate.json())
         self.assertEqual(QualityOrder.objects.filter(order_no="DUP-100").count(), 2)
         self.assertEqual(
             self.client.delete(f"/api/orders/orders/{first.json()['id']}/").status_code,

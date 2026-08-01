@@ -386,6 +386,19 @@ def _sheet_row_iter(sheet, header_row):
             yield row_no, cells
 
 
+def _row_repeats_header(cells, mapping, required_headers):
+    """Return True when a data row is another copy of the table header."""
+    for header in required_headers:
+        normalized = _normalized_header(header)
+        index = mapping.get(normalized)
+        if (
+            index is None
+            or _normalized_header(_cell(cells, index).display_text) != normalized
+        ):
+            return False
+    return True
+
+
 def _mapped_cell(cells, mapping, *names):
     for name in names:
         index = mapping.get(_normalized_header(name))
@@ -525,6 +538,10 @@ def _record_base(sha256, sheet, row, record_type, raw_data):
 def _parse_product_specifications(sheet, header_row, mapping, sha256, issues):
     records = []
     for row_no, cells in _sheet_row_iter(sheet, header_row):
+        if _row_repeats_header(
+            cells, mapping, ["规格", "材质", "料长", "切料重", "一次加硫条件"]
+        ):
+            continue
         important = [
             _mapped_cell(cells, mapping, "规格"),
             _mapped_cell(cells, mapping, "材质"),
@@ -612,6 +629,10 @@ def _parse_internal_orders(sheets, sha256, issues):
         if not mapping:
             continue
         for row_no, cells in _sheet_row_iter(sheet, header_row):
+            if _row_repeats_header(
+                cells, mapping, ["订单编号", "规格", "胶料配方", "交期", "订单量"]
+            ):
+                continue
             core_names = (
                 "订单编号",
                 "规格",
@@ -989,6 +1010,10 @@ def _parse_factory_work_contact(sheets, sha256, issues):
     source_system = _metadata_text(main_sheet, "协力商")
     source_document_at = _metadata_datetime(main_sheet, "发单时间")
     for row_no, cells in _sheet_row_iter(main_sheet, main_header):
+        if _row_repeats_header(
+            cells, main_mapping, ["独立需求号", "项次", "材质", "规格", "订单量"]
+        ):
+            continue
         order_no = _mapped_cell(cells, main_mapping, "独立需求号").display_text
         specification = _mapped_cell(cells, main_mapping, "规格").display_text
         if not any((order_no, specification, _mapped_cell(cells, main_mapping, "订单量").display_text)):
@@ -1017,7 +1042,9 @@ def _parse_factory_work_contact(sheets, sha256, issues):
                 "mold_in_stock": "",
                 "mold_no": _mapped_cell(cells, main_mapping, "模具号").display_text,
                 "mold_size": _mapped_cell(cells, main_mapping, "模具尺寸").display_text,
-                "standard_hours": _mapped_cell(cells, main_mapping, "参考工时", "标准工时").display_text,
+                # “参考工时”是本次订单的成型工时，不是可由同型号订单共享的
+                # 产品标准工时。只有来源表明确提供“标准工时”列时才写入产品。
+                "standard_hours": _mapped_cell(cells, main_mapping, "标准工时").display_text,
                 "notes": "",
                 "source_system": source_system,
                 "source_document_at": source_document_at,
@@ -1040,8 +1067,9 @@ def _parse_factory_work_contact(sheets, sha256, issues):
             "secondary_curing",
             "mold_no",
             "mold_size",
-            "standard_hours",
         ]
+        if _mapping_has(main_mapping, "标准工时"):
+            product_record["source_fields"].append("standard_hours")
         records.append(product_record)
         products_by_source_key[product_record["source_key"]] = product_record
         product_keys[(order_no.casefold(), item_no.casefold())] = product_record["source_key"]
@@ -1144,6 +1172,12 @@ def _parse_factory_work_contact(sheets, sha256, issues):
 
     if criteria_sheet and criteria_mapping:
         for row_no, cells in _sheet_row_iter(criteria_sheet, criteria_header):
+            if _row_repeats_header(
+                cells,
+                criteria_mapping,
+                ["独立需求号", "项次", "项目号", "检验项目", "下限", "上限"],
+            ):
+                continue
             order_no = _mapped_cell(cells, criteria_mapping, "独立需求号").display_text
             item_no = _mapped_cell(cells, criteria_mapping, "项次").display_text
             inspection_item = _mapped_cell(cells, criteria_mapping, "检验项目").display_text
@@ -1227,6 +1261,10 @@ def _parse_material_issue(sheet, header_row, mapping, sha256, issues):
     )
     source_document_at = _metadata_datetime(sheet, "打印日期", "打印时间")
     for row_no, cells in _sheet_row_iter(sheet, header_row):
+        if _row_repeats_header(
+            cells, mapping, ["独立需求号", "成品品名", "成品规格", "材质", "重量"]
+        ):
+            continue
         order_no = _mapped_cell(cells, mapping, "独立需求号", "订单号").display_text
         source_system = (
             _mapped_cell(cells, mapping, "课别", "来源单位").display_text
@@ -1587,10 +1625,11 @@ def _order_match(record, issues, *, lock=False):
         if match:
             return match
         if ambiguous:
+            record["ambiguous_order_identity"] = True
             issues.append(
                 _issue(
-                    "warning",
-                    "订单号和项次对应多条旧订单，不能自动认领旧记录。",
+                    "error",
+                    "订单号和项次对应多条旧订单，不能继续新增重复订单；请先在线合并或更正旧记录。",
                     sheet=record["sheet"],
                     row=record["row"],
                     field="item_no",
@@ -1839,6 +1878,7 @@ def _prepare_record_actions(records, source_type, issues, *, lock=False):
                 "SKIP"
                 if record.get("stale_source_version")
                 or record.get("ambiguous_internal_row")
+                or record.get("ambiguous_order_identity")
                 else "CREATE"
             )
             record["changes"] = {}
@@ -2404,6 +2444,7 @@ def commit_business_batch(batch, user):
                     order is not None
                     or record.get("stale_source_version")
                     or record.get("ambiguous_internal_row")
+                    or record.get("ambiguous_order_identity")
                 ):
                     skipped["orders"] += 1
                     if order is not None:

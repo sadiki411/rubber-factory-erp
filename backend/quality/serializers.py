@@ -3,7 +3,7 @@ from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
 from orders.models import BusinessRecordRevision, ProductSpecification
-from orders.services import model_snapshot, record_revision
+from orders.services import model_snapshot, order_identity_exists, record_revision
 
 from .models import QualityEmployee, QualityOrder, QualityShipment, ReturnRework
 
@@ -155,6 +155,20 @@ class QualityOrderSerializer(ValidatedModelSerializer):
             "mold_size": product.mold_size,
             "is_active": product.is_active,
         }
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        order_no = attrs.get("order_no", getattr(self.instance, "order_no", ""))
+        item_no = attrs.get("item_no", getattr(self.instance, "item_no", ""))
+        if order_identity_exists(
+            order_no,
+            item_no,
+            exclude_pk=getattr(self.instance, "pk", None),
+        ):
+            raise serializers.ValidationError(
+                {"item_no": "订单号和项次已存在；同一订单号可使用不同项次。"}
+            )
+        return attrs
 
     def create(self, validated_data):
         with transaction.atomic():
