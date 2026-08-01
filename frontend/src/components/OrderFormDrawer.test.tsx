@@ -1,6 +1,6 @@
 import { App } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { OrderFormDrawer } from './OrderFormDrawer'
 
@@ -34,12 +34,16 @@ describe('OrderFormDrawer', () => {
     const user = userEvent.setup()
     renderDrawer()
 
-    await user.type(screen.getByLabelText(/订单编号/), 'TEST-ORDER-001')
-    await user.type(screen.getByLabelText(/产品名称/), '测试产品A')
-    await user.type(screen.getByLabelText(/^规格/), 'TEST-SPEC-A')
-    await user.type(screen.getByLabelText(/材质 \/ 胶料/), 'SYN-RUBBER-A')
-    await user.type(screen.getByRole('spinbutton', { name: '订单数量' }), '240')
-    await user.type(screen.getByLabelText(/手工登记已发胶料/), '0')
+    fireEvent.change(screen.getByLabelText(/订单编号/), { target: { value: 'TEST-ORDER-001' } })
+    fireEvent.change(screen.getByLabelText(/产品名称/), { target: { value: '测试产品A' } })
+    fireEvent.change(screen.getByLabelText(/^规格/), { target: { value: 'TEST-SPEC-A' } })
+    fireEvent.change(screen.getByLabelText(/材质 \/ 胶料/), { target: { value: 'SYN-RUBBER-A' } })
+    fireEvent.change(screen.getByRole('spinbutton', { name: '订单数量' }), { target: { value: '240' } })
+    fireEvent.change(screen.getByLabelText(/手工登记已发胶料/), { target: { value: '0' } })
+    fireEvent.change(screen.getByLabelText(/流程卡（原表内容）/), { target: { value: '无' } })
+    fireEvent.change(screen.getByLabelText(/^生产数量/), { target: { value: '120' } })
+    fireEvent.change(screen.getByLabelText(/^出货日期/), { target: { value: '2026-08-31' } })
+    fireEvent.change(screen.getByLabelText(/^出货数量/), { target: { value: '80' } })
     await user.click(screen.getByRole('button', { name: /保\s*存/ }))
 
     await waitFor(() => expect(apiMocks.create).toHaveBeenCalledTimes(1))
@@ -47,5 +51,9 @@ describe('OrderFormDrawer', () => {
     expect(body.manual_received_material_kg).toBe('0')
     expect(body.required_material_kg).toBeUndefined()
     expect(body.production_required).toBeNull()
+    expect(body.process_card_text).toBe('无')
+    expect(body.production_quantity).toBe('120')
+    expect(body.shipment_date).toBe('2026-08-31')
+    expect(body.shipped_quantity).toBe('80')
   }, 20_000)
 })

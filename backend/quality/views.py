@@ -12,6 +12,8 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from orders.services import with_order_activity
+
 from .models import QualityEmployee, QualityOrder, QualityShipment, ReturnRework
 from .serializers import (
     QualityEmployeeSerializer,
@@ -111,7 +113,9 @@ class QualityOrderViewSet(NoDeleteModelViewSet):
     serializer_class = QualityOrderSerializer
 
     def get_queryset(self):
-        queryset = QualityOrder.objects.select_related("created_by", "product_specification")
+        queryset = with_order_activity(
+            QualityOrder.objects.select_related("created_by", "product_specification")
+        )
         params = self.request.query_params
         q = str(params.get("q", "")).strip()
         if q:

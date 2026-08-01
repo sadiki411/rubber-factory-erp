@@ -29,6 +29,10 @@ function exactValue(value: unknown, suffix = '') {
   return value === null || value === undefined || value === '' ? '未登记' : `${String(value)}${suffix}`
 }
 
+function formattedTimestamp(value?: string | null) {
+  return value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '未登记'
+}
+
 export function OrderFormDrawer({ open, order, onClose }: Props) {
   const [form] = Form.useForm<Record<string, any>>()
   const queryClient = useQueryClient()
@@ -117,6 +121,7 @@ export function OrderFormDrawer({ open, order, onClose }: Props) {
           <Descriptions.Item label="胶料差额">{exactValue(order.material_gap_kg, ' kg')}</Descriptions.Item>
           <Descriptions.Item label="胶料状态"><Tag color={MATERIAL_META[order.material_status || 'UNKNOWN'].color}>{MATERIAL_META[order.material_status || 'UNKNOWN'].text}</Tag></Descriptions.Item>
           <Descriptions.Item label="流程卡状态"><Tag color={PROCESS_CARD_META[order.process_card_status || 'NOT_RECEIVED'].color}>{PROCESS_CARD_META[order.process_card_status || 'NOT_RECEIVED'].text}</Tag></Descriptions.Item>
+          <Descriptions.Item label="最后更新">{formattedTimestamp(order.last_data_updated_at || order.updated_at)}</Descriptions.Item>
         </Descriptions>
       )}
       {order?.source_sheet && <Alert className="business-source-alert" type="info" showIcon title={`来源：${order.source_sheet}${order.source_row ? ` 第 ${order.source_row} 行` : ''}`} description="在线修改不会删除原始导入内容，便于后续核对。" />}
@@ -145,12 +150,20 @@ export function OrderFormDrawer({ open, order, onClose }: Props) {
         <div className="business-form-section">胶料与流程卡</div>
         <Alert className="business-form-hint" type="info" showIcon title="“发料单累计”由导入的客户发料清单自动汇总；手工登记量与其相加形成“已发胶料合计”。空值和 0 会分别保存。" />
         <Row gutter={14}>
-          <Col xs={24} sm={12}><Form.Item name="required_material_kg" label="所需胶料（kg）"><Input inputMode="decimal" placeholder="未登记时留空" /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="required_material_kg" label="胶料用量（kg）"><Input inputMode="decimal" placeholder="未登记时留空" /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="manual_received_material_kg" label="手工登记已发胶料（kg）"><Input inputMode="decimal" placeholder="未登记时留空；实际为 0 时填写 0" /></Form.Item></Col>
+          <Col xs={24}><Form.Item name="process_card_text" label="流程卡（原表内容）"><Input placeholder="例如：无、已收到、流程卡编号或客户原表内容" /></Form.Item></Col>
           <Col xs={12}><Form.Item name="process_card_count" label="流程卡张数"><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
           <Col xs={12}><Form.Item name="process_card_covered_quantity" label="流程卡覆盖订单数量"><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
         </Row>
-        <Form.Item name="legacy_shipment_text" label="原出货 / 流程卡说明"><Input.TextArea rows={2} maxLength={1000} showCount /></Form.Item>
+
+        <div className="business-form-section">生产与出货</div>
+        <Row gutter={14}>
+          <Col xs={24} sm={8}><Form.Item name="production_quantity" label="生产数量"><Input placeholder="保留原表内容" /></Form.Item></Col>
+          <Col xs={24} sm={8}><Form.Item name="shipment_date" label="出货日期"><Input placeholder="例如 2026-08-01" /></Form.Item></Col>
+          <Col xs={24} sm={8}><Form.Item name="shipped_quantity" label="出货数量"><Input placeholder="保留原表内容" /></Form.Item></Col>
+        </Row>
+        <Form.Item name="legacy_shipment_text" label="历史出货 / 流程卡说明（保留）"><Input.TextArea rows={2} maxLength={1000} showCount /></Form.Item>
         <Form.Item name="notes" label="备注"><Input.TextArea rows={4} maxLength={2000} showCount /></Form.Item>
       </Form>
     </Drawer>

@@ -242,6 +242,11 @@ export interface Order {
   process_card_count?: number | null
   process_card_covered_quantity?: number | null
   process_card_status?: OrderProcessCardStatus
+  process_card_text?: string
+  production_quantity?: string
+  shipment_date?: string
+  shipped_quantity?: string
+  last_data_updated_at?: string | null
   notes?: string
   source_sheet?: string
   source_row?: number | null
@@ -295,6 +300,7 @@ export interface BusinessImportPreviewRow {
   specification?: string
   material?: string
   summary?: string
+  changes?: Record<string, { from?: unknown; to?: unknown }>
   valid?: boolean
   [key: string]: unknown
 }
@@ -311,9 +317,13 @@ export interface BusinessImportPreview {
 }
 
 export interface BusinessImportCommitResult {
+  created?: Partial<BusinessImportCounts>
+  updated?: Partial<BusinessImportCounts>
   imported?: Partial<BusinessImportCounts>
   skipped?: Partial<BusinessImportCounts>
   counts?: Partial<BusinessImportCounts>
+  created_count?: number
+  updated_count?: number
   imported_count?: number
   skipped_count?: number
   [key: string]: unknown

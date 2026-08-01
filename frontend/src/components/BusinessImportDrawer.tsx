@@ -27,8 +27,89 @@ const SOURCE_META: Record<string, string> = {
   MIXED: '混合业务工作簿',
 }
 
+const CHANGE_FIELD_LABELS: Record<string, string> = {
+  product_name: '产品名称',
+  customer_product_no: '项目号',
+  specification: '规格',
+  material: '材质',
+  material_length: '料长',
+  cut_weight: '切料重',
+  strip_count: '条数',
+  primary_curing: '一次加硫条件',
+  secondary_curing: '二次加硫条件',
+  total_cavities: '总孔数',
+  effective_cavities: '有效孔数',
+  mold_in_stock: '模具在库',
+  mold_no: '模具号',
+  mold_size: '模具尺寸',
+  standard_hours: '标准工时',
+  notes: '备注',
+  order_no: '订单号',
+  item_no: '项次',
+  order_quantity: '订单数量',
+  order_date: '下单日期',
+  due_date: '交期',
+  forming_hours: '成型工时',
+  production_required: '是否生产',
+  legacy_shipment_text: '原出货信息',
+  required_material_kg: '所需胶料',
+  manual_received_material_kg: '手工已发胶料',
+  process_card_text: '流程卡',
+  production_quantity: '生产数量',
+  shipment_date: '出货日期',
+  shipped_quantity: '出货数量',
+  status: '订单状态',
+  finished_product_name: '成品品名',
+  batch_no: '批号',
+  sheet_size: '出片尺寸',
+  weight_kg: '发料重量',
+  manufactured_on: '制造日期',
+  project_no: '项目号',
+  customer: '客户',
+  category: '类别',
+  version: '版本',
+  inspection_item: '检验项目',
+  lower_limit: '下限',
+  upper_limit: '上限',
+  unit: '单位',
+  product_specification_id: '关联产品规格',
+  source_system: '数据来源',
+  source_document_at: '来源文件时间',
+  external_key: '外部业务标识',
+}
+
+function formatChangeValue(value: unknown) {
+  if (value === null || value === undefined || value === '') return '（空）'
+  if (value === true) return '是'
+  if (value === false) return '否'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+function renderChanges(changes: BusinessImportPreviewRow['changes']) {
+  const entries = Object.entries(changes || {})
+  if (!entries.length) return '-'
+  return (
+    <div className="business-import-changes">
+      {entries.map(([field, change]) => (
+        <div key={field}>
+          <strong>{CHANGE_FIELD_LABELS[field] || field}：</strong>
+          <span>{formatChangeValue(change?.from)} → {formatChangeValue(change?.to)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function countOf(counts: Partial<BusinessImportCounts> | undefined, key: keyof BusinessImportCounts) {
   return Number(counts?.[key] || 0)
+}
+
+function totalOf(counts: Partial<BusinessImportCounts> | undefined) {
+  return countOf(counts, 'product_specifications')
+    + countOf(counts, 'orders')
+    + countOf(counts, 'material_receipts')
+    + countOf(counts, 'inspection_criteria')
 }
 
 export function BusinessImportDrawer({ open, context = 'orders', onClose }: Props) {
@@ -61,14 +142,11 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
         queryClient.invalidateQueries({ queryKey: ['production'] }),
         queryClient.invalidateQueries({ queryKey: ['analytics'] }),
       ])
-      const imported = result.imported || result.counts
-      const importedTotal = result.imported_count ?? (
-        countOf(imported, 'product_specifications')
-        + countOf(imported, 'orders')
-        + countOf(imported, 'material_receipts')
-        + countOf(imported, 'inspection_criteria')
-      )
-      message.success(`业务数据导入完成，共写入 ${importedTotal} 条记录`)
+      const created = result.created || result.imported || result.counts
+      const createdTotal = result.created_count ?? result.imported_count ?? totalOf(created)
+      const updatedTotal = result.updated_count ?? totalOf(result.updated)
+      const skippedTotal = result.skipped_count ?? totalOf(result.skipped)
+      message.success(`业务数据导入完成：新增 ${createdTotal} 条，更新 ${updatedTotal} 条，跳过 ${skippedTotal} 条`)
       setPreview(undefined)
       setFiles([])
       onClose()
@@ -106,6 +184,7 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
     { title: '规格', dataIndex: 'specification', width: 180, render: (value) => value || '-' },
     { title: '材质', dataIndex: 'material', width: 130, render: (value) => value || '-' },
     { title: '识别摘要', dataIndex: 'summary', width: 280, ellipsis: true, render: (value) => value || '-' },
+    { title: '拟变更字段（原值 → 新值）', dataIndex: 'changes', width: 360, render: renderChanges },
     { title: '校验', dataIndex: 'valid', fixed: 'right', width: 80, render: (value) => <Tag color={value === false ? 'error' : 'success'}>{value === false ? '失败' : '通过'}</Tag> },
   ]
 
@@ -127,8 +206,8 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
       <Alert
         type="info"
         showIcon
-        title="系统会自动识别产品规格表、内部订单表、大厂工作联络单和客户发料清单。"
-        description="导入前会显示识别类型、拟新增或跳过的记录以及全部问题；存在错误时整批不会写入数据库。"
+        title="系统会自动识别产品规格表、内部订单表、客户工作联络单和客户发料清单。"
+        description="同一订单号与项次会增量更新现有订单；同一发料批号不会重复累计。导入前会显示新增、更新或跳过动作及全部问题，存在错误时整批不会写入数据库。"
       />
       <div className="business-import-upload">
         <Upload.Dragger
@@ -165,7 +244,7 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
           {preview.issues.length ? (
             <Table rowKey={(row) => `${row.sheet}-${row.row}-${row.field}-${row.message}`} size="small" dataSource={preview.issues} columns={issueColumns} pagination={{ pageSize: 6 }} scroll={{ x: 700 }} />
           ) : <Alert type="success" showIcon icon={<CheckCircleOutlined />} title="预检通过，可以导入" />}
-          <Table className="business-import-table" rowKey="row_key" size="small" dataSource={preview.rows} columns={rowColumns} pagination={{ pageSize: 10 }} scroll={{ x: 1295 }} />
+          <Table className="business-import-table" rowKey="row_key" size="small" dataSource={preview.rows} columns={rowColumns} pagination={{ pageSize: 10 }} scroll={{ x: 1655 }} />
           <div className="import-commit-bar">
             <span>确认后将一次性处理 {validRows} 条业务记录。</span>
             <Space wrap>

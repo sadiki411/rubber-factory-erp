@@ -258,9 +258,20 @@ class MaterialReceipt(TimeStampedModel):
         null=True,
         blank=True,
     )
+    last_source_batch = models.ForeignKey(
+        BusinessImportBatch,
+        related_name="latest_material_receipts",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
     source_sheet = models.CharField(max_length=100, blank=True, default="")
     source_row = models.PositiveIntegerField(null=True, blank=True)
     source_key = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    source_system = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    external_key = models.CharField(max_length=500, blank=True, default="", db_index=True)
+    source_document_at = models.DateTimeField(null=True, blank=True)
+    last_imported_at = models.DateTimeField(null=True, blank=True)
     raw_data = models.JSONField(default=dict, blank=True)
 
     class Meta:
@@ -273,6 +284,11 @@ class MaterialReceipt(TimeStampedModel):
                 fields=["source_key"],
                 condition=~Q(source_key=""),
                 name="uniq_material_receipt_source_key",
+            ),
+            models.UniqueConstraint(
+                fields=["external_key"],
+                condition=~Q(external_key=""),
+                name="uniq_material_receipt_external_key",
             ),
         ]
 
@@ -287,6 +303,8 @@ class MaterialReceipt(TimeStampedModel):
             "sheet_size",
             "source_sheet",
             "source_key",
+            "source_system",
+            "external_key",
         ):
             setattr(self, field_name, str(getattr(self, field_name, "") or "").strip())
         if not self.order_no:

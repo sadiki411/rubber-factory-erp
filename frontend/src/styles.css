@@ -508,6 +508,7 @@ button, input, textarea, select { font: inherit; }
   .business-data-drawer .ant-select-single { min-height: 44px; }
   .business-data-drawer .ant-select-single .ant-select-selector { min-height: 44px; align-items: center; }
   .business-mobile-grid { grid-template-columns: 1fr; }
+  .order-mobile-card .business-mobile-grid, .receipt-mobile-card .business-mobile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .production-specification-reference-grid { grid-template-columns: 1fr; }
   .production-kpi .ant-card-body { padding: 14px; }
   .production-kpi .ant-statistic-title { font-size: 12px; }

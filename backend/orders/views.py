@@ -1,9 +1,7 @@
-from decimal import Decimal
 from uuid import UUID
 from zipfile import BadZipFile
 
-from django.db.models import DecimalField, ExpressionWrapper, F, Q, Sum, Value
-from django.db.models.functions import Coalesce
+from django.db.models import F, Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import OpenApiParameter, extend_schema
@@ -37,6 +35,7 @@ from .serializers import (
     ProductInspectionCriterionSerializer,
     ProductSpecificationSerializer,
 )
+from .services import with_order_activity
 
 
 class BusinessPagination(PageNumberPagination):
@@ -92,22 +91,8 @@ class ProductSpecificationViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
 
 
 def _business_order_queryset():
-    decimal_field = DecimalField(max_digits=18, decimal_places=3)
-    imported = Coalesce(
-        Sum("material_receipts__weight_kg"), Value(Decimal("0")), output_field=decimal_field
-    )
-    manual = Coalesce(
-        F("manual_received_material_kg"), Value(Decimal("0")), output_field=decimal_field
-    )
-    return (
+    return with_order_activity(
         QualityOrder.objects.select_related("product_specification", "created_by")
-        .annotate(imported_received_material_kg_value=imported)
-        .annotate(
-            received_material_kg_value=ExpressionWrapper(
-                F("imported_received_material_kg_value") + manual,
-                output_field=decimal_field,
-            )
-        )
     )
 
 

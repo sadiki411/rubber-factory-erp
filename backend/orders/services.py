@@ -1,9 +1,12 @@
 import json
+from decimal import Decimal
 
 from django.core.serializers.json import DjangoJSONEncoder
+from django.db.models import DateTimeField, DecimalField, F, Max, OuterRef, Subquery, Sum, Value
+from django.db.models.functions import Coalesce, Greatest
 from django.forms.models import model_to_dict
 
-from .models import BusinessRecordRevision
+from .models import BusinessRecordRevision, MaterialReceipt
 
 
 MODEL_RECORD_TYPES = {
@@ -53,4 +56,69 @@ def record_revision(
         changes=diff_snapshots(before or {}, after) if before is not None else {},
         source_batch=source_batch,
         operator=operator,
+    )
+
+
+def with_order_activity(queryset):
+    """Annotate order material totals and the newest linked business activity.
+
+    Correlated subqueries avoid multiplying receipt weights when an order has
+    several production runs and shipments at the same time.
+    """
+    from production.models import ProductionRun
+    from quality.models import QualityShipment
+
+    decimal_field = DecimalField(max_digits=18, decimal_places=3)
+    receipt_totals = (
+        MaterialReceipt.objects.filter(order_id=OuterRef("pk"))
+        .values("order_id")
+        .annotate(total=Sum("weight_kg"))
+        .values("total")[:1]
+    )
+    receipt_latest = (
+        MaterialReceipt.objects.filter(order_id=OuterRef("pk"))
+        .values("order_id")
+        .annotate(latest=Max("updated_at"))
+        .values("latest")[:1]
+    )
+    run_latest = (
+        ProductionRun.objects.filter(order_id=OuterRef("pk"))
+        .values("order_id")
+        .annotate(latest=Max("updated_at"))
+        .values("latest")[:1]
+    )
+    shipment_latest = (
+        QualityShipment.objects.filter(order_id=OuterRef("pk"))
+        .values("order_id")
+        .annotate(latest=Max("updated_at"))
+        .values("latest")[:1]
+    )
+    return (
+        queryset.annotate(
+            imported_received_material_kg_value=Coalesce(
+                Subquery(receipt_totals, output_field=decimal_field),
+                Value(Decimal("0")),
+                output_field=decimal_field,
+            )
+        )
+        .annotate(
+            received_material_kg_value=F("imported_received_material_kg_value")
+            + Coalesce(
+                F("manual_received_material_kg"),
+                Value(Decimal("0")),
+                output_field=decimal_field,
+            )
+        )
+        .annotate(
+            last_data_updated_at_value=Greatest(
+                F("updated_at"),
+                Coalesce(
+                    Subquery(receipt_latest, output_field=DateTimeField()), F("updated_at")
+                ),
+                Coalesce(Subquery(run_latest, output_field=DateTimeField()), F("updated_at")),
+                Coalesce(
+                    Subquery(shipment_latest, output_field=DateTimeField()), F("updated_at")
+                ),
+            )
+        )
     )

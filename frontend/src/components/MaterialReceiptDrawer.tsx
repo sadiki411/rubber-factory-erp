@@ -98,12 +98,20 @@ export function MaterialReceiptDrawer({ open, receipt, orders, ordersLoading = f
   const selectOrder = (id?: number) => {
     const selected = orders.find((item) => item.id === id)
     if (!selected) return
+    const current = form.getFieldsValue([
+      'item_no',
+      'finished_product_name',
+      'specification',
+      'material',
+    ])
     form.setFieldsValue({
       order_no: selected.order_no,
-      item_no: selected.item_no || '',
-      finished_product_name: selected.product_name || form.getFieldValue('finished_product_name'),
-      specification: selected.specification || form.getFieldValue('specification'),
-      material: selected.material || form.getFieldValue('material'),
+      // 关联订单不应改写客户发料单的原始身份与产品字段。
+      // 总表的项次经常为空，若无条件同步会丢失发料单中的真实项次。
+      item_no: current.item_no || selected.item_no || '',
+      finished_product_name: current.finished_product_name || selected.product_name || '',
+      specification: current.specification || selected.specification || '',
+      material: current.material || selected.material || '',
     })
   }
 

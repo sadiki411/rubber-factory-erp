@@ -48,14 +48,14 @@ const receipt: MaterialReceipt = {
   source_row: 6,
 }
 
-function renderDrawer() {
+function renderDrawer(receiptValue = receipt, orderValues = [order]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   const invalidateSpy = vi.spyOn(client, 'invalidateQueries')
   const onClose = vi.fn()
   render(
     <QueryClientProvider client={client}>
       <App>
-        <MaterialReceiptDrawer open receipt={receipt} orders={[order]} onClose={onClose} />
+        <MaterialReceiptDrawer open receipt={receiptValue} orders={orderValues} onClose={onClose} />
       </App>
     </QueryClientProvider>,
   )
@@ -82,8 +82,8 @@ describe('MaterialReceiptDrawer', () => {
     expect(orderNumber).toHaveValue('TEST-ORDER-001')
     expect(orderNumber).toHaveAttribute('readonly')
     expect(screen.getByLabelText(/项次/)).toHaveAttribute('readonly')
-    expect(screen.getByLabelText(/成品名称/)).toHaveValue('测试产品A')
-    expect(screen.getByLabelText(/规格/)).toHaveValue('TEST-SPEC-A')
+    expect(screen.getByLabelText(/成品名称/)).toHaveValue('客户原始名称')
+    expect(screen.getByLabelText(/规格/)).toHaveValue('客户原始规格')
 
     await user.click(screen.getByRole('button', { name: '保存并同步订单' }))
 
@@ -92,8 +92,8 @@ describe('MaterialReceiptDrawer', () => {
       order_id: order.id,
       order_no: order.order_no,
       item_no: order.item_no,
-      finished_product_name: order.product_name,
-      specification: order.specification,
+      finished_product_name: receipt.finished_product_name,
+      specification: receipt.specification,
       material: order.material,
       batch_no: receipt.batch_no,
       sheet_size: receipt.sheet_size,
@@ -109,5 +109,41 @@ describe('MaterialReceiptDrawer', () => {
       ['quality'],
       ['analytics'],
     ]))
+  }, 20_000)
+
+  it('关联无项次的旧总表订单时保留客户发料单项次', async () => {
+    const legacyOrder: Order = {
+      ...order,
+      id: 8,
+      order_no: 'LEGACY-ORDER-001',
+      item_no: '',
+      product_name: '',
+      specification: '总表规格',
+    }
+    const importedReceipt: MaterialReceipt = {
+      ...receipt,
+      id: 20,
+      order_no: legacyOrder.order_no,
+      item_no: '28',
+      specification: '客户发料规格',
+    }
+    const user = userEvent.setup()
+    renderDrawer(importedReceipt, [legacyOrder])
+
+    await user.click(screen.getByRole('combobox', { name: /关联订单明细/ }))
+    await user.click(await screen.findByText(/^建议匹配 · LEGACY-ORDER-001/))
+
+    expect(screen.getByLabelText(/项次/)).toHaveValue('28')
+    expect(screen.getByDisplayValue('客户发料规格')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '保存并同步订单' }))
+    await waitFor(() => expect(apiMocks.update).toHaveBeenCalledWith(
+      importedReceipt.id,
+      expect.objectContaining({
+        order_id: legacyOrder.id,
+        item_no: importedReceipt.item_no,
+        specification: importedReceipt.specification,
+      }),
+    ))
   }, 20_000)
 })

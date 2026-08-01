@@ -1,12 +1,15 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework.test import APITestCase
 
 from orders.models import BusinessRecordRevision, MaterialReceipt, ProductSpecification
-from quality.models import QualityOrder
+from production.models import ProductionRun, ProductionStation
+from quality.models import QualityEmployee, QualityOrder, QualityShipment
 
 
 class BusinessApiTests(APITestCase):
@@ -95,6 +98,75 @@ class BusinessApiTests(APITestCase):
         self.assertEqual(updated.json()["received_material_kg"], "110.500")
         self.assertEqual(updated.json()["material_status"], "OVER")
         self.assertEqual(updated.json()["process_card_status"], "RECEIVED")
+
+    def test_process_card_text_is_used_only_without_structured_counts(self):
+        cases = (
+            ("CARD-TEXT-YES", "已收到", None, None, "RECEIVED"),
+            ("CARD-TEXT-NO", "未收到", None, None, "NOT_RECEIVED"),
+            ("CARD-TEXT-COUNT", "人工确认：2张", None, None, "RECEIVED"),
+            ("CARD-STRUCTURED", "有", 0, None, "NOT_RECEIVED"),
+        )
+        for order_no, text, count, covered, expected in cases:
+            order = QualityOrder.objects.create(
+                order_no=order_no,
+                specification="TEST-CARD-SPEC",
+                order_quantity=100,
+                process_card_text=text,
+                process_card_count=count,
+                process_card_covered_quantity=covered,
+                created_by=self.user,
+            )
+            response = self.client.get(f"/api/orders/orders/{order.pk}/")
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertEqual(response.json()["process_card_status"], expected)
+
+    def test_order_last_data_updated_at_includes_receipt_production_and_shipment(self):
+        order = QualityOrder.objects.create(
+            order_no="ACTIVITY-100",
+            specification="TEST-ACTIVITY-SPEC",
+            order_quantity=100,
+            created_by=self.user,
+        )
+        receipt = MaterialReceipt.objects.create(
+            order=order,
+            order_no=order.order_no,
+            weight_kg=Decimal("1.000"),
+        )
+        station = ProductionStation.objects.create(code="ACT-01", group="A", position_no=1)
+        run = ProductionRun.objects.create(
+            station=station,
+            order=order,
+            order_no=order.order_no,
+            specification=order.specification,
+            order_quantity=order.order_quantity,
+            planned_mold_count=1,
+            created_by=self.user,
+        )
+        inspector = QualityEmployee.objects.create(
+            employee_no="ACT-QA-01",
+            name="活动测试品检",
+            role=QualityEmployee.Role.INSPECTOR,
+        )
+        shipment = QualityShipment.objects.create(
+            shipment_no="ACT-SHIP-01",
+            shipment_date=timezone.localdate(),
+            order=order,
+            inspector=inspector,
+            inspection_quantity=1,
+            qualified_quantity=1,
+            defective_quantity=0,
+            shipped_quantity=1,
+            created_by=self.user,
+        )
+        base = timezone.now()
+        MaterialReceipt.objects.filter(pk=receipt.pk).update(updated_at=base + timedelta(minutes=1))
+        ProductionRun.objects.filter(pk=run.pk).update(updated_at=base + timedelta(minutes=2))
+        newest = base + timedelta(minutes=3)
+        QualityShipment.objects.filter(pk=shipment.pk).update(updated_at=newest)
+
+        response = self.client.get(f"/api/orders/orders/{order.pk}/")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(parse_datetime(response.json()["last_data_updated_at"]), newest)
 
     def test_identical_order_lines_are_allowed_and_delete_is_disabled(self):
         payload = {

@@ -101,6 +101,18 @@ class QualityOrder(TimeStampedModel):
     process_card_covered_quantity = models.PositiveIntegerField(
         "流程卡覆盖订单数量", null=True, blank=True
     )
+    process_card_text = models.CharField(
+        "流程卡原始记录", max_length=200, blank=True, default=""
+    )
+    production_quantity = models.CharField(
+        "生产数量原始记录", max_length=200, blank=True, default=""
+    )
+    shipment_date = models.CharField(
+        "出货日期原始记录", max_length=200, blank=True, default=""
+    )
+    shipped_quantity = models.CharField(
+        "出货数量原始记录", max_length=200, blank=True, default=""
+    )
     status = models.CharField(
         "状态", max_length=20, choices=Status.choices, default=Status.OPEN, db_index=True
     )
@@ -112,9 +124,20 @@ class QualityOrder(TimeStampedModel):
         null=True,
         blank=True,
     )
+    last_source_batch = models.ForeignKey(
+        "orders.BusinessImportBatch",
+        related_name="latest_orders",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
     source_sheet = models.CharField(max_length=100, blank=True, default="")
     source_row = models.PositiveIntegerField(null=True, blank=True)
     source_key = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    source_system = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    external_key = models.CharField(max_length=500, blank=True, default="", db_index=True)
+    source_document_at = models.DateTimeField(null=True, blank=True)
+    last_imported_at = models.DateTimeField(null=True, blank=True)
     raw_data = models.JSONField(default=dict, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -149,6 +172,11 @@ class QualityOrder(TimeStampedModel):
                 condition=~Q(source_key=""),
                 name="uniq_quality_order_source_key",
             ),
+            models.UniqueConstraint(
+                fields=["external_key"],
+                condition=~Q(external_key=""),
+                name="uniq_quality_order_external_key",
+            ),
         ]
 
     def clean(self):
@@ -163,8 +191,14 @@ class QualityOrder(TimeStampedModel):
             "material",
             "mold_size",
             "legacy_shipment_text",
+            "process_card_text",
+            "production_quantity",
+            "shipment_date",
+            "shipped_quantity",
             "source_sheet",
             "source_key",
+            "source_system",
+            "external_key",
         ):
             setattr(self, field_name, str(getattr(self, field_name, "") or "").strip())
         if not self.order_no:

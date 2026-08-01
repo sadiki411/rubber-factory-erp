@@ -61,9 +61,11 @@ class QualityEmployeeSerializer(ValidatedModelSerializer):
 
 class QualityOrderSerializer(ValidatedModelSerializer):
     source_batch_id = serializers.UUIDField(read_only=True)
+    last_source_batch_id = serializers.UUIDField(read_only=True)
     created_by_name = serializers.SerializerMethodField()
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     product_specification = serializers.SerializerMethodField()
+    last_data_updated_at = serializers.SerializerMethodField()
     product_specification_id = serializers.PrimaryKeyRelatedField(
         source="product_specification",
         queryset=ProductSpecification.objects.filter(is_active=True),
@@ -95,14 +97,24 @@ class QualityOrderSerializer(ValidatedModelSerializer):
             "manual_received_material_kg",
             "process_card_count",
             "process_card_covered_quantity",
+            "process_card_text",
+            "production_quantity",
+            "shipment_date",
+            "shipped_quantity",
             "status",
             "status_display",
             "notes",
             "source_batch_id",
+            "last_source_batch_id",
             "source_sheet",
             "source_row",
             "source_key",
+            "source_system",
+            "external_key",
+            "source_document_at",
+            "last_imported_at",
             "raw_data",
+            "last_data_updated_at",
             "created_by_name",
             "created_at",
             "updated_at",
@@ -111,7 +123,12 @@ class QualityOrderSerializer(ValidatedModelSerializer):
             "source_sheet",
             "source_row",
             "source_key",
+            "source_system",
+            "external_key",
+            "source_document_at",
+            "last_imported_at",
             "raw_data",
+            "last_data_updated_at",
             "created_by_name",
             "created_at",
             "updated_at",
@@ -119,6 +136,10 @@ class QualityOrderSerializer(ValidatedModelSerializer):
 
     def get_created_by_name(self, obj) -> str:
         return obj.created_by.get_full_name() or obj.created_by.get_username()
+
+    def get_last_data_updated_at(self, obj) -> str | None:
+        value = getattr(obj, "last_data_updated_at_value", None) or obj.updated_at
+        return serializers.DateTimeField().to_representation(value) if value else None
 
     def get_product_specification(self, obj) -> dict | None:
         product = obj.product_specification

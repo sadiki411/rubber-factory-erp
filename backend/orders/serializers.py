@@ -1,3 +1,4 @@
+import re
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -131,6 +132,7 @@ class ProductSpecificationSummarySerializer(serializers.ModelSerializer):
 
 class BusinessOrderSerializer(AuditedModelSerializer):
     source_batch_id = serializers.UUIDField(read_only=True)
+    last_source_batch_id = serializers.UUIDField(read_only=True)
     product_specification = ProductSpecificationSummarySerializer(read_only=True)
     product_specification_id = serializers.PrimaryKeyRelatedField(
         source="product_specification",
@@ -145,6 +147,7 @@ class BusinessOrderSerializer(AuditedModelSerializer):
     material_gap_kg = serializers.SerializerMethodField()
     material_status = serializers.SerializerMethodField()
     process_card_status = serializers.SerializerMethodField()
+    last_data_updated_at = serializers.SerializerMethodField()
 
     class Meta:
         model = QualityOrder
@@ -174,15 +177,25 @@ class BusinessOrderSerializer(AuditedModelSerializer):
             "material_status",
             "process_card_count",
             "process_card_covered_quantity",
+            "process_card_text",
             "process_card_status",
+            "production_quantity",
+            "shipment_date",
+            "shipped_quantity",
             "status",
             "status_display",
             "notes",
             "source_batch_id",
+            "last_source_batch_id",
             "source_sheet",
             "source_row",
             "source_key",
+            "source_system",
+            "external_key",
+            "source_document_at",
+            "last_imported_at",
             "raw_data",
+            "last_data_updated_at",
             "created_by_name",
             "created_at",
             "updated_at",
@@ -191,7 +204,12 @@ class BusinessOrderSerializer(AuditedModelSerializer):
             "source_sheet",
             "source_row",
             "source_key",
+            "source_system",
+            "external_key",
+            "source_document_at",
+            "last_imported_at",
             "raw_data",
+            "last_data_updated_at",
             "created_by_name",
             "created_at",
             "updated_at",
@@ -236,13 +254,36 @@ class BusinessOrderSerializer(AuditedModelSerializer):
         return "OVER"
 
     def get_process_card_status(self, obj) -> str:
-        count = int(obj.process_card_count or 0)
+        count_value = obj.process_card_count
         covered = obj.process_card_covered_quantity
-        if count <= 0 and not covered:
+        if count_value is not None or covered is not None:
+            count = int(count_value or 0)
+            if count <= 0 and (covered is None or int(covered) <= 0):
+                return "NOT_RECEIVED"
+            if covered is not None and int(covered) < int(obj.order_quantity or 0):
+                return "PARTIAL"
+            return "RECEIVED"
+
+        text = re.sub(r"[\s:：,，;；。]+", "", str(obj.process_card_text or "").casefold())
+        if not text:
             return "NOT_RECEIVED"
-        if covered is not None and int(covered) < int(obj.order_quantity or 0):
-            return "PARTIAL"
-        return "RECEIVED"
+        if (
+            text in {"无", "否", "没有", "未收到", "未提供", "未发", "0", "no", "n", "false"}
+            or text.startswith(("没有", "未收到", "未提供", "未发", "无流程卡"))
+        ):
+            return "NOT_RECEIVED"
+        quantity_match = re.search(r"(\d+)张", text)
+        if quantity_match:
+            return "RECEIVED" if int(quantity_match.group(1)) > 0 else "NOT_RECEIVED"
+        if text in {"有", "是", "已收到", "已提供", "已发", "收到", "yes", "y", "true"}:
+            return "RECEIVED"
+        if text.startswith(("有流程卡", "已收到", "已提供", "已发")):
+            return "RECEIVED"
+        return "NOT_RECEIVED"
+
+    def get_last_data_updated_at(self, obj) -> str | None:
+        value = getattr(obj, "last_data_updated_at_value", None) or obj.updated_at
+        return serializers.DateTimeField().to_representation(value) if value else None
 
 
 class OrderSummarySerializer(serializers.ModelSerializer):
@@ -254,6 +295,7 @@ class OrderSummarySerializer(serializers.ModelSerializer):
 class MaterialReceiptSerializer(AuditedModelSerializer):
     order_no = serializers.CharField(required=False, allow_blank=True, max_length=100)
     source_batch_id = serializers.UUIDField(read_only=True)
+    last_source_batch_id = serializers.UUIDField(read_only=True)
     order = OrderSummarySerializer(read_only=True)
     order_id = serializers.PrimaryKeyRelatedField(
         source="order", queryset=QualityOrder.objects.all(), required=False, allow_null=True
@@ -275,9 +317,14 @@ class MaterialReceiptSerializer(AuditedModelSerializer):
             "weight_kg",
             "manufactured_on",
             "source_batch_id",
+            "last_source_batch_id",
             "source_sheet",
             "source_row",
             "source_key",
+            "source_system",
+            "external_key",
+            "source_document_at",
+            "last_imported_at",
             "raw_data",
             "created_at",
             "updated_at",
@@ -286,6 +333,10 @@ class MaterialReceiptSerializer(AuditedModelSerializer):
             "source_sheet",
             "source_row",
             "source_key",
+            "source_system",
+            "external_key",
+            "source_document_at",
+            "last_imported_at",
             "raw_data",
             "created_at",
             "updated_at",
