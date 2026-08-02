@@ -42,7 +42,6 @@ const CHANGE_FIELD_LABELS: Record<string, string> = {
   mold_in_stock: '模具在库',
   mold_no: '模具号',
   mold_size: '模具尺寸',
-  standard_hours: '标准工时',
   notes: '备注',
   order_no: '订单号',
   item_no: '项次',
@@ -63,6 +62,7 @@ const CHANGE_FIELD_LABELS: Record<string, string> = {
   batch_no: '批号',
   sheet_size: '出片尺寸',
   weight_kg: '发料重量',
+  issued_on: '发料日期',
   manufactured_on: '制造日期',
   project_no: '项目号',
   customer: '客户',
@@ -130,6 +130,7 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
       message.success('业务工作簿预检完成')
     },
     onError: (error: Error) => message.error(error.message),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['business-import-history'] }),
   })
   const commitMutation = useMutation({
     mutationFn: (token: string) => businessImportApi.commit(token),
@@ -141,6 +142,7 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
         queryClient.invalidateQueries({ queryKey: ['quality'] }),
         queryClient.invalidateQueries({ queryKey: ['production'] }),
         queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+        queryClient.invalidateQueries({ queryKey: ['business-import-history'] }),
       ])
       const created = result.created || result.imported || result.counts
       const createdTotal = result.created_count ?? result.imported_count ?? totalOf(created)
@@ -151,7 +153,10 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
       setFiles([])
       onClose()
     },
-    onError: (error: Error) => message.error(error.message),
+    onError: (error: Error) => {
+      void queryClient.invalidateQueries({ queryKey: ['business-import-history'] })
+      message.error(error.message)
+    },
   })
 
   const busy = previewMutation.isPending || commitMutation.isPending

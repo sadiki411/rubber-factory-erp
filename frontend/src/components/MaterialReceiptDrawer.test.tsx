@@ -43,6 +43,7 @@ const receipt: MaterialReceipt = {
   batch_no: 'TEST-BATCH-09',
   sheet_size: 'TEST-SHEET-SIZE',
   weight_kg: '6.250',
+  issued_on: '2026-08-05',
   manufactured_on: '2026-08-04',
   source_sheet: '发料明细',
   source_row: 6,
@@ -84,6 +85,8 @@ describe('MaterialReceiptDrawer', () => {
     expect(screen.getByLabelText(/项次/)).toHaveAttribute('readonly')
     expect(screen.getByLabelText(/成品名称/)).toHaveValue('客户原始名称')
     expect(screen.getByLabelText(/规格/)).toHaveValue('客户原始规格')
+    expect(screen.getByLabelText(/发料日期/)).toHaveValue('2026-08-05')
+    expect(screen.getByLabelText(/制造日期/)).toHaveValue('2026-08-04')
 
     await user.click(screen.getByRole('button', { name: '保存并同步订单' }))
 
@@ -98,6 +101,7 @@ describe('MaterialReceiptDrawer', () => {
       batch_no: receipt.batch_no,
       sheet_size: receipt.sheet_size,
       weight_kg: receipt.weight_kg,
+      issued_on: receipt.issued_on,
       manufactured_on: receipt.manufactured_on,
     })
 

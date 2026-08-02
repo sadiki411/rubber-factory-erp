@@ -2,6 +2,7 @@ import hashlib
 import io
 import math
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -23,6 +24,7 @@ from openpyxl.styles.numbers import BUILTIN_FORMATS, is_date_format
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import CALENDAR_MAC_1904, CALENDAR_WINDOWS_1900, from_excel
 
+from molds.models import MoldModel
 from quality.models import QualityOrder
 
 from .models import (
@@ -574,7 +576,6 @@ def _parse_product_specifications(sheet, header_row, mapping, sha256, issues):
                 "mold_in_stock": _mapped_cell(cells, mapping, "模具在库").display_text,
                 "mold_no": _mapped_cell(cells, mapping, "模具号").display_text,
                 "mold_size": _mapped_cell(cells, mapping, "模具尺寸").display_text,
-                "standard_hours": _mapped_cell(cells, mapping, "标准工时").display_text,
                 "notes": _mapped_cell(cells, mapping, "备注").display_text,
             }
         )
@@ -612,7 +613,6 @@ def _parse_product_specifications(sheet, header_row, mapping, sha256, issues):
             "mold_in_stock",
             "mold_no",
             "mold_size",
-            "standard_hours",
             "notes",
         ]
         records.append(record)
@@ -814,6 +814,41 @@ def _link_existing_product_specifications(records, issues):
             )
 
 
+def _link_product_mold_models(records, issues):
+    """Link an existing mold model only when mold_no matches its code exactly."""
+    product_records = [
+        record
+        for record in records
+        if record.get("record_type") == RECORD_PRODUCT and record.get("mold_no")
+    ]
+    codes = {record["mold_no"] for record in product_records}
+    mold_models = {
+        mold_model.code: mold_model
+        for mold_model in MoldModel.objects.filter(code__in=codes).only("id", "code")
+    }
+    for record in product_records:
+        mold_no = record["mold_no"]
+        mold_model = mold_models.get(mold_no)
+        if mold_model is not None:
+            record["mold_model_id"] = mold_model.pk
+            if "mold_model_id" not in record["source_fields"]:
+                record["source_fields"].append("mold_model_id")
+            continue
+        record.pop("mold_model_id", None)
+        if "mold_model_id" in record["source_fields"]:
+            record["source_fields"].remove("mold_model_id")
+        issues.append(
+            _issue(
+                "warning",
+                f"模具号“{mold_no}”未精确匹配到现有模具型号；产品规格仍会导入，"
+                "但不会自动创建模具型号，也不会清空已有手工关联。",
+                sheet=record["sheet"],
+                row=record["row"],
+                field="mold_model",
+            )
+        )
+
+
 def _metadata_date(sheet, label):
     normalized = _normalized_header(label)
     for _, cells in sheet.rows[:10]:
@@ -851,6 +886,147 @@ def _metadata_datetime(sheet, *labels):
     return None
 
 
+_FILENAME_FULL_DATE_RE = re.compile(
+    r"(?<!\d)(20\d{2})\s*(?:[-_.\/]|\u5e74)\s*(0?[1-9]|1[0-2])"
+    r"\s*(?:[-_.\/]|\u6708)\s*(0?[1-9]|[12]\d|3[01])(?:\u65e5)?(?!\d)"
+)
+_FILENAME_MONTH_DAY_RE = re.compile(
+    r"(?<!\d)(0?[1-9]|1[0-2])\s*(?:[-_.\/]|\u6708)\s*"
+    r"(0?[1-9]|[12]\d|3[01])(?:\u65e5)?(?!\d)"
+)
+_DISPLAY_YEAR_RE = re.compile(
+    r"(?<!\d)(20\d{2})\s*(?:[-_.\/]|\u5e74)\s*\d{1,2}"
+    r"\s*(?:[-_.\/]|\u6708)\s*\d{1,2}(?:\u65e5)?(?!\d)"
+)
+
+
+def _workbook_year_candidates(sheets):
+    """Return plausible business years without treating arbitrary numbers as dates."""
+    years = []
+    for sheet in sheets:
+        for _, cells in sheet.rows:
+            for cell in cells:
+                value = cell.raw_value
+                if isinstance(value, (datetime, date)):
+                    years.append(value.year)
+                    continue
+                text = cell.display_text.strip()
+                match = _DISPLAY_YEAR_RE.search(text)
+                if match:
+                    years.append(int(match.group(1)))
+    return years
+
+
+def _filename_business_date(original_name, sheets, metadata_date=None):
+    """Parse a full date, or combine a filename month/day with a reliable year."""
+    filename = PurePosixPath(str(original_name or "").replace("\\", "/")).name
+    stem = filename.rsplit(".", 1)[0]
+    full_match = _FILENAME_FULL_DATE_RE.search(stem)
+    if full_match:
+        try:
+            return date(*(int(value) for value in full_match.groups())), False
+        except ValueError:
+            return None, False
+
+    month_day_match = _FILENAME_MONTH_DAY_RE.search(stem)
+    if not month_day_match:
+        return None, False
+    month, day = (int(value) for value in month_day_match.groups())
+
+    year = metadata_date.year if metadata_date else None
+    if year is None:
+        standalone_year = re.search(r"(?<!\d)(20\d{2})(?!\d)", stem)
+        if standalone_year:
+            year = int(standalone_year.group(1))
+    if year is None:
+        candidates = _workbook_year_candidates(sheets)
+        if candidates:
+            counts = Counter(candidates)
+            year = min(counts, key=lambda item: (-counts[item], item))
+
+    used_current_year = year is None
+    if used_current_year:
+        year = timezone.localdate().year
+    try:
+        return date(year, month, day), used_current_year
+    except ValueError:
+        return None, used_current_year
+
+
+def _resolve_business_document_date(
+    sheets,
+    sheet,
+    original_name,
+    issues,
+    *,
+    metadata_labels,
+    field,
+    label,
+    metadata_row=None,
+):
+    """Resolve business date deterministically and retain the source for audit."""
+    metadata_datetime = _metadata_datetime(sheet, *metadata_labels)
+    parsed_metadata_datetime = None
+    if metadata_datetime:
+        parsed_metadata_datetime = parse_datetime(metadata_datetime)
+        if parsed_metadata_datetime is None:
+            parsed_metadata_date = parse_date(metadata_datetime)
+            if parsed_metadata_date:
+                parsed_metadata_datetime = datetime.combine(
+                    parsed_metadata_date, datetime.min.time()
+                )
+    metadata_date = (
+        parsed_metadata_datetime.date() if parsed_metadata_datetime else None
+    )
+    filename_date, used_current_year = _filename_business_date(
+        original_name, sheets, metadata_date
+    )
+
+    if filename_date and used_current_year:
+        issues.append(
+            _issue(
+                "warning",
+                f"文件名只能识别到月日，表内也没有可用年份；{label}暂按当前年份解析为"
+                f"{filename_date.isoformat()}，请在提交前确认。",
+                sheet=sheet.name,
+                row=metadata_row,
+                field=field,
+            )
+        )
+
+    if filename_date and metadata_date and filename_date != metadata_date:
+        issues.append(
+            _issue(
+                "warning",
+                f"文件名识别的{label}为{filename_date.isoformat()}，但表内“"
+                f"{metadata_labels[0]}”为{metadata_date.isoformat()}；预检默认采用文件名日期"
+                f"{filename_date.isoformat()}，请确认文件名后再提交。",
+                sheet=sheet.name,
+                row=metadata_row,
+                field=field,
+            )
+        )
+        return (
+            filename_date.isoformat(),
+            datetime.combine(filename_date, datetime.min.time()).isoformat(),
+            "FILENAME_CONFLICT_DEFAULT",
+        )
+    if filename_date:
+        source_document_at = (
+            metadata_datetime
+            if metadata_date == filename_date and metadata_datetime
+            else datetime.combine(filename_date, datetime.min.time()).isoformat()
+        )
+        return (
+            filename_date.isoformat(),
+            source_document_at,
+            "FILENAME_AND_METADATA" if metadata_date else "FILENAME",
+        )
+    if metadata_date:
+        return metadata_date.isoformat(), metadata_datetime, "METADATA"
+    return None, None, "MISSING"
+
+
 FACTORY_PRODUCT_COMPARE_FIELDS = (
     "product_name",
     "customer_product_no",
@@ -866,7 +1042,6 @@ FACTORY_PRODUCT_COMPARE_FIELDS = (
     "mold_in_stock",
     "mold_no",
     "mold_size",
-    "standard_hours",
     "notes",
 )
 
@@ -981,7 +1156,7 @@ def _deduplicate_factory_criteria(records, issues):
         ]
 
 
-def _parse_factory_work_contact(sheets, sha256, issues):
+def _parse_factory_work_contact(sheets, sha256, issues, original_name=""):
     main_sheet = None
     main_header = None
     main_mapping = None
@@ -1006,9 +1181,21 @@ def _parse_factory_work_contact(sheets, sha256, issues):
     product_keys = {}
     products_by_source_key = {}
     order_keys = {}
-    order_date_value = _metadata_date(main_sheet, "发单时间")
+    (
+        order_date_value,
+        source_document_at,
+        order_date_source,
+    ) = _resolve_business_document_date(
+        sheets,
+        main_sheet,
+        original_name,
+        issues,
+        metadata_labels=("发单时间",),
+        field="order_date",
+        label="下单日期",
+        metadata_row=max(1, main_header - 1),
+    )
     source_system = _metadata_text(main_sheet, "协力商")
-    source_document_at = _metadata_datetime(main_sheet, "发单时间")
     for row_no, cells in _sheet_row_iter(main_sheet, main_header):
         if _row_repeats_header(
             cells, main_mapping, ["独立需求号", "项次", "材质", "规格", "订单量"]
@@ -1042,9 +1229,6 @@ def _parse_factory_work_contact(sheets, sha256, issues):
                 "mold_in_stock": "",
                 "mold_no": _mapped_cell(cells, main_mapping, "模具号").display_text,
                 "mold_size": _mapped_cell(cells, main_mapping, "模具尺寸").display_text,
-                # “参考工时”是本次订单的成型工时，不是可由同型号订单共享的
-                # 产品标准工时。只有来源表明确提供“标准工时”列时才写入产品。
-                "standard_hours": _mapped_cell(cells, main_mapping, "标准工时").display_text,
                 "notes": "",
                 "source_system": source_system,
                 "source_document_at": source_document_at,
@@ -1068,8 +1252,6 @@ def _parse_factory_work_contact(sheets, sha256, issues):
             "mold_no",
             "mold_size",
         ]
-        if _mapping_has(main_mapping, "标准工时"):
-            product_record["source_fields"].append("standard_hours")
         records.append(product_record)
         products_by_source_key[product_record["source_key"]] = product_record
         product_keys[(order_no.casefold(), item_no.casefold())] = product_record["source_key"]
@@ -1095,10 +1277,11 @@ def _parse_factory_work_contact(sheets, sha256, issues):
                 "material": product_record["material"],
                 "order_quantity": quantity,
                 "order_date": order_date_value,
+                "order_date_source": order_date_source,
                 "due_date": _date_value(_mapped_cell(cells, main_mapping, "完成日", "交期")),
                 "mold_size": product_record["mold_size"],
                 "forming_hours": _decimal_text(
-                    _mapped_cell(cells, main_mapping, "参考工时", "标准工时"),
+                    _mapped_cell(cells, main_mapping, "参考工时"),
                     issues,
                     sheet=main_sheet.name,
                     row=row_no,
@@ -1129,12 +1312,15 @@ def _parse_factory_work_contact(sheets, sha256, issues):
             "specification",
             "material",
             "order_quantity",
-            "order_date",
             "due_date",
             "mold_size",
             "forming_hours",
             "required_material_kg",
         ]
+        # A customer workbook without a recognizable document date must not
+        # erase a date that was entered or corrected manually in the ledger.
+        if order_date_value:
+            order_record["source_fields"].append("order_date")
         if not order_no:
             issues.append(_issue("error", "订单号不能为空。", sheet=main_sheet.name, row=row_no, field="order_no"))
         if not source_system:
@@ -1252,14 +1438,27 @@ def _parse_factory_work_contact(sheets, sha256, issues):
     return records
 
 
-def _parse_material_issue(sheet, header_row, mapping, sha256, issues):
+def _parse_material_issue(
+    sheet, header_row, mapping, sha256, issues, original_name=""
+):
     records = []
     metadata_source_system = (
         ""
         if _mapping_has(mapping, "课别", "来源单位")
         else _metadata_text(sheet, "课别")
     )
-    source_document_at = _metadata_datetime(sheet, "打印日期", "打印时间")
+    issued_on, source_document_at, issued_on_source = (
+        _resolve_business_document_date(
+            [sheet],
+            sheet,
+            original_name,
+            issues,
+            metadata_labels=("打印日期", "打印时间"),
+            field="issued_on",
+            label="发料日期",
+            metadata_row=max(1, header_row - 1),
+        )
+    )
     for row_no, cells in _sheet_row_iter(sheet, header_row):
         if _row_repeats_header(
             cells, mapping, ["独立需求号", "成品品名", "成品规格", "材质", "重量"]
@@ -1320,6 +1519,16 @@ def _parse_material_issue(sheet, header_row, mapping, sha256, issues):
                     field="batch_no",
                 )
             )
+        explicit_issued_on = _date_value(
+            _mapped_cell(cells, mapping, "发料日期", "发料时间")
+        )
+        row_issued_on = explicit_issued_on or issued_on
+        row_issued_on_source = "ROW" if explicit_issued_on else issued_on_source
+        row_source_document_at = source_document_at
+        if explicit_issued_on and not row_source_document_at:
+            row_source_document_at = datetime.combine(
+                parse_date(explicit_issued_on), datetime.min.time()
+            ).isoformat()
         record = _record_base(
             sha256, sheet.name, row_no, RECORD_RECEIPT, _raw_row(cells, mapping)
         )
@@ -1333,9 +1542,11 @@ def _parse_material_issue(sheet, header_row, mapping, sha256, issues):
                 "batch_no": batch_no,
                 "sheet_size": _mapped_cell(cells, mapping, "出片尺寸").display_text,
                 "weight_kg": weight,
+                "issued_on": row_issued_on,
+                "issued_on_source": row_issued_on_source,
                 "manufactured_on": _date_value(_mapped_cell(cells, mapping, "制造时间", "制造日期")),
                 "source_system": source_system,
-                "source_document_at": source_document_at,
+                "source_document_at": row_source_document_at,
             }
         )
         record["external_key"] = _external_key(
@@ -1356,6 +1567,11 @@ def _parse_material_issue(sheet, header_row, mapping, sha256, issues):
             "weight_kg",
             "manufactured_on",
         ]
+        # Missing document metadata is not evidence that an existing issue
+        # date should be cleared.  Keep manual corrections unless the source
+        # actually supplies a date.
+        if row_issued_on:
+            record["source_fields"].append("issued_on")
         records.append(record)
     return records
 
@@ -1401,7 +1617,21 @@ def _link_material_receipt_orders(records, issues):
             matches = list(refined.order_by("id")[:3])
         if len(matches) == 1:
             record["order_id"] = matches[0].pk
+            record["link_status"] = "LINKED"
+            record["link_reason_code"] = (
+                "MATCHED_LEGACY_ORDER" if used_legacy_fallback else "MATCHED_ORDER"
+            )
+            record["link_reason"] = (
+                "按订单号、规格和材质唯一匹配到旧总表订单。"
+                if used_legacy_fallback
+                else "按订单号和项次唯一匹配到订单明细。"
+            )
         elif not matches:
+            record["link_status"] = "UNLINKED"
+            record["link_reason_code"] = "ORDER_NOT_FOUND"
+            record["link_reason"] = (
+                "未找到对应订单明细；发料记录会保留，但暂不计入具体订单。"
+            )
             issues.append(
                 _issue(
                     "warning",
@@ -1412,6 +1642,11 @@ def _link_material_receipt_orders(records, issues):
                 )
             )
         else:
+            record["link_status"] = "UNLINKED"
+            record["link_reason_code"] = "ORDER_MATCH_AMBIGUOUS"
+            record["link_reason"] = (
+                "存在多条可能对应的订单明细，无法安全自动关联。"
+            )
             issues.append(
                 _issue(
                     "warning",
@@ -1436,6 +1671,9 @@ def _validate_duplicate_business_keys(records, issues):
             seen[(record["record_type"], external_key)] = record
             continue
         label = "客户订单" if record["record_type"] == RECORD_ORDER else "发料记录"
+        record["duplicate_in_file"] = True
+        record["duplicate_of_row_key"] = first["row_key"]
+        record["duplicate_of_row"] = first["row"]
         issues.append(
             _issue(
                 "error",
@@ -1447,7 +1685,7 @@ def _validate_duplicate_business_keys(records, issues):
         )
 
 
-def parse_business_sheets(sheets, sha256):
+def parse_business_sheets(sheets, sha256, original_name=""):
     issues = []
     material_match = None
     product_match = None
@@ -1477,11 +1715,15 @@ def parse_business_sheets(sheets, sha256):
 
     if material_match:
         sheet, header_row, mapping = material_match
-        records = _parse_material_issue(sheet, header_row, mapping, sha256, issues)
+        records = _parse_material_issue(
+            sheet, header_row, mapping, sha256, issues, original_name
+        )
         _link_material_receipt_orders(records, issues)
         source_type = BusinessImportBatch.SourceType.MATERIAL_ISSUE
     elif factory_main:
-        records = _parse_factory_work_contact(sheets, sha256, issues)
+        records = _parse_factory_work_contact(
+            sheets, sha256, issues, original_name
+        )
         source_type = BusinessImportBatch.SourceType.FACTORY_WORK_CONTACT
     elif product_match:
         sheet, header_row, mapping = product_match
@@ -1493,6 +1735,7 @@ def parse_business_sheets(sheets, sha256):
         source_type = BusinessImportBatch.SourceType.INTERNAL_ORDERS
     else:
         raise ValueError("无法识别Excel格式，请使用产品规格、内部订单、生产工作联络单或发料清单。")
+    _link_product_mold_models(records, issues)
     _validate_duplicate_business_keys(records, issues)
     if not records:
         issues.append(_issue("error", "工作簿中没有可导入的有效业务行。"))
@@ -1542,7 +1785,7 @@ def _datetime_from_payload(value):
 
 def _model_record_value(record, field):
     value = record.get(field)
-    if field in {"order_date", "due_date", "manufactured_on"}:
+    if field in {"order_date", "due_date", "issued_on", "manufactured_on"}:
         return _date_from_payload(value)
     if field in {
         "forming_hours",
@@ -1818,6 +2061,80 @@ def _product_dependency_change(instance, record, product_records):
     return None
 
 
+def _assign_skip_reasons(records):
+    """Attach a stable, user-readable reason to every preview row marked SKIP."""
+    for record in records:
+        if record.get("duplicate_in_file"):
+            record["action"] = "SKIP"
+            record["changes"] = {}
+
+        if record.get("action") != "SKIP":
+            record.pop("skip_reason_code", None)
+            record.pop("skip_reason", None)
+            continue
+
+        record_type = record.get("record_type")
+        if record.get("duplicate_in_file"):
+            if record_type == RECORD_ORDER:
+                code = "DUPLICATE_ORDER_NUMBER_ITEM_IN_FILE"
+                reason = (
+                    "同一文件中订单号和项次重复；首次业务行位于第"
+                    f"{record.get('duplicate_of_row')}行，当前行不能重复导入。"
+                )
+            else:
+                code = "DUPLICATE_MATERIAL_BATCH_IN_FILE"
+                reason = (
+                    "同一文件中课别、订单号、项次和批号重复；首次业务行位于第"
+                    f"{record.get('duplicate_of_row')}行，当前行不能重复导入。"
+                )
+        elif record.get("stale_source_version"):
+            code = "STALE_SOURCE_VERSION"
+            reason = "来源文件日期缺失或早于现有版本，为避免回退数据而跳过。"
+        elif record.get("protected_shared_product_version"):
+            code = "NEWER_LINKED_ORDER_PROTECTS_PRODUCT"
+            reason = "该产品已关联日期更新的客户订单，为避免回退共享产品工艺而跳过。"
+        elif record.get("protected_customer_source"):
+            code = "CUSTOMER_SOURCE_PROTECTED"
+            reason = "该总表行已由客户订单认领，旧总表不能覆盖客户来源数据。"
+        elif record.get("unsafe_product_identity") or record.get(
+            "unsafe_missing_identity"
+        ):
+            code = "UNSAFE_PRODUCT_IDENTITY"
+            reason = "产品身份信息不足或冲突，无法安全复用现有产品。"
+        elif record.get("ambiguous_internal_row"):
+            code = "AMBIGUOUS_INTERNAL_ORDER_ROW"
+            reason = "同一总表行对应多条旧订单，无法安全自动选择。"
+        elif record.get("ambiguous_order_identity"):
+            code = "AMBIGUOUS_ORDER_NUMBER_ITEM"
+            reason = "订单号和项次对应多条旧订单，无法安全自动选择。"
+        elif record.get("ambiguous_product_identity") and not record.get(
+            "ambiguous_product_resolved"
+        ):
+            code = "AMBIGUOUS_PRODUCT_IDENTITY"
+            reason = "数据库中存在多条相同产品身份，无法安全自动选择。"
+        elif record.get("ambiguous_criterion_identity"):
+            code = "AMBIGUOUS_INSPECTION_CRITERION"
+            reason = "数据库中存在多条相同检验标准业务键，无法安全自动选择。"
+        elif record.get("match_id"):
+            if record_type == RECORD_ORDER:
+                code = "ORDER_NUMBER_ITEM_ALREADY_CURRENT"
+                reason = "该订单号和项次已存在，且本次业务数据没有变化。"
+            elif record_type == RECORD_RECEIPT:
+                code = "MATERIAL_BATCH_ALREADY_CURRENT"
+                reason = "该发料批号已经导入，且本次业务数据没有变化。"
+            elif record_type == RECORD_PRODUCT:
+                code = "PRODUCT_ALREADY_CURRENT"
+                reason = "该产品规格已经存在，且本次业务数据没有变化。"
+            else:
+                code = "INSPECTION_CRITERION_ALREADY_CURRENT"
+                reason = "该检验标准已经存在，且本次业务数据没有变化。"
+        else:
+            code = "NO_SAFE_BUSINESS_CHANGE"
+            reason = "本次业务行没有可安全提交的新增或变更内容。"
+        record["skip_reason_code"] = code
+        record["skip_reason"] = reason
+
+
 def _prepare_record_actions(records, source_type, issues, *, lock=False):
     order_records = {record["source_key"]: record for record in records if record["record_type"] == RECORD_ORDER}
     product_records = {
@@ -1889,6 +2206,7 @@ def _prepare_record_actions(records, source_type, issues, *, lock=False):
         ):
             record["action"] = "SKIP"
             record["changes"] = {}
+            record["protected_customer_source"] = True
             issues.append(
                 _issue(
                     "warning",
@@ -2146,6 +2464,7 @@ def _prepare_record_actions(records, source_type, issues, *, lock=False):
         source_key = record.get("product_spec_source_key")
         if source_key and source_key in product_records:
             record["product_spec_match_id"] = product_records[source_key].get("match_id")
+    _assign_skip_reasons(records)
 
 
 def _preview_summary(record):
@@ -2167,17 +2486,20 @@ def preview_business_workbook(uploaded_file, user):
     uploaded_file.seek(0)
     sha256 = hashlib.sha256(data).hexdigest()
     sheets, parser = read_business_workbook(data)
-    source_type, records, issues = parse_business_sheets(sheets, sha256)
+    original_name = str(getattr(uploaded_file, "name", "upload.xlsx"))[:255]
+    source_type, records, issues = parse_business_sheets(
+        sheets, sha256, original_name
+    )
     _prepare_record_actions(records, source_type, issues)
     for record in records:
         if record["action"] == "SKIP":
             issues.append(
                 _issue(
                     "warning",
-                    "该业务行与现有数据相同或来源版本较旧，将跳过业务字段更新。",
+                    record["skip_reason"],
                     sheet=record["sheet"],
                     row=record["row"],
-                    field="source_key",
+                    field="skip_reason",
                 )
             )
     errors = [item for item in issues if item["level"] == "error"]
@@ -2185,7 +2507,7 @@ def preview_business_workbook(uploaded_file, user):
     batch = BusinessImportBatch(
         source_type=source_type,
         parser=parser,
-        original_name=str(getattr(uploaded_file, "name", "upload.xlsx"))[:255],
+        original_name=original_name,
         sha256=sha256,
         payload={"rows": json_safe(records), "parser": parser},
         errors=errors,
@@ -2215,10 +2537,18 @@ def preview_business_workbook(uploaded_file, user):
                 "sheet": record["sheet"],
                 "row": record["row"],
                 "action": record["action"],
+                "skip_reason_code": record.get("skip_reason_code", ""),
+                "skip_reason": record.get("skip_reason", ""),
+                "link_status": record.get("link_status", ""),
+                "link_reason_code": record.get("link_reason_code", ""),
+                "link_reason": record.get("link_reason", ""),
                 "match_id": record.get("match_id"),
                 "changes": record.get("changes", {}),
                 "order_no": record.get("order_no", ""),
                 "item_no": record.get("item_no", ""),
+                "order_date": record.get("order_date"),
+                "issued_on": record.get("issued_on"),
+                "manufactured_on": record.get("manufactured_on"),
                 "specification": record.get("specification", ""),
                 "material": record.get("material", ""),
                 "summary": _preview_summary(record),
@@ -2639,7 +2969,6 @@ TEMPLATE_HEADERS = {
         "模具在库",
         "模具号",
         "模具尺寸",
-        "标准工时",
         "备注",
     ],
     "orders": [
@@ -2672,6 +3001,7 @@ TEMPLATE_HEADERS = {
         "批号",
         "出片尺寸",
         "重量",
+        "发料日期",
         "制造时间",
     ],
 }

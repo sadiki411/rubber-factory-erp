@@ -1,8 +1,8 @@
-import { Alert, App, Button, Col, Drawer, Form, Input, Row, Space, Switch, Typography } from 'antd'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Alert, App, Button, Col, Drawer, Form, Input, Row, Select, Space, Switch, Typography } from 'antd'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
-import { productSpecificationApi } from '../api/client'
-import type { ProductSpecification } from '../types'
+import { masterApi, productSpecificationApi, toList } from '../api/client'
+import type { MoldModel, ProductSpecification } from '../types'
 
 interface Props {
   open: boolean
@@ -10,21 +10,37 @@ interface Props {
   onClose: () => void
 }
 
+const moldModelApi = masterApi<MoldModel>('mold-models')
+
 export function ProductSpecificationDrawer({ open, specification, onClose }: Props) {
   const [form] = Form.useForm<Record<string, unknown>>()
   const queryClient = useQueryClient()
   const { message } = App.useApp()
+  const moldModelsQuery = useQuery({
+    queryKey: ['mold-models', 'product-specification-options'],
+    queryFn: async () => toList(await moldModelApi.list()),
+    enabled: open,
+  })
 
   useEffect(() => {
     if (!open) return
     form.resetFields()
-    form.setFieldsValue(specification ? { ...specification } : { is_active: true })
+    form.setFieldsValue(specification ? {
+      ...specification,
+      mold_model_id: specification.mold_model_id ?? specification.mold_model?.id,
+    } : { is_active: true })
   }, [form, open, specification])
 
   const mutation = useMutation({
-    mutationFn: (values: Record<string, unknown>) => specification
-      ? productSpecificationApi.update(specification.id, values)
-      : productSpecificationApi.create(values),
+    mutationFn: (values: Record<string, unknown>) => {
+      const body = {
+        ...values,
+        mold_model_id: typeof values.mold_model_id === 'number' ? values.mold_model_id : null,
+      } as Partial<ProductSpecification>
+      return specification
+        ? productSpecificationApi.update(specification.id, body)
+        : productSpecificationApi.create(body)
+    },
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['product-specifications'] }),
@@ -73,7 +89,6 @@ export function ProductSpecificationDrawer({ open, specification, onClose }: Pro
           <Col xs={24} sm={12}><Form.Item name="cut_weight" label="裁料重量"><Input placeholder="例如 10g、0.010kg" /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="strip_count" label="条数 / 每批条数"><Input /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="primary_curing" label="一次硫化参数"><Input placeholder="温度、时间、压力等原始内容" /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="standard_hours" label="标准工时"><Input /></Form.Item></Col>
         </Row>
 
         <div className="business-form-section">二烤与模具</div>
@@ -82,7 +97,23 @@ export function ProductSpecificationDrawer({ open, specification, onClose }: Pro
           <Col xs={12} sm={8}><Form.Item name="total_cavities" label="总孔数"><Input /></Form.Item></Col>
           <Col xs={12} sm={8}><Form.Item name="effective_cavities" label="有效孔数"><Input /></Form.Item></Col>
           <Col xs={24} sm={8}><Form.Item name="mold_in_stock" label="模具在库情况"><Input placeholder="保留原表描述" /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="mold_no" label="模具编号"><Input /></Form.Item></Col>
+          <Col xs={24} sm={12}>
+            <Form.Item name="mold_model_id" label="关联模具型号" extra="关联模具台账中的标准型号；同型号的多副实物模具会共用此关联。">
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                loading={moldModelsQuery.isLoading}
+                placeholder="按型号或产品名称搜索"
+                options={(moldModelsQuery.data || []).map((model) => ({
+                  value: model.id,
+                  label: `${model.code} · ${model.product_name || '未填写产品名称'}`,
+                  disabled: !model.is_active && model.id !== specification?.mold_model?.id,
+                }))}
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={12}><Form.Item name="mold_no" label="原表模具号" extra="保留客户或历史表格中的原始写法，用于核对。"><Input /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="mold_size" label="模具尺寸"><Input /></Form.Item></Col>
         </Row>
         <Form.Item name="notes" label="备注"><Input.TextArea rows={4} maxLength={2000} showCount /></Form.Item>

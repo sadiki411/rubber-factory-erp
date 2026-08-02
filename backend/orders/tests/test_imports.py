@@ -12,6 +12,7 @@ from django.utils import timezone
 from openpyxl import Workbook, load_workbook
 from rest_framework.test import APITestCase
 
+from molds.models import MoldModel
 from orders.imports import commit_business_batch, preview_business_workbook
 from orders.models import (
     BusinessImportBatch,
@@ -351,6 +352,16 @@ class BusinessImportTests(TestCase):
             product.raw_data["条数"]["number_format"], CUSTOM_DISPLAY_TEXT
         )
 
+    def test_product_import_ignores_legacy_standard_hours_column(self):
+        workbook = load_workbook(io.BytesIO(product_workbook()))
+        sheet = workbook.active
+        sheet.cell(1, 12).value = "标准工时"
+        sheet.cell(2, 12).value = "SHOULD-NOT-IMPORT"
+        result = self.preview("products-with-standard-hours.xlsx", workbook_bytes(workbook))
+        self.assertEqual(result["error_count"], 0, result["issues"])
+        self.commit(result)
+        self.assertEqual(ProductSpecification.objects.get().standard_hours, "")
+
     def test_bad_styles_uses_safe_ooxml_dates_and_preserves_identical_rows(self):
         result = self.preview(
             "orders.xlsx",
@@ -408,6 +419,136 @@ class BusinessImportTests(TestCase):
         self.assertEqual(criterion.order_id, order.pk)
         self.assertEqual(criterion.project_no, SYNTHETIC_PROJECT)
         self.assertTrue(order.production_required)
+
+    def test_factory_exact_mold_number_links_existing_mold_model(self):
+        mold_model = MoldModel.objects.create(
+            code="TEST-MOLD-01", product_name="TEST-MOLD-PRODUCT"
+        )
+        result = self.preview("factory-mold-link.xlsx", factory_workbook())
+        product_payload = next(
+            row
+            for row in BusinessImportBatch.objects.get(pk=result["token"]).payload[
+                "rows"
+            ]
+            if row["record_type"] == "PRODUCT_SPECIFICATION"
+        )
+        self.assertEqual(product_payload["mold_model_id"], mold_model.pk)
+        self.assertFalse(
+            any(issue.get("field") == "mold_model" for issue in result["issues"]),
+            result["issues"],
+        )
+        self.commit(result)
+        self.assertEqual(
+            ProductSpecification.objects.get().mold_model_id, mold_model.pk
+        )
+
+    def test_unmatched_mold_number_warns_without_creating_or_clearing_manual_link(self):
+        content = factory_workbook()
+        first = self.preview("factory-unmatched-mold.xlsx", content)
+        self.assertTrue(
+            any(
+                issue.get("field") == "mold_model"
+                and "不会自动创建" in issue["message"]
+                for issue in first["issues"]
+            )
+        )
+        self.commit(first)
+        self.assertEqual(MoldModel.objects.count(), 0)
+
+        manual_mold = MoldModel.objects.create(
+            code="MANUAL-MOLD-LINK", product_name="MANUAL-PRODUCT"
+        )
+        product = ProductSpecification.objects.get()
+        product.mold_model = manual_mold
+        product.save()
+
+        repeated = self.preview("factory-unmatched-mold.xlsx", content)
+        product_row = next(
+            row
+            for row in repeated["rows"]
+            if row["record_type"] == "PRODUCT_SPECIFICATION"
+        )
+        self.assertEqual(product_row["action"], "SKIP")
+        self.commit(repeated)
+        product.refresh_from_db()
+        self.assertEqual(product.mold_model_id, manual_mold.pk)
+        self.assertEqual(MoldModel.objects.count(), 1)
+
+    def test_factory_filename_date_conflict_warns_and_defaults_to_filename(self):
+        result = self.preview(
+            "NBR-T3(7-23).xlsx",
+            factory_workbook(issued_on=date(2026, 4, 27)),
+        )
+        order_row = next(
+            row for row in result["rows"] if row["record_type"] == "ORDER"
+        )
+        payload_row = next(
+            row
+            for row in BusinessImportBatch.objects.get(pk=result["token"]).payload[
+                "rows"
+            ]
+            if row["record_type"] == "ORDER"
+        )
+        self.assertEqual(order_row["order_date"], "2026-07-23")
+        self.assertEqual(payload_row["order_date_source"], "FILENAME_CONFLICT_DEFAULT")
+        self.assertEqual(payload_row["source_document_at"], "2026-07-23T00:00:00")
+        warning = next(
+            issue
+            for issue in result["issues"]
+            if issue.get("field") == "order_date"
+        )
+        self.assertIn("2026-07-23", warning["message"])
+        self.assertIn("2026-04-27", warning["message"])
+        self.commit(result)
+        self.assertEqual(
+            QualityOrder.objects.get(order_no=SYNTHETIC_FACTORY_ORDER).order_date,
+            date(2026, 7, 23),
+        )
+
+    def test_factory_without_document_date_preserves_manual_order_date(self):
+        first = self.preview(
+            "factory-without-date-first.xlsx",
+            factory_workbook(issued_on=None),
+        )
+        self.commit(first)
+        order = QualityOrder.objects.get(order_no=SYNTHETIC_FACTORY_ORDER)
+        order.order_date = date(2026, 7, 9)
+        order.save(update_fields=["order_date", "updated_at"])
+
+        changed = self.preview(
+            "factory-without-date-corrected.xlsx",
+            factory_workbook(issued_on=None, order_quantity=2500),
+        )
+        order_row = next(
+            row for row in changed["rows"] if row["record_type"] == "ORDER"
+        )
+        self.assertEqual(order_row["action"], "UPDATE")
+        self.assertIn("order_quantity", order_row["changes"])
+        self.assertNotIn("order_date", order_row["changes"])
+        self.commit(changed)
+
+        order.refresh_from_db()
+        self.assertEqual(order.order_date, date(2026, 7, 9))
+        self.assertEqual(order.order_quantity, 2500)
+
+    def test_factory_filename_month_day_uses_year_from_workbook(self):
+        result = self.preview(
+            "NBR-T3(7-25).xlsx",
+            factory_workbook(issued_on=None),
+        )
+        order_row = next(
+            row for row in result["rows"] if row["record_type"] == "ORDER"
+        )
+        self.assertEqual(order_row["order_date"], "2026-07-25")
+        self.assertFalse(
+            any(issue.get("field") == "order_date" for issue in result["issues"]),
+            result["issues"],
+        )
+        self.commit(result)
+        self.assertEqual(
+            QualityOrder.objects.get(order_no=SYNTHETIC_FACTORY_ORDER).order_date,
+            date(2026, 7, 25),
+        )
 
     def test_factory_main_sheet_without_criteria_is_still_an_order_import(self):
         result = self.preview(
@@ -1029,6 +1170,17 @@ class BusinessImportTests(TestCase):
             row for row in repeated["rows"] if row["record_type"] == "ORDER"
         )
         self.assertEqual(repeated_row["action"], "SKIP")
+        self.assertEqual(
+            repeated_row["skip_reason_code"], "ORDER_NUMBER_ITEM_ALREADY_CURRENT"
+        )
+        stored_order_row = next(
+            row
+            for row in BusinessImportBatch.objects.get(pk=repeated["token"]).payload[
+                "rows"
+            ]
+            if row["record_type"] == "ORDER"
+        )
+        self.assertEqual(stored_order_row["skip_reason"], repeated_row["skip_reason"])
         self.commit(repeated)
         order.refresh_from_db()
         self.assertEqual(order.source_batch_id, first_batch_id)
@@ -1278,9 +1430,91 @@ class BusinessImportTests(TestCase):
 
         repeated = self.preview("material.xlsx", content)
         self.assertEqual(repeated["warning_count"], 1)
+        repeated_row = next(
+            row
+            for row in repeated["rows"]
+            if row["record_type"] == "MATERIAL_RECEIPT"
+        )
+        self.assertEqual(
+            repeated_row["skip_reason_code"], "MATERIAL_BATCH_ALREADY_CURRENT"
+        )
+        stored_row = next(
+            row
+            for row in BusinessImportBatch.objects.get(pk=repeated["token"]).payload[
+                "rows"
+            ]
+            if row["record_type"] == "MATERIAL_RECEIPT"
+        )
+        self.assertEqual(stored_row["skip_reason"], repeated_row["skip_reason"])
         result = self.commit(repeated)
         self.assertEqual(result["skipped"]["material_receipts"], 1)
         self.assertEqual(MaterialReceipt.objects.count(), 1)
+
+    def test_material_issue_date_and_manufacture_date_are_kept_separately(self):
+        result = self.preview(
+            "NBRT3 8-4发料清单.xlsx",
+            material_workbook(printed_at="2026-08-04 09:30:00"),
+        )
+        receipt_row = next(
+            row
+            for row in result["rows"]
+            if row["record_type"] == "MATERIAL_RECEIPT"
+        )
+        self.assertEqual(receipt_row["issued_on"], "2026-08-04")
+        self.assertEqual(receipt_row["manufactured_on"], "2026-08-04")
+        self.commit(result)
+        receipt = MaterialReceipt.objects.get()
+        self.assertEqual(receipt.issued_on, date(2026, 8, 4))
+        self.assertEqual(receipt.manufactured_on, date(2026, 8, 4))
+
+    def test_material_filename_date_conflict_warns_and_defaults_to_filename(self):
+        result = self.preview(
+            "NBRT3 7-25发料清单.xlsx",
+            material_workbook(printed_at="2026-04-27 10:44:20"),
+        )
+        receipt_row = next(
+            row
+            for row in result["rows"]
+            if row["record_type"] == "MATERIAL_RECEIPT"
+        )
+        self.assertEqual(receipt_row["issued_on"], "2026-07-25")
+        warning = next(
+            issue
+            for issue in result["issues"]
+            if issue.get("field") == "issued_on"
+        )
+        self.assertIn("2026-07-25", warning["message"])
+        self.assertIn("2026-04-27", warning["message"])
+        self.commit(result)
+        self.assertEqual(MaterialReceipt.objects.get().issued_on, date(2026, 7, 25))
+
+    def test_material_without_document_date_preserves_manual_issue_date(self):
+        first = self.preview(
+            "material-without-date-first.xlsx",
+            material_workbook(printed_at=""),
+        )
+        self.commit(first)
+        receipt = MaterialReceipt.objects.get()
+        receipt.issued_on = date(2026, 7, 8)
+        receipt.save(update_fields=["issued_on", "updated_at"])
+
+        changed = self.preview(
+            "material-without-date-corrected.xlsx",
+            material_workbook(printed_at="", weight=25.75),
+        )
+        receipt_row = next(
+            row
+            for row in changed["rows"]
+            if row["record_type"] == "MATERIAL_RECEIPT"
+        )
+        self.assertEqual(receipt_row["action"], "UPDATE")
+        self.assertIn("weight_kg", receipt_row["changes"])
+        self.assertNotIn("issued_on", receipt_row["changes"])
+        self.commit(changed)
+
+        receipt.refresh_from_db()
+        self.assertEqual(receipt.issued_on, date(2026, 7, 8))
+        self.assertEqual(receipt.weight_kg, Decimal("25.75"))
 
     def test_material_batch_uses_stable_key_and_updates_changed_weight(self):
         order = QualityOrder.objects.create(
@@ -1480,6 +1714,13 @@ class BusinessImportTests(TestCase):
     def test_material_receipt_preview_warns_when_order_is_missing_or_ambiguous(self):
         missing = self.preview("material-missing.xlsx", material_workbook())
         self.assertTrue(any("未找到对应订单" in item["message"] for item in missing["issues"]))
+        missing_row = next(
+            row
+            for row in missing["rows"]
+            if row["record_type"] == "MATERIAL_RECEIPT"
+        )
+        self.assertEqual(missing_row["link_status"], "UNLINKED")
+        self.assertEqual(missing_row["link_reason_code"], "ORDER_NOT_FOUND")
         self.commit(missing)
         self.assertIsNone(MaterialReceipt.objects.get().order_id)
 
@@ -1496,6 +1737,15 @@ class BusinessImportTests(TestCase):
         ambiguous_content = material_workbook("TEST-BATCH-002")
         ambiguous = self.preview("material-ambiguous.xlsx", ambiguous_content)
         self.assertTrue(any("多条可能对应" in item["message"] for item in ambiguous["issues"]))
+        ambiguous_row = next(
+            row
+            for row in ambiguous["rows"]
+            if row["record_type"] == "MATERIAL_RECEIPT"
+        )
+        self.assertEqual(ambiguous_row["link_status"], "UNLINKED")
+        self.assertEqual(
+            ambiguous_row["link_reason_code"], "ORDER_MATCH_AMBIGUOUS"
+        )
         self.commit(ambiguous)
         receipt = MaterialReceipt.objects.order_by("-id").first()
         self.assertIsNone(receipt.order_id)
@@ -1517,6 +1767,16 @@ class BusinessImportTests(TestCase):
         )
         self.assertIn("第4行", factory_issue["message"])
         self.assertIn("第5行", factory_issue["message"])
+        duplicate_order_row = next(
+            row
+            for row in factory_preview["rows"]
+            if row["record_type"] == "ORDER" and row["row"] == 5
+        )
+        self.assertEqual(duplicate_order_row["action"], "SKIP")
+        self.assertEqual(
+            duplicate_order_row["skip_reason_code"],
+            "DUPLICATE_ORDER_NUMBER_ITEM_IN_FILE",
+        )
 
         material = load_workbook(io.BytesIO(material_workbook()))
         material_sheet = material["sheet1"]
@@ -1534,6 +1794,16 @@ class BusinessImportTests(TestCase):
         )
         self.assertIn("第4行", material_issue["message"])
         self.assertIn("第5行", material_issue["message"])
+        duplicate_receipt_row = next(
+            row
+            for row in material_preview["rows"]
+            if row["record_type"] == "MATERIAL_RECEIPT" and row["row"] == 5
+        )
+        self.assertEqual(duplicate_receipt_row["action"], "SKIP")
+        self.assertEqual(
+            duplicate_receipt_row["skip_reason_code"],
+            "DUPLICATE_MATERIAL_BATCH_IN_FILE",
+        )
 
     def test_factory_and_material_require_stable_business_key_fields(self):
         factory = load_workbook(
@@ -1627,6 +1897,11 @@ class BusinessImportApiTests(APITestCase):
             "/api/orders/imports/template/?type=product_specifications"
         )
         self.assertEqual(template.status_code, 200, template.content)
+        product_template = load_workbook(io.BytesIO(template.content), read_only=True)
+        self.assertNotIn(
+            "标准工时", [cell.value for cell in product_template.active[1]]
+        )
+        product_template.close()
         order_template = self.client.get("/api/orders/imports/template/?type=orders")
         self.assertEqual(order_template.status_code, 200, order_template.content)
         workbook = load_workbook(io.BytesIO(order_template.content), read_only=True)
@@ -1676,6 +1951,7 @@ class BusinessImportApiTests(APITestCase):
             "批号": "TEMPLATE-BATCH-001",
             "出片尺寸": "300/3",
             "重量": 1.25,
+            "发料日期": date(2026, 8, 2),
             "制造时间": date(2026, 8, 1),
         }
         sheet.append([values.get(header, "") for header in headers])
@@ -1687,6 +1963,7 @@ class BusinessImportApiTests(APITestCase):
         self.assertEqual(preview.status_code, 200, preview.content)
         self.assertEqual(preview.json()["source_type"], "MATERIAL_ISSUE")
         self.assertEqual(preview.json()["error_count"], 0, preview.json()["issues"])
+        self.assertEqual(preview.json()["rows"][0]["issued_on"], "2026-08-02")
 
         blank_source = load_workbook(io.BytesIO(template.content))
         blank_sheet = blank_source.active

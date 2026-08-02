@@ -98,7 +98,6 @@ export function OrderFormDrawer({ open, order, onClose }: Props) {
       specification: selected.specification || form.getFieldValue('specification'),
       material: selected.material || form.getFieldValue('material'),
       mold_size: selected.mold_size || form.getFieldValue('mold_size'),
-      forming_hours: /^\d+(?:\.\d+)?$/.test(String(selected.standard_hours || '').trim()) ? selected.standard_hours : form.getFieldValue('forming_hours'),
     })
   }
 
@@ -136,7 +135,7 @@ export function OrderFormDrawer({ open, order, onClose }: Props) {
           <Col xs={12} sm={6}><Form.Item name="item_no" label="项次"><Input /></Form.Item></Col>
           <Col xs={12} sm={6}><Form.Item name="batch_no" label="批次号"><Input /></Form.Item></Col>
           <Col xs={24}><Form.Item name="product_specification_id" label="关联产品规格"><Select allowClear showSearch optionFilterProp="label" loading={specificationsQuery.isLoading} onChange={selectSpecification} placeholder="选择后带入产品、规格、材质和模具资料" options={(specificationsQuery.data || []).map((item) => ({ value: item.id, label: [item.customer_product_no, item.product_name, item.specification].filter(Boolean).join(' · '), disabled: !item.is_active }))} /></Form.Item></Col>
-          {selectedSpecification && <Col xs={24}><Alert type="info" showIcon title="产品工艺参考" description={`标准工时：${selectedSpecification.standard_hours || '-'}；一次硫化：${selectedSpecification.primary_curing || '-'}；二烤：${selectedSpecification.secondary_curing || '-'}；模具：${selectedSpecification.mold_no || selectedSpecification.mold_size || '-'}`} /></Col>}
+          {selectedSpecification && <Col xs={24}><Alert type="info" showIcon title="产品工艺参考" description={`一次硫化：${selectedSpecification.primary_curing || '-'}；二烤：${selectedSpecification.secondary_curing || '-'}；模具型号：${selectedSpecification.mold_model?.code || selectedSpecification.mold_no || '-'}；模具尺寸：${selectedSpecification.mold_size || '-'}`} /></Col>}
           <Col xs={24} sm={12}><Form.Item name="product_code" label="产品编码"><Input /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="product_name" label="产品名称"><Input /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="specification" label="规格" rules={[{ required: true, whitespace: true, message: '请输入规格' }]}><Input /></Form.Item></Col>
@@ -144,7 +143,7 @@ export function OrderFormDrawer({ open, order, onClose }: Props) {
           <Col xs={12} sm={8}><Form.Item name="order_quantity" label="订单数量" rules={[{ required: true, message: '请输入订单数量' }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
           <Col xs={12} sm={8}><Form.Item name="forming_hours" label="成型工时"><Input placeholder="可保留原始小数" /></Form.Item></Col>
           <Col xs={24} sm={8}><Form.Item name="mold_size" label="模具 / 模具尺寸"><Input /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="order_date" label="订单日期"><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="order_date" label="下单日期"><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="due_date" label="交付日期"><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="status" label="订单状态" rules={[{ required: true }]}><Select options={[{ value: 'OPEN', label: '进行中' }, { value: 'COMPLETED', label: '已完成' }, { value: 'CANCELLED', label: '已取消' }]} /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="production_required_choice" label="是否需要生产"><Select options={[{ value: 'UNKNOWN', label: '未登记' }, { value: 'YES', label: '需要生产' }, { value: 'NO', label: '无需生产' }]} /></Form.Item></Col>

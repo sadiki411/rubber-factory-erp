@@ -1,4 +1,4 @@
-import { EditOutlined, FileExcelOutlined, PlusOutlined, SearchOutlined, WarningOutlined } from '@ant-design/icons'
+import { EditOutlined, FileExcelOutlined, HistoryOutlined, PlusOutlined, SearchOutlined, WarningOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Empty, Grid, Input, List, Select, Space, Table, Tabs, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useQuery } from '@tanstack/react-query'
@@ -7,10 +7,13 @@ import utc from 'dayjs/plugin/utc'
 import { useState } from 'react'
 import { materialReceiptApi, orderApi, toList } from '../api/client'
 import { BusinessImportDrawer } from '../components/BusinessImportDrawer'
+import { BusinessImportHistoryDrawer } from '../components/BusinessImportHistoryDrawer'
 import { MaterialReceiptDrawer } from '../components/MaterialReceiptDrawer'
 import { OrderFormDrawer } from '../components/OrderFormDrawer'
 import { PageTitle } from '../components/PageTitle'
 import type { MaterialReceipt, Order, OrderMaterialStatus, OrderProcessCardStatus, OrderStatus } from '../types'
+
+type OrderOrdering = 'order_date' | '-order_date' | 'due_date' | '-due_date'
 
 dayjs.extend(utc)
 
@@ -67,6 +70,7 @@ export function OrdersPage() {
   const [status, setStatus] = useState<OrderStatus | ''>('OPEN')
   const [productionRequired, setProductionRequired] = useState<'' | 'yes' | 'no'>('')
   const [materialStatus, setMaterialStatus] = useState<OrderMaterialStatus | ''>('')
+  const [ordering, setOrdering] = useState<OrderOrdering>('-order_date')
   const [receiptQuery, setReceiptQuery] = useState('')
   const [receiptLink, setReceiptLink] = useState<'' | 'linked' | 'unlinked'>('')
   const [editing, setEditing] = useState<Order>()
@@ -74,14 +78,16 @@ export function OrdersPage() {
   const [editingReceipt, setEditingReceipt] = useState<MaterialReceipt>()
   const [receiptFormOpen, setReceiptFormOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
+  const [importHistoryOpen, setImportHistoryOpen] = useState(false)
 
   const ordersQuery = useQuery({
-    queryKey: ['orders', { query, status, productionRequired, materialStatus }],
+    queryKey: ['orders', { query, status, productionRequired, materialStatus, ordering }],
     queryFn: async () => toList(await orderApi.list({
       q: query || undefined,
       status: status || undefined,
       production_required: productionRequired === '' ? undefined : productionRequired === 'yes',
       material_status: materialStatus || undefined,
+      ordering,
       page_size: 1000,
     })),
   })
@@ -123,13 +129,29 @@ export function OrdersPage() {
     { title: '流程卡', key: 'process_card', width: 190, render: (_, row) => <span>{exactOrderValue(row.process_card_text)}{(row.process_card_count !== null && row.process_card_count !== undefined) || (row.process_card_covered_quantity !== null && row.process_card_covered_quantity !== undefined) ? <><br /><Typography.Text type="secondary">{exactOrderValue(row.process_card_count, ' 张')} · 覆盖 {exactOrderValue(row.process_card_covered_quantity)}</Typography.Text></> : null}<br /><ProcessCardStatusTag status={row.process_card_status} /></span> },
     { title: '规格 / 产品', key: 'specification', width: 220, render: (_, row) => <span>{row.specification || '-'}<br /><Typography.Text type="secondary">{row.product_name || row.product_code || '-'}</Typography.Text></span> },
     { title: '材质', dataIndex: 'material', width: 125, render: (value) => value || '-' },
-    { title: '交期', dataIndex: 'due_date', width: 110, render: (value) => value || '未登记' },
+    {
+      title: '交期',
+      dataIndex: 'due_date',
+      width: 110,
+      sorter: true,
+      sortDirections: ['ascend', 'descend', 'ascend'],
+      sortOrder: ordering === 'due_date' ? 'ascend' : ordering === '-due_date' ? 'descend' : null,
+      render: (value) => value || '未登记',
+    },
     { title: '订单量', dataIndex: 'order_quantity', width: 95, render: (value) => exactOrderValue(value) },
     { title: '胶料用量', dataIndex: 'required_material_kg', width: 115, render: (value) => exactOrderValue(value, ' kg') },
     { title: '已发胶料', key: 'received_material', width: 130, render: (_, row) => <span>{exactOrderValue(row.received_material_kg, ' kg')}<br /><Typography.Text type="secondary">差额 {exactOrderValue(row.material_gap_kg, ' kg')}</Typography.Text></span> },
     { title: '成型工时', dataIndex: 'forming_hours', width: 105, render: (value) => exactOrderValue(value, ' h') },
-    { title: '下单时间', dataIndex: 'order_date', width: 110, render: (value) => value || '未登记' },
-    { title: '模具尺寸', key: 'mold', width: 155, render: (_, row) => <span>{row.mold_size || row.product_specification?.mold_size || '-'}{row.product_specification?.mold_no && <><br /><Typography.Text type="secondary">{row.product_specification.mold_no}</Typography.Text></>}</span> },
+    {
+      title: '下单日期',
+      dataIndex: 'order_date',
+      width: 110,
+      sorter: true,
+      sortDirections: ['ascend', 'descend', 'ascend'],
+      sortOrder: ordering === 'order_date' ? 'ascend' : ordering === '-order_date' ? 'descend' : null,
+      render: (value) => value || '未登记',
+    },
+    { title: '模具型号 / 尺寸', key: 'mold', width: 165, render: (_, row) => <span>{row.product_specification?.mold_model?.code || row.product_specification?.mold_no || '-'}<br /><Typography.Text type="secondary">{row.mold_size || row.product_specification?.mold_size || '-'}</Typography.Text></span> },
     { title: '是否生产', dataIndex: 'production_required', width: 105, render: (value) => <Tag color={value === true ? 'processing' : 'default'}>{productionRequiredText(value)}</Tag> },
     { title: '生产数量', dataIndex: 'production_quantity', width: 110, render: (value) => exactOrderValue(value) },
     { title: '出货日期', dataIndex: 'shipment_date', width: 120, render: (value) => exactOrderValue(value) },
@@ -146,7 +168,8 @@ export function OrdersPage() {
     { title: '材质 / 批次', key: 'material', width: 170, render: (_, row) => <span>{row.material || '-'}<br /><Typography.Text type="secondary">{row.batch_no || '-'}</Typography.Text></span> },
     { title: '片材尺寸', dataIndex: 'sheet_size', width: 135, render: (value) => value || '-' },
     { title: '发料重量', dataIndex: 'weight_kg', width: 120, render: (value) => exactOrderValue(value, ' kg') },
-    { title: '制造 / 发料日期', dataIndex: 'manufactured_on', width: 135, render: (value) => value || '未登记' },
+    { title: '发料日期', dataIndex: 'issued_on', width: 120, render: (value) => value || '未登记' },
+    { title: '制造日期', dataIndex: 'manufactured_on', width: 135, render: (value) => value || '未登记' },
     { title: '来源', key: 'source', width: 165, render: (_, row) => row.source_sheet ? `${row.source_sheet}${row.source_row ? ` · 第${row.source_row}行` : ''}` : '在线录入' },
     { title: '最后更新', dataIndex: 'updated_at', width: 155, render: (value) => formattedTimestamp(value) },
     { title: '操作', key: 'action', fixed: 'right', width: 85, render: (_, row) => <Button type="link" icon={<EditOutlined />} onClick={() => openReceiptForm(row)}>{row.order_id || row.order ? '编辑' : '关联'}</Button> },
@@ -157,7 +180,7 @@ export function OrdersPage() {
       <PageTitle
         title="订单管理"
         description="统一管理订单、胶料到料和流程卡状态；空值表示尚未登记，实际为零时会明确显示 0。"
-        extra={<Space wrap><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入订单 / 发料单</Button>{activeTab === 'orders' ? <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增订单</Button> : <Button type="primary" icon={<PlusOutlined />} onClick={() => openReceiptForm()}>新增发料记录</Button>}</Space>}
+        extra={<Space wrap><Button icon={<HistoryOutlined />} onClick={() => setImportHistoryOpen(true)}>导入记录</Button><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入订单 / 发料单</Button>{activeTab === 'orders' ? <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增订单</Button> : <Button type="primary" icon={<PlusOutlined />} onClick={() => openReceiptForm()}>新增发料记录</Button>}</Space>}
       />
       <Tabs
         className="business-page-tabs"
@@ -177,6 +200,17 @@ export function OrdersPage() {
               <Select value={status} onChange={setStatus} options={[{ value: '', label: '全部订单状态' }, { value: 'OPEN', label: '进行中' }, { value: 'COMPLETED', label: '已完成' }, { value: 'CANCELLED', label: '已取消' }]} />
               <Select value={productionRequired} onChange={setProductionRequired} options={[{ value: '', label: '全部生产安排' }, { value: 'yes', label: '需要生产' }, { value: 'no', label: '无需生产' }]} />
               <Select value={materialStatus} onChange={setMaterialStatus} options={[{ value: '', label: '全部胶料状态' }, ...Object.entries(MATERIAL_META).map(([value, meta]) => ({ value, label: meta.text }))]} />
+              <Select<OrderOrdering>
+                aria-label="订单排序"
+                value={ordering}
+                onChange={setOrdering}
+                options={[
+                  { value: '-order_date', label: '下单日期：新到旧' },
+                  { value: 'order_date', label: '下单日期：旧到新' },
+                  { value: 'due_date', label: '交期：近到远' },
+                  { value: '-due_date', label: '交期：远到近' },
+                ]}
+              />
             </div>
           </Card>
           {ordersQuery.isError && <Alert className="business-page-alert" type="error" showIcon title="订单读取失败" description={(ordersQuery.error as Error).message} />}
@@ -203,7 +237,8 @@ export function OrdersPage() {
                       <span><small>已发胶料</small><b>{exactOrderValue(record.received_material_kg, ' kg')}</b></span>
                       <span><small>胶料差额</small><b>{exactOrderValue(record.material_gap_kg, ' kg')}</b></span>
                       <span><small>成型工时</small><b>{exactOrderValue(record.forming_hours, ' h')}</b></span>
-                      <span><small>下单时间</small><b>{record.order_date || '未登记'}</b></span>
+                      <span><small>下单日期</small><b>{record.order_date || '未登记'}</b></span>
+                      <span><small>模具型号</small><b>{record.product_specification?.mold_model?.code || record.product_specification?.mold_no || '-'}</b></span>
                       <span><small>模具尺寸</small><b>{record.mold_size || record.product_specification?.mold_size || '-'}</b></span>
                       <span><small>是否生产</small><b>{productionRequiredText(record.production_required)}</b></span>
                       <span><small>生产数量</small><b>{exactOrderValue(record.production_quantity)}</b></span>
@@ -219,7 +254,19 @@ export function OrdersPage() {
             />
           ) : (
             <Card className="data-card" styles={{ body: { padding: 0 } }}>
-              <Table rowKey="id" loading={ordersQuery.isLoading} dataSource={ordersQuery.data || []} columns={columns} scroll={{ x: 2680 }} pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }} />
+              <Table
+                rowKey="id"
+                loading={ordersQuery.isLoading}
+                dataSource={ordersQuery.data || []}
+                columns={columns}
+                scroll={{ x: 2680 }}
+                pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
+                onChange={(_, __, sorter) => {
+                  if (Array.isArray(sorter) || !sorter.field || !sorter.order) return
+                  if (sorter.field === 'order_date') setOrdering(sorter.order === 'ascend' ? 'order_date' : '-order_date')
+                  if (sorter.field === 'due_date') setOrdering(sorter.order === 'ascend' ? 'due_date' : '-due_date')
+                }}
+              />
             </Card>
           )}
         </>
@@ -258,7 +305,8 @@ export function OrdersPage() {
                     <div className="business-mobile-grid">
                       <span><small>发料重量</small><b>{exactOrderValue(record.weight_kg, ' kg')}</b></span>
                       <span><small>片材尺寸</small><b>{record.sheet_size || '-'}</b></span>
-                      <span><small>制造 / 发料日期</small><b>{record.manufactured_on || '未登记'}</b></span>
+                      <span><small>发料日期</small><b>{record.issued_on || '未登记'}</b></span>
+                      <span><small>制造日期</small><b>{record.manufactured_on || '未登记'}</b></span>
                       <span><small>来源</small><b>{record.source_sheet || '在线录入'}</b></span>
                       <span><small>最后更新</small><b>{formattedTimestamp(record.updated_at)}</b></span>
                     </div>
@@ -269,7 +317,7 @@ export function OrdersPage() {
             />
           ) : (
             <Card className="data-card" styles={{ body: { padding: 0 } }}>
-              <Table rowKey="id" loading={receiptsQuery.isLoading} dataSource={receipts} columns={receiptColumns} scroll={{ x: 1495 }} pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }} />
+              <Table rowKey="id" loading={receiptsQuery.isLoading} dataSource={receipts} columns={receiptColumns} scroll={{ x: 1615 }} pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }} />
             </Card>
           )}
         </>
@@ -278,6 +326,7 @@ export function OrdersPage() {
       <OrderFormDrawer open={formOpen} order={editing} onClose={() => setFormOpen(false)} />
       <MaterialReceiptDrawer open={receiptFormOpen} receipt={editingReceipt} orders={orderOptionsQuery.data || []} ordersLoading={orderOptionsQuery.isLoading} onClose={() => setReceiptFormOpen(false)} />
       <BusinessImportDrawer open={importOpen} context="orders" onClose={() => setImportOpen(false)} />
+      <BusinessImportHistoryDrawer open={importHistoryOpen} onClose={() => setImportHistoryOpen(false)} />
     </div>
   )
 }

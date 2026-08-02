@@ -57,6 +57,7 @@ class ProductionImportTests(ProductionTestMixin, TestCase):
         mold = self.create_mold()
         original_machine_id = mold.current_machine_id
         now = timezone.now().replace(microsecond=0)
+        history_unloaded_at = now - timedelta(hours=1)
         upload = production_workbook_upload(
             [
                 {
@@ -66,7 +67,7 @@ class ProductionImportTests(ProductionTestMixin, TestCase):
                     "status": "COMPLETED",
                     "mold_code": mold.asset_code,
                     "loaded_at": now - timedelta(hours=3),
-                    "unloaded_at": now - timedelta(hours=1),
+                    "unloaded_at": history_unloaded_at,
                     "actual_good_quantity": 590,
                     "actual_defective_quantity": 10,
                     "total_material_kg": 20,
@@ -76,7 +77,7 @@ class ProductionImportTests(ProductionTestMixin, TestCase):
                     "settlement_notes": "历史订单结算",
                     "daily_logs": [
                         {
-                            "date": timezone.localdate(),
+                            "date": timezone.localdate(history_unloaded_at),
                             "produced_mold_count": 100,
                             "notes": "历史订单日报",
                         }
@@ -315,6 +316,7 @@ class ProductionImportTests(ProductionTestMixin, TestCase):
 
     def test_legacy_daily_accounting_template_is_aggregated_to_settlement(self):
         now = timezone.now().replace(microsecond=0)
+        unloaded_at = now - timedelta(hours=1)
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = "旧版订单卡"
@@ -330,17 +332,17 @@ class ProductionImportTests(ProductionTestMixin, TestCase):
                 "planned_mold_count": 10,
                 "material_unit_price": 10,
                 "loaded_at": now - timedelta(hours=2),
-                "unloaded_at": now - timedelta(hours=1),
+                "unloaded_at": unloaded_at,
             }
             value = values.get(field, "")
             if hasattr(value, "tzinfo") and value.tzinfo is not None:
-                value = value.replace(tzinfo=None)
+                value = timezone.localtime(value).replace(tzinfo=None)
             sheet[value_cell] = value
         sheet["A2"] = "站位编号"
         for column, (_, label) in enumerate(LEGACY_DAILY_HEADERS, 1):
             sheet.cell(10, column, label)
         legacy_values = [
-            timezone.localdate(),
+            timezone.localdate(unloaded_at),
             "张三",
             10,
             58,
@@ -471,6 +473,7 @@ class ProductionImportTests(ProductionTestMixin, TestCase):
 
     def test_excel_completed_order_settlement_is_imported(self):
         now = timezone.now().replace(microsecond=0)
+        unloaded_at = now - timedelta(hours=1)
         preview = self.client.post(
             "/api/production/imports/preview/",
             {
@@ -481,7 +484,7 @@ class ProductionImportTests(ProductionTestMixin, TestCase):
                             "order_no": "AUTO-GOOD",
                             "status": "COMPLETED",
                             "loaded_at": now - timedelta(hours=2),
-                            "unloaded_at": now - timedelta(hours=1),
+                            "unloaded_at": unloaded_at,
                             "actual_good_quantity": 59,
                             "actual_defective_quantity": 1,
                             "total_material_kg": 0,
@@ -491,7 +494,7 @@ class ProductionImportTests(ProductionTestMixin, TestCase):
                             "settlement_notes": "完工结算",
                             "daily_logs": [
                                 {
-                                    "date": timezone.localdate(),
+                                    "date": timezone.localdate(unloaded_at),
                                     "produced_mold_count": 10,
                                 }
                             ],
@@ -678,6 +681,11 @@ class ProductionImportTests(ProductionTestMixin, TestCase):
         )
 
         now = timezone.now().replace(microsecond=0)
+        unloaded_at = now - timedelta(hours=1)
+        allowed_log = {
+            "date": timezone.localdate(unloaded_at),
+            "produced_mold_count": 1,
+        }
         allowed = self.client.post(
             "/api/production/imports/preview/",
             {
@@ -688,8 +696,8 @@ class ProductionImportTests(ProductionTestMixin, TestCase):
                             "order_no": "CANCELLED-HISTORY-IMPORT",
                             "status": "CANCELLED",
                             "loaded_at": now - timedelta(hours=2),
-                            "unloaded_at": now - timedelta(hours=1),
-                            "daily_logs": [today_log],
+                            "unloaded_at": unloaded_at,
+                            "daily_logs": [allowed_log],
                         }
                     ]
                 )

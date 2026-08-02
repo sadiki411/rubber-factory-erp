@@ -7,6 +7,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework.test import APITestCase
 
+from molds.models import MoldModel
 from orders.models import BusinessRecordRevision, MaterialReceipt, ProductSpecification
 from production.models import ProductionRun, ProductionStation
 from quality.models import QualityEmployee, QualityOrder, QualityShipment
@@ -18,6 +19,10 @@ class BusinessApiTests(APITestCase):
         self.client.force_authenticate(self.user)
 
     def test_product_specification_crud_is_audited_and_cannot_be_deleted(self):
+        mold_model = MoldModel.objects.create(
+            code="API-MOLD-MODEL-001",
+            product_name="API模具产品",
+        )
         created = self.client.post(
             "/api/orders/product-specifications/",
             {
@@ -26,12 +31,21 @@ class BusinessApiTests(APITestCase):
                 "specification": "TEST-SPEC-A",
                 "material": "SYN-RUBBER-A",
                 "strip_count": "9/4",
+                "mold_model_id": mold_model.pk,
+                "standard_hours": "SHOULD-NOT-BE-WRITABLE",
                 "is_active": True,
             },
             format="json",
         )
         self.assertEqual(created.status_code, 201, created.content)
+        self.assertEqual(created.json()["mold_model_id"], mold_model.pk)
+        self.assertEqual(created.json()["mold_model"]["code"], mold_model.code)
+        self.assertNotIn("standard_hours", created.json())
         product_id = created.json()["id"]
+        product = ProductSpecification.objects.get(pk=product_id)
+        self.assertEqual(product.mold_model_id, mold_model.pk)
+        self.assertEqual(product.standard_hours, "")
+        self.assertTrue(product.normalized_key.endswith("|api-mold-model-001"))
         updated = self.client.patch(
             f"/api/orders/product-specifications/{product_id}/",
             {"is_active": False},
@@ -54,6 +68,39 @@ class BusinessApiTests(APITestCase):
             revision.delete()
         deleted = self.client.delete(f"/api/orders/product-specifications/{product_id}/")
         self.assertEqual(deleted.status_code, 405)
+
+    def test_product_specification_keeps_current_inactive_mold_but_rejects_new_inactive_link(self):
+        current = MoldModel.objects.create(
+            code="INACTIVE-CURRENT-MOLD",
+            product_name="历史停用模具",
+            is_active=False,
+        )
+        other = MoldModel.objects.create(
+            code="INACTIVE-OTHER-MOLD",
+            product_name="其他停用模具",
+            is_active=False,
+        )
+        product = ProductSpecification.objects.create(
+            product_name="历史产品",
+            specification="INACTIVE-LINK-SPEC",
+            mold_model=current,
+        )
+
+        unchanged = self.client.patch(
+            f"/api/orders/product-specifications/{product.pk}/",
+            {"notes": "只修改备注", "mold_model_id": current.pk},
+            format="json",
+        )
+        self.assertEqual(unchanged.status_code, 200, unchanged.content)
+        self.assertEqual(unchanged.json()["mold_model_id"], current.pk)
+
+        rejected = self.client.patch(
+            f"/api/orders/product-specifications/{product.pk}/",
+            {"mold_model_id": other.pk},
+            format="json",
+        )
+        self.assertEqual(rejected.status_code, 400, rejected.content)
+        self.assertIn("mold_model_id", rejected.json())
 
     def test_order_material_and_process_card_status_use_imported_plus_manual_weight(self):
         order = QualityOrder.objects.create(
@@ -214,14 +261,18 @@ class BusinessApiTests(APITestCase):
                 "batch_no": "TEST-BATCH-01",
                 "sheet_size": "TEST-SHEET-SIZE",
                 "weight_kg": "6.250",
+                "issued_on": "2026-08-05",
                 "manufactured_on": "2026-08-04",
             },
             format="json",
         )
         self.assertEqual(created.status_code, 201, created.content)
         self.assertEqual(created.json()["order_no"], "MAT-100")
+        self.assertEqual(created.json()["issued_on"], "2026-08-05")
+        self.assertEqual(created.json()["manufactured_on"], "2026-08-04")
         receipt = MaterialReceipt.objects.get(pk=created.json()["id"])
         self.assertEqual(receipt.order_id, order.pk)
+        self.assertEqual(receipt.issued_on.isoformat(), "2026-08-05")
         self.assertTrue(
             BusinessRecordRevision.objects.filter(
                 record_type=BusinessRecordRevision.RecordType.MATERIAL_RECEIPT,

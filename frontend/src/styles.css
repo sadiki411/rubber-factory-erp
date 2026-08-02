@@ -206,7 +206,7 @@ button, input, textarea, select { font: inherit; }
 
 .business-filter-row { display: grid; gap: 12px; }
 .product-specification-filter-row { grid-template-columns: minmax(280px, 1fr) 180px; }
-.order-filter-row { grid-template-columns: minmax(300px, 1fr) 150px 150px 150px; }
+.order-filter-row { grid-template-columns: minmax(280px, 1fr) 145px 145px 145px 175px; }
 .receipt-filter-row { grid-template-columns: minmax(300px, 1fr) 180px; }
 .business-page-tabs { margin-bottom: 14px; }
 .business-page-tabs .ant-tabs-nav { margin-bottom: 0; }
@@ -231,6 +231,10 @@ button, input, textarea, select { font: inherit; }
 .business-import-preview { margin-top: 24px; }
 .business-import-preview .ant-progress { margin: 10px 0 18px; }
 .business-import-table { margin-top: 16px; }
+.import-history-table, .import-history-mobile-list { margin-top: 16px; }
+.import-history-mobile-list .ant-list-item { padding-inline: 0; }
+.import-history-reasons { margin: 0; padding-left: 18px; }
+.import-history-reasons li + li { margin-top: 4px; }
 .production-specification-reference { margin-bottom: 18px; }
 .production-specification-reference-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 14px; }
 

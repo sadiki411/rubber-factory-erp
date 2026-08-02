@@ -2,6 +2,8 @@ import type {
   ApiList,
   AnalyticsDashboard,
   BusinessImportCommitResult,
+  BusinessImportHistoryDetail,
+  BusinessImportHistorySummary,
   BusinessImportPreview,
   ImportPreview,
   Machine,
@@ -313,6 +315,7 @@ export interface OrderFilters {
   status?: string
   production_required?: boolean
   material_status?: string
+  ordering?: 'order_date' | '-order_date' | 'due_date' | '-due_date'
   page?: number
   page_size?: number
 }
@@ -360,6 +363,9 @@ export const businessImportApi = {
   commit: (token: string) => apiFetch<BusinessImportCommitResult>('/api/orders/imports/commit/', {
     method: 'POST', body: JSON.stringify({ token }),
   }),
+  history: (filters: { q?: string; status?: string; source_type?: string; page?: number; page_size?: number } = {}) =>
+    apiFetch<ApiList<BusinessImportHistorySummary> | BusinessImportHistorySummary[]>(`/api/orders/imports/history/${queryString(filters)}`),
+  historyDetail: (token: string) => apiFetch<BusinessImportHistoryDetail>(`/api/orders/imports/history/${token}/`),
   templateUrl: (type: 'orders' | 'product_specifications') => `/api/orders/imports/template/${queryString({ type })}`,
   errorReportUrl: (token: string) => `/api/orders/imports/${token}/errors/`,
 }

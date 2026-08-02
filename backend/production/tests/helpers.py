@@ -2,6 +2,7 @@ import io
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.utils import timezone
 from openpyxl import load_workbook
 
 from molds.models import MoldAsset, MoldModel
@@ -68,7 +69,7 @@ def production_workbook_upload(cards, name="production-orders.xlsx"):
         }
         for coordinate, value in fixed.items():
             if hasattr(value, "tzinfo") and value.tzinfo is not None:
-                value = value.replace(tzinfo=None)
+                value = timezone.localtime(value).replace(tzinfo=None)
             sheet[coordinate] = value
         daily_logs = card.get("daily_logs", [])
         settlement = {

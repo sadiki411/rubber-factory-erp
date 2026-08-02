@@ -38,18 +38,23 @@ class ProductSpecificationAdmin(AuditedAdmin):
         "specification",
         "material",
         "customer_product_no",
+        "mold_model",
         "mold_no",
         "is_active",
         "updated_at",
     )
-    list_filter = ("is_active", "material")
+    list_filter = ("is_active", "material", "mold_model")
+    list_select_related = ("mold_model",)
     search_fields = (
         "product_name",
         "customer_product_no",
         "specification",
         "material",
+        "mold_model__code",
+        "mold_model__product_name",
         "mold_no",
     )
+    exclude = ("standard_hours",)
     readonly_fields = (
         "normalized_key",
         "source_batch",
@@ -69,10 +74,11 @@ class MaterialReceiptAdmin(AuditedAdmin):
         "item_no",
         "batch_no",
         "weight_kg",
+        "issued_on",
         "manufactured_on",
     )
     search_fields = ("order_no", "item_no", "batch_no", "finished_product_name")
-    list_filter = ("manufactured_on", "material")
+    list_filter = ("issued_on", "manufactured_on", "material")
     readonly_fields = ("source_batch", "source_sheet", "source_row", "source_key", "raw_data")
 
 

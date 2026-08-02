@@ -35,7 +35,7 @@ describe('ProductionRunDrawer order and specification linkage', () => {
     apiMocks.specifications.mockResolvedValue([{
       id: 9, product_name: '测试产品A', customer_product_no: 'TEST-PRODUCT-001', specification: 'TEST-SPEC-A', material: 'SYN-RUBBER-A',
       material_length: 'TEST-SHEET-SIZE', cut_weight: '10g', strip_count: '9/4', primary_curing: '160℃×240秒', secondary_curing: '140℃×2h',
-      total_cavities: '6', effective_cavities: '5', standard_hours: '4.5', is_active: true,
+      total_cavities: '6', effective_cavities: '5', mold_model_id: 7, mold_model: { id: 7, code: 'TEST-MOLD-MODEL-01', product_name: '测试产品A模具', is_active: true }, is_active: true,
     }])
     apiMocks.orders.mockResolvedValue([{
       id: 3, order_no: 'TEST-ORDER-001', item_no: '10', batch_no: '', product_code: 'TEST-PRODUCT-001', product_name: '测试产品A', specification: 'TEST-SPEC-A', material: 'SYN-RUBBER-A',
@@ -60,5 +60,18 @@ describe('ProductionRunDrawer order and specification linkage', () => {
     expect(screen.getByLabelText(/硫化时间/)).toHaveValue('240')
     expect(screen.getByLabelText(/预计生产工时/)).toHaveValue('4.75')
     expect(screen.getByText('二烤：140℃×2h')).toBeInTheDocument()
+    expect(screen.getByText('模具型号：TEST-MOLD-MODEL-01')).toBeInTheDocument()
+  }, 15_000)
+
+  it('keeps planned hours independent when only a product specification is selected', async () => {
+    const user = userEvent.setup()
+    renderDrawer()
+
+    const specificationSelect = screen.getByRole('combobox', { name: /关联产品规格/ })
+    await user.click(specificationSelect)
+    await user.click(await screen.findByText('TEST-PRODUCT-001 · 测试产品A · TEST-SPEC-A'))
+
+    await waitFor(() => expect(screen.getByLabelText(/胶料尺寸/)).toHaveValue('TEST-SHEET-SIZE'))
+    expect(screen.getByLabelText(/预计生产工时/)).toHaveValue('8.00')
   }, 15_000)
 })

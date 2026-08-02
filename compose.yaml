@@ -8,15 +8,21 @@ x-logging: &default-logging
 
 services:
   backend:
-    image: ${GHCR_BACKEND_IMAGE:?Set GHCR_BACKEND_IMAGE in .env}
+    image: ${GHCR_BACKEND_IMAGE:-ghcr.io/sadiki411/rubber-factory-erp-backend:latest}
     pull_policy: always
-    env_file:
-      - .env
     environment:
       SQLITE_PATH: /app/data/db.sqlite3
       MEDIA_ROOT: /app/media
       STATIC_ROOT: /app/staticfiles
       BACKUP_DIR: /app/backups
+      DJANGO_SECRET_KEY: "${DJANGO_SECRET_KEY:-}"
+      DJANGO_DEBUG: "${DJANGO_DEBUG:-0}"
+      DJANGO_ALLOWED_HOSTS: "${DJANGO_ALLOWED_HOSTS:-*}"
+      DJANGO_CSRF_TRUSTED_ORIGINS: "${DJANGO_CSRF_TRUSTED_ORIGINS:-}"
+      DJANGO_SECURE_COOKIES: "${DJANGO_SECURE_COOKIES:-0}"
+      DJANGO_SUPERUSER_USERNAME: "${DJANGO_SUPERUSER_USERNAME:-erpadmin}"
+      DJANGO_SUPERUSER_EMAIL: "${DJANGO_SUPERUSER_EMAIL:-admin@example.com}"
+      DJANGO_SUPERUSER_PASSWORD: "${DJANGO_SUPERUSER_PASSWORD:-}"
       BACKUP_BEFORE_MIGRATE: ${BACKUP_BEFORE_MIGRATE:-1}
       BACKUP_RETENTION_COUNT: ${BACKUP_RETENTION_COUNT:-30}
       TZ: ${TZ:-Asia/Shanghai}
@@ -42,7 +48,7 @@ services:
       start_period: 40s
 
   web:
-    image: ${GHCR_WEB_IMAGE:?Set GHCR_WEB_IMAGE in .env}
+    image: ${GHCR_WEB_IMAGE:-ghcr.io/sadiki411/rubber-factory-erp-web:latest}
     pull_policy: always
     ports:
       - "${APP_PORT:-8080}:80"
@@ -63,10 +69,8 @@ services:
       start_period: 10s
 
   backup:
-    image: ${GHCR_BACKEND_IMAGE:?Set GHCR_BACKEND_IMAGE in .env}
+    image: ${GHCR_BACKEND_IMAGE:-ghcr.io/sadiki411/rubber-factory-erp-backend:latest}
     pull_policy: always
-    env_file:
-      - .env
     environment:
       SQLITE_PATH: /app/data/db.sqlite3
       MEDIA_ROOT: /app/media

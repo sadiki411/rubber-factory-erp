@@ -84,23 +84,7 @@ echo "$GHCR_TOKEN" | docker login ghcr.io -u <GitHub账号> --password-stdin
 
 本项目不要求在当前开发电脑安装Docker。推荐由GitHub Actions构建镜像，然后在安装了 Docker Engine 和 Docker Compose v2 的Linux服务器上仅执行拉取和启动。
 
-在服务器克隆仓库后：
-
-```bash
-cp .env.example .env
-mkdir -p runtime/data runtime/media runtime/backups
-```
-
-必须编辑 `.env`：
-
-- `GHCR_BACKEND_IMAGE`和`GHCR_WEB_IMAGE`默认已指向本仓库发布的`latest`镜像；如果使用Fork仓库或固定版本，再改为对应镜像地址或版本标签。
-- 将 `DJANGO_SECRET_KEY` 换成随机密钥，可用 `python3 -c "import secrets; print(secrets.token_urlsafe(50))"` 生成。
-- 将 `DJANGO_SUPERUSER_PASSWORD` 换成强密码。
-- 将 `DJANGO_ALLOWED_HOSTS` 改成实际域名或服务器地址，多个值用英文逗号分隔。
-- 将 `DJANGO_CSRF_TRUSTED_ORIGINS` 改成完整访问来源，例如 `https://erp.example.com`。
-- 外层已启用HTTPS时，将 `DJANGO_SECURE_COOKIES` 改成 `1`。
-
-部署只需要仓库根目录的一个 `compose.yaml` 文件。该文件直接拉取 `.env` 中配置的GHCR镜像，不在服务器上构建源码：
+服务器上只需保存一个 `compose.yaml`，无需克隆源码，也不强制要求 `.env`。在该文件所在目录直接执行：
 
 ```bash
 docker compose config
@@ -108,6 +92,20 @@ docker compose pull
 docker compose up -d --remove-orphans
 docker compose ps
 ```
+
+默认直接拉取本仓库的两个公开 `latest` 镜像，运行时自动创建 `runtime/data`、`runtime/media`、`runtime/backups`。首次启动若未提供 `DJANGO_SECRET_KEY`，后端会生成安全随机密钥并保存到 `runtime/data/.django-secret-key`，以后重启继续使用；若未提供共享账号密码，启动日志会一次性显示系统生成的初始密码：
+
+```bash
+docker compose logs backend
+```
+
+如需固定镜像版本、域名、HTTPS Cookie或初始账号，可以在执行Compose前设置同名环境变量；也可自愿放置Docker Compose会自动读取的 `.env`，但它不是启动所必需的。可配置项参见仓库中的 `.env.example`：
+
+- `GHCR_BACKEND_IMAGE`、`GHCR_WEB_IMAGE`：Fork仓库镜像或固定的`v*`、`sha-*`版本。
+- `DJANGO_ALLOWED_HOSTS`：实际域名或服务器地址；默认允许当前请求主机。
+- `DJANGO_CSRF_TRUSTED_ORIGINS`：需要额外信任的完整来源，例如 `https://erp.example.com`。
+- `DJANGO_SECURE_COOKIES=1`：外层已启用HTTPS时开启。
+- `DJANGO_SECRET_KEY`、`DJANGO_SUPERUSER_PASSWORD`：可自行固定安全随机值；不要把真实密钥提交到Git。
 
 默认HTTP入口为 `http://服务器地址:8080`。Compose本身不签发HTTPS证书；公网部署应由服务器上的反向代理提供域名和HTTPS，并保留 `Host`、`X-Forwarded-Proto` 请求头。
 
@@ -121,10 +119,10 @@ docker compose ps
 
 ### 账号维护
 
-首次启动会按 `.env` 创建共享账号。以后修改 `.env` 中的密码不会自动覆盖已有密码，需要显式重置：
+首次启动创建共享账号，默认用户名为 `erpadmin`。未指定密码时，应从首次启动日志保存一次性初始密码。以后设置环境变量不会自动覆盖已有密码，需要显式重置：
 
 ```bash
-docker compose exec backend \
+DJANGO_SUPERUSER_PASSWORD='替换为新强密码' docker compose run --rm --no-deps backend \
   python manage.py init_erp --reset-password
 ```
 
@@ -160,7 +158,7 @@ docker compose up -d --remove-orphans
 docker compose ps
 ```
 
-生产环境更推荐在 `.env` 中固定 `v1.0.0` 或 `sha-*` 标签。需要回滚时改回旧标签，再重复 `pull` 和 `up`。容器入口会自动执行数据库迁移、静态文件收集及幂等 `init_erp`，更新前仍应手动备份。
+生产环境更推荐通过可选 `.env` 或服务器环境变量固定 `v1.0.0` 或 `sha-*` 标签。需要回滚时改回旧标签，再重复 `pull` 和 `up`。容器入口会自动执行数据库迁移、静态文件收集及幂等 `init_erp`，更新前仍应手动备份。
 
 ## 初始货架
 
@@ -175,13 +173,15 @@ J01至J06的每个可用区域都支持独立切换容量和叠放显示。关�
 
 ## 产品规格与订单管理
 
-- “产品规格资料”独立维护产品名称、客户产品编号、规格、材质、裁料参数、一次硫化、二烤、孔数、模具和标准工时；工艺字段按原始文本保存，不会把单位、范围或特殊显示格式强制改成数字。
-- “订单管理”按总表方式统一维护订单明细、交期、数量、是否生产、所需/已发胶料、流程卡、生产数量、出货日期和出货数量；客户发料明细会实时汇总，并显示未收到、未发够、已发够或超额到料。
+- “产品规格资料”独立维护产品名称、客户产品编号、规格、材质、裁料参数、一次硫化、二烤、孔数和关联模具型号；同一模具型号可对应多条不同规格参数。工艺字段按原始文本保存，不会把单位、范围或特殊显示格式强制改成数字。工时由具体订单记录，不再从产品规格自动带入。
+- “订单管理”按总表方式统一维护订单明细、下单日期、交期、数量、成型工时、是否生产、所需/已发胶料、流程卡、生产数量、出货日期和出货数量；支持按下单日期或交期升序、降序排列，未登记日期始终置底。客户发料明细会实时汇总，并显示未收到、未发够、已发够或超额到料。
 - 支持产品规格记录表、内部订单总表、大厂生产工作联络单和客户发料清单四类 `.xlsx` 自动识别。上传后先预检，明确显示拟新增、更新或跳过的记录及错误警告；存在阻断错误时整批不写入数据库。
 - 首次启用时先导入自有订单总表建立基准；以后直接上传客户工作联络单和发料清单即可增量更新同一张在线订单总表，不需要再手工抄录。
 - 导入保留原始文件、原始单元格值、Excel显示文本和数字格式，兼容样式不规范但数据仍有效的工作簿。相同源文件重复上传会按源行跳过，不覆盖在线修正，也不会把订单表中的重复业务行擅自合并。
 - 客户订单以“来源单位＋独立需求号＋项次”为稳定身份，同一订单的新版本会更新原记录而不会重复新增；旧总表没有项次时，仅在订单号、规格、材质、订单量和交期唯一命中时自动补齐。
 - 客户发料以“来源单位＋独立需求号＋项次＋批号”为稳定身份，重复导入不会重复累计。能唯一匹配的重量立即进入订单“已发胶料”；无法唯一判断的明细完整保留为待关联记录，绝不会猜测分摊。
+- 下单日期优先结合文件名和表格右上角“发单时间”识别；两者冲突时预检会明确警告并采用文件名日期。发料日期来自文件名、右上角“打印日期”或标准模板的“发料日期”，与每批胶料的制造日期分开保存和展示。
+- 订单管理中的“导入记录”长期保存每次预检、失败和提交结果；无法识别的文件及逐行跳过内容均记录文件名、时间、工作表、行号、业务标识和具体原因，可随时回看或下载问题报告。
 - 自有总表中非空的“已发胶料”按手工补充量保留，并与发料明细累计相加；预检会提示核对，避免同一批胶料同时出现在手工值和发料清单中而重复统计。
 - 每条订单记录来源单据时间、最近导入时间和总体最后更新时间；总体时间同时考虑订单资料、发料、生产和出货的最近变化，完整变更仍保留在不可修改的审计历史中。
 - 生产计划和生产记录可直接选择同一订单明细与产品规格；品检出货继续引用同一订单主档，绩效分析优先按订单明细ID汇总，历史文本记录才回退到订单号匹配。

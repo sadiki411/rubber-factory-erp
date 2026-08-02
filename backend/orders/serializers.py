@@ -6,6 +6,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Sum
 from rest_framework import serializers
 
+from molds.models import MoldModel
 from quality.models import QualityOrder
 
 from .models import (
@@ -71,8 +72,28 @@ class AuditedModelSerializer(serializers.ModelSerializer):
         return instance
 
 
+class MoldModelSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MoldModel
+        fields = ["id", "code", "product_name", "is_active"]
+
+
 class ProductSpecificationSerializer(AuditedModelSerializer):
     source_batch_id = serializers.UUIDField(read_only=True)
+    mold_model = MoldModelSummarySerializer(read_only=True)
+    mold_model_id = serializers.PrimaryKeyRelatedField(
+        source="mold_model",
+        queryset=MoldModel.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    def validate_mold_model_id(self, value):
+        if value is None or value.is_active:
+            return value
+        if self.instance is not None and self.instance.mold_model_id == value.pk:
+            return value
+        raise serializers.ValidationError("只能新关联已启用的模具型号。")
 
     class Meta:
         model = ProductSpecification
@@ -90,9 +111,10 @@ class ProductSpecificationSerializer(AuditedModelSerializer):
             "total_cavities",
             "effective_cavities",
             "mold_in_stock",
+            "mold_model",
+            "mold_model_id",
             "mold_no",
             "mold_size",
-            "standard_hours",
             "notes",
             "normalized_key",
             "is_active",
@@ -116,6 +138,9 @@ class ProductSpecificationSerializer(AuditedModelSerializer):
 
 
 class ProductSpecificationSummarySerializer(serializers.ModelSerializer):
+    mold_model = MoldModelSummarySerializer(read_only=True)
+    mold_model_id = serializers.IntegerField(read_only=True)
+
     class Meta:
         model = ProductSpecification
         fields = [
@@ -124,6 +149,8 @@ class ProductSpecificationSummarySerializer(serializers.ModelSerializer):
             "customer_product_no",
             "specification",
             "material",
+            "mold_model",
+            "mold_model_id",
             "mold_no",
             "mold_size",
             "is_active",
@@ -329,6 +356,7 @@ class MaterialReceiptSerializer(AuditedModelSerializer):
             "batch_no",
             "sheet_size",
             "weight_kg",
+            "issued_on",
             "manufactured_on",
             "source_batch_id",
             "last_source_batch_id",

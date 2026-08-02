@@ -15,14 +15,17 @@ fi
 if [ "${DJANGO_DEBUG:-0}" != "1" ]; then
   case "${DJANGO_SECRET_KEY:-}" in
     ""|change-this-to-a-long-random-string|dev-only-change-me)
-      echo "DJANGO_SECRET_KEY 未设置为安全随机值，拒绝启动生产服务。" >&2
-      exit 1
-      ;;
-  esac
-  case "${DJANGO_SUPERUSER_PASSWORD:-}" in
-    ""|change-this-password)
-      echo "DJANGO_SUPERUSER_PASSWORD 未设置为安全密码，拒绝启动生产服务。" >&2
-      exit 1
+      SECRET_KEY_FILE="$(dirname "$SQLITE_PATH")/.django-secret-key"
+      if [ -s "$SECRET_KEY_FILE" ]; then
+        DJANGO_SECRET_KEY="$(cat "$SECRET_KEY_FILE")"
+      else
+        umask 077
+        DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')"
+        printf '%s\n' "$DJANGO_SECRET_KEY" > "$SECRET_KEY_FILE"
+        chmod 600 "$SECRET_KEY_FILE"
+        echo "已生成并持久化Django安全密钥。"
+      fi
+      export DJANGO_SECRET_KEY
       ;;
   esac
 fi

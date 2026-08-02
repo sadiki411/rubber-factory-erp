@@ -1,6 +1,6 @@
 import { App } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { OrdersPage } from './OrdersPage'
 import { ProductSpecificationsPage } from './ProductSpecificationsPage'
@@ -12,9 +12,10 @@ Object.defineProperty(window, 'matchMedia', {
 class ResizeObserverMock { observe() {} unobserve() {} disconnect() {} }
 globalThis.ResizeObserver = ResizeObserverMock
 
-const apiMocks = vi.hoisted(() => ({ listSpecifications: vi.fn(), listOrders: vi.fn(), listReceipts: vi.fn(), createSpecification: vi.fn(), updateSpecification: vi.fn(), createOrder: vi.fn(), updateOrder: vi.fn(), createReceipt: vi.fn(), updateReceipt: vi.fn() }))
+const apiMocks = vi.hoisted(() => ({ listSpecifications: vi.fn(), listMoldModels: vi.fn(), listOrders: vi.fn(), listReceipts: vi.fn(), createSpecification: vi.fn(), updateSpecification: vi.fn(), createOrder: vi.fn(), updateOrder: vi.fn(), createReceipt: vi.fn(), updateReceipt: vi.fn() }))
 vi.mock('../api/client', () => ({
   productSpecificationApi: { list: apiMocks.listSpecifications, create: apiMocks.createSpecification, update: apiMocks.updateSpecification },
+  masterApi: () => ({ list: apiMocks.listMoldModels }),
   orderApi: { list: apiMocks.listOrders, create: apiMocks.createOrder, update: apiMocks.updateOrder },
   materialReceiptApi: { list: apiMocks.listReceipts, create: apiMocks.createReceipt, update: apiMocks.updateReceipt },
   businessImportApi: { preview: vi.fn(), commit: vi.fn(), templateUrl: (type: string) => `/template?type=${type}`, errorReportUrl: (token: string) => `/errors/${token}` },
@@ -28,9 +29,11 @@ function renderPage(node: React.ReactNode) {
 
 describe('business data pages on mobile', () => {
   beforeEach(() => {
+    apiMocks.listMoldModels.mockResolvedValue([])
     apiMocks.listSpecifications.mockResolvedValue([{
       id: 1, product_name: '测试产品A', customer_product_no: 'TEST-PRODUCT-001', specification: 'TEST-SPEC-A', material: 'SYN-RUBBER-A',
-      primary_curing: '160℃×240秒', secondary_curing: '140℃×2h', total_cavities: '06孔', effective_cavities: '05孔', standard_hours: '4.5', is_active: true,
+      primary_curing: '160℃×240秒', secondary_curing: '140℃×2h', total_cavities: '06孔', effective_cavities: '05孔',
+      mold_model_id: 7, mold_model: { id: 7, code: 'TEST-MOLD-MODEL-01', product_name: '测试产品A模具', is_active: true }, mold_size: '500×500', is_active: true,
     }])
     apiMocks.listOrders.mockResolvedValue([{
       id: 2, order_no: 'TEST-ORDER-001', item_no: '10', batch_no: '', product_code: 'TEST-PRODUCT-001', product_name: '测试产品A', specification: 'TEST-SPEC-A', material: 'SYN-RUBBER-A',
@@ -38,7 +41,7 @@ describe('business data pages on mobile', () => {
       process_card_text: '无', production_quantity: '120', shipment_date: '2026-08-31', shipped_quantity: '80', last_data_updated_at: '2026-08-05T10:15:00+08:00',
     }])
     apiMocks.listReceipts.mockResolvedValue([{
-      id: 9, order: null, order_id: null, order_no: 'TEST-ORDER-001', item_no: '10', finished_product_name: '测试产品A', specification: 'TEST-SPEC-A', material: 'SYN-RUBBER-A', batch_no: 'TEST-BATCH-09', sheet_size: 'TEST-SHEET-SIZE', weight_kg: '2.500', manufactured_on: '2026-08-04', source_sheet: '发料明细', source_row: 6, updated_at: '2026-08-06T09:30:00+08:00',
+      id: 9, order: null, order_id: null, order_no: 'TEST-ORDER-001', item_no: '10', finished_product_name: '测试产品A', specification: 'TEST-SPEC-A', material: 'SYN-RUBBER-A', batch_no: 'TEST-BATCH-09', sheet_size: 'TEST-SHEET-SIZE', weight_kg: '2.500', issued_on: '2026-08-05', manufactured_on: '2026-08-04', source_sheet: '发料明细', source_row: 6, updated_at: '2026-08-06T09:30:00+08:00',
     }])
   })
 
@@ -48,12 +51,14 @@ describe('business data pages on mobile', () => {
     renderPage(<ProductSpecificationsPage />)
     expect(await screen.findByText('测试产品A')).toBeInTheDocument()
     expect(screen.getByText('05孔 / 06孔')).toBeInTheDocument()
+    expect(screen.getAllByText(/TEST-MOLD-MODEL-01/).length).toBeGreaterThan(0)
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
 
   it('renders material and process-card states in order cards and preserves zero', async () => {
     renderPage(<OrdersPage />)
     expect(await screen.findByText('TEST-ORDER-001 / 10')).toBeInTheDocument()
+    expect(apiMocks.listOrders).toHaveBeenCalledWith(expect.objectContaining({ ordering: '-order_date' }))
     expect(screen.getAllByText('未收到').length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText('0 kg')).toBeInTheDocument()
     expect(screen.getByText('0 张 / 覆盖 0')).toBeInTheDocument()
@@ -61,6 +66,17 @@ describe('business data pages on mobile', () => {
     expect(screen.getByText('2026-08-31')).toBeInTheDocument()
     expect(screen.getByText('80')).toBeInTheDocument()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
+  })
+
+  it('lets mobile users change order date sorting', async () => {
+    const user = userEvent.setup()
+    renderPage(<OrdersPage />)
+
+    await screen.findByText('TEST-ORDER-001 / 10')
+    await user.click(screen.getByRole('combobox', { name: '订单排序' }))
+    await user.click(await screen.findByText('交期：近到远'))
+
+    await waitFor(() => expect(apiMocks.listOrders).toHaveBeenCalledWith(expect.objectContaining({ ordering: 'due_date' })))
   })
 
   it('shows pending receipt count before opening the mobile receipt tab and renders actionable cards', async () => {
@@ -71,6 +87,8 @@ describe('business data pages on mobile', () => {
     await user.click(screen.getByRole('tab', { name: /发料记录/ }))
 
     expect(await screen.findByText('2.500 kg')).toBeInTheDocument()
+    expect(screen.getByText('2026-08-05')).toBeInTheDocument()
+    expect(screen.getByText('2026-08-04')).toBeInTheDocument()
     expect(screen.getByText('2026-08-06 09:30')).toBeInTheDocument()
     expect(screen.getByText('关联到订单').closest('button')).toHaveClass('ant-btn-block')
     expect(screen.queryByRole('table')).not.toBeInTheDocument()

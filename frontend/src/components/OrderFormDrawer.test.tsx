@@ -56,4 +56,27 @@ describe('OrderFormDrawer', () => {
     expect(body.shipment_date).toBe('2026-08-31')
     expect(body.shipped_quantity).toBe('80')
   }, 20_000)
+
+  it('shows the linked mold model without deriving forming hours from product specifications', async () => {
+    apiMocks.listSpecifications.mockResolvedValue([{
+      id: 9,
+      product_name: '测试产品A',
+      customer_product_no: 'TEST-PRODUCT-001',
+      specification: 'TEST-SPEC-A',
+      material: 'SYN-RUBBER-A',
+      primary_curing: '160℃×240秒',
+      mold_model_id: 7,
+      mold_model: { id: 7, code: 'TEST-MOLD-MODEL-01', product_name: '测试产品A模具', is_active: true },
+      mold_size: '500×500',
+      is_active: true,
+    }])
+    const user = userEvent.setup()
+    renderDrawer()
+
+    await user.click(screen.getByRole('combobox', { name: /关联产品规格/ }))
+    await user.click(await screen.findByText('TEST-PRODUCT-001 · 测试产品A · TEST-SPEC-A'))
+
+    expect(screen.getByLabelText(/成型工时/)).toHaveValue('')
+    expect(screen.getByText(/模具型号：TEST-MOLD-MODEL-01/)).toBeInTheDocument()
+  }, 20_000)
 })

@@ -17,6 +17,7 @@ def business_import_path(instance, filename):
 
 class BusinessImportBatch(models.Model):
     class SourceType(models.TextChoices):
+        UNKNOWN = "UNKNOWN", "无法识别"
         PRODUCT_SPECIFICATIONS = "PRODUCT_SPECIFICATIONS", "产品规格数据"
         INTERNAL_ORDERS = "INTERNAL_ORDERS", "内部季度订单"
         FACTORY_WORK_CONTACT = "FACTORY_WORK_CONTACT", "生产工作联络单"
@@ -83,6 +84,14 @@ class ProductSpecification(TimeStampedModel):
     mold_in_stock = models.CharField(
         "模具在库", max_length=100, blank=True, default=""
     )
+    mold_model = models.ForeignKey(
+        "molds.MoldModel",
+        verbose_name="模具型号",
+        related_name="product_specifications",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
     mold_no = models.CharField("模具号", max_length=100, blank=True, default="")
     mold_size = models.CharField("模具尺寸", max_length=100, blank=True, default="")
     standard_hours = models.CharField(
@@ -142,7 +151,7 @@ class ProductSpecification(TimeStampedModel):
             self.customer_product_no,
             self.specification,
             self.material,
-            self.mold_no,
+            self.mold_model.code if self.mold_model_id else self.mold_no,
         )
 
     def save(self, *args, **kwargs):
@@ -250,6 +259,7 @@ class MaterialReceipt(TimeStampedModel):
         decimal_places=3,
         validators=[MinValueValidator(0)],
     )
+    issued_on = models.DateField("发料日期", null=True, blank=True, db_index=True)
     manufactured_on = models.DateField("制造日期", null=True, blank=True, db_index=True)
     source_batch = models.ForeignKey(
         BusinessImportBatch,
@@ -275,7 +285,7 @@ class MaterialReceipt(TimeStampedModel):
     raw_data = models.JSONField(default=dict, blank=True)
 
     class Meta:
-        ordering = ["-manufactured_on", "-id"]
+        ordering = ["-issued_on", "-manufactured_on", "-id"]
         constraints = [
             models.CheckConstraint(
                 condition=Q(weight_kg__gte=0), name="material_receipt_weight_nonnegative"

@@ -135,7 +135,6 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
     const strips = plainInteger(specification.strip_count)
     const seconds = curingSeconds(specification.primary_curing)
     const stripWeight = weightKg(specification.cut_weight)
-    const standardHours = plainNumber(specification.standard_hours)
     form.setFieldsValue({
       specification: specification.specification || specification.product_name || form.getFieldValue('specification'),
       material: specification.material || form.getFieldValue('material'),
@@ -144,7 +143,6 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
       ...(strips !== undefined ? { strips_per_batch: strips } : {}),
       ...(seconds !== undefined ? { curing_seconds: seconds } : {}),
       ...(stripWeight !== undefined ? { strip_weight_kg: stripWeight } : {}),
-      ...(standardHours !== undefined ? { estimated_hours: standardHours } : {}),
     })
   }
 
@@ -350,7 +348,7 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
             type="info"
             showIcon
             title={`工艺参考 · ${selectedProductSpecification.product_name}`}
-            description={<div className="production-specification-reference-grid"><span>胶料尺寸：{selectedProductSpecification.material_length || '-'}</span><span>裁重：{selectedProductSpecification.cut_weight || '-'}</span><span>条数：{selectedProductSpecification.strip_count || '-'}</span><span>一次硫化：{selectedProductSpecification.primary_curing || '-'}</span><span>二烤：{selectedProductSpecification.secondary_curing || '-'}</span><span>孔数：{selectedProductSpecification.effective_cavities || '-'} / {selectedProductSpecification.total_cavities || '-'}</span></div>}
+            description={<div className="production-specification-reference-grid"><span>胶料尺寸：{selectedProductSpecification.material_length || '-'}</span><span>裁重：{selectedProductSpecification.cut_weight || '-'}</span><span>条数：{selectedProductSpecification.strip_count || '-'}</span><span>一次硫化：{selectedProductSpecification.primary_curing || '-'}</span><span>二烤：{selectedProductSpecification.secondary_curing || '-'}</span><span>孔数：{selectedProductSpecification.effective_cavities || '-'} / {selectedProductSpecification.total_cavities || '-'}</span><span>模具型号：{selectedProductSpecification.mold_model?.code || selectedProductSpecification.mold_no || '-'}</span></div>}
           />
         )}
 

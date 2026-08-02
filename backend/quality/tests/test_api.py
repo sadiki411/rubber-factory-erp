@@ -5,6 +5,7 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
+from molds.models import MoldModel
 from orders.models import ProductSpecification
 from quality.models import (
     QualityEmployee,
@@ -175,10 +176,15 @@ class QualityCrudApiTests(QualityTestMixin, TestCase):
         )
 
     def test_nested_order_product_specification_does_not_add_per_row_queries(self):
+        mold_model = MoldModel.objects.create(
+            code="QC-QUERY-MOLD",
+            product_name="品检查询模具",
+        )
         product = ProductSpecification.objects.create(
             product_name="品检查询产品",
             specification="QC-QUERY-SPEC",
             material="NBR",
+            mold_model=mold_model,
         )
         self.order.product_specification = product
         self.order.save(update_fields=["product_specification", "updated_at"])
@@ -190,6 +196,12 @@ class QualityCrudApiTests(QualityTestMixin, TestCase):
         self.assertEqual(
             response_results(response)[0]["order"]["product_specification"]["id"],
             product.pk,
+        )
+        self.assertEqual(
+            response_results(response)[0]["order"]["product_specification"][
+                "mold_model"
+            ]["code"],
+            mold_model.code,
         )
 
         for index in range(2, 6):

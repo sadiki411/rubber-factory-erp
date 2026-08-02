@@ -145,12 +145,24 @@ class QualityOrderSerializer(ValidatedModelSerializer):
         product = obj.product_specification
         if not product:
             return None
+        mold_model = product.mold_model
         return {
             "id": product.pk,
             "product_name": product.product_name,
             "customer_product_no": product.customer_product_no,
             "specification": product.specification,
             "material": product.material,
+            "mold_model_id": product.mold_model_id,
+            "mold_model": (
+                {
+                    "id": mold_model.pk,
+                    "code": mold_model.code,
+                    "product_name": mold_model.product_name,
+                    "is_active": mold_model.is_active,
+                }
+                if mold_model
+                else None
+            ),
             "mold_no": product.mold_no,
             "mold_size": product.mold_size,
             "is_active": product.is_active,

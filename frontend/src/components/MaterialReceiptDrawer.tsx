@@ -23,6 +23,7 @@ interface MaterialReceiptFormValues {
   batch_no?: string
   sheet_size?: string
   weight_kg?: string
+  issued_on?: Dayjs | null
   manufactured_on?: Dayjs | null
 }
 
@@ -69,8 +70,9 @@ export function MaterialReceiptDrawer({ open, receipt, orders, ordersLoading = f
       batch_no: receipt.batch_no,
       sheet_size: receipt.sheet_size,
       weight_kg: String(receipt.weight_kg),
+      issued_on: receipt.issued_on ? dayjs(receipt.issued_on) : undefined,
       manufactured_on: receipt.manufactured_on ? dayjs(receipt.manufactured_on) : undefined,
-    } : {})
+    } : { issued_on: dayjs() })
   }, [form, open, receipt])
 
   const mutation = useMutation({
@@ -78,6 +80,7 @@ export function MaterialReceiptDrawer({ open, receipt, orders, ordersLoading = f
       const body = {
         ...values,
         order_id: values.order_id ?? null,
+        issued_on: values.issued_on ? values.issued_on.format('YYYY-MM-DD') : null,
         manufactured_on: values.manufactured_on ? values.manufactured_on.format('YYYY-MM-DD') : null,
       }
       return receipt ? materialReceiptApi.update(receipt.id, body) : materialReceiptApi.create(body)
@@ -181,7 +184,8 @@ export function MaterialReceiptDrawer({ open, receipt, orders, ordersLoading = f
               <Input inputMode="decimal" placeholder="例如 12.500" />
             </Form.Item>
           </Col>
-          <Col xs={24} sm={12}><Form.Item name="manufactured_on" label="制造 / 发料日期"><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="issued_on" label="发料日期"><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="manufactured_on" label="制造日期"><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
         </Row>
       </Form>
     </Drawer>

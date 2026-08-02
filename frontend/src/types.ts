@@ -155,6 +155,8 @@ export interface ImportIssue {
   sheet?: string
   row?: number
   field?: string
+  stage?: string
+  recorded_at?: string
   message: string
 }
 
@@ -199,9 +201,10 @@ export interface ProductSpecification {
   total_cavities?: string
   effective_cavities?: string
   mold_in_stock?: string
+  mold_model?: MoldModel | null
+  mold_model_id?: number | null
   mold_no?: string
   mold_size?: string
-  standard_hours?: string
   notes?: string
   normalized_key?: string
   is_active: boolean
@@ -271,6 +274,7 @@ export interface MaterialReceipt {
   batch_no?: string
   sheet_size?: string
   weight_kg: number | string
+  issued_on?: string | null
   manufactured_on?: string | null
   source_sheet?: string
   source_row?: number | null
@@ -327,6 +331,41 @@ export interface BusinessImportCommitResult {
   imported_count?: number
   skipped_count?: number
   [key: string]: unknown
+}
+
+export interface BusinessImportHistoryActions {
+  CREATE: number
+  UPDATE: number
+  SKIP: number
+}
+
+export interface BusinessImportHistorySummary {
+  token: string
+  original_name: string
+  source_type: string
+  source_type_display: string
+  parser: string
+  status: 'PREVIEWED' | 'COMMITTING' | 'COMMITTED' | 'FAILED' | string
+  status_display: string
+  created_at: string
+  committed_at?: string | null
+  total_rows: number
+  counts: BusinessImportCounts
+  actions: BusinessImportHistoryActions
+  error_count: number
+  warning_count: number
+}
+
+export interface BusinessImportHistoryRow extends BusinessImportPreviewRow {
+  skip_reason?: string
+  skip_reason_code?: string
+  reasons: string[]
+  issues: ImportIssue[]
+}
+
+export interface BusinessImportHistoryDetail extends BusinessImportHistorySummary {
+  rows: BusinessImportHistoryRow[]
+  issues: ImportIssue[]
 }
 
 export interface RackConfigInput {

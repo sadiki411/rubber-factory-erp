@@ -114,7 +114,11 @@ class QualityOrderViewSet(NoDeleteModelViewSet):
 
     def get_queryset(self):
         queryset = with_order_activity(
-            QualityOrder.objects.select_related("created_by", "product_specification")
+            QualityOrder.objects.select_related(
+                "created_by",
+                "product_specification",
+                "product_specification__mold_model",
+            )
         )
         params = self.request.query_params
         q = str(params.get("q", "")).strip()
@@ -150,6 +154,7 @@ def _shipment_queryset():
         QualityShipment.objects.select_related(
             "order__created_by",
             "order__product_specification",
+            "order__product_specification__mold_model",
             "inspector",
             "created_by",
         )

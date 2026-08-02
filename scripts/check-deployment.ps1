@@ -48,6 +48,8 @@ if missing:
 backend = services["backend"]
 if backend.get("deploy", {}).get("replicas", 1) != 1:
     raise SystemExit("SQLite deployment must use exactly one backend replica")
+if any((services.get(name) or {}).get("env_file") for name in required):
+    raise SystemExit("compose.yaml must run without a required .env file")
 if not any("/app/data" in str(value) for value in backend.get("volumes", [])):
     raise SystemExit("backend is missing the SQLite persistent directory")
 backup_env = services["backup"].get("environment", {})
@@ -60,10 +62,16 @@ if "BACKUP_BEFORE_MIGRATE" not in backend_env:
 for name in required:
     service = services.get(name) or {}
     image = str(service.get("image", ""))
-    if name in {"backend", "backup"} and "GHCR_BACKEND_IMAGE" not in image:
-        raise SystemExit(f"compose.yaml service {name} must use GHCR_BACKEND_IMAGE")
-    if name == "web" and "GHCR_WEB_IMAGE" not in image:
-        raise SystemExit("compose.yaml service web must use GHCR_WEB_IMAGE")
+    if name in {"backend", "backup"} and not (
+        "GHCR_BACKEND_IMAGE" in image
+        and "ghcr.io/sadiki411/rubber-factory-erp-backend:latest" in image
+    ):
+        raise SystemExit(f"compose.yaml service {name} needs an overridable default backend image")
+    if name == "web" and not (
+        "GHCR_WEB_IMAGE" in image
+        and "ghcr.io/sadiki411/rubber-factory-erp-web:latest" in image
+    ):
+        raise SystemExit("compose.yaml service web needs an overridable default web image")
     if service.get("pull_policy") != "always":
         raise SystemExit(f"compose.yaml service {name} must always pull its image")
     if "build" in service:
@@ -106,6 +114,11 @@ Write-Host 'Dockerfile source and runtime version checks passed.'
 $entrypoint = Get-Content -Raw -LiteralPath (Join-Path $root 'deploy\backend-entrypoint.sh')
 if ($entrypoint -notmatch 'backup_erp' -or $entrypoint -notmatch 'BACKUP_BEFORE_MIGRATE') {
     throw 'backend entrypoint must create a backup before running migrations.'
+}
+foreach ($requiredSecretText in @('.django-secret-key', 'secrets.token_urlsafe', 'export DJANGO_SECRET_KEY')) {
+    if ($entrypoint -notmatch [regex]::Escape($requiredSecretText)) {
+        throw "backend entrypoint is missing persistent secret generation: $requiredSecretText"
+    }
 }
 $nginxConfig = Get-Content -Raw -LiteralPath (Join-Path $root 'deploy\nginx.conf')
 $privateImportLocation = 'location ^~ /media/business-imports/'

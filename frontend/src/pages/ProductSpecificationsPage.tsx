@@ -17,6 +17,18 @@ function productSpecificationTitle(record: ProductSpecification) {
   return record.product_name || record.customer_product_no || record.specification || '未命名产品'
 }
 
+function moldModelText(record: ProductSpecification) {
+  return record.mold_model?.code || record.mold_no || '-'
+}
+
+function moldDetailsText(record: ProductSpecification) {
+  return [
+    record.mold_model?.product_name,
+    record.mold_no && record.mold_no !== record.mold_model?.code ? `原表 ${record.mold_no}` : '',
+    record.mold_size,
+  ].filter(Boolean).join(' · ') || '-'
+}
+
 export function ProductSpecificationsPage() {
   const screens = Grid.useBreakpoint()
   const mobile = screens.md === false
@@ -48,8 +60,7 @@ export function ProductSpecificationsPage() {
     { title: '一次硫化', dataIndex: 'primary_curing', width: 190, ellipsis: true, render: exactText },
     { title: '二烤参数', dataIndex: 'secondary_curing', width: 190, ellipsis: true, render: exactText },
     { title: '孔数', key: 'cavities', width: 120, render: (_, row) => `${exactText(row.effective_cavities)} / ${exactText(row.total_cavities)}` },
-    { title: '模具编号 / 尺寸', key: 'mold', width: 180, render: (_, row) => <span>{exactText(row.mold_no)}<br /><Typography.Text type="secondary">{exactText(row.mold_size)}</Typography.Text></span> },
-    { title: '标准工时', dataIndex: 'standard_hours', width: 110, render: exactText },
+    { title: '模具型号 / 尺寸', key: 'mold', width: 230, render: (_, row) => <span>{moldModelText(row)}<br /><Typography.Text type="secondary">{moldDetailsText(row)}</Typography.Text></span> },
     { title: '状态', dataIndex: 'is_active', width: 90, render: (value) => <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag> },
     { title: '操作', key: 'action', fixed: 'right', width: 80, render: (_, row) => <Button type="link" icon={<EditOutlined />} onClick={() => openForm(row)}>编辑</Button> },
   ]
@@ -80,12 +91,12 @@ export function ProductSpecificationsPage() {
               <Card className="mobile-record-card business-mobile-card" role="button" tabIndex={0} onClick={() => openForm(record)}>
                 <div className="record-card-heading"><Typography.Title level={4}>{productSpecificationTitle(record)}</Typography.Title><Tag color={record.is_active ? 'success' : 'default'}>{record.is_active ? '启用' : '停用'}</Tag></div>
                 <Typography.Text>{exactText(record.customer_product_no)} · {exactText(record.specification)}</Typography.Text>
-                <Typography.Text type="secondary">材质 {exactText(record.material)} · 模具 {exactText(record.mold_no)}</Typography.Text>
+                <Typography.Text type="secondary">材质 {exactText(record.material)} · 模具型号 {moldModelText(record)}</Typography.Text>
                 <div className="business-mobile-grid">
                   <span><small>一次硫化</small><b>{exactText(record.primary_curing)}</b></span>
                   <span><small>二烤参数</small><b>{exactText(record.secondary_curing)}</b></span>
                   <span><small>有效 / 总孔数</small><b>{exactText(record.effective_cavities)} / {exactText(record.total_cavities)}</b></span>
-                  <span><small>标准工时</small><b>{exactText(record.standard_hours)}</b></span>
+                  <span><small>模具资料</small><b>{moldDetailsText(record)}</b></span>
                 </div>
                 <Button block icon={<EditOutlined />} onClick={(event) => { event.stopPropagation(); openForm(record) }}>编辑资料</Button>
               </Card>
@@ -94,7 +105,7 @@ export function ProductSpecificationsPage() {
         />
       ) : (
         <Card className="data-card" styles={{ body: { padding: 0 } }}>
-          <Table rowKey="id" loading={specificationsQuery.isLoading} dataSource={specificationsQuery.data || []} columns={columns} scroll={{ x: 1825 }} pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }} />
+          <Table rowKey="id" loading={specificationsQuery.isLoading} dataSource={specificationsQuery.data || []} columns={columns} scroll={{ x: 1765 }} pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }} />
         </Card>
       )}
 

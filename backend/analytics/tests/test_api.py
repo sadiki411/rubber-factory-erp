@@ -181,7 +181,10 @@ class AnalyticsApiTests(TestCase):
         )
 
     def test_dashboard_merges_automatic_and_manual_sources_with_clear_basis(self):
-        day = timezone.localdate()
+        # Use a completed calendar day. The dashboard intentionally caps machine
+        # time at ``timezone.now()`` so a same-day fixture with 08:00-10:00 runs
+        # would produce a clock-dependent result when the suite runs before 10:00.
+        day = timezone.localdate() - timedelta(days=1)
         self.create_automatic_records(day)
         self.create_manual_records(day)
 
