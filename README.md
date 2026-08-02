@@ -8,6 +8,7 @@
 - 后端：Python 3.11、Django 5.2 LTS、Django REST Framework
 - 数据库：SQLite（WAL、单后端实例）
 - 部署：Docker Compose、Nginx、Gunicorn
+- 手机入口：原生微信小程序快捷首页 + 同域 `web-view`
 
 ## 本地开发
 
@@ -79,6 +80,20 @@ Actions 使用仓库自带的 `GITHUB_TOKEN` 推送镜像，不需要另建发�
 ```bash
 echo "$GHCR_TOKEN" | docker login ghcr.io -u <GitHub账号> --password-stdin
 ```
+
+## 微信小程序
+
+`wechat-miniprogram/` 提供独立的微信小程序工程。小程序使用原生快捷首页展示工作台、模具、货架、订单、生产、品检、数据分析和产品规格入口，再通过固定白名单打开 `https://erp.qvgro.com` 的移动端页面；它不复制数据库，也不会在代码或URL中保存ERP密码和Session。
+
+正式发布需要非个人主体小程序的真实 AppID、开发者权限、`qvgro.com` ICP备案，以及在微信公众平台把 `https://erp.qvgro.com` 配置为业务域名。仓库保留 `touristappid` 占位值，不提交AppSecret或上传私钥。完整配置与审核步骤见 [微信小程序说明](wechat-miniprogram/README.md)。
+
+静态检查：
+
+```powershell
+D:\develop\venvs\erp\Scripts\python.exe scripts\check_miniprogram.py
+```
+
+GitHub Actions会独立验证小程序目录、固定HTTPS域名、页面完整性和敏感信息边界；网页功能更新后，小程序会直接加载新页面，通常不需要重新提交审核。
 
 ## Docker Compose部署
 

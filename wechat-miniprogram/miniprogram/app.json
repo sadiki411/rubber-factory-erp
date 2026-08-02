@@ -1,0 +1,15 @@
+{
+  "pages": [
+    "pages/home/index",
+    "pages/webview/index"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#125c4d",
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "橡胶工厂 ERP",
+    "backgroundColor": "#f3f6f5",
+    "backgroundTextStyle": "dark"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

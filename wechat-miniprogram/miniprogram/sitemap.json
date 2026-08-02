@@ -1,0 +1,9 @@
+{
+  "desc": "工厂内部ERP不进入微信搜索索引",
+  "rules": [
+    {
+      "action": "disallow",
+      "page": "*"
+    }
+  ]
+}

@@ -453,6 +453,9 @@ button, input, textarea, select { font: inherit; }
 }
 
 @media (max-width: 767px) {
+  html[data-runtime='wechat-mini-program'] .app-header { padding-inline: 12px; }
+  html[data-runtime='wechat-mini-program'] .page-container { padding-top: 14px; }
+  html[data-runtime='wechat-mini-program'] .login-page { padding-top: 18px; }
   .app-header { height: 56px; }
   .mobile-nav-button { width: 44px; min-width: 44px; height: 44px; }
   .user-name { display: none; }

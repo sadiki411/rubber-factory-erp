@@ -68,6 +68,19 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Check mini program JavaScript syntax
+        run: find ../wechat-miniprogram/miniprogram -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+
+  miniprogram:
+    name: Validate WeChat mini program
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate mini program source and security boundaries
+        run: python3 scripts/check_miniprogram.py
+
   deployment:
     name: Validate Compose deployment files
     runs-on: ubuntu-latest
@@ -89,6 +102,7 @@ jobs:
     needs:
       - backend
       - frontend
+      - miniprogram
       - deployment
     runs-on: ubuntu-latest
     permissions:

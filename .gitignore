@@ -20,9 +20,20 @@ frontend/node_modules/
 frontend/dist/
 frontend/coverage/
 
+# WeChat mini program local/private files
+wechat-miniprogram/project.private.config.json
+wechat-miniprogram/miniprogram_npm/
+wechat-miniprogram/.miniprogram-ci/
+wechat-miniprogram/**/private.*
+
 # Environment and IDE
 .env
-.env.local
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
 .idea/
 .vscode/
 .codex_tmp/

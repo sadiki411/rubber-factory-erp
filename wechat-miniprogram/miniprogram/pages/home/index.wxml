@@ -1,0 +1,42 @@
+<view class="home-page">
+  <view class="hero">
+    <view class="brand-mark">橡</view>
+    <view class="hero-copy">
+      <text class="eyebrow">RUBBER FACTORY ERP</text>
+      <text class="title">工厂数据，随时查阅</text>
+      <text class="subtitle">模具、货架、订单、生产与品检共用网站实时数据</text>
+    </view>
+    <view class="network {{online ? 'online' : 'offline'}}">
+      <view class="network-dot"></view>
+      <text>{{networkText}}</text>
+    </view>
+    <button class="primary-entry" data-path="/" bindtap="openModule">打开 ERP 工作台</button>
+  </view>
+
+  <view class="section-heading">
+    <text class="section-title">快捷入口</text>
+    <text class="section-tip">选择要查看的板块</text>
+  </view>
+
+  <view class="module-grid">
+    <button
+      wx:for="{{modules}}"
+      wx:key="path"
+      class="module-card"
+      data-path="{{item.path}}"
+      bindtap="openModule"
+      hover-class="module-card-active"
+    >
+      <view class="module-icon">{{item.icon}}</view>
+      <view class="module-copy">
+        <text class="module-title">{{item.shortTitle}}</text>
+        <text class="module-description">{{item.description}}</text>
+      </view>
+    </button>
+  </view>
+
+  <view class="notice">
+    <text class="notice-title">使用说明</text>
+    <text>首次打开需要使用工厂 ERP 共用账号登录，登录后查看的是服务器中的实时数据。</text>
+  </view>
+</view>

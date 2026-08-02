@@ -1,0 +1,20 @@
+<web-view
+  wx:if="{{src}}"
+  src="{{src}}"
+  bindload="handleLoad"
+  binderror="handleError"
+></web-view>
+
+<view wx:elif="{{loadError}}" class="error-page">
+  <view class="error-icon">!</view>
+  <text class="error-title">ERP 页面暂时无法打开</text>
+  <text class="error-description">请检查手机网络，或确认服务器和微信业务域名配置正常。</text>
+  <button class="retry-button" bindtap="retry">重新连接</button>
+  <button class="secondary-button" bindtap="backHome">返回快捷入口</button>
+  <button class="link-button" bindtap="copyAddress">复制网页版地址</button>
+</view>
+
+<view wx:else class="loading-page">
+  <view class="loading-mark">橡</view>
+  <text>正在准备 ERP 页面…</text>
+</view>

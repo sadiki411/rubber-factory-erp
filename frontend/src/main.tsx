@@ -7,6 +7,24 @@ import { BrowserRouter } from 'react-router-dom'
 import { App } from './App'
 import './styles.css'
 
+const runtimeEntry = new URLSearchParams(window.location.search).get('entry')
+if (runtimeEntry === 'wxmini') {
+  try {
+    window.sessionStorage.setItem('erp-runtime-entry', runtimeEntry)
+  } catch {
+    // Storage can be unavailable in privacy modes; the query marker still works.
+  }
+}
+let rememberedRuntime = ''
+try {
+  rememberedRuntime = window.sessionStorage.getItem('erp-runtime-entry') || ''
+} catch {
+  // Keep the normal browser layout when storage is unavailable.
+}
+if (runtimeEntry === 'wxmini' || rememberedRuntime === 'wxmini') {
+  document.documentElement.dataset.runtime = 'wechat-mini-program'
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

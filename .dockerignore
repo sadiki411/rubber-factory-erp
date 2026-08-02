@@ -22,6 +22,7 @@ backend/molds/tests/
 frontend/node_modules/
 frontend/dist/
 frontend/coverage/
+wechat-miniprogram/
 
 # 真实业务原始资料和根目录预览图不进入Docker构建上下文。
 *.xls
@@ -38,3 +39,7 @@ frontend/coverage/
 ~$*.xls*
 
 *.log
+*.pem
+*.key
+*.p12
+*.pfx

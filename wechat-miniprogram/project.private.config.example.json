@@ -1,0 +1,4 @@
+{
+  "description": "复制为project.private.config.json后填写真实小程序AppID；该私有文件不会提交Git",
+  "appid": "wx0000000000000000"
+}
