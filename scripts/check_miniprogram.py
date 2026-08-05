@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 import subprocess
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
@@ -59,6 +60,7 @@ def reviewable_files(root: Path):
 
 required_files = {
     PROJECT / "README.md",
+    PROJECT / "assets" / "app-avatar-dong.png",
     PROJECT / "project.config.json",
     PROJECT / "project.private.config.example.json",
     SOURCE / "app.js",
@@ -78,6 +80,16 @@ required_files = {
 missing = sorted(str(path.relative_to(ROOT)) for path in required_files if not path.is_file())
 if missing:
     fail(f"missing required files: {', '.join(missing)}")
+
+avatar_path = PROJECT / "assets" / "app-avatar-dong.png"
+avatar_bytes = avatar_path.read_bytes()
+if len(avatar_bytes) < 24 or avatar_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+    fail("assets/app-avatar-dong.png must be a valid PNG file")
+avatar_width, avatar_height = struct.unpack(">II", avatar_bytes[16:24])
+if (avatar_width, avatar_height) != (1024, 1024):
+    fail("assets/app-avatar-dong.png must remain 1024x1024")
+if len(avatar_bytes) > 2 * 1024 * 1024:
+    fail("assets/app-avatar-dong.png must remain smaller than 2 MiB")
 
 project_config = read_json(PROJECT / "project.config.json")
 if project_config.get("compileType") != "miniprogram":

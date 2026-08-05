@@ -2,6 +2,16 @@
 
 本目录是一个不重复保存业务数据的微信小程序入口。原生首页提供模具、货架、订单、生产、品检和绩效快捷入口；进入功能后由微信 `web-view` 打开 `https://erp.qvgro.com` 的移动端页面，因此网站和小程序始终使用同一套 Django API、SQLite 数据库与共享账号。
 
+## 品牌头像
+
+微信公众平台可直接上传 `assets/app-avatar-dong.png` 作为小程序头像。图片为 1024×1024 PNG，以“东”字作为唯一主标识，并为微信的圆形或圆角裁切预留了安全边距。
+
+需要重新生成时，在仓库根目录执行：
+
+```powershell
+D:\develop\venvs\erp\Scripts\python.exe scripts\generate_app_avatar.py
+```
+
 ## 正式发布前的必要条件
 
 1. 使用非个人主体的小程序账号，并取得该小程序的真实 AppID。个人类型小程序和小游戏不支持 `web-view`。
