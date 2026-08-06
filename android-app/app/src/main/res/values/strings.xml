@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">东橡生产助手</string>
+    <string name="app_icon_description">东橡生产助手图标</string>
+    <string name="load_failed_title">暂时无法连接 ERP</string>
+    <string name="network_error_message">请检查 Wi-Fi 或移动网络后重试。\n已经填写但尚未保存的内容不会离线提交。</string>
+    <string name="server_error_message">服务器暂时没有正常响应，请稍后重试。</string>
+    <string name="ssl_error_message">服务器安全证书校验失败，已停止连接。请联系管理员处理，切勿继续访问。</string>
+    <string name="unsafe_page_message">系统已阻止打开不安全的页面。</string>
+    <string name="webview_crashed_message">手机网页组件已停止响应，请点击重试重新连接。</string>
+    <string name="retry">重新连接</string>
+    <string name="select_file">选择 Excel、图片或其他文件</string>
+    <string name="no_file_app">手机上没有可用的文件选择器。</string>
+    <string name="external_link_blocked">已阻止不受信任的链接。</string>
+    <string name="no_external_app">手机上没有可以打开该链接的应用。</string>
+    <string name="download_started">下载已开始，可在系统“下载”中查看。</string>
+    <string name="download_failed">下载失败，请重新登录后再试。</string>
+    <string name="download_permission_denied">未获得存储权限，无法保存下载文件。</string>
+    <string name="exit_hint">再按一次返回键退出东橡生产助手</string>
+</resources>

@@ -8,7 +8,7 @@
 - 后端：Python 3.11、Django 5.2 LTS、Django REST Framework
 - 数据库：SQLite（WAL、单后端实例）
 - 部署：Docker Compose、Nginx、Gunicorn
-- 手机入口：原生微信小程序快捷首页 + 同域 `web-view`
+- 手机入口：原生Android应用“东橡生产助手” + 微信小程序预留入口
 
 ## 本地开发
 
@@ -80,6 +80,10 @@ Actions 使用仓库自带的 `GITHUB_TOKEN` 推送镜像，不需要另建发�
 ```bash
 echo "$GHCR_TOKEN" | docker login ghcr.io -u <GitHub账号> --password-stdin
 ```
+
+## Android应用
+
+`android-app/` 提供面向OPPO等安卓手机的“东橡生产助手”APK。App直接连接 `https://erp.qvgro.com/`，网页部署后会自动使用最新功能；只有Android原生外壳变化时才需要重新发布APK。本机构建、正式签名、GitHub Release和ColorOS安装说明见 [android-app/README.md](android-app/README.md)。
 
 ## 微信小程序
 

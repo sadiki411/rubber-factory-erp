@@ -1,0 +1,226 @@
+name: Test and release Android APK
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "android-v*"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: Version name for the signed APK (for example, 1.0.0)
+        required: true
+        default: "1.0.0"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref_type == 'branch' }}
+
+jobs:
+  checks:
+    name: Tests, lint, and debug APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android-app
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Android SDK platform
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Run unit tests, lint, and debug build
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace testDebugUnitTest lintRelease :app:assembleDebug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dongxiang-debug-${{ github.run_number }}-${{ github.run_attempt }}
+          path: android-app/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  signed_release:
+    name: Build signed release APK
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/android-v')
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: android-app
+    outputs:
+      artifact_name: ${{ steps.version.outputs.artifact_name }}
+      version_name: ${{ steps.version.outputs.version_name }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Android SDK platform
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Resolve application version
+        id: version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" == refs/tags/android-v* ]]; then
+            version_name="${GITHUB_REF_NAME#android-v}"
+          else
+            version_name="$REQUESTED_VERSION"
+          fi
+
+          if [[ ! "$version_name" =~ ^[0-9]+(\.[0-9]+){2}([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Version must use a semantic version such as 1.0.0 or 1.0.0-beta.1."
+            exit 1
+          fi
+
+          echo "ANDROID_VERSION_NAME=$version_name" >> "$GITHUB_ENV"
+          echo "ANDROID_VERSION_CODE=$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+          echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=dongxiang-signed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Decode and validate release keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$ANDROID_KEYSTORE_BASE64" || -z "$ANDROID_KEYSTORE_PASSWORD" || -z "$ANDROID_KEY_ALIAS" || -z "$ANDROID_KEY_PASSWORD" ]]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD are all required."
+            exit 1
+          fi
+
+          keystore="$RUNNER_TEMP/dongxiang-production-assistant-release.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+          test -s "$keystore"
+          keytool -list \
+            -keystore "$keystore" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" > /dev/null
+          echo "ANDROID_KEYSTORE_FILE=$keystore" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace -PrequireReleaseSigning=true :app:assembleRelease
+
+      - name: Verify and package signed APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_apk="app/build/outputs/apk/release/app-release.apk"
+          apk_name="dongxiang-production-assistant-${ANDROID_VERSION_NAME}.apk"
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          test -f "$source_apk"
+          test -n "$sdk_root"
+
+          apksigner="$(find "$sdk_root/build-tools" -maxdepth 2 -type f -name apksigner -print | sort -V | tail -n 1)"
+          test -n "$apksigner"
+          certificate_output="$("$apksigner" verify --verbose --print-certs "$source_apk")"
+          printf '%s\n' "$certificate_output"
+          actual_fingerprint="$(printf '%s\n' "$certificate_output" | awk -F': ' '/certificate SHA-256 digest/{print tolower($2); exit}')"
+          expected_fingerprint="4f7fbb8ffdf64ea0a1d7d6e131c9f9d443eb185e096bf3858d68a9cd88abe3af"
+          if [[ "$actual_fingerprint" != "$expected_fingerprint" ]]; then
+            echo "::error::The release APK was signed by an unexpected certificate."
+            exit 1
+          fi
+
+          mkdir -p release-output
+          cp "$source_apk" "release-output/$apk_name"
+          (
+            cd release-output
+            sha256sum "$apk_name" > "${apk_name}.sha256"
+          )
+
+      - name: Upload signed release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.artifact_name }}
+          path: |
+            android-app/release-output/*.apk
+            android-app/release-output/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove temporary keystore
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/dongxiang-production-assistant-release.jks"
+
+  publish:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/android-v')
+    needs: signed_release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download signed release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.signed_release.outputs.artifact_name }}
+          path: release-output
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+          VERSION_NAME: ${{ needs.signed_release.outputs.version_name }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG_NAME" release-output/*.apk release-output/*.sha256 \
+              --clobber \
+              --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG_NAME" release-output/*.apk release-output/*.sha256 \
+              --generate-notes \
+              --title "东橡生产助手 ${VERSION_NAME}" \
+              --repo "$GITHUB_REPOSITORY"
+          fi
