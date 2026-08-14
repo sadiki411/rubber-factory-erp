@@ -54,6 +54,17 @@ jobs:
         if: steps.config.outputs.enabled == 'true'
         uses: actions/checkout@v4
 
+      - name: Report that native upload is not configured
+        if: steps.config.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          echo "::warning::Native mini program code was not uploaded because the AppID/upload key secrets are not configured. Website content still stays in sync through the web-view."
+          {
+            echo "## Native mini program upload was not performed"
+            echo
+            echo "Configure WECHAT_MINIPROGRAM_APPID and WECHAT_MINIPROGRAM_PRIVATE_KEY_BASE64 to upload a developer version. WeChat review and publication remain manual."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Set up Node.js 22
         if: steps.config.outputs.enabled == 'true'
         uses: actions/setup-node@v4

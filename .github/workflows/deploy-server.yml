@@ -61,6 +61,17 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
+      - name: Report that production deployment is not configured
+        if: steps.config.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          echo "::warning::Production was not restarted because the server deployment secrets are not configured."
+          {
+            echo "## Production deployment was not performed"
+            echo
+            echo "Configure DEPLOY_HOST, DEPLOY_USER, DEPLOY_PATH, DEPLOY_SSH_KEY, and DEPLOY_KNOWN_HOSTS to enable automatic backup, pull, and restart."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Configure strict SSH
         if: steps.config.outputs.enabled == 'true'
         env:
