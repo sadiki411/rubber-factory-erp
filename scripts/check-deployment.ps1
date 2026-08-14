@@ -12,10 +12,14 @@ if (-not $python) {
 
 $composePath = Join-Path $root 'compose.yaml'
 $workflowPath = Join-Path $root '.github\workflows\container-images.yml'
+$serverDeployWorkflowPath = Join-Path $root '.github\workflows\deploy-server.yml'
+$miniProgramWorkflowPath = Join-Path $root '.github\workflows\miniprogram-upload.yml'
 $dockerIgnorePath = Join-Path $root '.dockerignore'
 $requiredFiles = @(
     $composePath,
     $workflowPath,
+    $serverDeployWorkflowPath,
+    $miniProgramWorkflowPath,
     $dockerIgnorePath,
     (Join-Path $root 'deploy\backend.Dockerfile'),
     (Join-Path $root 'deploy\web.Dockerfile'),
@@ -41,7 +45,7 @@ with path.open("r", encoding="utf-8") as stream:
 if not isinstance(data, dict):
     raise SystemExit("compose.yaml must contain a mapping at the top level")
 services = data.get("services") or {}
-required = {"backend", "web", "backup"}
+required = {"backend", "web", "backup", "watchtower"}
 missing = sorted(required - set(services))
 if missing:
     raise SystemExit(f"compose.yaml is missing services: {', '.join(missing)}")
@@ -59,7 +63,7 @@ backend_env = backend.get("environment", {})
 if "BACKUP_BEFORE_MIGRATE" not in backend_env:
     raise SystemExit("backend is missing pre-migration backup protection")
 
-for name in required:
+for name in {"backend", "web", "backup"}:
     service = services.get(name) or {}
     image = str(service.get("image", ""))
     if name in {"backend", "backup"} and not (
@@ -76,6 +80,17 @@ for name in required:
         raise SystemExit(f"compose.yaml service {name} must always pull its image")
     if "build" in service:
         raise SystemExit(f"compose.yaml service {name} must not build from source")
+watchtower = services["watchtower"]
+if "containrrr/watchtower:" not in str(watchtower.get("image", "")):
+    raise SystemExit("watchtower must use the pinned public Watchtower image")
+if "--label-enable" not in str(watchtower.get("command", "")):
+    raise SystemExit("watchtower must update only explicitly labelled services")
+if not any("docker.sock:/var/run/docker.sock" in str(value) for value in watchtower.get("volumes", [])):
+    raise SystemExit("watchtower is missing the Docker socket mount")
+for name in ("backend", "web", "backup"):
+    labels = services[name].get("labels", {}) or {}
+    if labels.get("com.centurylinklabs.watchtower.enable") not in (True, "true", "True"):
+        raise SystemExit(f"compose.yaml service {name} must be labelled for watchtower updates")
 print("compose.yaml parsed successfully; all services pull GHCR images directly.")
 '@ | & $python -
 if ($LASTEXITCODE -ne 0) { throw 'compose.yaml static validation failed.' }
@@ -143,6 +158,31 @@ foreach ($requiredText in @(
 )) {
     if ($workflow -notmatch [regex]::Escape($requiredText)) {
         throw "GitHub Actions workflow is missing required content: $requiredText"
+    }
+}
+$serverDeployWorkflow = Get-Content -Raw -LiteralPath $serverDeployWorkflowPath
+foreach ($requiredText in @(
+    'DEPLOY_SSH_KEY',
+    'DEPLOY_KNOWN_HOSTS',
+    'backup_erp',
+    'docker compose pull',
+    'docker compose up -d --remove-orphans --wait',
+    'StrictHostKeyChecking=yes'
+)) {
+    if ($serverDeployWorkflow -notmatch [regex]::Escape($requiredText)) {
+        throw "Server deployment workflow is missing required protection/content: $requiredText"
+    }
+}
+$miniProgramWorkflow = Get-Content -Raw -LiteralPath $miniProgramWorkflowPath
+foreach ($requiredText in @(
+    'WECHAT_MINIPROGRAM_APPID',
+    'WECHAT_MINIPROGRAM_PRIVATE_KEY_BASE64',
+    'miniprogram-ci@2.1.31',
+    'RUNNER_TEMP/wechat-upload.key',
+    'rm -f'
+)) {
+    if ($miniProgramWorkflow -notmatch [regex]::Escape($requiredText)) {
+        throw "Mini program upload workflow is missing required secret handling/content: $requiredText"
     }
 }
 $dockerIgnore = Get-Content -Raw -LiteralPath $dockerIgnorePath

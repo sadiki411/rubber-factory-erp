@@ -112,6 +112,8 @@ docker compose up -d --remove-orphans
 docker compose ps
 ```
 
+`compose.yaml` 还包含一个仅更新带有 Watchtower 标签的 ERP 服务的自动更新容器。首次在服务器执行上述命令后，它每5分钟检查一次公开 GHCR 镜像；发现新镜像会先拉取并滚动重启，旧镜像不自动清理，方便按镜像摘要回滚。Watchtower 需要访问 Docker socket，等同于该服务器的管理权限，只应在受信任的专用主机上运行。如果生产环境不允许此权限，可删除 `watchtower` 服务，改用仓库中的 SSH 部署工作流。
+
 默认直接拉取本仓库的两个公开 `latest` 镜像，运行时自动创建 `runtime/data`、`runtime/media`、`runtime/backups`。首次启动若未提供 `DJANGO_SECRET_KEY`，后端会生成安全随机密钥并保存到 `runtime/data/.django-secret-key`，以后重启继续使用；若未提供共享账号密码，启动日志会一次性显示系统生成的初始密码：
 
 ```bash
@@ -264,6 +266,15 @@ D:\develop\node22\npm.cmd run build
 ```
 
 ## 重要限制
+
+### 自动同步网站、Android 与微信小程序
+
+- 每次推送到 `main` 后，容器工作流会先运行后端/前端/Compose 检查，再构建并推送 GHCR 镜像。
+- `.github/workflows/deploy-server.yml` 会在镜像工作流成功后，使用 SSH 连接生产服务器；连接成功时先执行在线备份，再同步最新 `compose.yaml`、拉取镜像、启动服务并等待健康检查。
+- 服务器部署工作流是可选的。需要在 GitHub 仓库 `Settings → Secrets and variables → Actions` 设置：`DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_PATH`、`DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS`；可选 `DEPLOY_PORT`（默认22）。未设置时工作流会明确跳过，不会误报已部署。
+- Android 应用和微信小程序的网页入口都固定加载 `https://erp.qvgro.com`。网站/API镜像更新并在服务器重启后，重新打开或刷新即可使用新版本，不需要重新安装 APK 或重新上传小程序网页页面。
+- Android 原生代码、权限、图标或小程序原生首页变化不能通过网页部署替代。Android 需要同一签名的新版 APK；小程序原生代码可由 `.github/workflows/miniprogram-upload.yml` 上传开发版，但仍需配置 `WECHAT_MINIPROGRAM_APPID` 和 `WECHAT_MINIPROGRAM_PRIVATE_KEY_BASE64`，并由微信后台人工审核、发布。
+- 小程序上传密钥只存在 GitHub Runner 临时目录，不写入仓库、构建产物或日志。微信平台的 IP 白名单、业务域名、备案和审核要求仍由管理员维护。
 
 - 系统目前仍使用共用登录账号，可记录责任员工和返工员工，但不能区分具体的系统录入经办人。
 - 状态由人员手动更新，不连接设备自动判断。

@@ -10,6 +10,8 @@ services:
   backend:
     image: ${GHCR_BACKEND_IMAGE:-ghcr.io/sadiki411/rubber-factory-erp-backend:latest}
     pull_policy: always
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
     environment:
       SQLITE_PATH: /app/data/db.sqlite3
       MEDIA_ROOT: /app/media
@@ -50,6 +52,8 @@ services:
   web:
     image: ${GHCR_WEB_IMAGE:-ghcr.io/sadiki411/rubber-factory-erp-web:latest}
     pull_policy: always
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
     ports:
       - "${APP_PORT:-8080}:80"
     volumes:
@@ -71,6 +75,8 @@ services:
   backup:
     image: ${GHCR_BACKEND_IMAGE:-ghcr.io/sadiki411/rubber-factory-erp-backend:latest}
     pull_policy: always
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
     environment:
       SQLITE_PATH: /app/data/db.sqlite3
       MEDIA_ROOT: /app/media
@@ -85,6 +91,26 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging: *default-logging
+
+  # Pull-based updates keep the production host in sync even when inbound SSH
+  # is unavailable.  Only the explicitly labelled ERP services are updated;
+  # old images are retained so an operator can roll back by digest if needed.
+  # The Docker socket is equivalent to administrative access on this host, so
+  # run this compose project on a dedicated/trusted server.
+  watchtower:
+    image: containrrr/watchtower:1.7.1
+    command: --label-enable --interval 300 --rolling-restart
+    environment:
+      WATCHTOWER_CLEANUP: "false"
+      WATCHTOWER_INCLUDE_RESTARTING: "true"
+      WATCHTOWER_NO_STARTUP_MESSAGE: "true"
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     init: true
     restart: unless-stopped
     stop_grace_period: 30s

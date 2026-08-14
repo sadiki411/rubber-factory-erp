@@ -1,0 +1,139 @@
+name: Deploy ERP server after container release
+
+on:
+  workflow_run:
+    workflows:
+      - Test and publish container images
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: erp-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Pull images and restart production Compose
+    # A workflow_run is trusted only after the image workflow completed
+    # successfully.  workflow_dispatch is useful for a manual retry.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check optional server deployment configuration
+        id: config
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_PATH DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} )); then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Server deployment skipped. Add GitHub Actions secrets ${missing[*]} to enable automatic backup/pull/restart."
+            exit 0
+          fi
+          if [[ ! "$DEPLOY_PATH" =~ ^[A-Za-z0-9_./-]+$ ]]; then
+            echo "::error::DEPLOY_PATH may contain only letters, numbers, dot, underscore, slash, and hyphen."
+            exit 1
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the exact release commit
+        if: steps.config.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Configure strict SSH
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/erp-deploy-key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/erp-deploy-key" "$HOME/.ssh/known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/erp-deploy-key" > /dev/null
+          port="${DEPLOY_PORT:-22}"
+          if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+            echo "::error::DEPLOY_PORT must be numeric."
+            exit 1
+          fi
+          echo "DEPLOY_PORT=$port" >> "$GITHUB_ENV"
+
+      - name: Upload compose file and create a pre-update backup
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          GITHUB_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh_cmd=(ssh -i "$HOME/.ssh/erp-deploy-key" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
+          scp_cmd=(scp -i "$HOME/.ssh/erp-deploy-key" -P "$DEPLOY_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+
+          "${ssh_cmd[@]}" "$target" "mkdir -p '$DEPLOY_PATH/runtime/backups'"
+          # The remote entrypoint also protects migrations, but this explicit
+          # online backup is made before replacing compose.yaml whenever the
+          # existing backend is running.
+          "${ssh_cmd[@]}" "$target" "cd '$DEPLOY_PATH' && if docker compose ps --status running --services 2>/dev/null | grep -qx backend; then docker compose exec -T backend python manage.py backup_erp; fi"
+          "${scp_cmd[@]}" compose.yaml "$target:$DEPLOY_PATH/.compose.yaml.next"
+
+          "${ssh_cmd[@]}" "$target" "DEPLOY_PATH='$DEPLOY_PATH' RELEASE_SHA='$GITHUB_SHA' bash -s" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          test -s .compose.yaml.next
+          docker compose -f .compose.yaml.next config >/dev/null
+          if [ -f compose.yaml ]; then
+            cp compose.yaml "runtime/backups/compose-before-${RELEASE_SHA}.yaml"
+          fi
+          mv .compose.yaml.next compose.yaml
+          REMOTE_SCRIPT
+
+      - name: Pull the release and wait for healthy services
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -i "$HOME/.ssh/erp-deploy-key" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" "cd '$DEPLOY_PATH' && docker compose pull && docker compose up -d --remove-orphans --wait && docker compose ps"
+
+      - name: Remove temporary SSH material
+        if: always()
+        shell: bash
+        run: rm -f "$HOME/.ssh/erp-deploy-key" "$HOME/.ssh/known_hosts"

@@ -1,0 +1,104 @@
+name: Upload WeChat mini program developer version
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - wechat-miniprogram/**
+      - .github/workflows/miniprogram-upload.yml
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Developer version, for example 1.0.12"
+        required: false
+        type: string
+      description:
+        description: "Upload description"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wechat-miniprogram-upload
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    name: Upload native mini program code
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check optional upload credentials
+        id: config
+        env:
+          APPID: ${{ secrets.WECHAT_MINIPROGRAM_APPID }}
+          PRIVATE_KEY: ${{ secrets.WECHAT_MINIPROGRAM_PRIVATE_KEY_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$APPID" || -z "$PRIVATE_KEY" ]]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Mini program upload skipped. Add WECHAT_MINIPROGRAM_APPID and WECHAT_MINIPROGRAM_PRIVATE_KEY_BASE64 to upload native code automatically. Website changes still reach the web-view without an upload."
+            exit 0
+          fi
+          if [[ ! "$APPID" =~ ^wx[0-9a-fA-F]{16}$ ]]; then
+            echo "::error::WECHAT_MINIPROGRAM_APPID is not a valid AppID format."
+            exit 1
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check out mini program source
+        if: steps.config.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        if: steps.config.outputs.enabled == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Prepare temporary upload key
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          PRIVATE_KEY_BASE64: ${{ secrets.WECHAT_MINIPROGRAM_PRIVATE_KEY_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/wechat-upload.key"
+          printf '%s' "$PRIVATE_KEY_BASE64" | base64 --decode > "$key"
+          chmod 600 "$key"
+          test -s "$key"
+          echo "WECHAT_KEY_PATH=$key" >> "$GITHUB_ENV"
+
+      - name: Upload developer version
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          APPID: ${{ secrets.WECHAT_MINIPROGRAM_APPID }}
+          VERSION_INPUT: ${{ inputs.version }}
+          DESCRIPTION_INPUT: ${{ inputs.description }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${VERSION_INPUT:-1.0.${GITHUB_RUN_NUMBER}}"
+          description="${DESCRIPTION_INPUT:-GitHub ${GITHUB_SHA::7}}"
+          if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+){2}([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::The mini program version must look like 1.0.12."
+            exit 1
+          fi
+          npm exec --yes --package=miniprogram-ci@2.1.31 -- \
+            miniprogram-ci upload \
+            --pp ./wechat-miniprogram \
+            --pkp "$WECHAT_KEY_PATH" \
+            --appid "$APPID" \
+            --uv "$version" \
+            --ud "$description" \
+            --robot 1 \
+            --use-project-config true
+
+      - name: Remove temporary upload key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/wechat-upload.key"
