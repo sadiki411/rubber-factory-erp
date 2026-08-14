@@ -116,6 +116,9 @@ SPECTACULAR_SETTINGS = {
         "ProductionRunStatusEnum": "production.models.ProductionRun.Status",
         "QualityOrderStatusEnum": "quality.models.QualityOrder.Status",
         "ReturnReworkStatusEnum": "quality.models.ReturnRework.Status",
+        "QualityProcessCardStatusEnum": "quality.models.ProcessCard.Status",
+        "QualityShipmentBatchStatusEnum": "quality.models.QualityShipmentBatch.Status",
+        "QualityReworkCaseStatusEnum": "quality.models.QualityReworkCase.Status",
         "BusinessImportStatusEnum": "orders.models.BusinessImportBatch.Status",
     },
 }

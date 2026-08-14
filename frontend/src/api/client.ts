@@ -25,6 +25,13 @@ import type {
   ProductionSummary,
   ProductSpecification,
   QualityEmployee,
+  QualityProcessCard,
+  QualityUnitWeight,
+  QualityShipmentBatch,
+  QualityShipmentBatchInput,
+  QualityShipmentBatchResult,
+  QualityReworkCase,
+  QualityReworkAttempt,
   QualityShipment,
   QualitySummary,
   RackConfigInput,
@@ -498,6 +505,48 @@ export const qualityApi = {
 
   summary: (filters: Pick<QualityListFilters, 'date_from' | 'date_to'>) =>
     apiFetch<QualitySummary>(`/api/quality/summary/${queryString(filters)}`),
+}
+
+/**
+ * New一期 workflow contract.  Kept separate from qualityApi so an older
+ * server can continue serving the legacy tables while the UI falls back.
+ */
+export const qualityWorkflowApi = {
+  listUnitWeights: (filters: QualityListFilters = {}) =>
+    apiFetch<ApiList<QualityUnitWeight> | QualityUnitWeight[]>(`/api/quality/product-unit-weights/${queryString(filters)}`),
+  createUnitWeight: (body: Partial<QualityUnitWeight>) => apiFetch<QualityUnitWeight>('/api/quality/product-unit-weights/', { method: 'POST', body: JSON.stringify(body) }),
+  updateUnitWeight: (id: number | string, body: Partial<QualityUnitWeight>) => apiFetch<QualityUnitWeight>(`/api/quality/product-unit-weights/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
+  listProcessCards: (filters: QualityListFilters = {}) =>
+    apiFetch<ApiList<QualityProcessCard> | QualityProcessCard[]>(`/api/quality/process-cards/${queryString(filters)}`),
+  createProcessCard: (body: Record<string, unknown>) => apiFetch<QualityProcessCard>('/api/quality/process-cards/', { method: 'POST', body: JSON.stringify(body) }),
+  updateProcessCard: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityProcessCard>(`/api/quality/process-cards/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
+  listShipmentBatches: (filters: QualityListFilters = {}) => apiFetch<ApiList<QualityShipmentBatch> | QualityShipmentBatch[]>(`/api/quality/shipment-batches/${queryString(filters)}`),
+  getShipmentBatch: (id: number | string) => apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/`),
+  createShipmentBatch: (body: QualityShipmentBatchInput) =>
+    apiFetch<QualityShipmentBatchResult>('/api/quality/shipment-batches/', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateShipmentBatch: (id: number | string, body: Record<string, unknown>) =>
+    apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  confirmShipmentBatch: (id: number | string) => apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/confirm/`, { method: 'POST', body: JSON.stringify({}) }),
+  voidShipmentBatch: (id: number | string) => apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/void/`, { method: 'POST', body: JSON.stringify({}) }),
+  createAndConfirmShipmentBatch: async (body: QualityShipmentBatchInput) => {
+    const draft = await qualityWorkflowApi.createShipmentBatch(body)
+    if (!draft.id) throw new Error('出货批次创建成功但未返回批次 ID，无法确认')
+    return qualityWorkflowApi.confirmShipmentBatch(draft.id)
+  },
+  listReworkCases: (filters: QualityListFilters = {}) => apiFetch<ApiList<QualityReworkCase> | QualityReworkCase[]>(`/api/quality/rework-cases/${queryString(filters)}`),
+  createReworkCase: (body: Record<string, unknown>) => apiFetch<QualityReworkCase>('/api/quality/rework-cases/', { method: 'POST', body: JSON.stringify(body) }),
+  updateReworkCase: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityReworkCase>(`/api/quality/rework-cases/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
+  listReworkAttempts: (filters: QualityListFilters = {}) => apiFetch<ApiList<QualityReworkAttempt> | QualityReworkAttempt[]>(`/api/quality/rework-attempts/${queryString(filters)}`),
+  createReworkAttempt: (body: Record<string, unknown>) => apiFetch<QualityReworkAttempt>('/api/quality/rework-attempts/', { method: 'POST', body: JSON.stringify(body) }),
+  updateReworkAttempt: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityReworkAttempt>(`/api/quality/rework-attempts/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
+  listReworkTimeline: (processCardId: string | number) =>
+    apiFetch<QualityReworkCase[]>(`/api/quality/process-cards/${processCardId}/timeline/`),
 }
 
 export interface AnalyticsFilters {

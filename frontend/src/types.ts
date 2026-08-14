@@ -678,6 +678,173 @@ export interface ReturnRework {
   notes?: string
 }
 
+/**
+ *一期流程卡/批量出货契约。
+ *
+ * These shapes are additive.  Older deployments do not expose these routes;
+ * the quality page falls back to the existing order/shipment endpoints until
+ * the backend migration is installed.
+ */
+export type QualityProcessCardStatus = 'OPEN' | 'PARTIAL_SHIPPED' | 'SHIPPED' | 'CANCELLED' | 'READY' | 'PARTIAL' | 'REWORK'
+
+export interface QualityUnitWeight {
+  id: number | string
+  product_specification_id?: number | null
+  mold_model_id?: number | null
+  unit_weight_g: number | string | null
+  sample_count?: number | null
+  sample_total_weight_g?: number | string | null
+  measured_on?: string | null
+  is_active?: boolean
+  notes?: string
+}
+
+export interface QualityProcessCard {
+  id: string | number
+  card_no: string
+  order_id: number
+  order?: QualityOrder
+  source_item_no?: string
+  source_order_no?: string
+  quantity: number
+  unit_weight_g?: number | string | null
+  theoretical_weight_kg?: number | string | null
+  max_allowed_weight_kg?: number | string | null
+  shipped_net_weight_kg?: number | string | null
+  delivered_net_weight_kg?: number | string | null
+  remaining_weight_kg?: number | string | null
+  expected_weight_kg?: number | string | null // legacy alias
+  shipped_quantity?: number // optional piece-based summary
+  returned_piece_quantity?: number
+  delivered_piece_quantity?: number
+  shipped_weight_kg?: number | string | null // legacy alias
+  due_date?: string | null
+  demand_date?: string | null
+  received_on?: string | null
+  material_issue_weight_kg?: number | string | null
+  material_weight_g?: number | string | null // legacy UI alias
+  product_code_snapshot?: string
+  formula_code_snapshot?: string
+  product_name_snapshot?: string
+  specification_snapshot?: string
+  material_snapshot?: string
+  customer_snapshot?: string
+  department_snapshot?: string
+  special_requirements?: string
+  qr_text?: string
+  original_image?: string | null
+  backfill_reason?: string
+  reprint_count?: number
+  unit_weight_config_id?: string | number | null
+  sample_count_snapshot?: number | null
+  sample_total_weight_g_snapshot?: number | string | null
+  measured_on_snapshot?: string | null
+  mold_model_code_snapshot?: string
+  raw_data?: Record<string, unknown>
+  status?: QualityProcessCardStatus
+  rework_count?: number
+  source?: string
+  notes?: string
+}
+
+export interface QualityShipmentBatchLineInput {
+  process_card_id?: string | number
+  order_id?: number
+  quantity?: number
+  unit_weight_g?: number | null
+  expected_weight_kg?: number | null
+  actual_weight_kg?: number
+  net_weight_kg?: number
+  piece_quantity?: number
+  tolerance_percent?: number
+  notes?: string
+}
+
+export interface QualityShipmentBatchInput {
+  shipment_date?: string | null
+  client_key?: string
+  notes?: string
+  confirm_warnings?: boolean
+  lines: QualityShipmentBatchLineInput[]
+}
+
+export interface QualityShipmentBatchResult {
+  id?: string | number
+  shipment_no?: string
+  shipment_date?: string | null
+  line_count?: number
+  shipped_quantity?: number
+  actual_weight_kg?: number | string
+  warnings?: string[]
+  status?: 'DRAFT' | 'CONFIRMED' | 'VOID'
+}
+
+export interface QualityShipmentBatch extends QualityShipmentBatchResult {
+  id: string | number
+  shipment_no: string
+  status?: 'DRAFT' | 'CONFIRMED' | 'VOID'
+  inspector_id?: number | null
+  date_pending?: boolean
+  customer?: string
+  delivery_info?: string
+  net_weight_kg?: number | string
+  backfill_reason?: string
+  notes?: string
+  lines?: QualityShipmentBatchLine[]
+}
+
+export interface QualityShipmentBatchLine {
+  id: string | number
+  process_card_id?: string | number
+  process_card?: QualityProcessCard
+  net_weight_kg: number | string
+  piece_quantity?: number | null
+  theoretical_weight_kg_snapshot?: number | string | null
+  max_allowed_weight_kg_snapshot?: number | string | null
+  notes?: string
+}
+
+export type QualityReworkOrigin = 'INTERNAL' | 'CUSTOMER_RETURN'
+export type QualityReworkCaseStatus = 'OPEN' | 'PROCESSING' | 'WAITING_REINSPECTION' | 'COMPLETED' | 'SCRAPPED' | 'CANCELLED'
+
+export interface QualityReworkCase {
+  id: number | string
+  case_no: string
+  origin: QualityReworkOrigin
+  process_card_id?: number | string | null
+  shipment_line_id?: number | string | null
+  opened_on: string
+  backfill_reason?: string
+  responsible_inspector_id?: number | null
+  reason_category: ReturnReasonCategory
+  reason?: string
+  affected_quantity?: number | null
+  affected_weight_kg?: number | string | null
+  status: QualityReworkCaseStatus
+  attempt_count?: number
+  notes?: string
+  attempts?: QualityReworkAttempt[]
+}
+
+export interface QualityReworkAttempt {
+  id: number | string
+  case_id?: number | string
+  attempt_no?: number
+  attempt_date: string
+  backfill_reason?: string
+  rework_employee_id?: number | null
+  input_quantity: number
+  reworked_quantity: number
+  recovered_quantity: number
+  scrap_quantity: number
+  status: QualityReworkCaseStatus
+  input_weight_kg?: number | string
+  reworked_weight_kg?: number | string
+  recovered_weight_kg?: number | string
+  scrap_weight_kg?: number | string
+  notes?: string
+}
+
 export interface QualityDailyTrend {
   date: string
   inspection_quantity: number

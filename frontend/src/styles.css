@@ -384,6 +384,11 @@ button, input, textarea, select { font: inherit; }
 .quality-warning-row > td { background: #fff8f6 !important; }
 .quality-responsibility-alert { margin-bottom: 18px; }
 .quality-form-alert { margin-bottom: 20px; }
+.quality-workflow, .quality-workflow-management { min-width: 0; max-width: 100%; overflow: hidden; }
+.quality-workflow-card, .quality-workflow-management .ant-card { max-width: 100%; }
+.quality-workflow-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.quality-workflow-heading > div { min-width: 0; }
+.quality-workflow .ant-table-wrapper, .quality-workflow-management .ant-table-wrapper { max-width: 100%; overflow-x: auto; }
 
 .analytics-placeholder-icon { color: #4d8c7d; font-size: 48px; }
 .analytics-filter-row { display: grid; grid-template-columns: 180px 180px minmax(220px, 300px) 1fr; gap: 12px; align-items: center; }
@@ -554,6 +559,15 @@ button, input, textarea, select { font: inherit; }
   .quality-tab-content > .section-heading h3 { font-size: 20px; }
   .quality-tab-content > .section-heading .ant-btn { flex: 0 0 auto; min-height: 44px; }
   .quality-trend-card .ant-card-body { padding: 14px; }
+  .quality-workflow-heading { align-items: stretch; flex-direction: column; }
+  .quality-workflow-heading .ant-space { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+  .quality-workflow-heading .ant-btn { min-height: 44px; }
+  .quality-workflow-management .ant-tabs-nav-wrap { overflow-x: auto; }
+  .quality-workflow-management .ant-card-head-title { white-space: normal; }
+  .quality-workflow-management .ant-table { min-width: 680px; }
+  .quality-shipment-batch-drawer .ant-drawer-content-wrapper { width: 100% !important; max-width: 100vw; }
+  .quality-shipment-batch-drawer .drawer-footer-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; width: 100%; }
+  .quality-shipment-batch-drawer .drawer-footer-actions .ant-btn { min-width: 0; padding-inline: 8px; }
   .quality-trend-row { grid-template-columns: 44px minmax(0, 1fr); gap: 8px; }
   .analytics-filter-row { grid-template-columns: 1fr; }
   .analytics-filter-row .ant-picker, .analytics-filter-row .ant-select { width: 100%; min-height: 44px; }

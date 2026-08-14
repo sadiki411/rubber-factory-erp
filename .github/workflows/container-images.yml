@@ -34,7 +34,10 @@ jobs:
         run: python -m pip install -r requirements.txt
 
       - name: Run backend tests
-        run: python manage.py test
+        # Django does not discover tests in every app when no labels are
+        # supplied in this repository.  Keep CI aligned with the local
+        # regression command so a release cannot pass with zero tests run.
+        run: python manage.py test molds orders production quality analytics --verbosity 1
 
       - name: Generate and validate OpenAPI schema
         run: python manage.py spectacular --file openapi.yml --validate

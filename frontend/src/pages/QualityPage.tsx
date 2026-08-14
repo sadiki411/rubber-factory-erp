@@ -14,13 +14,15 @@ import { useQuery } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { orderApi, qualityApi, toList } from '../api/client'
+import { orderApi, qualityApi, qualityWorkflowApi, toList } from '../api/client'
 import {
   QualityEmployeeDrawer,
   QualityReworkDrawer,
   QualityShipmentDrawer,
 } from '../components/QualityFormDrawers'
 import { PageTitle } from '../components/PageTitle'
+import { QualityShippingWorkflow } from '../components/QualityShippingWorkflow'
+import { QualityWorkflowManagement } from '../components/QualityWorkflowManagement'
 import { formatQualityDate, isHighReworkCount, qualityNumber } from '../quality'
 import type {
   QualityDailyTrend,
@@ -111,7 +113,7 @@ export function QualityPage() {
   const navigate = useNavigate()
   const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs().startOf('month'), dayjs().endOf('month')])
   const [query, setQuery] = useState('')
-  const [activeTab, setActiveTab] = useState('daily')
+  const [activeTab, setActiveTab] = useState('workflow')
   const [shipmentForm, setShipmentForm] = useState<{ shipment?: QualityShipment }>()
   const [reworkForm, setReworkForm] = useState<{ rework?: ReturnRework }>()
   const [employeeForm, setEmployeeForm] = useState<{ employee?: QualityEmployee }>()
@@ -142,12 +144,42 @@ export function QualityPage() {
     queryKey: ['quality', 'reworks', { dateFrom, dateTo, query }],
     queryFn: async () => toList(await qualityApi.listReworks({ q: query, date_from: dateFrom, date_to: dateTo, page_size: 1000 })),
   })
+  const processCardsQuery = useQuery({
+    queryKey: ['quality', 'process-cards', query],
+    queryFn: async () => toList(await qualityWorkflowApi.listProcessCards({ q: query, page_size: 1000 })),
+    retry: false,
+  })
+  const unitWeightsQuery = useQuery({
+    queryKey: ['quality', 'unit-weights'],
+    queryFn: async () => toList(await qualityWorkflowApi.listUnitWeights({ page_size: 1000 })),
+    retry: false,
+  })
+  const batchesQuery = useQuery({
+    queryKey: ['quality', 'shipment-batches', dateFrom, dateTo],
+    queryFn: async () => toList(await qualityWorkflowApi.listShipmentBatches({ date_from: dateFrom, date_to: dateTo, page_size: 1000 })),
+    retry: false,
+  })
+  const shipmentBatchOptionsQuery = useQuery({
+    queryKey: ['quality', 'shipment-batches', 'confirmed-options'],
+    queryFn: async () => toList(await qualityWorkflowApi.listShipmentBatches({ status: 'CONFIRMED', page_size: 1000 })),
+    retry: false,
+  })
+  const reworkCasesQuery = useQuery({
+    queryKey: ['quality', 'rework-cases'],
+    queryFn: async () => toList(await qualityWorkflowApi.listReworkCases({ page_size: 1000 })),
+    retry: false,
+  })
 
   const employees = useMemo(() => employeesQuery.data || [], [employeesQuery.data])
   const orders = useMemo(() => ordersQuery.data || [], [ordersQuery.data])
   const shipments = shipmentsQuery.data || []
   const shipmentOptions = shipmentOptionsQuery.data || []
   const reworks = reworksQuery.data || []
+  const processCards = processCardsQuery.data || []
+  const unitWeights = unitWeightsQuery.data || []
+  const shipmentBatches = batchesQuery.data || []
+  const shipmentBatchOptions = shipmentBatchOptionsQuery.data || []
+  const reworkCases = reworkCasesQuery.data || []
   const summary = summaryQuery.data
   const totals = summary?.totals
   const keyword = query.trim().toLowerCase()
@@ -221,6 +253,13 @@ export function QualityPage() {
 
   const tabItems = [
     {
+      key: 'workflow',
+      label: '流程卡出货',
+      children: <div className="quality-tab-content">
+        {(processCardsQuery.error || unitWeightsQuery.error || batchesQuery.error || shipmentBatchOptionsQuery.error || reworkCasesQuery.error) && <Alert type="warning" showIcon style={{ marginBottom: 16 }} title="流程卡重量出货模块暂不可用" description="当前服务器未返回一期流程卡接口，页面已保留原有件数出货功能；完成后端迁移后刷新即可启用。" />}
+        <QualityShippingWorkflow orders={orders} processCards={processCards} shipments={shipmentOptions} batches={shipmentBatches} reworks={reworks} loading={ordersQuery.isLoading || processCardsQuery.isLoading} onOpenRework={(rework) => setReworkForm({ rework })} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); await Promise.all([shipmentsQuery.refetch(), shipmentOptionsQuery.refetch(), processCardsQuery.refetch(), batchesQuery.refetch(), shipmentBatchOptionsQuery.refetch(), summaryQuery.refetch()]) }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} /><QualityWorkflowManagement orders={orders} cards={processCards} unitWeights={unitWeights} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions} reworkCases={reworkCases} onRefresh={async () => { await Promise.all([unitWeightsQuery.refetch(), batchesQuery.refetch(), shipmentBatchOptionsQuery.refetch(), reworkCasesQuery.refetch(), processCardsQuery.refetch()]) }} /></div>,
+    },
+    {
       key: 'daily',
       label: '每日出货',
       children: <div className="quality-tab-content">
@@ -256,6 +295,9 @@ export function QualityPage() {
     },
   ]
 
+  // The additive一期 endpoints may be absent during a rolling deployment.
+  // Their errors are shown inside the workflow tab, while the legacy quality
+  // dashboard remains usable.
   const anyError = summaryQuery.error || employeesQuery.error || ordersQuery.error || shipmentsQuery.error || reworksQuery.error
 
   return (

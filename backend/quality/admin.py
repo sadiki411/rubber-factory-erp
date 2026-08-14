@@ -3,7 +3,9 @@ from django.contrib import admin
 from orders.models import BusinessRecordRevision
 from orders.services import model_snapshot, record_revision
 
-from .models import QualityEmployee, QualityOrder, QualityShipment, ReturnRework
+from .models import (QualityEmployee, QualityOrder, QualityShipment, ReturnRework,
+                     ProductUnitWeight, ProcessCard, QualityShipmentBatch,
+                     QualityShipmentLine, QualityReworkCase, QualityReworkAttempt)
 
 
 class NoDeleteAdmin(admin.ModelAdmin):
@@ -129,3 +131,81 @@ class ReturnReworkAdmin(AuditAdmin):
         "rework_employee__name",
     )
     date_hierarchy = "rework_date"
+
+
+@admin.register(ProductUnitWeight)
+class ProductUnitWeightAdmin(AuditAdmin):
+    list_display = ("product_specification", "mold_model", "unit_weight_g", "measured_on", "is_active")
+    list_filter = ("is_active", "measured_on")
+    search_fields = ("product_specification__product_name", "mold_model__code")
+
+
+@admin.register(ProcessCard)
+class ProcessCardAdmin(AuditAdmin):
+    list_display = ("card_no", "order", "quantity", "unit_weight_g", "status", "shipped_net_weight_kg", "reprint_count")
+    list_filter = ("status", "received_on", "demand_date")
+    search_fields = ("card_no", "source_order_no", "source_item_no", "product_code_snapshot", "qr_text")
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj and obj.shipment_lines.exists():
+            return tuple(field.name for field in self.model._meta.fields)
+        return super().get_readonly_fields(request, obj)
+
+
+class QualityShipmentLineInline(admin.TabularInline):
+    model = QualityShipmentLine
+    extra = 0
+    # Shipment history is append-only once a batch is posted.  Draft lines
+    # are edited by replacing the draft batch through the API; keeping the
+    # inline non-destructive prevents an accidental historical deletion in
+    # Django admin as well.
+    can_delete = False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(QualityShipmentBatch)
+class QualityShipmentBatchAdmin(AuditAdmin):
+    readonly_fields = ("status", "created_by", "created_at", "updated_at")
+    list_display = ("shipment_no", "client_key", "shipment_date", "status", "customer", "net_weight_kg", "line_count")
+    list_filter = ("status", "shipment_date")
+    search_fields = ("shipment_no", "client_key", "customer", "delivery_info")
+    inlines = [QualityShipmentLineInline]
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj and obj.status == QualityShipmentBatch.Status.CONFIRMED:
+            return tuple(field.name for field in self.model._meta.fields)
+        return super().get_readonly_fields(request, obj)
+
+
+@admin.register(QualityShipmentLine)
+class QualityShipmentLineAdmin(NoDeleteAdmin):
+    list_display = ("batch", "process_card", "net_weight_kg", "piece_quantity")
+    list_filter = ("batch__status",)
+    search_fields = ("batch__shipment_no", "process_card__card_no")
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj and obj.batch.status != QualityShipmentBatch.Status.DRAFT:
+            return tuple(field.name for field in self.model._meta.fields)
+        return super().get_readonly_fields(request, obj)
+
+
+@admin.register(QualityReworkCase)
+class QualityReworkCaseAdmin(AuditAdmin):
+    list_display = ("case_no", "origin", "process_card", "shipment_line", "opened_on", "status", "attempt_count")
+    list_filter = ("origin", "status", "opened_on")
+    search_fields = ("case_no", "reason", "process_card__card_no")
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj and obj.attempts.exists():
+            return tuple(field.name for field in self.model._meta.fields)
+        return super().get_readonly_fields(request, obj)
+
+
+@admin.register(QualityReworkAttempt)
+class QualityReworkAttemptAdmin(AuditAdmin):
+    readonly_fields = ("case", "attempt_no", "created_by", "created_at", "updated_at")
+    list_display = ("case", "attempt_no", "attempt_date", "input_quantity", "reworked_quantity", "recovered_quantity", "scrap_quantity", "status")
+    list_filter = ("status", "attempt_date")
+    search_fields = ("case__case_no", "notes")

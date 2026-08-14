@@ -1,12 +1,14 @@
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
+from django.db import transaction
 from django.db.models import Count, IntegerField, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -14,12 +16,16 @@ from rest_framework.views import APIView
 
 from orders.services import with_order_activity
 
-from .models import QualityEmployee, QualityOrder, QualityShipment, ReturnRework
+from .models import (QualityEmployee, QualityOrder, QualityShipment, ReturnRework,
+                     ProductUnitWeight, ProcessCard, QualityShipmentBatch,
+                     QualityShipmentLine, QualityReworkCase, QualityReworkAttempt)
 from .serializers import (
     QualityEmployeeSerializer,
     QualityOrderSerializer,
     QualityShipmentSerializer,
     ReturnReworkSerializer,
+    ProductUnitWeightSerializer, ProcessCardSerializer, QualityShipmentBatchSerializer,
+    QualityShipmentLineSerializer, QualityReworkCaseSerializer, QualityReworkAttemptSerializer,
 )
 
 
@@ -78,6 +84,229 @@ def _filter_order(queryset, value, field="order"):
 class NoDeleteModelViewSet(viewsets.ModelViewSet):
     pagination_class = QualityPagination
     http_method_names = ["get", "post", "put", "patch", "head", "options"]
+
+
+class WorkflowModelViewSet(viewsets.ModelViewSet):
+    pagination_class = QualityPagination
+    http_method_names = ["get", "post", "put", "patch", "head", "options"]
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        # Workflow rows are audit records.  Even draft rows are retained so a
+        # retry or an operator correction cannot silently erase history.
+        raise DRFValidationError({"detail": "品检出货流程记录不支持删除，请使用作废操作。"})
+
+
+class ProductUnitWeightViewSet(WorkflowModelViewSet):
+    serializer_class = ProductUnitWeightSerializer
+    queryset = ProductUnitWeight.objects.select_related("product_specification", "mold_model", "created_by").all()
+
+    def get_queryset(self):
+        queryset = self.queryset
+        q = str(self.request.query_params.get("q", "")).strip()
+        if q:
+            queryset = queryset.filter(
+                Q(product_specification__product_name__icontains=q)
+                | Q(product_specification__specification__icontains=q)
+                | Q(product_specification__customer_product_no__icontains=q)
+                | Q(mold_model__code__icontains=q)
+            )
+        active = str(self.request.query_params.get("active", "")).lower()
+        if active in {"1", "true", "yes"}:
+            queryset = queryset.filter(is_active=True)
+        elif active in {"0", "false", "no"}:
+            queryset = queryset.filter(is_active=False)
+        return queryset
+
+
+class ProcessCardViewSet(WorkflowModelViewSet):
+    serializer_class = ProcessCardSerializer
+
+    def get_queryset(self):
+        queryset = ProcessCard.objects.select_related("order", "product_specification", "unit_weight_config", "created_by").all()
+        q = str(self.request.query_params.get("q", "")).strip()
+        if q:
+            queryset = queryset.filter(
+                Q(card_no__icontains=q)
+                | Q(source_order_no__icontains=q)
+                | Q(source_item_no__icontains=q)
+                | Q(product_name_snapshot__icontains=q)
+                | Q(product_code_snapshot__icontains=q)
+                | Q(specification_snapshot__icontains=q)
+                | Q(material_snapshot__icontains=q)
+            )
+        status = str(self.request.query_params.get("status", "")).strip().upper()
+        if status:
+            if status not in ProcessCard.Status.values:
+                raise DRFValidationError({"status": "无效的流程卡状态。"})
+            queryset = queryset.filter(status=status)
+        date_from, date_to = _date_range(self.request.query_params)
+        if date_from:
+            queryset = queryset.filter(demand_date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(demand_date__lte=date_to)
+        return queryset
+
+    @action(detail=True, methods=["get"])
+    def timeline(self, request, pk=None):
+        card = self.get_object()
+        batches = QualityShipmentBatch.objects.filter(lines__process_card=card).distinct().order_by("shipment_date", "id")
+        cases = QualityReworkCase.objects.filter(process_card=card).order_by("opened_on", "id")
+        return Response({"card_id": card.pk, "events": [
+            *({"type": "shipment", "id": b.pk, "shipment_no": b.shipment_no, "date": b.shipment_date, "status": b.status, "net_weight_kg": str(b.net_weight_kg)} for b in batches),
+            *({"type": "rework", "id": c.pk, "case_no": c.case_no, "date": c.opened_on, "status": c.status, "origin": c.origin} for c in cases),
+        ]})
+
+    @action(detail=True, methods=["get"], url_path="rework-timeline")
+    def rework_timeline(self, request, pk=None):
+        card = self.get_object()
+        cases = QualityReworkCase.objects.filter(process_card=card).prefetch_related("attempts").order_by("opened_on", "id")
+        return Response(QualityReworkCaseSerializer(cases, many=True, context={"request": request}).data)
+
+
+class QualityShipmentLineViewSet(WorkflowModelViewSet):
+    serializer_class = QualityShipmentLineSerializer
+
+    def get_queryset(self):
+        return QualityShipmentLine.objects.select_related("batch", "process_card", "process_card__order").all()
+
+    def perform_create(self, serializer):
+        batch = serializer.validated_data.get("batch")
+        if batch is None:
+            raise DRFValidationError({"batch_id": "创建出货明细必须指定草稿批次。"})
+        if batch.status != QualityShipmentBatch.Status.DRAFT:
+            raise DRFValidationError({"batch": "只有草稿批次可以新增明细。"})
+        serializer.save()
+
+    def perform_update(self, serializer):
+        if serializer.instance.batch.status != QualityShipmentBatch.Status.DRAFT:
+            raise DRFValidationError({"batch": "已确认或已作废的出货明细不能修改。"})
+        target_batch = serializer.validated_data.get("batch", serializer.instance.batch)
+        if target_batch.status != QualityShipmentBatch.Status.DRAFT:
+            raise DRFValidationError({"batch": "出货明细只能保存在草稿批次中。"})
+        serializer.save()
+
+
+class QualityShipmentBatchViewSet(WorkflowModelViewSet):
+    serializer_class = QualityShipmentBatchSerializer
+
+    def get_queryset(self):
+        queryset = QualityShipmentBatch.objects.select_related("inspector", "created_by").prefetch_related("lines__process_card").all()
+        q = str(self.request.query_params.get("q", "")).strip()
+        if q:
+            queryset = queryset.filter(
+                Q(shipment_no__icontains=q)
+                | Q(client_key__icontains=q)
+                | Q(customer__icontains=q)
+                | Q(lines__process_card__card_no__icontains=q)
+            ).distinct()
+        date_from, date_to = _date_range(self.request.query_params)
+        if date_from:
+            queryset = queryset.filter(Q(shipment_date__gte=date_from) | Q(shipment_date__isnull=True))
+        if date_to:
+            queryset = queryset.filter(Q(shipment_date__lte=date_to) | Q(shipment_date__isnull=True))
+        status = str(self.request.query_params.get("status", "")).strip().upper()
+        if status:
+            if status not in QualityShipmentBatch.Status.values:
+                raise DRFValidationError({"status": "无效的出货批次状态。"})
+            queryset = queryset.filter(status=status)
+        return queryset
+
+    @action(detail=True, methods=["post"])
+    def confirm(self, request, pk=None):
+        with transaction.atomic():
+            batch = QualityShipmentBatch.objects.select_for_update().get(pk=pk)
+            if batch.status == QualityShipmentBatch.Status.VOID:
+                raise DRFValidationError({"status": "A void shipment batch cannot be confirmed."})
+            if batch.status == QualityShipmentBatch.Status.CONFIRMED:
+                return Response(self.get_serializer(batch).data)
+            # Confirmation is idempotent.  Mobile clients may retry after a
+            # network timeout; a previously confirmed batch must not be
+            # counted against itself a second time.
+            if batch.status == QualityShipmentBatch.Status.CONFIRMED:
+                return Response(self.get_serializer(batch).data)
+            lines = list(batch.lines.select_related("process_card"))
+            if not lines:
+                raise DRFValidationError({"lines": "At least one shipment line is required."})
+            if batch.shipment_date is None:
+                raise DRFValidationError({"shipment_date": "请先填写实际出货日期后再确认。"})
+            # Lock cards and check existing confirmed deliveries plus all lines
+            # in this batch atomically.
+            by_card = {}
+            by_pieces = {}
+            for line in lines:
+                by_card.setdefault(line.process_card_id, Decimal("0"))
+                by_card[line.process_card_id] += Decimal(line.net_weight_kg)
+                if line.piece_quantity is not None:
+                    by_pieces.setdefault(line.process_card_id, 0)
+                    by_pieces[line.process_card_id] += line.piece_quantity
+            for card_id, incoming in by_card.items():
+                card = ProcessCard.objects.select_for_update().get(pk=card_id)
+                if card.unit_weight_g is None or card.unit_weight_g <= 0:
+                    raise DRFValidationError({"lines": f"流程卡 {card.card_no} 尚未填写成品单重，不能确认出货。"})
+                if card.delivered_net_weight_kg + incoming > card.max_allowed_weight_kg:
+                    raise DRFValidationError({"lines": f"流程卡 {card.card_no} 累计出货净重不能超过理论重量的110%。"})
+                if card_id in by_pieces:
+                    existing_pieces = QualityShipmentLine.objects.filter(process_card_id=card_id, batch__status=QualityShipmentBatch.Status.CONFIRMED).exclude(batch_id=batch.pk).aggregate(total=Sum("piece_quantity"))["total"] or 0
+                    if existing_pieces - card.returned_piece_quantity + by_pieces[card_id] > card.quantity:
+                        raise DRFValidationError({"lines": f"流程卡 {card.card_no} 累计出货件数不能超过卡上数量。"})
+            batch.status = QualityShipmentBatch.Status.CONFIRMED
+            batch.save()
+            for card_id in by_card:
+                ProcessCard.objects.get(pk=card_id).refresh_shipping_status()
+        return Response(self.get_serializer(batch).data)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        with transaction.atomic():
+            batch = QualityShipmentBatch.objects.select_for_update().get(pk=pk)
+            if batch.status == QualityShipmentBatch.Status.CONFIRMED:
+                raise DRFValidationError({"status": "A confirmed shipment batch cannot be voided."})
+            if batch.status == QualityShipmentBatch.Status.VOID:
+                return Response(self.get_serializer(batch).data)
+            batch.status = QualityShipmentBatch.Status.VOID
+            batch.save()
+        return Response(self.get_serializer(batch).data)
+
+
+class QualityReworkCaseViewSet(WorkflowModelViewSet):
+    serializer_class = QualityReworkCaseSerializer
+    queryset = QualityReworkCase.objects.select_related("process_card", "shipment_line", "responsible_inspector", "created_by").prefetch_related("attempts").all()
+
+    def get_queryset(self):
+        queryset = self.queryset
+        q = str(self.request.query_params.get("q", "")).strip()
+        if q:
+            queryset = queryset.filter(
+                Q(case_no__icontains=q)
+                | Q(reason__icontains=q)
+                | Q(process_card__card_no__icontains=q)
+            )
+        origin = str(self.request.query_params.get("origin", "")).strip().upper()
+        if origin:
+            if origin not in QualityReworkCase.Origin.values:
+                raise DRFValidationError({"origin": "无效的返工来源。"})
+            queryset = queryset.filter(origin=origin)
+        status = str(self.request.query_params.get("status", "")).strip().upper()
+        if status:
+            if status not in QualityReworkCase.Status.values:
+                raise DRFValidationError({"status": "无效的返工状态。"})
+            queryset = queryset.filter(status=status)
+        return queryset
+
+
+class QualityReworkAttemptViewSet(WorkflowModelViewSet):
+    serializer_class = QualityReworkAttemptSerializer
+    queryset = QualityReworkAttempt.objects.select_related("case", "rework_employee", "created_by").all()
+
+    def get_queryset(self):
+        queryset = self.queryset
+        case_id = self.request.query_params.get("case") or self.request.query_params.get("case_id")
+        if case_id:
+            queryset = queryset.filter(case_id=case_id)
+        return queryset
 
 
 class QualityEmployeeViewSet(NoDeleteModelViewSet):
