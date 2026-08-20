@@ -6,7 +6,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from production.models import ProductionDailyLog, ProductionRun
-from quality.models import QualityShipment, ReturnRework
+from quality.models import QualityShipment, QualityShipmentBatch, ReturnRework
 
 from .models import ManualFinancialEntry, ManualPerformanceEntry
 
@@ -410,9 +410,29 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
 
     shipments = list(
         QualityShipment.objects.filter(
+            shipment_date__isnull=False,
             shipment_date__gte=date_from,
             shipment_date__lte=date_to,
-        ).select_related("order", "inspector")
+        ).select_related("order", "inspector").prefetch_related("inspectors")
+    )
+    # The weighted shipment workflow is the current production path.  Keep
+    # the legacy quantity-based rows above for historical compatibility, but
+    # include confirmed weighted batches in the same dashboard aggregates.
+    # Draft and void batches must never affect performance or order totals.
+    weighted_batches = list(
+        QualityShipmentBatch.objects.filter(
+            status=QualityShipmentBatch.Status.CONFIRMED,
+            shipment_date__isnull=False,
+            shipment_date__gte=date_from,
+            shipment_date__lte=date_to,
+        )
+        .select_related("inspector")
+        .prefetch_related(
+            "inspectors",
+            "lines__order",
+            "lines__process_card__order",
+            "lines__process_card__product_specification",
+        )
     )
     reworks = list(
         ReturnRework.objects.filter(
@@ -587,6 +607,22 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             _add_finance(row, finance)
             row["_run_ids"].add(run.pk)
 
+    def _split_quantity(quantity, people):
+        """Split one quantity across unique participating inspectors."""
+        unique = {}
+        for person in people:
+            if person is not None:
+                unique[person.pk] = person
+        people = list(unique.values())
+        if not people:
+            return []
+        quantity = max(0, int(quantity or 0))
+        base, remainder = divmod(quantity, len(people))
+        return [
+            (person, base + (1 if index < remainder else 0))
+            for index, person in enumerate(people)
+        ]
+
     for shipment in shipments:
         values = {
             "inspection_quantity": shipment.inspection_quantity,
@@ -597,19 +633,29 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         _add_quality(automatic_quality, values)
         _add_quality(daily[shipment.shipment_date], values)
 
-        employee_key = _employee_key(shipment.inspector)
-        employee = employees.setdefault(
-            employee_key, _employee_row(shipment.inspector)
-        )
-        for field in (
-            "inspection_quantity",
-            "qualified_quantity",
-            "defective_quantity",
-            "shipped_quantity",
-        ):
-            employee[field] += int(values[field] or 0)
-        employee["inspection_days"].add(shipment.shipment_date)
-        employee["automatic_record_count"] += 1
+        people = list(shipment.inspectors.all())
+        if not people and shipment.inspector:
+            people = [shipment.inspector]
+        # Allocate each metric once across the participating inspectors.  The
+        # company/order totals above remain unchanged and are never multiplied
+        # by the number of people.
+        for person in {item.pk: item for item in people}.values():
+            employee_key = _employee_key(person)
+            employee = employees.setdefault(employee_key, _employee_row(person))
+            for field in (
+                "inspection_quantity",
+                "qualified_quantity",
+                "defective_quantity",
+                "shipped_quantity",
+            ):
+                allocated = _split_quantity(values[field], people)
+                person_value = next(
+                    (amount for target, amount in allocated if target.pk == person.pk),
+                    0,
+                )
+                employee[field] += person_value
+            employee["inspection_days"].add(shipment.shipment_date)
+            employee["automatic_record_count"] += 1
 
         order = shipment.order
         row = _ensure_order_row(
@@ -622,6 +668,69 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         )
         _add_quality(row, values)
         row["automatic_record_count"] += 1
+
+    for batch in weighted_batches:
+        # A batch may contain several process cards/orders.  Add each line to
+        # the corresponding order while counting the batch only once in the
+        # source counter below.
+        lines = list(batch.lines.all())
+        people = list(getattr(batch, "inspectors", []).all()) if hasattr(batch, "inspectors") else []
+        if not people and getattr(batch, "inspector", None):
+            people = [batch.inspector]
+        for line in lines:
+            card = line.process_card
+            # Free-form weighted shipments may be linked directly to an order
+            # without a process card.  Do not dereference ``card.order``
+            # unconditionally: one direct line used to crash the dashboard.
+            order = line.order or (card.order if card else None) or batch.order
+            if order is None:
+                # Confirmation rejects new rows without an order/card, but
+                # tolerate any pre-migration residue instead of failing the
+                # complete analytics response.
+                continue
+            quantity = getattr(line, "calculated_piece_quantity", None)
+            if quantity is None:
+                quantity = getattr(line, "piece_quantity", None)
+            if quantity is None:
+                unit_weight = getattr(line, "unit_weight_g_snapshot", None) or getattr(card, "unit_weight_g", None)
+                quantity = (
+                    (Decimal(str(line.net_weight_kg)) * Decimal("1000") / Decimal(str(unit_weight))).quantize(
+                        Decimal("1"), rounding=ROUND_HALF_UP
+                    )
+                    if unit_weight
+                    else 0
+                )
+            values = {"inspection_quantity": 0, "qualified_quantity": 0, "defective_quantity": 0, "shipped_quantity": int(quantity or 0)}
+            _add_quality(automatic_quality, values)
+            _add_quality(daily[batch.shipment_date], values)
+
+            for person, allocated in _split_quantity(quantity, people):
+                employee_key = _employee_key(person)
+                employee = employees.setdefault(employee_key, _employee_row(person))
+                employee["shipped_quantity"] += allocated
+                employee["inspection_days"].add(batch.shipment_date)
+                employee["automatic_record_count"] += 1
+
+            row = _ensure_order_row(
+                orders,
+                order_id=order.pk,
+                order_no=order.order_no,
+                product_name=order.product_name,
+                specification=(
+                    getattr(card, "specification_snapshot", "")
+                    or getattr(line, "specification_snapshot", "")
+                    or getattr(batch, "specification_snapshot", "")
+                    or order.specification
+                ),
+                material=(
+                    getattr(card, "material_snapshot", "")
+                    or getattr(line, "material_snapshot", "")
+                    or getattr(batch, "material_snapshot", "")
+                    or order.material
+                ),
+            )
+            _add_quality(row, values)
+            row["automatic_record_count"] += 1
 
     reason_labels = dict(ReturnRework.ReasonCategory.choices)
     for rework in reworks:
@@ -1003,7 +1112,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         "manual_production_hours": "ManualPerformanceEntry.production_hours手工填报实际工时",
         "automatic_finance_date": "ProductionRun.settled_at",
         "manual_finance_date": "ManualFinancialEntry.occurred_on",
-        "quality_date": "QualityShipment.shipment_date",
+        "quality_date": "QualityShipment.shipment_date + confirmed QualityShipmentBatch.shipment_date",
         "rework_date": "ReturnRework.rework_date",
         "order_link": (
             "已关联生产、品检和出货记录按order_id归集；"
@@ -1031,9 +1140,9 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                 "automatic_settled_runs": len(settled_runs),
             },
             "quality": {
-                "automatic": len(shipments),
+                "automatic": len(shipments) + len(weighted_batches),
                 "manual": manual_counts[ManualPerformanceEntry.EntryType.QUALITY],
-                "total": len(shipments)
+                "total": len(shipments) + len(weighted_batches)
                 + manual_counts[ManualPerformanceEntry.EntryType.QUALITY],
             },
             "rework": {
@@ -1085,7 +1194,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             "automatic": quality_source(automatic_quality),
             "manual": quality_source(manual_quality),
             "total": quality_source(combined_quality),
-            "shipment_count": len(shipments),
+            "shipment_count": len(shipments) + len(weighted_batches),
             "rework_count": len(reworks),
         },
         "daily_trend": daily_payload,

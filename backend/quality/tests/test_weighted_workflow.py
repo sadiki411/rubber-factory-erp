@@ -29,6 +29,7 @@ class WeightedWorkflowApiTests(QualityTestMixin, TestCase):
             {
                 "shipment_date": timezone.localdate().isoformat(),
                 "client_key": key,
+                "inspector_ids": [self.inspector.pk],
                 "lines": list(lines),
             },
             format="json",
@@ -159,6 +160,7 @@ class WeightedWorkflowApiTests(QualityTestMixin, TestCase):
             {
                 "client_key": "date-1",
                 "shipment_date": None,
+                "inspector_ids": [self.inspector.pk],
                 "lines": [{"process_card_id": card.pk, "net_weight_kg": "2.500", "piece_quantity": 1000}],
             },
             format="json",

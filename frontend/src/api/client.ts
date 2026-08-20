@@ -33,6 +33,7 @@ import type {
   QualityReworkCase,
   QualityReworkAttempt,
   QualityShipment,
+  QualityShipmentCandidate,
   QualitySummary,
   RackConfigInput,
   RackLayout,
@@ -467,6 +468,11 @@ export interface QualityListFilters {
   date_to?: string
   page?: number
   page_size?: number
+  shipment_no?: string
+  order_no?: string
+  specification?: string
+  material?: string
+  candidate?: boolean
 }
 
 export const qualityApi = {
@@ -491,6 +497,15 @@ export const qualityApi = {
     method: 'PATCH',
     body: JSON.stringify(body),
   }),
+  /**
+   * Lightweight duplicate check used by the weighted shipment drawer.  The
+   * endpoint is additive; older servers can simply return an empty result and
+   * the drawer still performs a client-side check against loaded records.
+   */
+  checkShipmentNo: (shipmentNo: string, excludeId?: number | string) =>
+    apiFetch<{ exists?: boolean; duplicate?: boolean; shipment?: QualityShipment }>(`/api/quality/shipments/check-shipment-no/${queryString({ shipment_no: shipmentNo, exclude_id: excludeId })}`),
+  listShipmentCandidates: (filters: QualityListFilters = {}) =>
+    apiFetch<ApiList<QualityShipmentCandidate> | QualityShipmentCandidate[]>(`/api/quality/shipments/candidates/${queryString(filters)}`),
 
   listReworks: (filters: QualityListFilters = {}) =>
     apiFetch<ApiList<ReturnRework> | ReturnRework[]>(`/api/quality/reworks/${queryString(filters)}`),
@@ -521,6 +536,10 @@ export const qualityWorkflowApi = {
   createProcessCard: (body: Record<string, unknown>) => apiFetch<QualityProcessCard>('/api/quality/process-cards/', { method: 'POST', body: JSON.stringify(body) }),
   updateProcessCard: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityProcessCard>(`/api/quality/process-cards/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
   listShipmentBatches: (filters: QualityListFilters = {}) => apiFetch<ApiList<QualityShipmentBatch> | QualityShipmentBatch[]>(`/api/quality/shipment-batches/${queryString(filters)}`),
+  listShipmentCandidates: (filters: QualityListFilters = {}) =>
+    apiFetch<ApiList<QualityShipmentCandidate> | QualityShipmentCandidate[]>(`/api/quality/shipment-batches/candidates/${queryString(filters)}`),
+  checkShipmentNo: (shipmentNo: string, excludeId?: number | string) =>
+    apiFetch<{ exists?: boolean; duplicate?: boolean; shipment?: QualityShipmentBatch }>(`/api/quality/shipment-batches/check-shipment-no/${queryString({ shipment_no: shipmentNo, exclude_id: excludeId })}`),
   getShipmentBatch: (id: number | string) => apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/`),
   createShipmentBatch: (body: QualityShipmentBatchInput) =>
     apiFetch<QualityShipmentBatchResult>('/api/quality/shipment-batches/', {

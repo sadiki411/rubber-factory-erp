@@ -9,7 +9,14 @@ from rest_framework.test import APIClient
 from analytics.models import ManualFinancialEntry, ManualPerformanceEntry
 from production.models import ProductionDailyLog, ProductionRun, ProductionStation
 from production.services import seed_default_stations
-from quality.models import QualityEmployee, QualityOrder, QualityShipment, ReturnRework
+from quality.models import (
+    QualityEmployee,
+    QualityOrder,
+    QualityShipment,
+    QualityShipmentBatch,
+    QualityShipmentLine,
+    ReturnRework,
+)
 
 
 class AnalyticsApiTests(TestCase):
@@ -300,6 +307,68 @@ class AnalyticsApiTests(TestCase):
             {item["order_id"] for item in rows},
             {self.order.pk, second_order.pk},
         )
+
+    def test_dashboard_includes_direct_weighted_order_shipments(self):
+        day = timezone.localdate()
+        batch = QualityShipmentBatch.objects.create(
+            shipment_no="WEIGHTED-DIRECT-ANALYTICS",
+            shipment_date=day,
+            order=self.order,
+            unit_weight_g=Decimal("2"),
+            status=QualityShipmentBatch.Status.CONFIRMED,
+            created_by=self.user,
+        )
+        QualityShipmentLine.objects.create(
+            batch=batch,
+            order=self.order,
+            net_weight_kg=Decimal("1.000"),
+            piece_quantity=500,
+            unit_weight_g_snapshot=Decimal("2"),
+        )
+        response = self.client.get(
+            "/api/analytics/dashboard/",
+            {"date_from": day.isoformat(), "date_to": day.isoformat()},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertEqual(payload["quality"]["automatic"]["shipped_quantity"], 500)
+        linked = next(
+            item for item in payload["order_performance"]
+            if item["row_key"] == f"order:{self.order.pk}"
+        )
+        self.assertEqual(linked["shipped_quantity"], 500)
+
+    def test_multi_inspector_legacy_shipment_is_split_without_double_counting(self):
+        day = timezone.localdate()
+        second = QualityEmployee.objects.create(
+            employee_no="QC-A02",
+            name="赵品检",
+            team="品检组",
+            role=QualityEmployee.Role.BOTH,
+        )
+        shipment = QualityShipment.objects.create(
+            shipment_no="MULTI-LEGACY-ANALYTICS",
+            shipment_date=day,
+            order=self.order,
+            inspector=self.inspector,
+            inspection_quantity=100,
+            qualified_quantity=80,
+            defective_quantity=20,
+            shipped_quantity=80,
+            created_by=self.user,
+        )
+        shipment.inspectors.set([self.inspector, second])
+        payload = self.client.get(
+            "/api/analytics/dashboard/",
+            {"date_from": day.isoformat(), "date_to": day.isoformat()},
+        ).json()
+        employees = {
+            row["employee_no"]: row
+            for row in payload["quality_employee_performance"]
+        }
+        self.assertEqual(employees["QC-A01"]["shipped_quantity"], 40)
+        self.assertEqual(employees["QC-A02"]["shipped_quantity"], 40)
+        self.assertEqual(payload["quality"]["automatic"]["shipped_quantity"], 80)
 
     def test_manual_crud_soft_void_restore_and_validation(self):
         day = timezone.localdate()

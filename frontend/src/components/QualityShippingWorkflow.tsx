@@ -1,6 +1,5 @@
 import {
   Alert,
-  App,
   Badge,
   Button,
   Card,
@@ -13,7 +12,6 @@ import {
   Form,
   Input,
   InputNumber,
-  Progress,
   Row,
   Select,
   Space,
@@ -25,18 +23,16 @@ import {
 } from 'antd'
 import type { TableColumnsType, TableProps } from 'antd'
 import { EditOutlined, PlusOutlined } from '@ant-design/icons'
-import dayjs, { type Dayjs } from 'dayjs'
+import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import {
   expectedWeightKg,
   formatQualityDate,
   orderUnitWeightG,
   qualityNumber,
-  weightUpperLimitKg,
-  weightVariancePercent,
-  weightWithinUpperLimit,
 } from '../quality'
 import type {
+  QualityEmployee,
   QualityProcessCard,
   QualityOrder,
   QualityShipment,
@@ -44,6 +40,7 @@ import type {
   QualityShipmentBatchInput,
   ReturnRework,
 } from '../types'
+import { QualityWeightShipmentDrawer, type QualityWeightShipmentLineSeed } from './QualityWeightShipmentDrawer'
 
 export interface WorkflowCard {
   key: string
@@ -66,6 +63,7 @@ export interface WorkflowCard {
 
 interface WorkflowProps {
   orders: QualityOrder[]
+  employees?: QualityEmployee[]
   processCards?: QualityProcessCard[]
   shipments: QualityShipment[]
   batches?: QualityShipmentBatch[]
@@ -74,17 +72,9 @@ interface WorkflowProps {
   onOpenRework: (rework?: ReturnRework) => void
   onOpenTimeline: (card: WorkflowCard) => void
   onSubmitBatch: (payload: QualityShipmentBatchInput) => Promise<void>
+  onOpenShipment?: () => void
   onSaveProcessCard?: (body: Record<string, unknown>, card?: QualityProcessCard) => Promise<void>
 }
-
-interface BatchLine {
-  card: WorkflowCard
-  quantity: number
-  unitWeightG: number | null
-  actualWeightKg: number | null
-}
-
-const DRAFT_KEY = 'erp-quality-shipment-drafts-v1'
 
 function parseWeightFromNotes(notes?: string) {
   const match = String(notes || '').match(/(?:净重|实际净重|weight)\s*[=:：]\s*([\d.]+)/i)
@@ -137,162 +127,43 @@ function statusTag(card: WorkflowCard) {
 function BatchShipmentDrawer({
   open,
   cards,
+  orders,
+  employees,
+  shipments,
+  batches,
   onClose,
   onSubmit,
 }: {
   open: boolean
   cards: WorkflowCard[]
+  orders: QualityOrder[]
+  employees: QualityEmployee[]
+  shipments: QualityShipment[]
+  batches: QualityShipmentBatch[]
   onClose: () => void
   onSubmit: (payload: QualityShipmentBatchInput) => Promise<void>
 }) {
-  const [form] = Form.useForm<{ shipment_date: Dayjs; notes?: string }>()
-  const { message } = App.useApp()
-  const [lines, setLines] = useState<BatchLine[]>([])
-  const [saving, setSaving] = useState(false)
-  const tolerance = 10
-
-  useEffect(() => {
-    if (!open) return
-    form.resetFields()
-    form.setFieldsValue({ shipment_date: dayjs() })
-    // Initialize the drawer from the current selection when it opens.
-    // The tolerance is a fixed business rule (theoretical weight +10%).
-    // This is a deliberate form reset when the drawer opens, not a render
-    // feedback loop: the effect only runs when the selected basket changes.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLines(cards.map((card) => ({
-      card,
-      quantity: card.remainingQuantity,
-      unitWeightG: card.unitWeightG,
-      actualWeightKg: card.expectedWeightKg,
-    })))
-  }, [cards, form, open])
-
-  const metrics = useMemo(() => lines.reduce((result, line) => {
-    const expected = expectedWeightKg(line.quantity, line.unitWeightG)
-    const upper = weightUpperLimitKg(expected, tolerance)
-    const actual = Number(line.actualWeightKg)
-    const validActual = Number.isFinite(actual) && actual > 0
-    const over = validActual && upper !== null && actual > upper
-    const variance = weightVariancePercent(actual, expected)
-    return {
-      quantity: result.quantity + Number(line.quantity || 0),
-      expected: result.expected + Number(expected || 0),
-      actual: result.actual + (validActual ? actual : 0),
-      over: result.over || over,
-      under: result.under || (validActual && expected !== null && actual < expected),
-      missing: result.missing || !line.unitWeightG || !validActual || !line.quantity,
-      variance,
-    }
-  }, { quantity: 0, expected: 0, actual: 0, over: false, under: false, missing: false, variance: null as number | null }), [lines, tolerance])
-
-  const submit = async () => {
-    const values = await form.validateFields()
-    if (!lines.length) return
-    if (metrics.missing) {
-      message.warning('请为每张流程卡填写数量、产品单重和实称净重。')
-      return
-    }
-    if (metrics.over) {
-      message.error('存在超过理论重量上限 10% 的明细，提交已被硬限制阻止')
-      return
-    }
-    setSaving(true)
-    try {
-      await onSubmit({
-        shipment_date: values.shipment_date.format('YYYY-MM-DD'),
-        client_key: `quality-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        notes: values.notes,
-        confirm_warnings: false,
-        lines: lines.map((line) => ({
-          process_card_id: line.card.processCard?.id ?? line.card.key,
-          piece_quantity: Number(line.quantity),
-          net_weight_kg: Number(line.actualWeightKg),
-        })),
-      })
-      message.success(`已提交 ${lines.length} 张流程卡的批量出货。`)
-      onClose()
-    } catch (error) {
-      message.error((error as Error).message || '批量出货提交失败')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const saveDraft = () => {
-    const current = JSON.parse(localStorage.getItem(DRAFT_KEY) || '[]') as unknown[]
-    current.push({ created_at: new Date().toISOString(), lines: lines.map((line) => ({ order_id: line.card.order.id, card_no: line.card.cardNo, quantity: line.quantity, unit_weight_g: line.unitWeightG, actual_weight_kg: line.actualWeightKg })) })
-    localStorage.setItem(DRAFT_KEY, JSON.stringify(current.slice(-20)))
-    message.success('已保存本机草稿，日期确认后可重新提交。')
-  }
-
-  return (
-    <Drawer
-      open={open}
-      onClose={onClose}
-      width={760}
-      title="批量出货重量登记"
-      className="quality-shipment-batch-drawer"
-      footer={<Space className="drawer-footer-actions"><Button onClick={saveDraft}>保存草稿</Button><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} onClick={() => void submit()}>确认出货</Button></Space>}
-    >
-      <Alert
-        type="info"
-        showIcon
-        message="默认按整卡出货；可调整数量后部分出货。"
-        description="实际净重超过理论重量 +10% 会阻止提交，低于理论重量只提示。胶料重量不参与成品单重计算。"
-        className="quality-form-alert"
-      />
-      <Form form={form} layout="vertical" requiredMark="optional">
-        <Row gutter={14}>
-          <Col xs={24} sm={12}>
-            <Form.Item name="shipment_date" label="实际出货日期" rules={[{ required: true, message: '请选择实际出货日期' }]}>
-              <DatePicker style={{ width: '100%' }} />
-            </Form.Item>
-          </Col>
-          <Col xs={24} sm={12}>
-            <Form.Item label="重量上限" extra="系统固定最多允许理论重量+10%">
-              <InputNumber value={tolerance} addonAfter="%" disabled style={{ width: '100%' }} />
-            </Form.Item>
-          </Col>
-        </Row>
-        <Form.Item name="notes" label="批次备注"><Input.TextArea rows={2} maxLength={300} showCount placeholder="如车次、客户、包装说明" /></Form.Item>
-      </Form>
-
-      <div className="quality-batch-summary">
-        <Statistic title="流程卡" value={lines.length} suffix="张" />
-        <Statistic title="本次件数" value={metrics.quantity} suffix="件" />
-        <Statistic title="理论重量" value={metrics.expected} precision={3} suffix="kg" />
-        <Statistic title="实称净重" value={metrics.actual} precision={3} suffix="kg" />
-      </div>
-      {metrics.over && <Alert type="error" showIcon message="有明细超过重量上限" description="请核对称重或数量；超过理论重量 +10% 时提交会被硬限制阻止。" className="quality-batch-warning" />}
-      {metrics.under && !metrics.over && <Alert type="warning" showIcon message="有明细低于理论重量" description="系统允许继续提交，请确认称重、包装和流程卡数量是否正确。" className="quality-batch-warning" />}
-      {metrics.expected > 0 && <div className="quality-batch-progress"><Progress percent={Math.min(100, Math.round((metrics.actual / (metrics.expected * (1 + tolerance / 100))) * 100))} status={metrics.over ? 'exception' : 'active'} /><Typography.Text type="secondary">上限使用率（按整批汇总展示）</Typography.Text></div>}
-
-      <div className="quality-batch-lines">
-        {lines.length ? lines.map((line, index) => {
-          const expected = expectedWeightKg(line.quantity, line.unitWeightG)
-          const upper = weightUpperLimitKg(expected, tolerance)
-          const variance = weightVariancePercent(line.actualWeightKg, expected)
-          const under = Number(line.actualWeightKg) > 0 && expected !== null && Number(line.actualWeightKg) < expected
-          const over = !weightWithinUpperLimit(line.actualWeightKg, expected, tolerance)
-            && Number(line.actualWeightKg) > Number(expected || 0)
-          return (
-            <Card size="small" className={`quality-batch-line ${over ? 'is-over' : ''}`} key={line.card.key}>
-              <div className="quality-batch-line-heading"><div><strong>{line.card.cardNo}</strong><Typography.Text type="secondary">{line.card.order.order_no} · {line.card.order.product_name || line.card.order.specification}</Typography.Text></div>{over ? <Tag color="error">超上限</Tag> : under ? <Tag color="warning">低于理论</Tag> : <Tag color="success">可提交</Tag>}</div>
-              <Row gutter={10}>
-                <Col xs={12} sm={6}><label>本次件数</label><InputNumber min={1} max={line.card.remainingQuantity} precision={0} value={line.quantity} onChange={(value) => setLines((prev) => prev.map((item, itemIndex) => itemIndex === index ? { ...item, quantity: Number(value || 0) } : item))} style={{ width: '100%' }} /></Col>
-                <Col xs={12} sm={6}><label>产品单重(g)</label><InputNumber min={0.001} precision={4} value={line.unitWeightG ?? undefined} onChange={(value) => setLines((prev) => prev.map((item, itemIndex) => itemIndex === index ? { ...item, unitWeightG: value === null ? null : Number(value) } : item))} placeholder="待补" style={{ width: '100%' }} /></Col>
-                <Col xs={12} sm={6}><label>理论重量(kg)</label><InputNumber value={expected ?? undefined} disabled precision={3} style={{ width: '100%' }} /></Col>
-                <Col xs={12} sm={6}><label>实称净重(kg)</label><InputNumber min={0.001} precision={3} value={line.actualWeightKg ?? undefined} onChange={(value) => setLines((prev) => prev.map((item, itemIndex) => itemIndex === index ? { ...item, actualWeightKg: value === null ? null : Number(value) } : item))} placeholder="请输入" style={{ width: '100%' }} /></Col>
-              </Row>
-              <div className="quality-batch-line-meta"><span>允许上限 {upper === null ? '-' : `${upper.toFixed(3)} kg`}</span><span className={over ? 'quality-danger-text' : 'quality-good-text'}>偏差 {variance === null ? '-' : `${variance >= 0 ? '+' : ''}${variance.toFixed(2)}%`}</span><span>剩余 {qualityNumber(line.card.remainingQuantity)} 件</span></div>
-            </Card>
-          )
-        }) : <Empty description="请先从待出货流程卡中选择明细" />}
-      </div>
-      {metrics.over && <Alert type="error" showIcon message="硬限制：禁止通过二次确认绕过 +10% 重量上限" />}
-    </Drawer>
-  )
+  const lineSeeds: QualityWeightShipmentLineSeed[] = cards.map((card) => ({
+    key: card.key,
+    process_card_id: card.processCard?.id ?? card.key,
+    card_no: card.cardNo,
+    order_id: card.order.id,
+    order: card.order,
+    quantity: card.remainingQuantity,
+    remaining_quantity: card.remainingQuantity,
+    unit_weight_g: card.unitWeightG,
+    net_weight_kg: card.expectedWeightKg,
+  }))
+  return <QualityWeightShipmentDrawer
+    open={open}
+    orders={orders}
+    employees={employees}
+    lines={lineSeeds}
+    existingShipments={shipments}
+    existingBatches={batches}
+    onClose={onClose}
+    onSubmit={onSubmit}
+  />
 }
 
 function ReworkTimelineDrawer({
@@ -377,7 +248,7 @@ function ProcessCardDrawer({ open, card, orders, onClose, onSave }: { open: bool
   </Drawer>
 }
 
-export function QualityShippingWorkflow({ orders, processCards = [], shipments, batches = [], reworks, loading, onOpenRework, onOpenTimeline, onSubmitBatch, onSaveProcessCard }: WorkflowProps) {
+export function QualityShippingWorkflow({ orders, employees = [], processCards = [], shipments, batches = [], reworks, loading, onOpenRework, onOpenTimeline, onSubmitBatch, onOpenShipment, onSaveProcessCard }: WorkflowProps) {
   const [selectedKeys, setSelectedKeys] = useState<React.Key[]>([])
   const [basketOpen, setBasketOpen] = useState(false)
   const [onlyAlerts, setOnlyAlerts] = useState(false)
@@ -433,10 +304,10 @@ export function QualityShippingWorkflow({ orders, processCards = [], shipments, 
         <Col xs={12} md={6}><Card className={`quality-workflow-kpi ${pendingReworkCount ? 'has-warning' : ''}`}><Statistic title="待处理返工" value={pendingReworkCount} suffix="条" /></Card></Col>
       </Row>
       {(missingDateCount || cards.some((card) => card.overdue)) && <Alert className="quality-workflow-alert" type="warning" showIcon message={`需要关注 ${missingDateCount + cards.filter((card) => card.overdue).length} 项记录`} description="出货日期缺失、交期已过或返工未完成的流程卡会显示在这里。先补日期，再安排出货。" action={<Button size="small" onClick={() => setOnlyAlerts((value) => !value)}>{onlyAlerts ? '显示全部' : '只看提醒'}</Button>} />}
-      <Card className="quality-workflow-card" title={<div className="quality-workflow-heading"><div><Typography.Title level={4}>流程卡与待出货篮</Typography.Title><Typography.Text type="secondary">流程卡单重未录入时可保存，但不可加入出货篮；胶料重量仅作记录，不参与成品出货计算。未建立流程卡的旧订单仅用于查看，不能从这里创建重量出货。</Typography.Text></div><Space wrap><Button onClick={() => setProcessCardForm(null)} icon={<PlusOutlined />}>新增流程卡</Button><Button disabled={!selectedCards.length} onClick={() => setBasketOpen(true)}>出货篮（{selectedCards.length}）</Button><Button type="primary" disabled={!selectedCards.length} onClick={() => setBasketOpen(true)}>批量登记出货</Button></Space></div>}>
+      <Card className="quality-workflow-card" title={<div className="quality-workflow-heading"><div><Typography.Title level={4}>流程卡与待出货篮</Typography.Title><Typography.Text type="secondary">流程卡单重未录入时可保存，但不可加入出货篮；胶料重量仅作记录，不参与成品重量计算。新增出货统一使用重量登记抽屉。</Typography.Text></div><Space wrap><Button onClick={() => setProcessCardForm(null)} icon={<PlusOutlined />}>新增流程卡</Button>{onOpenShipment && <Button onClick={onOpenShipment}>新增重量出货</Button>}<Button disabled={!selectedCards.length} onClick={() => setBasketOpen(true)}>出货篮（{selectedCards.length}）</Button><Button type="primary" disabled={!selectedCards.length} onClick={() => setBasketOpen(true)}>批量登记出货</Button></Space></div>}>
         <Table<WorkflowCard> rowKey="key" loading={loading} dataSource={visibleCards} columns={columns} rowSelection={rowSelection} scroll={{ x: 1170 }} pagination={{ pageSize: 12, showSizeChanger: true, showTotal: (total) => `共 ${total} 张流程卡` }} locale={{ emptyText: <Empty description={onlyAlerts ? '暂无待处理提醒' : '暂无可用流程卡'} /> }} />
       </Card>
-      <BatchShipmentDrawer open={basketOpen} cards={selectedCards} onClose={() => setBasketOpen(false)} onSubmit={async (payload) => { await onSubmitBatch(payload); setSelectedKeys([]) }} />
+      <BatchShipmentDrawer open={basketOpen} cards={selectedCards} orders={orders} employees={employees} shipments={shipments} batches={batches} onClose={() => setBasketOpen(false)} onSubmit={async (payload) => { await onSubmitBatch(payload); setSelectedKeys([]) }} />
       <ProcessCardDrawer open={processCardForm !== undefined} card={processCardForm || undefined} orders={orders} onClose={() => setProcessCardForm(undefined)} onSave={onSaveProcessCard} />
       <ReworkTimelineDrawer open={!!timelineCard} card={timelineCard} reworks={reworks} shipments={shipments} onClose={() => setTimelineCard(undefined)} onEdit={onOpenRework} onAdd={() => onOpenRework()} />
     </div>

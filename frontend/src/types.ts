@@ -212,6 +212,9 @@ export interface ProductSpecification {
   source_row?: number | null
   source_key?: string
   raw_data?: Record<string, unknown>
+  latest_unit_weight_g?: number | string | null
+  latest_unit_weight_measured_on?: string | null
+  unit_weight_history_count?: number
   created_at?: string
   updated_at?: string
 }
@@ -249,6 +252,10 @@ export interface Order {
   production_quantity?: string
   shipment_date?: string
   shipped_quantity?: string
+  weighted_shipped_quantity?: number
+  weighted_remaining_quantity?: number
+  shipment_status?: 'UNSHIPPED' | 'PARTIAL' | 'SHIPPED' | 'CANCELLED' | string
+  remaining_quantity?: number | string | null
   last_data_updated_at?: string | null
   notes?: string
   source_sheet?: string
@@ -645,8 +652,30 @@ export interface QualityShipment {
   shipment_date: string
   order: QualityOrder
   order_id?: number
+  product_specification_id?: number | null
+  product_name?: string
+  product_name_snapshot?: string
+  customer?: string
+  delivery_info?: string
+  backfill_reason?: string
   inspector: QualityEmployee
   inspector_id?: number
+  /** Weighted shipments may be assigned to more than one inspector. */
+  inspectors?: QualityEmployee[]
+  inspector_ids?: number[]
+  /** Snapshots are used when the shipment was entered without an order link. */
+  specification_snapshot?: string
+  material_snapshot?: string
+  specification?: string
+  material?: string
+  unit_weight_g?: number | string | null
+  unit_weight_g_snapshot?: number | string | null
+  total_net_weight_kg?: number | string | null
+  net_weight_kg?: number | string | null
+  product_batch_count?: number | null
+  batch_count?: number | null
+  pieces_per_batch?: number | null
+  piece_quantity?: number | null
   inspection_quantity: number
   qualified_quantity: number
   defective_quantity: number
@@ -750,18 +779,51 @@ export interface QualityProcessCard {
 export interface QualityShipmentBatchLineInput {
   process_card_id?: string | number
   order_id?: number
+  /** Optional snapshots for a manually entered order/specification. */
+  order_no?: string
+  product_name?: string
+  product_name_snapshot?: string
+  specification?: string
+  material?: string
+  specification_snapshot?: string
+  material_snapshot?: string
   quantity?: number
   unit_weight_g?: number | null
+  unit_weight_g_snapshot?: number | null
   expected_weight_kg?: number | null
   actual_weight_kg?: number
   net_weight_kg?: number
   piece_quantity?: number
+  total_net_weight_kg?: number
+  product_batch_count?: number
+  batch_count?: number
+  pieces_per_batch?: number
   tolerance_percent?: number
   notes?: string
 }
 
 export interface QualityShipmentBatchInput {
+  shipment_no?: string
   shipment_date?: string | null
+  order_id?: number | null
+  order_ids?: number[]
+  order_no?: string
+  product_name?: string
+  product_specification_id?: number | null
+  specification?: string
+  material?: string
+  specification_snapshot?: string
+  material_snapshot?: string
+  unit_weight_g?: number | null
+  unit_weight_g_snapshot?: number | null
+  total_net_weight_kg?: number | null
+  net_weight_kg?: number | null
+  product_batch_count?: number | null
+  batch_count?: number | null
+  pieces_per_batch?: number | null
+  piece_quantity?: number | null
+  inspector_id?: number | null
+  inspector_ids?: number[]
   client_key?: string
   notes?: string
   confirm_warnings?: boolean
@@ -771,7 +833,29 @@ export interface QualityShipmentBatchInput {
 export interface QualityShipmentBatchResult {
   id?: string | number
   shipment_no?: string
+  client_key?: string
   shipment_date?: string | null
+  order_id?: number | null
+  order?: QualityOrder | null
+  order_no?: string
+  product_name?: string
+  product_name_snapshot?: string
+  product_specification_id?: number | null
+  specification?: string
+  material?: string
+  specification_snapshot?: string
+  material_snapshot?: string
+  unit_weight_g?: number | string | null
+  unit_weight_g_snapshot?: number | string | null
+  total_net_weight_kg?: number | string | null
+  net_weight_kg?: number | string | null
+  product_batch_count?: number | null
+  batch_count?: number | null
+  pieces_per_batch?: number | null
+  piece_quantity?: number | null
+  inspector_id?: number | null
+  inspector_ids?: number[]
+  inspectors?: QualityEmployee[]
   line_count?: number
   shipped_quantity?: number
   actual_weight_kg?: number | string
@@ -784,6 +868,8 @@ export interface QualityShipmentBatch extends QualityShipmentBatchResult {
   shipment_no: string
   status?: 'DRAFT' | 'CONFIRMED' | 'VOID'
   inspector_id?: number | null
+  inspector_ids?: number[]
+  inspectors?: QualityEmployee[]
   date_pending?: boolean
   customer?: string
   delivery_info?: string
@@ -793,10 +879,37 @@ export interface QualityShipmentBatch extends QualityShipmentBatchResult {
   lines?: QualityShipmentBatchLine[]
 }
 
+/** Candidate order returned by the weighted shipment entry helper endpoint. */
+export interface QualityShipmentCandidate {
+  id?: number | string
+  order_id?: number | null
+  order?: QualityOrder | null
+  order_no?: string
+  item_no?: string
+  product_code?: string
+  product_name?: string
+  specification?: string
+  material?: string
+  remaining_quantity?: number | string | null
+  remaining_weight_kg?: number | string | null
+  unit_weight_g?: number | string | null
+  is_candidate?: boolean
+  reason?: string
+}
+
 export interface QualityShipmentBatchLine {
   id: string | number
   process_card_id?: string | number
   process_card?: QualityProcessCard
+  order_id?: number | null
+  order?: QualityOrder | null
+  card_no?: string
+  unit_weight_g?: number | string | null
+  unit_weight_g_snapshot?: number | string | null
+  quantity?: number | null
+  remaining_quantity?: number | null
+  specification_snapshot?: string
+  material_snapshot?: string
   net_weight_kg: number | string
   piece_quantity?: number | null
   theoretical_weight_kg_snapshot?: number | string | null

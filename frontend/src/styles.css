@@ -389,6 +389,33 @@ button, input, textarea, select { font: inherit; }
 .quality-workflow-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .quality-workflow-heading > div { min-width: 0; }
 .quality-workflow .ant-table-wrapper, .quality-workflow-management .ant-table-wrapper { max-width: 100%; overflow-x: auto; }
+.quality-weight-shipment-drawer .ant-drawer-body { padding: 18px 20px 28px; }
+.quality-weight-shipment-form { display: grid; gap: 14px; }
+.quality-weight-shipment-form > .ant-form-item { margin-bottom: 0; }
+.quality-weight-basic-card, .quality-weight-inspector-card, .quality-weight-measure-card { border-color: #dbe8e3; }
+.quality-weight-basic-card .ant-card-head, .quality-weight-inspector-card .ant-card-head, .quality-weight-measure-card .ant-card-head { min-height: 42px; padding-inline: 14px; background: #f7fbf9; }
+.quality-weight-basic-card .ant-card-body, .quality-weight-inspector-card .ant-card-body, .quality-weight-measure-card .ant-card-body { padding: 14px; }
+.quality-weight-order-preview { margin: -3px 0 14px; }
+.quality-weight-duplicate-alert, .quality-weight-draft-alert, .quality-weight-limit-alert { margin: 0; }
+.quality-weight-draft-alert .ant-alert-action { margin-inline-start: 12px; }
+.quality-weight-quick-batches { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin: -2px 0 14px; }
+.quality-weight-quick-batches .ant-btn { min-height: 30px; }
+.quality-weight-derived-row { margin-top: 2px; }
+.quality-weight-derived-row .ant-statistic { height: 100%; padding: 10px 12px; border-radius: 9px; background: #f5faf8; border: 1px solid #e1eee9; }
+.quality-weight-derived-row .ant-statistic-title { font-size: 11px; }
+.quality-weight-derived-row .ant-statistic-content { color: #185c4c; font-size: 20px; }
+.quality-weight-calculation-note { margin: 8px 0 0; }
+.quality-weight-line-list { display: grid; gap: 10px; margin-top: 12px; }
+.quality-weight-line { border-color: #dfebe7; }
+.quality-weight-line.is-over { border-color: #e8a29b; background: #fff8f6; }
+.quality-weight-line-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.quality-weight-line-heading > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.quality-weight-line-heading .ant-typography { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quality-weight-line .ant-form-item { margin-bottom: 0; }
+.quality-weight-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 15px; padding: 12px; border: 1px solid #dceae5; border-radius: 10px; background: linear-gradient(135deg, #f1f8f5, #fbfdfc); }
+.quality-weight-summary .ant-statistic { min-width: 0; }
+.quality-weight-summary .ant-statistic-title { font-size: 11px; }
+.quality-weight-summary .ant-statistic-content { font-size: 19px; color: #185c4c; }
 
 .analytics-placeholder-icon { color: #4d8c7d; font-size: 48px; }
 .analytics-filter-row { display: grid; grid-template-columns: 180px 180px minmax(220px, 300px) 1fr; gap: 12px; align-items: center; }
@@ -568,6 +595,24 @@ button, input, textarea, select { font: inherit; }
   .quality-shipment-batch-drawer .ant-drawer-content-wrapper { width: 100% !important; max-width: 100vw; }
   .quality-shipment-batch-drawer .drawer-footer-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; width: 100%; }
   .quality-shipment-batch-drawer .drawer-footer-actions .ant-btn { min-width: 0; padding-inline: 8px; }
+  .quality-weight-shipment-drawer .ant-drawer-content-wrapper { width: 100% !important; max-width: 100vw; }
+  .quality-weight-shipment-drawer .ant-drawer-body { padding: 14px 12px calc(20px + env(safe-area-inset-bottom)); }
+  .quality-weight-shipment-drawer .ant-drawer-footer { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); }
+  .quality-weight-shipment-drawer .drawer-footer-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; width: 100%; }
+  .quality-weight-shipment-drawer .drawer-footer-actions .ant-btn { min-width: 0; min-height: 46px; padding-inline: 6px; }
+  .quality-weight-shipment-drawer .ant-input,
+  .quality-weight-shipment-drawer .ant-input-number,
+  .quality-weight-shipment-drawer .ant-picker,
+  .quality-weight-shipment-drawer .ant-select-single .ant-select-selector,
+  .quality-weight-shipment-drawer .ant-select-multiple .ant-select-selector { min-height: 44px; }
+  .quality-weight-shipment-drawer .ant-input-number { width: 100%; }
+  .quality-weight-shipment-drawer .ant-select-single .ant-select-selector { align-items: center; }
+  .quality-weight-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .quality-weight-derived-row { row-gap: 8px; }
+  .quality-weight-derived-row .ant-statistic-content { font-size: 18px; }
+  .quality-weight-line .ant-form-item-label > label { font-size: 11px; }
+  .quality-weight-draft-alert .ant-alert-action { display: block; margin: 8px 0 0; }
+  .quality-weight-draft-alert .ant-btn { width: 100%; min-height: 44px; }
   .quality-trend-row { grid-template-columns: 44px minmax(0, 1fr); gap: 8px; }
   .analytics-filter-row { grid-template-columns: 1fr; }
   .analytics-filter-row .ant-picker, .analytics-filter-row .ant-select { width: 100%; min-height: 44px; }

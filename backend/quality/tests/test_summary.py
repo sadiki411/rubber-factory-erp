@@ -4,6 +4,12 @@ from decimal import Decimal
 from django.test import TestCase
 from django.utils import timezone
 
+from quality.models import (
+    QualityEmployee,
+    QualityShipmentBatch,
+    QualityShipmentLine,
+)
+
 from .helpers import QualityTestMixin
 
 
@@ -148,3 +154,108 @@ class QualitySummaryApiTests(QualityTestMixin, TestCase):
         self.assert_decimal_value(totals["return_rate"], 0)
         self.assert_decimal_value(totals["rework_pass_rate"], 0)
 
+    def test_summary_includes_only_confirmed_weighted_batches_once(self):
+        today = timezone.localdate()
+        second_inspector = QualityEmployee.objects.create(
+            employee_no="QC-SUM-002",
+            name="王品检",
+            role=QualityEmployee.Role.INSPECTOR,
+            team="白班",
+        )
+        self.create_shipment(
+            shipment_no="SHP-SUM-LEGACY",
+            shipment_date=today,
+            inspection_quantity=20,
+            qualified_quantity=20,
+            defective_quantity=0,
+            shipped_quantity=20,
+        )
+
+        confirmed = QualityShipmentBatch.objects.create(
+            shipment_no="SHP-SUM-WEIGHTED",
+            shipment_date=today,
+            order=self.order,
+            inspector=self.inspector,
+            status=QualityShipmentBatch.Status.CONFIRMED,
+            created_by=self.user,
+        )
+        confirmed.inspectors.set([self.inspector, second_inspector])
+        for quantity in (41, 60):
+            QualityShipmentLine.objects.create(
+                batch=confirmed,
+                order=self.order,
+                net_weight_kg=Decimal(quantity) / Decimal("1000"),
+                piece_quantity=quantity,
+                unit_weight_g_snapshot=Decimal("1"),
+            )
+
+        draft = QualityShipmentBatch.objects.create(
+            shipment_no="SHP-SUM-DRAFT",
+            shipment_date=today,
+            order=self.order,
+            inspector=self.inspector,
+            status=QualityShipmentBatch.Status.DRAFT,
+            created_by=self.user,
+        )
+        QualityShipmentLine.objects.create(
+            batch=draft,
+            order=self.order,
+            net_weight_kg=Decimal("0.300"),
+            piece_quantity=300,
+            unit_weight_g_snapshot=Decimal("1"),
+        )
+
+        void = QualityShipmentBatch.objects.create(
+            shipment_no="SHP-SUM-VOID",
+            shipment_date=today,
+            order=self.order,
+            inspector=self.inspector,
+            status=QualityShipmentBatch.Status.DRAFT,
+            created_by=self.user,
+        )
+        QualityShipmentLine.objects.create(
+            batch=void,
+            order=self.order,
+            net_weight_kg=Decimal("0.400"),
+            piece_quantity=400,
+            unit_weight_g_snapshot=Decimal("1"),
+        )
+        QualityShipmentBatch.objects.filter(pk=void.pk).update(
+            status=QualityShipmentBatch.Status.VOID
+        )
+
+        response = self.client.get(
+            "/api/quality/summary/",
+            {"date_from": today.isoformat(), "date_to": today.isoformat()},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+
+        # The company total is legacy 20 + weighted 101, not one copy of the
+        # weighted quantity for each of the two inspectors.
+        self.assertEqual(payload["totals"]["shipped_quantity"], 121)
+        self.assertEqual(payload["totals"]["shipment_count"], 2)
+        self.assertEqual(payload["totals"]["order_count"], 1)
+
+        day = payload["daily_trend"][0]
+        self.assertEqual(day["shipped_quantity"], 121)
+        self.assertEqual(day["shipment_count"], 2)
+
+        order = payload["order_stats"][0]
+        self.assertEqual(order["shipped_quantity"], 121)
+        self.assertEqual(order["shipment_count"], 2)
+
+        employees = {
+            item["employee_no"]: item for item in payload["employee_stats"]
+        }
+        primary = employees[self.inspector.employee_no]
+        secondary = employees[second_inspector.employee_no]
+        self.assertEqual(primary["shipped_quantity"], 71)
+        self.assertEqual(primary["shipment_count"], 2)
+        self.assertEqual(primary["inspection_days"], 1)
+        self.assertEqual(secondary["shipped_quantity"], 50)
+        self.assertEqual(secondary["shipment_count"], 1)
+        self.assertEqual(secondary["inspection_days"], 1)
+        self.assertEqual(
+            primary["shipped_quantity"] + secondary["shipped_quantity"], 121
+        )

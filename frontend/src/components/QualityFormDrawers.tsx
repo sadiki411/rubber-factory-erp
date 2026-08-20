@@ -4,7 +4,8 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { useEffect } from 'react'
 import { qualityApi } from '../api/client'
 import { reworkQuantitiesValid, shipmentQuantitiesMatch, shipmentQuantityAllowed } from '../quality'
-import type { QualityEmployee, QualityOrder, QualityShipment, ReturnRework } from '../types'
+import type { QualityEmployee, QualityOrder, QualityProcessCard, QualityShipment, QualityShipmentBatch, ReturnRework } from '../types'
+import { QualityWeightShipmentDrawer } from './QualityWeightShipmentDrawer'
 
 interface BaseDrawerProps {
   open: boolean
@@ -15,9 +16,14 @@ interface ShipmentDrawerProps extends BaseDrawerProps {
   shipment?: QualityShipment
   orders: QualityOrder[]
   employees: QualityEmployee[]
+  processCards?: QualityProcessCard[]
+  existingShipments?: QualityShipment[]
+  existingBatches?: QualityShipmentBatch[]
+  onSubmit?: (payload: import('../types').QualityShipmentBatchInput) => Promise<unknown>
+  onSaved?: (result?: unknown) => void | Promise<void>
 }
 
-export function QualityShipmentDrawer({ open, shipment, orders, employees, onClose }: ShipmentDrawerProps) {
+function LegacyQualityShipmentDrawer({ open, shipment, orders, employees, onClose }: ShipmentDrawerProps) {
   const [form] = Form.useForm<Record<string, any>>()
   const queryClient = useQueryClient()
   const { message } = App.useApp()
@@ -116,6 +122,28 @@ export function QualityShipmentDrawer({ open, shipment, orders, employees, onClo
       </Form>
     </Drawer>
   )
+}
+
+/**
+ * Compatibility export retained for callers outside the quality page.  New
+ * records always use the weighted workflow drawer; the legacy form remains
+ * available only while editing historical件数制 records.
+ */
+export function QualityShipmentDrawer(props: ShipmentDrawerProps) {
+  if (!props.shipment) {
+    return <QualityWeightShipmentDrawer
+      open={props.open}
+      orders={props.orders}
+      employees={props.employees}
+      processCards={props.processCards}
+      existingShipments={props.existingShipments}
+      existingBatches={props.existingBatches}
+      onSubmit={props.onSubmit}
+      onSaved={props.onSaved}
+      onClose={props.onClose}
+    />
+  }
+  return <LegacyQualityShipmentDrawer {...props} />
 }
 
 interface EmployeeDrawerProps extends BaseDrawerProps {

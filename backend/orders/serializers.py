@@ -1,9 +1,9 @@
 import re
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from rest_framework import serializers
 
 from molds.models import MoldModel
@@ -19,6 +19,23 @@ from .services import model_snapshot, order_identity_exists, record_revision
 
 
 ZERO = Decimal("0")
+
+
+def _latest_product_unit_weight(instance):
+    """Return the newest active finished-piece weight for a specification."""
+    # Import lazily: quality models already point at orders.ProductSpecification
+    # and importing them at module load would create an app-import cycle.
+    from quality.models import ProductUnitWeight
+
+    return (
+        ProductUnitWeight.objects.filter(
+            product_specification_id=instance.pk,
+            is_active=True,
+            unit_weight_g__gt=0,
+        )
+        .order_by("-measured_on", "-id")
+        .first()
+    )
 
 
 def _validation_details(exc):
@@ -80,6 +97,9 @@ class MoldModelSummarySerializer(serializers.ModelSerializer):
 
 class ProductSpecificationSerializer(AuditedModelSerializer):
     source_batch_id = serializers.UUIDField(read_only=True)
+    latest_unit_weight_g = serializers.SerializerMethodField()
+    latest_unit_weight_measured_on = serializers.SerializerMethodField()
+    unit_weight_history_count = serializers.SerializerMethodField()
     mold_model = MoldModelSummarySerializer(read_only=True)
     mold_model_id = serializers.PrimaryKeyRelatedField(
         source="mold_model",
@@ -123,6 +143,9 @@ class ProductSpecificationSerializer(AuditedModelSerializer):
             "source_row",
             "source_key",
             "raw_data",
+            "latest_unit_weight_g",
+            "latest_unit_weight_measured_on",
+            "unit_weight_history_count",
             "created_at",
             "updated_at",
         ]
@@ -132,12 +155,30 @@ class ProductSpecificationSerializer(AuditedModelSerializer):
             "source_row",
             "source_key",
             "raw_data",
+            "latest_unit_weight_g",
+            "latest_unit_weight_measured_on",
+            "unit_weight_history_count",
             "created_at",
             "updated_at",
         ]
 
+    def get_latest_unit_weight_g(self, obj) -> str | None:
+        weight = _latest_product_unit_weight(obj)
+        return str(weight.unit_weight_g) if weight else None
+
+    def get_latest_unit_weight_measured_on(self, obj) -> str | None:
+        weight = _latest_product_unit_weight(obj)
+        return weight.measured_on.isoformat() if weight and weight.measured_on else None
+
+    def get_unit_weight_history_count(self, obj) -> int:
+        from quality.models import ProductUnitWeight
+
+        return ProductUnitWeight.objects.filter(product_specification_id=obj.pk).count()
+
 
 class ProductSpecificationSummarySerializer(serializers.ModelSerializer):
+    latest_unit_weight_g = serializers.SerializerMethodField()
+    latest_unit_weight_measured_on = serializers.SerializerMethodField()
     mold_model = MoldModelSummarySerializer(read_only=True)
     mold_model_id = serializers.IntegerField(read_only=True)
 
@@ -154,7 +195,17 @@ class ProductSpecificationSummarySerializer(serializers.ModelSerializer):
             "mold_no",
             "mold_size",
             "is_active",
+            "latest_unit_weight_g",
+            "latest_unit_weight_measured_on",
         ]
+
+    def get_latest_unit_weight_g(self, obj) -> str | None:
+        weight = _latest_product_unit_weight(obj)
+        return str(weight.unit_weight_g) if weight else None
+
+    def get_latest_unit_weight_measured_on(self, obj) -> str | None:
+        weight = _latest_product_unit_weight(obj)
+        return weight.measured_on.isoformat() if weight and weight.measured_on else None
 
 
 class BusinessOrderSerializer(AuditedModelSerializer):
@@ -175,6 +226,9 @@ class BusinessOrderSerializer(AuditedModelSerializer):
     material_status = serializers.SerializerMethodField()
     process_card_status = serializers.SerializerMethodField()
     last_data_updated_at = serializers.SerializerMethodField()
+    weighted_shipped_quantity = serializers.SerializerMethodField()
+    weighted_remaining_quantity = serializers.SerializerMethodField()
+    shipment_status = serializers.SerializerMethodField()
 
     class Meta:
         model = QualityOrder
@@ -223,6 +277,9 @@ class BusinessOrderSerializer(AuditedModelSerializer):
             "last_imported_at",
             "raw_data",
             "last_data_updated_at",
+            "weighted_shipped_quantity",
+            "weighted_remaining_quantity",
+            "shipment_status",
             "created_by_name",
             "created_at",
             "updated_at",
@@ -325,6 +382,46 @@ class BusinessOrderSerializer(AuditedModelSerializer):
     def get_last_data_updated_at(self, obj) -> str | None:
         value = getattr(obj, "last_data_updated_at_value", None) or obj.updated_at
         return serializers.DateTimeField().to_representation(value) if value else None
+
+    @staticmethod
+    def _weighted_lines(obj):
+        from quality.models import QualityShipmentBatch, QualityShipmentLine
+
+        return QualityShipmentLine.objects.filter(
+            batch__status=QualityShipmentBatch.Status.CONFIRMED,
+        ).filter(
+            Q(order_id=obj.pk) | Q(process_card__order_id=obj.pk)
+        ).distinct().only(
+            "piece_quantity", "net_weight_kg", "unit_weight_g_snapshot"
+        )
+
+    def get_weighted_shipped_quantity(self, obj) -> int:
+        total = 0
+        for line in self._weighted_lines(obj):
+            quantity = line.piece_quantity
+            if quantity is None and line.unit_weight_g_snapshot:
+                quantity = int(
+                    (Decimal(line.net_weight_kg) * Decimal("1000") / Decimal(line.unit_weight_g_snapshot))
+                    .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                )
+            total += max(
+                int(quantity or 0) - int(line.returned_piece_quantity or 0),
+                0,
+            )
+        return total
+
+    def get_weighted_remaining_quantity(self, obj) -> int:
+        return max(int(obj.order_quantity or 0) - self.get_weighted_shipped_quantity(obj), 0)
+
+    def get_shipment_status(self, obj) -> str:
+        if obj.status == QualityOrder.Status.CANCELLED:
+            return "CANCELLED"
+        shipped = self.get_weighted_shipped_quantity(obj)
+        if shipped <= 0:
+            return "UNSHIPPED"
+        if shipped >= int(obj.order_quantity or 0):
+            return "SHIPPED"
+        return "PARTIAL"
 
 
 class OrderSummarySerializer(serializers.ModelSerializer):

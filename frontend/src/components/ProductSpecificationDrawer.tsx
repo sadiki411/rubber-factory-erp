@@ -73,6 +73,15 @@ export function ProductSpecificationDrawer({ open, specification, onClose }: Pro
           description="以下字段均可在线修正；系统仍保留原始导入数据用于核对。"
         />
       )}
+      {specification?.latest_unit_weight_g != null && (
+        <Alert
+          className="business-source-alert"
+          type="success"
+          showIcon
+          title={`最近成品单重：${specification.latest_unit_weight_g} g/件`}
+          description={specification.latest_unit_weight_measured_on ? `最后确认日期：${specification.latest_unit_weight_measured_on}；历史记录 ${specification.unit_weight_history_count || 0} 条。出货确认时会继续保留历史版本。` : '该单重来自已确认出货记录。'}
+        />
+      )}
       <Form form={form} layout="vertical" requiredMark="optional">
         <div className="business-form-section">基本资料</div>
         <Row gutter={14}>

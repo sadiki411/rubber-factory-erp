@@ -247,6 +247,12 @@ class QualityShipment(TimeStampedModel):
         related_name="inspected_shipments",
         on_delete=models.PROTECT,
     )
+    inspectors = models.ManyToManyField(
+        QualityEmployee,
+        verbose_name="品检员（多人）",
+        related_name="legacy_inspected_shipments_many",
+        blank=True,
+    )
     inspection_quantity = models.PositiveIntegerField("质检数量")
     qualified_quantity = models.PositiveIntegerField("合格数量", default=0)
     defective_quantity = models.PositiveIntegerField("不良数量", default=0)
@@ -854,6 +860,48 @@ class QualityShipmentBatch(TimeStampedModel):
 
     shipment_no = models.CharField("shipment batch number", max_length=100, unique=True, blank=True, default="")
     client_key = models.CharField("idempotency client key", max_length=128, blank=True, default="")
+    # Optional order/product context for the lightweight (non-process-card)
+    # entry form.  Existing process-card batches continue to use the card as
+    # their authoritative order association.
+    order = models.ForeignKey(
+        QualityOrder,
+        verbose_name="order",
+        related_name="quality_shipment_batches",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    product_specification = models.ForeignKey(
+        "orders.ProductSpecification",
+        verbose_name="product specification",
+        related_name="quality_shipment_batches",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    product_name_snapshot = models.CharField(
+        "product name snapshot", max_length=200, blank=True, default=""
+    )
+    specification_snapshot = models.CharField(
+        "specification snapshot", max_length=200, blank=True, default=""
+    )
+    material_snapshot = models.CharField(
+        "material snapshot", max_length=100, blank=True, default=""
+    )
+    unit_weight_g = models.DecimalField(
+        "unit weight snapshot (g)",
+        max_digits=14,
+        decimal_places=5,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    product_batch_count = models.PositiveIntegerField(
+        "product batch count", null=True, blank=True
+    )
+    pieces_per_batch = models.PositiveIntegerField(
+        "pieces per product batch", null=True, blank=True
+    )
     # A null date is an explicit "date to be filled" state.  Omitting the
     # field when creating through the API uses today's local date via default;
     # sending JSON null keeps it pending for later correction.
@@ -870,6 +918,16 @@ class QualityShipmentBatch(TimeStampedModel):
         related_name="weighted_shipment_batches",
         on_delete=models.PROTECT,
         null=True,
+        blank=True,
+    )
+    # ``inspector`` is retained as the legacy single-responsible-person field.
+    # New clients may assign any number of active inspectors through this M2M;
+    # serializers keep the first selected person mirrored into ``inspector``
+    # so old reports and APIs continue to work unchanged.
+    inspectors = models.ManyToManyField(
+        QualityEmployee,
+        verbose_name="inspectors",
+        related_name="weighted_shipment_batches_many",
         blank=True,
     )
     status = models.CharField(
@@ -906,9 +964,19 @@ class QualityShipmentBatch(TimeStampedModel):
         return self.net_weight_kg
 
     @property
+    def total_net_weight_kg(self):
+        """Canonical total-weight alias used by the current entry form."""
+        return self.net_weight_kg
+
+    @property
     def shipped_quantity(self):
         total = self.lines.aggregate(total=Sum("piece_quantity"))["total"]
         return total or 0
+
+    @property
+    def piece_quantity(self):
+        """Alias used by the weighted entry response for one-line forms."""
+        return self.shipped_quantity
 
     @property
     def line_count(self):
@@ -929,8 +997,23 @@ class QualityShipmentBatch(TimeStampedModel):
             ).first()
             if role not in (QualityEmployee.Role.INSPECTOR, QualityEmployee.Role.BOTH):
                 errors["inspector"] = "The selected employee is not an inspector."
-        for field_name in ("client_key", "customer", "delivery_info", "backfill_reason", "notes"):
+        for field_name in (
+            "product_name_snapshot",
+            "specification_snapshot",
+            "material_snapshot",
+            "backfill_reason",
+            "notes",
+            "client_key",
+            "customer",
+            "delivery_info",
+        ):
             setattr(self, field_name, str(getattr(self, field_name, "") or "").strip())
+        if self.unit_weight_g is not None and self.unit_weight_g <= 0:
+            errors["unit_weight_g"] = "成品单重必须大于 0。"
+        for field_name in ("product_batch_count", "pieces_per_batch"):
+            value = getattr(self, field_name, None)
+            if value is not None and value < 1:
+                errors[field_name] = "批数必须大于 0。"
         if errors:
             raise ValidationError(errors)
 
@@ -958,6 +1041,32 @@ class QualityShipmentLine(TimeStampedModel):
         verbose_name="process card",
         related_name="shipment_lines",
         on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    # Direct order lines are accepted for the lightweight shipment form.  A
+    # process-card line still takes precedence when both associations exist.
+    order = models.ForeignKey(
+        QualityOrder,
+        verbose_name="order",
+        related_name="quality_shipment_lines",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    product_specification = models.ForeignKey(
+        "orders.ProductSpecification",
+        verbose_name="product specification",
+        related_name="quality_shipment_lines",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    specification_snapshot = models.CharField(
+        "specification snapshot", max_length=200, blank=True, default=""
+    )
+    material_snapshot = models.CharField(
+        "material snapshot", max_length=100, blank=True, default=""
     )
     net_weight_kg = models.DecimalField(
         "net shipment weight (kg)",
@@ -971,6 +1080,12 @@ class QualityShipmentLine(TimeStampedModel):
     unit_weight_g_snapshot = models.DecimalField(
         max_digits=14, decimal_places=5, null=True, blank=True
     )
+    product_batch_count = models.PositiveIntegerField(
+        "product batch count", null=True, blank=True
+    )
+    pieces_per_batch = models.PositiveIntegerField(
+        "pieces per product batch", null=True, blank=True
+    )
     theoretical_weight_kg_snapshot = models.DecimalField(
         max_digits=14, decimal_places=3, null=True, blank=True
     )
@@ -982,27 +1097,131 @@ class QualityShipmentLine(TimeStampedModel):
     class Meta:
         ordering = ["id"]
 
+    @property
+    def returned_piece_quantity(self):
+        """Customer-return pieces, including weight-only return records."""
+        total = 0
+        returns = self.rework_cases.filter(
+            origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+        ).exclude(status=QualityReworkCase.Status.CANCELLED)
+        unit = self.unit_weight_g_snapshot or (
+            self.process_card.unit_weight_g if self.process_card_id else None
+        )
+        for case in returns.only("affected_quantity", "affected_weight_kg"):
+            if case.affected_quantity is not None:
+                total += int(case.affected_quantity)
+            elif case.affected_weight_kg is not None and unit:
+                total += int(
+                    (Decimal(case.affected_weight_kg) * Decimal("1000") / Decimal(unit))
+                    .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                )
+        return total
+
+    @property
+    def returned_net_weight_kg(self):
+        """Customer-return weight, deriving it from pieces when necessary."""
+        total = Decimal("0")
+        returns = self.rework_cases.filter(
+            origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+        ).exclude(status=QualityReworkCase.Status.CANCELLED)
+        unit = self.unit_weight_g_snapshot or (
+            self.process_card.unit_weight_g if self.process_card_id else None
+        )
+        for case in returns.only("affected_quantity", "affected_weight_kg"):
+            if case.affected_weight_kg is not None:
+                total += Decimal(case.affected_weight_kg)
+            elif case.affected_quantity is not None and unit:
+                total += Decimal(case.affected_quantity) * Decimal(unit) / Decimal("1000")
+        return total
+
+    @property
+    def delivered_piece_quantity(self):
+        return max(0, int(self.piece_quantity or 0) - self.returned_piece_quantity)
+
+    @property
+    def delivered_net_weight_kg(self):
+        return max(Decimal("0"), Decimal(self.net_weight_kg or 0) - self.returned_net_weight_kg)
+
     def clean(self):
         errors = {}
         if self.net_weight_kg is None or self.net_weight_kg <= 0:
             errors["net_weight_kg"] = "Net shipment weight must be greater than zero."
         if self.piece_quantity is not None and self.piece_quantity < 1:
             errors["piece_quantity"] = "Piece quantity must be greater than zero."
+        if not self.process_card_id and not self.order_id:
+            errors["process_card"] = "出货明细必须关联流程卡或订单。"
         if self.batch_id:
             batch = self.batch
             if batch.status == QualityShipmentBatch.Status.VOID:
                 errors["batch"] = "A void shipment batch cannot receive lines."
-        if self.process_card_id and self.net_weight_kg is not None:
-            card = self.process_card
-            if card.unit_weight_g is None or card.unit_weight_g <= 0:
-                errors["process_card"] = "流程卡尚未填写成品单重，不能出货。"
-            # Fill immutable snapshots on first save.
-            if self.unit_weight_g_snapshot is None:
-                self.unit_weight_g_snapshot = card.unit_weight_g
-            if self.theoretical_weight_kg_snapshot is None:
-                self.theoretical_weight_kg_snapshot = card.theoretical_weight_kg
-            if self.max_allowed_weight_kg_snapshot is None:
-                self.max_allowed_weight_kg_snapshot = card.max_allowed_weight_kg
+        card = self.process_card if self.process_card_id else None
+        order = self.order if self.order_id else (card.order if card else None)
+        if card and self.order_id and self.order_id != card.order_id:
+            errors["order"] = "出货明细订单必须与流程卡一致。"
+        if order and self.product_specification_id is None and order.product_specification_id:
+            self.product_specification_id = order.product_specification_id
+        if card and self.product_specification_id is None and card.product_specification_id:
+            self.product_specification_id = card.product_specification_id
+        if order:
+            expected_spec = str(
+                (card.specification_snapshot if card else "") or order.specification or ""
+            ).strip()
+            expected_material = str(
+                (card.material_snapshot if card else "") or order.material or ""
+            ).strip()
+            if not self.specification_snapshot:
+                self.specification_snapshot = expected_spec
+            if not self.material_snapshot:
+                self.material_snapshot = expected_material
+            if self.specification_snapshot and expected_spec and self.specification_snapshot != expected_spec:
+                errors["specification_snapshot"] = "规格必须与所选流程卡/订单一致。"
+            if self.material_snapshot and expected_material and self.material_snapshot != expected_material:
+                errors["material_snapshot"] = "材质必须与所选流程卡/订单一致。"
+        unit_weight = self.unit_weight_g_snapshot
+        if unit_weight is None and card:
+            unit_weight = card.unit_weight_g
+            self.unit_weight_g_snapshot = unit_weight
+        if unit_weight is None or unit_weight <= 0:
+            errors["process_card" if card else "unit_weight_g_snapshot"] = (
+                "出货明细必须填写大于 0 的成品单重。"
+            )
+        if self.product_batch_count is not None and self.product_batch_count < 1:
+            errors["product_batch_count"] = "批数必须大于 0。"
+        if self.pieces_per_batch is not None and self.pieces_per_batch < 1:
+            errors["pieces_per_batch"] = "每批件数必须大于 0。"
+        # Direct-order weighted shipments are authoritative by scale:
+        # ``net kg * 1000 / unit g``.  Batch count and pieces-per-batch remain
+        # useful operator notes/shortcuts, but they must never replace the
+        # measured quantity.  The older process-card workflow retains its
+        # explicit-piece compatibility because those cards may intentionally
+        # allow a weight tolerance around a fixed card quantity.
+        if not card and unit_weight and self.net_weight_kg:
+            self.piece_quantity = int(
+                (Decimal(self.net_weight_kg) * Decimal("1000") / Decimal(unit_weight))
+                .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            )
+        elif self.product_batch_count and self.pieces_per_batch:
+            self.piece_quantity = int(self.product_batch_count * self.pieces_per_batch)
+        elif self.piece_quantity is None and unit_weight and self.net_weight_kg:
+            self.piece_quantity = int(
+                (Decimal(self.net_weight_kg) * Decimal("1000") / Decimal(unit_weight))
+                .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            )
+        quantity_basis = int(
+            self.piece_quantity
+            or (card.quantity if card else (order.order_quantity if order else 0))
+            or 0
+        )
+        theoretical = (
+            Decimal(quantity_basis) * Decimal(unit_weight or 0) / Decimal("1000")
+        ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+        if self.theoretical_weight_kg_snapshot is None and theoretical:
+            self.theoretical_weight_kg_snapshot = theoretical
+        if self.max_allowed_weight_kg_snapshot is None and theoretical:
+            self.max_allowed_weight_kg_snapshot = (
+                theoretical * Decimal("1.10")
+            ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+        if card and self.batch_id and self.batch.status == QualityShipmentBatch.Status.CONFIRMED:
             # Draft and void documents do not consume the card's delivered
             # allowance.  Confirmation performs the same check inside a
             # transaction, making the cap safe under concurrent requests.
@@ -1020,6 +1239,8 @@ class QualityShipmentLine(TimeStampedModel):
                 ).exclude(batch_id=self.batch_id).aggregate(total=Sum("piece_quantity"))["total"] or 0
                 if previous_pieces - card.returned_piece_quantity + self.piece_quantity > card.quantity:
                     errors["piece_quantity"] = "Cumulative shipped pieces cannot exceed the process-card quantity."
+        self.specification_snapshot = str(self.specification_snapshot or "").strip()
+        self.material_snapshot = str(self.material_snapshot or "").strip()
         self.notes = str(self.notes or "").strip()
         if errors:
             raise ValidationError(errors)
@@ -1032,7 +1253,8 @@ class QualityShipmentLine(TimeStampedModel):
         return result
 
     def __str__(self):
-        return f"{self.batch.shipment_no} - {self.process_card.card_no}"
+        card_label = self.process_card.card_no if self.process_card_id else (self.order.order_no if self.order_id else self.pk)
+        return f"{self.batch.shipment_no} - {card_label}"
 
 
 class QualityReworkCase(TimeStampedModel):
@@ -1150,9 +1372,12 @@ class QualityReworkCase(TimeStampedModel):
             self.process_card_id = self.shipment_line.process_card_id
         if self.shipment_line_id and self.origin == self.Origin.CUSTOMER_RETURN:
             line = self.shipment_line
-            if self.affected_weight_kg is None and self.affected_quantity and line.process_card.unit_weight_g:
+            line_unit_weight = line.unit_weight_g_snapshot or (
+                line.process_card.unit_weight_g if line.process_card_id else None
+            )
+            if self.affected_weight_kg is None and self.affected_quantity and line_unit_weight:
                 self.affected_weight_kg = (
-                    Decimal(self.affected_quantity) * line.process_card.unit_weight_g / Decimal("1000")
+                    Decimal(self.affected_quantity) * Decimal(line_unit_weight) / Decimal("1000")
                 ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
             if line.batch.status != QualityShipmentBatch.Status.CONFIRMED:
                 errors["shipment_line"] = "A customer return must link to a confirmed shipment line."

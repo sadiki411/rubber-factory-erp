@@ -2,7 +2,10 @@ import {
   expectedWeightKg,
   isHighReworkCount,
   orderUnitWeightG,
+  piecesFromBatchCount,
+  piecesFromWeight,
   reworkQuantitiesValid,
+  shipmentPieceQuantity,
   shipmentQuantitiesMatch,
   shipmentQuantityAllowed,
   weightUpperLimitKg,
@@ -38,6 +41,19 @@ describe('quality quantity validation', () => {
     expect(weightVariancePercent(17.3, 16.326)).toBeCloseTo(5.97, 1)
     expect(weightWithinUpperLimit(17.3, 16.326, 10)).toBe(true)
     expect(weightWithinUpperLimit(18.1, 16.326, 10)).toBe(false)
+  })
+
+  it('derives whole pieces from total net weight and finished unit weight', () => {
+    expect(piecesFromWeight(2.5, 31.25)).toBe(80)
+    expect(piecesFromWeight('2.500', '31.25')).toBe(80)
+    expect(piecesFromWeight(0, 31.25)).toBeNull()
+    expect(piecesFromWeight(2.5, 0)).toBeNull()
+  })
+
+  it('supports batch-count quick calculation but keeps weighed quantity authoritative', () => {
+    expect(piecesFromBatchCount(3, 24)).toBe(72)
+    expect(shipmentPieceQuantity({ totalNetWeightKg: 2.5, unitWeightG: 31.25, batchCount: 3, piecesPerBatch: 24 })).toBe(80)
+    expect(shipmentPieceQuantity({ totalNetWeightKg: 2.5, unitWeightG: 31.25 })).toBe(80)
   })
 
   it('reads only explicit unit-weight fields from product specifications', () => {

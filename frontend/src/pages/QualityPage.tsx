@@ -10,7 +10,7 @@ import {
 } from '@ant-design/icons'
 import { Alert, Button, Card, Col, DatePicker, Empty, Input, Progress, Row, Skeleton, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -111,6 +111,7 @@ type OrderRow = { order: QualityOrder; stats?: QualityOrderStatistics }
 
 export function QualityPage() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs().startOf('month'), dayjs().endOf('month')])
   const [query, setQuery] = useState('')
   const [activeTab, setActiveTab] = useState('workflow')
@@ -183,6 +184,23 @@ export function QualityPage() {
   const summary = summaryQuery.data
   const totals = summary?.totals
   const keyword = query.trim().toLowerCase()
+
+  const refreshAfterShipment = async () => {
+    await Promise.all([
+      ordersQuery.refetch(),
+      shipmentsQuery.refetch(),
+      shipmentOptionsQuery.refetch(),
+      processCardsQuery.refetch(),
+      unitWeightsQuery.refetch(),
+      batchesQuery.refetch(),
+      shipmentBatchOptionsQuery.refetch(),
+      summaryQuery.refetch(),
+      queryClient.invalidateQueries({ queryKey: ['orders'] }),
+      queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+      queryClient.invalidateQueries({ queryKey: ['product-specifications'] }),
+    ])
+  }
 
   const filteredEmployees = useMemo(() => employees.filter((item) => !keyword || [item.employee_no, item.name, item.team, item.role_display].some((value) => String(value || '').toLowerCase().includes(keyword))), [employees, keyword])
   const orderRows = useMemo<OrderRow[]>(() => {
@@ -257,7 +275,7 @@ export function QualityPage() {
       label: '流程卡出货',
       children: <div className="quality-tab-content">
         {(processCardsQuery.error || unitWeightsQuery.error || batchesQuery.error || shipmentBatchOptionsQuery.error || reworkCasesQuery.error) && <Alert type="warning" showIcon style={{ marginBottom: 16 }} title="流程卡重量出货模块暂不可用" description="当前服务器未返回一期流程卡接口，页面已保留原有件数出货功能；完成后端迁移后刷新即可启用。" />}
-        <QualityShippingWorkflow orders={orders} processCards={processCards} shipments={shipmentOptions} batches={shipmentBatches} reworks={reworks} loading={ordersQuery.isLoading || processCardsQuery.isLoading} onOpenRework={(rework) => setReworkForm({ rework })} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); await Promise.all([shipmentsQuery.refetch(), shipmentOptionsQuery.refetch(), processCardsQuery.refetch(), batchesQuery.refetch(), shipmentBatchOptionsQuery.refetch(), summaryQuery.refetch()]) }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} /><QualityWorkflowManagement orders={orders} cards={processCards} unitWeights={unitWeights} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions} reworkCases={reworkCases} onRefresh={async () => { await Promise.all([unitWeightsQuery.refetch(), batchesQuery.refetch(), shipmentBatchOptionsQuery.refetch(), reworkCasesQuery.refetch(), processCardsQuery.refetch()]) }} /></div>,
+        <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} shipments={shipmentOptions} batches={shipmentBatches} reworks={reworks} loading={ordersQuery.isLoading || processCardsQuery.isLoading} onOpenShipment={() => setShipmentForm({})} onOpenRework={(rework) => setReworkForm({ rework })} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); await refreshAfterShipment() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} /><QualityWorkflowManagement orders={orders} cards={processCards} unitWeights={unitWeights} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions} reworkCases={reworkCases} onRefresh={async () => { await refreshAfterShipment(); await reworkCasesQuery.refetch() }} /></div>,
     },
     {
       key: 'daily',
@@ -329,7 +347,21 @@ export function QualityPage() {
         <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems} />
       </Card>
 
-      <QualityShipmentDrawer open={!!shipmentForm} shipment={shipmentForm?.shipment} orders={orders} employees={employees} onClose={() => setShipmentForm(undefined)} />
+      {/* Existing ledger rows keep the legacy edit fields; every new shipment
+          entry is routed through the weighted workflow drawer by the
+          compatibility component. */}
+      <QualityShipmentDrawer
+        open={!!shipmentForm}
+        shipment={shipmentForm?.shipment}
+        orders={orders}
+        employees={employees}
+        processCards={processCards}
+        existingShipments={shipmentOptions}
+        existingBatches={shipmentBatchOptions}
+        onClose={() => setShipmentForm(undefined)}
+        onSubmit={(payload) => qualityWorkflowApi.createAndConfirmShipmentBatch(payload)}
+        onSaved={refreshAfterShipment}
+      />
       <QualityReworkDrawer open={!!reworkForm} rework={reworkForm?.rework} shipments={shipmentOptions} employees={employees} onClose={() => setReworkForm(undefined)} />
       <QualityEmployeeDrawer open={!!employeeForm} employee={employeeForm?.employee} onClose={() => setEmployeeForm(undefined)} />
     </div>

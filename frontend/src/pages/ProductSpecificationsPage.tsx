@@ -56,6 +56,7 @@ export function ProductSpecificationsPage() {
     { title: '客户产品编号', dataIndex: 'customer_product_no', fixed: 'left', width: 155, render: exactText },
     { title: '规格', dataIndex: 'specification', width: 180, render: exactText },
     { title: '材质 / 胶料', dataIndex: 'material', width: 140, render: exactText },
+    { title: '最新成品单重', key: 'unit_weight', width: 135, render: (_, row) => row.latest_unit_weight_g == null ? '-' : `${row.latest_unit_weight_g} g/件` },
     { title: '胶料长度 / 裁重', key: 'material', width: 190, render: (_, row) => <span>{exactText(row.material_length)}<br /><Typography.Text type="secondary">{exactText(row.cut_weight)}</Typography.Text></span> },
     { title: '一次硫化', dataIndex: 'primary_curing', width: 190, ellipsis: true, render: exactText },
     { title: '二烤参数', dataIndex: 'secondary_curing', width: 190, ellipsis: true, render: exactText },
@@ -96,6 +97,7 @@ export function ProductSpecificationsPage() {
                   <span><small>一次硫化</small><b>{exactText(record.primary_curing)}</b></span>
                   <span><small>二烤参数</small><b>{exactText(record.secondary_curing)}</b></span>
                   <span><small>有效 / 总孔数</small><b>{exactText(record.effective_cavities)} / {exactText(record.total_cavities)}</b></span>
+                  <span><small>最新成品单重</small><b>{record.latest_unit_weight_g == null ? '-' : `${record.latest_unit_weight_g} g/件`}</b></span>
                   <span><small>模具资料</small><b>{moldDetailsText(record)}</b></span>
                 </div>
                 <Button block icon={<EditOutlined />} onClick={(event) => { event.stopPropagation(); openForm(record) }}>编辑资料</Button>

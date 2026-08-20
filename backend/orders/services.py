@@ -2,7 +2,7 @@ import json
 from decimal import Decimal
 
 from django.core.serializers.json import DjangoJSONEncoder
-from django.db.models import DateTimeField, DecimalField, F, Max, OuterRef, Subquery, Sum, Value
+from django.db.models import DateTimeField, DecimalField, F, Max, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce, Greatest
 from django.forms.models import model_to_dict
 
@@ -83,7 +83,7 @@ def with_order_activity(queryset):
     several production runs and shipments at the same time.
     """
     from production.models import ProductionRun
-    from quality.models import QualityShipment
+    from quality.models import QualityShipment, QualityShipmentBatch
 
     decimal_field = DecimalField(max_digits=18, decimal_places=3)
     receipt_totals = (
@@ -110,6 +110,18 @@ def with_order_activity(queryset):
         .annotate(latest=Max("updated_at"))
         .values("latest")[:1]
     )
+    weighted_shipment_latest = (
+        QualityShipmentBatch.objects.filter(
+            status=QualityShipmentBatch.Status.CONFIRMED,
+        )
+        .filter(
+            Q(order_id=OuterRef("pk"))
+            | Q(lines__order_id=OuterRef("pk"))
+            | Q(lines__process_card__order_id=OuterRef("pk"))
+        )
+        .order_by("-updated_at")
+        .values("updated_at")[:1]
+    )
     return (
         queryset.annotate(
             imported_received_material_kg_value=Coalesce(
@@ -135,6 +147,10 @@ def with_order_activity(queryset):
                 Coalesce(Subquery(run_latest, output_field=DateTimeField()), F("updated_at")),
                 Coalesce(
                     Subquery(shipment_latest, output_field=DateTimeField()), F("updated_at")
+                ),
+                Coalesce(
+                    Subquery(weighted_shipment_latest, output_field=DateTimeField()),
+                    F("updated_at"),
                 ),
             )
         )
