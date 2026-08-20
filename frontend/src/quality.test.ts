@@ -4,10 +4,12 @@ import {
   orderUnitWeightG,
   piecesFromBatchCount,
   piecesFromWeight,
+  processCardQuantityUpperLimit,
   reworkQuantitiesValid,
   shipmentPieceQuantity,
   shipmentQuantitiesMatch,
   shipmentQuantityAllowed,
+  shipmentQuantityWithinFlowCardLimit,
   weightUpperLimitKg,
   weightVariancePercent,
   weightWithinUpperLimit,
@@ -50,10 +52,16 @@ describe('quality quantity validation', () => {
     expect(piecesFromWeight(2.5, 0)).toBeNull()
   })
 
-  it('supports batch-count quick calculation but keeps weighed quantity authoritative', () => {
+  it('multiplies a single weighing by the entered batch count', () => {
     expect(piecesFromBatchCount(3, 24)).toBe(72)
-    expect(shipmentPieceQuantity({ totalNetWeightKg: 2.5, unitWeightG: 31.25, batchCount: 3, piecesPerBatch: 24 })).toBe(80)
+    expect(shipmentPieceQuantity({ totalNetWeightKg: 2.5, unitWeightG: 31.25, batchCount: 3, piecesPerBatch: 24 })).toBe(240)
     expect(shipmentPieceQuantity({ totalNetWeightKg: 2.5, unitWeightG: 31.25 })).toBe(80)
+  })
+
+  it('enforces the flow-card single-batch quantity cap at exactly ten percent', () => {
+    expect(processCardQuantityUpperLimit(100, 10)).toBe(110)
+    expect(shipmentQuantityWithinFlowCardLimit(110, 100, 10)).toBe(true)
+    expect(shipmentQuantityWithinFlowCardLimit(111, 100, 10)).toBe(false)
   })
 
   it('reads only explicit unit-weight fields from product specifications', () => {

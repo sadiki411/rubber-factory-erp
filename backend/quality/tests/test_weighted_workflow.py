@@ -80,7 +80,7 @@ class WeightedWorkflowApiTests(QualityTestMixin, TestCase):
         card = self.card("PC-PIECES", quantity=10, unit_weight_g="2")
         first = self.batch("pieces-1", {"process_card_id": card.pk, "net_weight_kg": "0.016", "piece_quantity": 8})
         self.assertEqual(self.confirm(first.json()["id"]).status_code, 200)
-        second = self.batch("pieces-2", {"process_card_id": card.pk, "net_weight_kg": "0.004", "piece_quantity": 3})
+        second = self.batch("pieces-2", {"process_card_id": card.pk, "net_weight_kg": "0.008", "piece_quantity": 4})
         self.assertEqual(self.confirm(second.json()["id"]).status_code, 400)
         self.assertEqual(self.client.patch(f"/api/quality/shipment-batches/{first.json()['id']}/", {"notes": "x"}, format="json").status_code, 400)
         self.assertEqual(self.client.delete(f"/api/quality/shipment-batches/{first.json()['id']}/").status_code, 405)

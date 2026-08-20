@@ -126,12 +126,14 @@ class ShippingEnhancementApiTests(QualityTestMixin, TestCase):
                 "piece_quantity": 999,
                 "product_batch_count": 2,
                 "pieces_per_batch": 300,
+                "process_card_shipment_quantity": 500,
                 "lines": [{"order_id": self.order.pk, "piece_quantity": 999}],
             },
             format="json",
         )
         self.assertEqual(response.status_code, 201, response.content)
         line = QualityShipmentLine.objects.get(batch_id=response.json()["id"])
+        self.assertIsNone(line.single_batch_net_weight_kg)
         self.assertEqual(line.net_weight_kg, Decimal("1.000"))
         self.assertEqual(line.piece_quantity, 500)
         self.assertEqual(line.product_batch_count, 2)
@@ -288,7 +290,7 @@ class ShippingEnhancementApiTests(QualityTestMixin, TestCase):
                 "specification_snapshot": self.order.specification,
                 "material_snapshot": self.order.material,
                 "unit_weight_g": "2",
-                "total_net_weight_kg": "1.100",
+                "total_net_weight_kg": "1.300",
                 "lines": [{"order_id": self.order.pk}],
             },
             format="json",
@@ -300,7 +302,146 @@ class ShippingEnhancementApiTests(QualityTestMixin, TestCase):
         self.assertEqual(confirmed.status_code, 400, confirmed.content)
         self.assertIn("订单", str(confirmed.json()))
 
-    def test_confirmation_requires_inspector_and_accepts_line_unit_weight_for_card(self):
+    def test_repeat_count_expands_single_weight_and_uses_per_batch_card_standard(self):
+        self.order.order_quantity = 5000
+        self.order.save()
+        response = self.client.post(
+            "/api/quality/shipment-batches/",
+            {
+                "shipment_no": "",
+                "order_id": self.order.pk,
+                "specification_snapshot": self.order.specification,
+                "material_snapshot": self.order.material,
+                "unit_weight_g": "10",
+                "single_batch_net_weight_kg": "1.100",
+                "product_batch_count": 3,
+                "process_card_shipment_quantity": 100,
+                "lines": [{"order_id": self.order.pk}],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertRegex(response.json()["shipment_no"], r"^QS-\d{8}-[A-F0-9]{8}$")
+        line = QualityShipmentLine.objects.get(batch_id=response.json()["id"])
+        self.assertEqual(line.single_batch_net_weight_kg, Decimal("1.100"))
+        self.assertEqual(line.net_weight_kg, Decimal("3.300"))
+        self.assertEqual(line.pieces_per_batch, 110)
+        self.assertEqual(line.piece_quantity, 330)
+        self.assertEqual(line.process_card_shipment_quantity, 100)
+        self.assertEqual(line.theoretical_weight_kg_snapshot, Decimal("3.000"))
+        self.assertEqual(line.max_allowed_weight_kg_snapshot, Decimal("3.300"))
+
+        resumed = self.client.patch(
+            f"/api/quality/shipment-batches/{response.json()['id']}/",
+            {
+                "single_batch_net_weight_kg": "1.100",
+                "total_net_weight_kg": "3.300",
+                "product_batch_count": 3,
+                "process_card_shipment_quantity": 100,
+                "lines": [{
+                    "order_id": self.order.pk,
+                    "single_batch_net_weight_kg": "1.100",
+                }],
+            },
+            format="json",
+        )
+        self.assertEqual(resumed.status_code, 200, resumed.content)
+        line = QualityShipmentLine.objects.get(batch_id=response.json()["id"])
+        self.assertEqual(line.net_weight_kg, Decimal("3.300"))
+        self.assertEqual(line.piece_quantity, 330)
+
+        # Inspectors are optional at confirmation time and can be attached
+        # later without reopening immutable shipment weights.
+        confirmed = self.client.post(
+            f"/api/quality/shipment-batches/{response.json()['id']}/confirm/",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        self.assertEqual(confirmed.json()["inspector_ids"], [])
+        assigned = self.client.post(
+            f"/api/quality/shipment-batches/{response.json()['id']}/assign-inspectors/",
+            {"inspector_ids": [self.inspector.pk]},
+            format="json",
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.content)
+        self.assertEqual(assigned.json()["inspector_ids"], [self.inspector.pk])
+        line.refresh_from_db()
+        self.assertEqual(line.net_weight_kg, Decimal("3.300"))
+        self.assertEqual(line.piece_quantity, 330)
+
+    def test_repeat_count_rejects_single_batch_over_process_card_quantity_110_percent(self):
+        response = self.client.post(
+            "/api/quality/shipment-batches/",
+            {
+                "order_id": self.order.pk,
+                "specification_snapshot": self.order.specification,
+                "material_snapshot": self.order.material,
+                "unit_weight_g": "10",
+                "single_batch_net_weight_kg": "1.110",
+                "product_batch_count": 4,
+                "process_card_shipment_quantity": 100,
+                "lines": [{"order_id": self.order.pk}],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("process_card_shipment_quantity", str(response.json()))
+
+    def test_process_card_repeat_defaults_standard_and_allows_exact_ten_percent(self):
+        card = self.card("PC-REPEAT-110", quantity=100, unit="10")
+        response = self.client.post(
+            "/api/quality/shipment-batches/",
+            {
+                "single_batch_net_weight_kg": "1.100",
+                "product_batch_count": 1,
+                "lines": [{
+                    "process_card_id": card.pk,
+                    "single_batch_net_weight_kg": "1.100",
+                }],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        line = QualityShipmentLine.objects.get(batch_id=response.json()["id"])
+        self.assertEqual(line.process_card_shipment_quantity, 100)
+        self.assertEqual(line.pieces_per_batch, 110)
+        self.assertEqual(line.piece_quantity, 110)
+        confirmed = self.client.post(
+            f"/api/quality/shipment-batches/{response.json()['id']}/confirm/",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+
+    def test_process_card_repeat_compares_each_batch_not_expanded_total_to_one_batch(self):
+        card = self.card("PC-REPEAT-THREE", quantity=100, unit="10")
+        response = self.client.post(
+            "/api/quality/shipment-batches/",
+            {
+                "single_batch_net_weight_kg": "1.050",
+                "product_batch_count": 3,
+                "lines": [{
+                    "process_card_id": card.pk,
+                    "single_batch_net_weight_kg": "1.050",
+                    "product_batch_count": 3,
+                }],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        line = QualityShipmentLine.objects.get(batch_id=response.json()["id"])
+        self.assertEqual(line.pieces_per_batch, 105)
+        self.assertEqual(line.piece_quantity, 315)
+        self.assertEqual(line.net_weight_kg, Decimal("3.150"))
+        confirmed = self.client.post(
+            f"/api/quality/shipment-batches/{response.json()['id']}/confirm/",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+
+    def test_confirmation_allows_later_inspector_and_accepts_line_unit_weight_for_card(self):
         card = self.card("PC-LINE-UNIT", quantity=500, unit=None)
         draft = self.client.post(
             "/api/quality/shipment-batches/",
@@ -315,21 +456,16 @@ class ShippingEnhancementApiTests(QualityTestMixin, TestCase):
             format="json",
         )
         self.assertEqual(draft.status_code, 201, draft.content)
-        missing_inspector = self.client.post(
-            f"/api/quality/shipment-batches/{draft.json()['id']}/confirm/", {}, format="json"
-        )
-        self.assertEqual(missing_inspector.status_code, 400)
-        self.assertIn("inspector_ids", missing_inspector.json())
-        patched = self.client.patch(
-            f"/api/quality/shipment-batches/{draft.json()['id']}/",
-            {"inspector_ids": [self.inspector.pk]},
-            format="json",
-        )
-        self.assertEqual(patched.status_code, 200, patched.content)
         confirmed = self.client.post(
             f"/api/quality/shipment-batches/{draft.json()['id']}/confirm/", {}, format="json"
         )
         self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        assigned = self.client.post(
+            f"/api/quality/shipment-batches/{draft.json()['id']}/assign-inspectors/",
+            {"inspector_ids": [self.inspector.pk]},
+            format="json",
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.content)
         card.refresh_from_db()
         self.assertEqual(card.unit_weight_g, Decimal("2.00000"))
 

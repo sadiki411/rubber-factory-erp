@@ -896,6 +896,17 @@ class QualityShipmentBatch(TimeStampedModel):
         blank=True,
         validators=[MinValueValidator(Decimal("0"))],
     )
+    single_batch_net_weight_kg = models.DecimalField(
+        "single batch net weight (kg)",
+        max_digits=14,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.001"))],
+    )
+    process_card_shipment_quantity = models.PositiveIntegerField(
+        "process-card shipment quantity per batch", null=True, blank=True
+    )
     product_batch_count = models.PositiveIntegerField(
         "product batch count", null=True, blank=True
     )
@@ -1010,6 +1021,16 @@ class QualityShipmentBatch(TimeStampedModel):
             setattr(self, field_name, str(getattr(self, field_name, "") or "").strip())
         if self.unit_weight_g is not None and self.unit_weight_g <= 0:
             errors["unit_weight_g"] = "成品单重必须大于 0。"
+        if (
+            self.single_batch_net_weight_kg is not None
+            and self.single_batch_net_weight_kg <= 0
+        ):
+            errors["single_batch_net_weight_kg"] = "单批净重必须大于 0。"
+        if (
+            self.process_card_shipment_quantity is not None
+            and self.process_card_shipment_quantity < 1
+        ):
+            errors["process_card_shipment_quantity"] = "流程卡出货数量必须大于 0。"
         for field_name in ("product_batch_count", "pieces_per_batch"):
             value = getattr(self, field_name, None)
             if value is not None and value < 1:
@@ -1080,6 +1101,17 @@ class QualityShipmentLine(TimeStampedModel):
     unit_weight_g_snapshot = models.DecimalField(
         max_digits=14, decimal_places=5, null=True, blank=True
     )
+    single_batch_net_weight_kg = models.DecimalField(
+        "single batch net weight (kg)",
+        max_digits=14,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.001"))],
+    )
+    process_card_shipment_quantity = models.PositiveIntegerField(
+        "process-card shipment quantity per batch", null=True, blank=True
+    )
     product_batch_count = models.PositiveIntegerField(
         "product batch count", null=True, blank=True
     )
@@ -1144,8 +1176,6 @@ class QualityShipmentLine(TimeStampedModel):
 
     def clean(self):
         errors = {}
-        if self.net_weight_kg is None or self.net_weight_kg <= 0:
-            errors["net_weight_kg"] = "Net shipment weight must be greater than zero."
         if self.piece_quantity is not None and self.piece_quantity < 1:
             errors["piece_quantity"] = "Piece quantity must be greater than zero."
         if not self.process_card_id and not self.order_id:
@@ -1156,6 +1186,8 @@ class QualityShipmentLine(TimeStampedModel):
                 errors["batch"] = "A void shipment batch cannot receive lines."
         card = self.process_card if self.process_card_id else None
         order = self.order if self.order_id else (card.order if card else None)
+        if card and self.process_card_shipment_quantity is None:
+            self.process_card_shipment_quantity = card.quantity
         if card and self.order_id and self.order_id != card.order_id:
             errors["order"] = "出货明细订单必须与流程卡一致。"
         if order and self.product_specification_id is None and order.product_specification_id:
@@ -1189,26 +1221,77 @@ class QualityShipmentLine(TimeStampedModel):
             errors["product_batch_count"] = "批数必须大于 0。"
         if self.pieces_per_batch is not None and self.pieces_per_batch < 1:
             errors["pieces_per_batch"] = "每批件数必须大于 0。"
-        # Direct-order weighted shipments are authoritative by scale:
-        # ``net kg * 1000 / unit g``.  Batch count and pieces-per-batch remain
-        # useful operator notes/shortcuts, but they must never replace the
-        # measured quantity.  The older process-card workflow retains its
-        # explicit-piece compatibility because those cards may intentionally
-        # allow a weight tolerance around a fixed card quantity.
-        if not card and unit_weight and self.net_weight_kg:
+        if (
+            self.process_card_shipment_quantity is not None
+            and self.process_card_shipment_quantity < 1
+        ):
+            errors["process_card_shipment_quantity"] = "流程卡出货数量必须大于 0。"
+        if (
+            self.single_batch_net_weight_kg is not None
+            and self.single_batch_net_weight_kg <= 0
+        ):
+            errors["single_batch_net_weight_kg"] = "单批净重必须大于 0。"
+
+        # Repeated shipment batches are a quick-entry feature for equal scale
+        # readings.  Persist the expanded total weight/count while retaining
+        # the single reading so reopening a draft cannot multiply it twice.
+        repeat_count = int(self.product_batch_count or 1)
+        single_batch_pieces = None
+        if self.single_batch_net_weight_kg is not None:
+            if self.process_card_shipment_quantity is None:
+                errors["process_card_shipment_quantity"] = (
+                    "重复称重出货必须填写单批流程卡出货数量。"
+                )
+            self.net_weight_kg = (
+                Decimal(self.single_batch_net_weight_kg) * Decimal(repeat_count)
+            ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+            if unit_weight:
+                single_batch_pieces = int(
+                    (
+                        Decimal(self.single_batch_net_weight_kg)
+                        * Decimal("1000")
+                        / Decimal(unit_weight)
+                    ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                )
+                self.pieces_per_batch = single_batch_pieces
+                self.piece_quantity = single_batch_pieces * repeat_count
+        elif not card and unit_weight and self.net_weight_kg:
+            # Compatibility for older clients that submit only a total net
+            # weight and do not use the repeat shortcut.
             self.piece_quantity = int(
                 (Decimal(self.net_weight_kg) * Decimal("1000") / Decimal(unit_weight))
                 .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
             )
-        elif self.product_batch_count and self.pieces_per_batch:
-            self.piece_quantity = int(self.product_batch_count * self.pieces_per_batch)
         elif self.piece_quantity is None and unit_weight and self.net_weight_kg:
             self.piece_quantity = int(
                 (Decimal(self.net_weight_kg) * Decimal("1000") / Decimal(unit_weight))
                 .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
             )
+        if self.net_weight_kg is None or self.net_weight_kg <= 0:
+            errors["net_weight_kg"] = "Net shipment weight must be greater than zero."
+
+        if self.process_card_shipment_quantity is not None:
+            if single_batch_pieces is None and self.piece_quantity:
+                single_batch_pieces = int(
+                    (Decimal(self.piece_quantity) / Decimal(repeat_count)).quantize(
+                        Decimal("1"), rounding=ROUND_HALF_UP
+                    )
+                )
+            if (
+                single_batch_pieces is not None
+                and Decimal(single_batch_pieces)
+                > Decimal(self.process_card_shipment_quantity) * Decimal("1.10")
+            ):
+                errors["process_card_shipment_quantity"] = (
+                    "单批实际出货数量不能超过流程卡出货数量的 110%。"
+                )
         quantity_basis = int(
-            self.piece_quantity
+            (
+                self.process_card_shipment_quantity * repeat_count
+                if self.process_card_shipment_quantity is not None
+                else None
+            )
+            or self.piece_quantity
             or (card.quantity if card else (order.order_quantity if order else 0))
             or 0
         )

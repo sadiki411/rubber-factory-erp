@@ -375,8 +375,6 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             inspectors = list(batch.inspectors.all())
             if not inspectors and batch.inspector_id:
                 inspectors = [batch.inspector]
-            if not inspectors:
-                raise DRFValidationError({"inspector_ids": "确认出货前至少选择一名责任品检员。"})
             invalid_inspectors = [
                 employee.employee_no
                 for employee in inspectors
@@ -400,6 +398,13 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 order = line.order or (card.order if card else None)
                 if not card and not order:
                     raise DRFValidationError({"lines": "每条出货明细必须关联流程卡或订单。"})
+                unit = (
+                    line.unit_weight_g_snapshot
+                    or (card.unit_weight_g if card else None)
+                    or batch.unit_weight_g
+                )
+                if unit:
+                    self._normalize_repeat_line(line, unit)
                 if card:
                     by_card.setdefault(card.pk, Decimal("0"))
                     by_card[card.pk] += Decimal(line.net_weight_kg)
@@ -421,16 +426,18 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                         line.unit_weight_g_snapshot = card.unit_weight_g
                     if line.unit_weight_g_snapshot is None or line.unit_weight_g_snapshot <= 0:
                         raise DRFValidationError({"lines": f"流程卡 {card.card_no} 的成品单重必须大于 0。"})
-                    if line.product_batch_count and line.pieces_per_batch:
-                        line.piece_quantity = line.product_batch_count * line.pieces_per_batch
-                    elif line.piece_quantity is None:
-                        line.piece_quantity = int(
-                            (Decimal(line.net_weight_kg) * Decimal("1000") / Decimal(line.unit_weight_g_snapshot))
-                            .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-                        )
+                    self._normalize_repeat_line(line, line.unit_weight_g_snapshot)
                     quantity = int(line.piece_quantity or 0)
+                    theoretical_quantity = int(
+                        (
+                            line.process_card_shipment_quantity
+                            * int(line.product_batch_count or 1)
+                            if line.process_card_shipment_quantity is not None
+                            else quantity
+                        )
+                    )
                     line.theoretical_weight_kg_snapshot = (
-                        Decimal(quantity) * Decimal(line.unit_weight_g_snapshot) / Decimal("1000")
+                        Decimal(theoretical_quantity) * Decimal(line.unit_weight_g_snapshot) / Decimal("1000")
                     ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
                     line.max_allowed_weight_kg_snapshot = (
                         line.theoretical_weight_kg_snapshot * Decimal("1.10")
@@ -450,16 +457,39 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                         updated_at=timezone.now(),
                     )
                     card.unit_weight_g = card_unit
-                # Keep the original process-card cap semantics for legacy lines.
-                max_card_weight = (
-                    Decimal(card.quantity) * Decimal(card_unit) / Decimal("1000") * Decimal("1.10")
-                ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
-                if card.delivered_net_weight_kg + incoming > max_card_weight:
-                    raise DRFValidationError({"lines": f"流程卡 {card.card_no} 累计出货净重不能超过理论重量的110%。"})
-                if ("card", card_id) in by_pieces:
+                # Legacy card rows have one fixed card total, so retain their
+                # cumulative cap.  New repeated-weighing rows carry an
+                # explicit per-batch standard and were already checked line by
+                # line above; comparing their expanded multi-batch total to a
+                # single old card quantity would incorrectly reject valid
+                # entries (for example 105 pieces x 3 batches).
+                legacy_card_lines = [
+                    line for line in card_lines
+                    if line.single_batch_net_weight_kg is None
+                ]
+                if legacy_card_lines:
+                    legacy_incoming = sum(
+                        (Decimal(line.net_weight_kg) for line in legacy_card_lines),
+                        Decimal("0"),
+                    )
+                    max_card_weight = (
+                        Decimal(card.quantity) * Decimal(card_unit) / Decimal("1000") * Decimal("1.10")
+                    ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+                    if card.delivered_net_weight_kg + legacy_incoming > max_card_weight:
+                        raise DRFValidationError({"lines": f"流程卡 {card.card_no} 累计出货净重不能超过理论重量的110%。"})
+                if ("card", card_id) in by_pieces and legacy_card_lines:
                     existing_pieces = QualityShipmentLine.objects.filter(process_card_id=card_id, batch__status=QualityShipmentBatch.Status.CONFIRMED).exclude(batch_id=batch.pk).aggregate(total=Sum("piece_quantity"))["total"] or 0
-                    if existing_pieces - card.returned_piece_quantity + by_pieces[("card", card_id)] > card.quantity:
-                        raise DRFValidationError({"lines": f"流程卡 {card.card_no} 累计出货件数不能超过卡上数量。"})
+                    maximum_card_pieces = Decimal(card.quantity) * Decimal("1.10")
+                    legacy_incoming_pieces = sum(
+                        int(line.piece_quantity or 0) for line in legacy_card_lines
+                    )
+                    if (
+                        existing_pieces
+                        - card.returned_piece_quantity
+                        + legacy_incoming_pieces
+                        > maximum_card_pieces
+                    ):
+                        raise DRFValidationError({"lines": f"流程卡 {card.card_no} 累计出货件数不能超过卡上数量的110%。"})
             # Resolve direct-order lines first.  Their cap is checked below
             # against *all* confirmed weighted lines for the order (including
             # process-card lines), not just other direct-order rows.
@@ -476,16 +506,18 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                     if unit is None or unit <= 0:
                         raise DRFValidationError({"lines": "自由出货明细必须填写大于 0 的成品单重。"})
                     line.unit_weight_g_snapshot = unit
-                    # The scale is authoritative.  Batch-count fields are
-                    # retained for quick entry/history but cannot override
-                    # the quantity derived from measured net weight.
-                    line.piece_quantity = int(
-                        (Decimal(line.net_weight_kg) * Decimal("1000") / Decimal(unit))
-                        .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-                    )
+                    self._normalize_repeat_line(line, unit)
                     quantity = int(line.piece_quantity or 0)
+                    theoretical_quantity = int(
+                        (
+                            line.process_card_shipment_quantity
+                            * int(line.product_batch_count or 1)
+                            if line.process_card_shipment_quantity is not None
+                            else quantity
+                        )
+                    )
                     line.theoretical_weight_kg_snapshot = (
-                        Decimal(quantity) * Decimal(unit) / Decimal("1000")
+                        Decimal(theoretical_quantity) * Decimal(unit) / Decimal("1000")
                     ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
                     line.max_allowed_weight_kg_snapshot = (
                         line.theoretical_weight_kg_snapshot * Decimal("1.10")
@@ -584,8 +616,11 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
                 if previous_weight + legacy_weight + incoming_weight > max_weight:
                     raise DRFValidationError({"lines": f"订单 {order.order_no} 累计出货净重不能超过理论重量的110%。"})
-                if previous_pieces + incoming_pieces > order.order_quantity:
-                    raise DRFValidationError({"lines": f"订单 {order.order_no} 累计出货件数不能超过订单数量。"})
+                if (
+                    Decimal(previous_pieces + incoming_pieces)
+                    > Decimal(order.order_quantity) * Decimal("1.10")
+                ):
+                    raise DRFValidationError({"lines": f"订单 {order.order_no} 累计出货件数不能超过订单数量的110%。"})
             # Ensure batch-level context is also frozen for manually entered
             # rows, and preserve an exact product specification history.
             if lines:
@@ -608,6 +643,93 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 batch.inspectors.add(batch.inspector_id)
             for card_id in by_card:
                 ProcessCard.objects.get(pk=card_id).refresh_shipping_status()
+        return Response(self.get_serializer(batch).data)
+
+    @staticmethod
+    def _normalize_repeat_line(line, unit_weight):
+        """Expand one equal-weight scale reading into immutable totals."""
+        unit = Decimal(unit_weight)
+        if unit <= 0:
+            raise DRFValidationError({"lines": "成品单重必须大于 0。"})
+        repeat_count = int(line.product_batch_count or 1)
+        if line.single_batch_net_weight_kg is not None:
+            if line.process_card_id and line.process_card_shipment_quantity is None:
+                line.process_card_shipment_quantity = line.process_card.quantity
+            if line.process_card_shipment_quantity is None:
+                raise DRFValidationError(
+                    {
+                        "process_card_shipment_quantity": (
+                            "重复称重出货必须填写单批流程卡出货数量。"
+                        )
+                    }
+                )
+            single_weight = Decimal(line.single_batch_net_weight_kg)
+            if single_weight <= 0:
+                raise DRFValidationError({"lines": "单批净重必须大于 0。"})
+            line.net_weight_kg = (
+                single_weight * Decimal(repeat_count)
+            ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+            single_pieces = int(
+                (single_weight * Decimal("1000") / unit).quantize(
+                    Decimal("1"), rounding=ROUND_HALF_UP
+                )
+            )
+            line.pieces_per_batch = single_pieces
+            line.piece_quantity = single_pieces * repeat_count
+        elif line.piece_quantity is None:
+            line.piece_quantity = int(
+                (Decimal(line.net_weight_kg) * Decimal("1000") / unit).quantize(
+                    Decimal("1"), rounding=ROUND_HALF_UP
+                )
+            )
+            single_pieces = int(line.piece_quantity)
+        else:
+            single_pieces = int(
+                (Decimal(line.piece_quantity) / Decimal(repeat_count)).quantize(
+                    Decimal("1"), rounding=ROUND_HALF_UP
+                )
+            )
+        standard = line.process_card_shipment_quantity
+        if standard is not None and Decimal(single_pieces) > Decimal(standard) * Decimal("1.10"):
+            raise DRFValidationError(
+                {
+                    "process_card_shipment_quantity": (
+                        "单批实际出货数量不能超过流程卡出货数量的110%。"
+                    )
+                }
+            )
+
+    @action(detail=True, methods=["post"], url_path="assign-inspectors")
+    def assign_inspectors(self, request, pk=None):
+        """Add or correct responsible inspectors without rewriting shipment facts."""
+        raw_ids = request.data.get("inspector_ids")
+        if not isinstance(raw_ids, list):
+            raise DRFValidationError({"inspector_ids": "请提交品检员编号列表。"})
+        try:
+            ids = list(dict.fromkeys(int(value) for value in raw_ids))
+        except (TypeError, ValueError):
+            raise DRFValidationError({"inspector_ids": "品检员编号格式无效。"})
+        with transaction.atomic():
+            batch = QualityShipmentBatch.objects.select_for_update().get(pk=pk)
+            if batch.status == QualityShipmentBatch.Status.VOID:
+                raise DRFValidationError({"status": "已作废出货记录不能补录品检员。"})
+            people = list(
+                QualityEmployee.objects.filter(
+                    pk__in=ids,
+                    is_active=True,
+                    role__in=(QualityEmployee.Role.INSPECTOR, QualityEmployee.Role.BOTH),
+                )
+            )
+            by_id = {person.pk: person for person in people}
+            missing = [value for value in ids if value not in by_id]
+            if missing:
+                raise DRFValidationError(
+                    {"inspector_ids": f"品检员不存在、已停用或岗位不符：{', '.join(map(str, missing))}"}
+                )
+            ordered = [by_id[value] for value in ids]
+            batch.inspectors.set(ordered)
+            batch.inspector = ordered[0] if ordered else None
+            batch.save(update_fields=["inspector", "updated_at"])
         return Response(self.get_serializer(batch).data)
 
     @staticmethod
@@ -663,7 +785,9 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             )
         line.save(update_fields=[
             "product_specification", "specification_snapshot", "material_snapshot",
-            "unit_weight_g_snapshot", "piece_quantity", "theoretical_weight_kg_snapshot",
+            "unit_weight_g_snapshot", "single_batch_net_weight_kg", "net_weight_kg",
+            "process_card_shipment_quantity", "product_batch_count", "pieces_per_batch",
+            "piece_quantity", "theoretical_weight_kg_snapshot",
             "max_allowed_weight_kg_snapshot", "updated_at",
         ])
 

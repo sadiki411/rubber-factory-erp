@@ -26,9 +26,10 @@ import {
   orderUnitWeightG,
   piecesFromBatchCount,
   piecesFromWeight,
+  processCardQuantityUpperLimit,
   qualityNumber,
+  shipmentQuantityWithinFlowCardLimit,
   shipmentPieceQuantity,
-  weightUpperLimitKg,
   weightVariancePercent,
 } from '../quality'
 import type {
@@ -56,10 +57,14 @@ export interface QualityWeightShipmentLineSeed {
   order_id?: number
   order?: QualityOrder
   quantity?: number | string | null
+  piece_quantity?: number | string | null
   remaining_quantity?: number | string | null
   unit_weight_g?: number | string | null
   net_weight_kg?: number | string | null
   actual_weight_kg?: number | string | null
+  single_batch_net_weight_kg?: number | string | null
+  product_batch_count?: number | string | null
+  process_card_shipment_quantity?: number | string | null
   specification_snapshot?: string
   material_snapshot?: string
   notes?: string
@@ -96,12 +101,14 @@ type DrawerValues = {
   material_snapshot?: string
   unit_weight_g?: number | null
   unit_weight_g_snapshot?: number | null
+  single_batch_net_weight_kg?: number | null
   total_net_weight_kg?: number | null
   net_weight_kg?: number | null
   piece_quantity?: number | null
   product_batch_count?: number | null
   batch_count?: number | null
   pieces_per_batch?: number | null
+  process_card_shipment_quantity?: number | null
   inspector_id?: number | null
   inspector_ids?: number[]
   notes?: string
@@ -115,9 +122,13 @@ interface EditableLine extends QualityWeightShipmentLineSeed {
   quantity: number | null
   unit_weight_g: number | null
   net_weight_kg: number | null
+  single_batch_net_weight_kg: number | null
+  product_batch_count: number
+  process_card_shipment_quantity: number | null
 }
 
 function numeric(value: unknown) {
+  if (value == null || (typeof value === 'string' && value.trim() === '')) return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
@@ -158,13 +169,27 @@ function inspectorIds(value: QualityShipment | QualityShipmentBatch | undefined)
 
 function seedLines(seeds: QualityWeightShipmentLineSeed[] | undefined, cards: QualityProcessCard[]) {
   if (seeds?.length) {
-    return seeds.map((line, index) => ({
-      ...line,
-      key: String(line.key ?? line.process_card_id ?? `line-${index}`),
-      quantity: numeric(line.quantity ?? line.remaining_quantity),
-      unit_weight_g: numeric(line.unit_weight_g),
-      net_weight_kg: numeric(line.net_weight_kg ?? line.actual_weight_kg),
-    })) satisfies EditableLine[]
+    return seeds.map((line, index) => {
+      const batchCount = numeric(line.product_batch_count) || 1
+      const totalWeight = numeric(line.net_weight_kg ?? line.actual_weight_kg)
+      const singleWeight = numeric(line.single_batch_net_weight_kg)
+        ?? (totalWeight != null ? totalWeight / batchCount : null)
+      const standardQuantity = numeric(
+        line.process_card_shipment_quantity
+        ?? line.remaining_quantity
+        ?? line.quantity,
+      )
+      return {
+        ...line,
+        key: String(line.key ?? line.process_card_id ?? `line-${index}`),
+        quantity: numeric(line.piece_quantity ?? line.quantity),
+        unit_weight_g: numeric(line.unit_weight_g),
+        net_weight_kg: totalWeight,
+        single_batch_net_weight_kg: singleWeight,
+        product_batch_count: batchCount,
+        process_card_shipment_quantity: standardQuantity,
+      }
+    }) satisfies EditableLine[]
   }
   // A process-card selection can be supplied by id without forcing callers to
   // construct line objects themselves.  Generic order entry uses no lines and
@@ -179,6 +204,9 @@ function seedLines(seeds: QualityWeightShipmentLineSeed[] | undefined, cards: Qu
     remaining_quantity: numeric(card.quantity),
     unit_weight_g: numeric(card.unit_weight_g),
     net_weight_kg: numeric(card.theoretical_weight_kg),
+    single_batch_net_weight_kg: numeric(card.theoretical_weight_kg),
+    product_batch_count: 1,
+    process_card_shipment_quantity: numeric(card.quantity),
   })) satisfies EditableLine[]
 }
 
@@ -224,9 +252,13 @@ function batchLineSeeds(lines?: QualityShipmentBatchLine[]) {
       order_id: line.order_id ?? order?.id ?? processCard?.order_id,
       order,
       quantity: numeric(line.quantity ?? line.piece_quantity),
+      piece_quantity: numeric(line.piece_quantity ?? line.quantity),
       remaining_quantity: numeric(line.remaining_quantity ?? line.quantity ?? line.piece_quantity),
       unit_weight_g: numeric(line.unit_weight_g ?? line.unit_weight_g_snapshot),
       net_weight_kg: numeric(line.net_weight_kg),
+      single_batch_net_weight_kg: numeric(line.single_batch_net_weight_kg),
+      product_batch_count: numeric(line.product_batch_count),
+      process_card_shipment_quantity: numeric(line.process_card_shipment_quantity),
       specification_snapshot: line.specification_snapshot,
       material_snapshot: line.material_snapshot,
     } satisfies QualityWeightShipmentLineSeed
@@ -235,6 +267,40 @@ function batchLineSeeds(lines?: QualityShipmentBatchLine[]) {
 
 function lineOrder(line: EditableLine, orders: QualityOrder[]) {
   return line.order || orders.find((item) => item.id === line.order_id)
+}
+
+function editableLineMetrics(line: EditableLine) {
+  const batchCount = Number.isInteger(line.product_batch_count) && line.product_batch_count > 0
+    ? line.product_batch_count
+    : 1
+  const standardQuantity = numeric(line.process_card_shipment_quantity)
+  const singleWeight = numeric(line.single_batch_net_weight_kg)
+  const singlePieces = piecesFromWeight(singleWeight, line.unit_weight_g)
+  const quantity = singlePieces == null ? null : singlePieces * batchCount
+  const actual = singleWeight == null ? null : singleWeight * batchCount
+  const expected = expectedWeightKg(
+    standardQuantity == null ? null : standardQuantity * batchCount,
+    line.unit_weight_g,
+  )
+  const quantityUpper = processCardQuantityUpperLimit(standardQuantity, TOLERANCE_PERCENT)
+  const over = Boolean(
+    singlePieces
+    && standardQuantity
+    && !shipmentQuantityWithinFlowCardLimit(singlePieces, standardQuantity, TOLERANCE_PERCENT),
+  )
+  return {
+    batchCount,
+    standardQuantity,
+    singleWeight,
+    singlePieces,
+    quantity,
+    actual,
+    expected,
+    quantityUpper,
+    over,
+    under: Boolean(singlePieces && standardQuantity && singlePieces < standardQuantity),
+    missing: !standardQuantity || !numeric(line.unit_weight_g) || !singleWeight || !singlePieces,
+  }
 }
 
 /**
@@ -284,13 +350,13 @@ export function QualityWeightShipmentDrawer({
   const shipmentNumberValue = Form.useWatch('shipment_no', form)
   const orderId = Form.useWatch('order_id', form)
   const unitWeight = Form.useWatch('unit_weight_g', form)
-  const totalWeight = Form.useWatch('total_net_weight_kg', form)
+  const singleBatchWeight = Form.useWatch('single_batch_net_weight_kg', form)
   const specificationValue = Form.useWatch('specification_snapshot', form)
   const materialValue = Form.useWatch('material_snapshot', form)
   const productBatchCount = Form.useWatch('product_batch_count', form)
   const legacyBatchCount = Form.useWatch('batch_count', form)
   const batchCount = productBatchCount ?? legacyBatchCount
-  const piecesPerBatch = Form.useWatch('pieces_per_batch', form)
+  const processCardShipmentQuantity = Form.useWatch('process_card_shipment_quantity', form)
   const selectedInspectors = Form.useWatch('inspector_ids', form) || []
   const activeBatch = loadedDraft || batch
 
@@ -325,40 +391,54 @@ export function QualityWeightShipmentDrawer({
   }, [mergedOrders, orderId])
 
   const calculatedPieces = useMemo(() => shipmentPieceQuantity({
-    totalNetWeightKg: totalWeight,
+    totalNetWeightKg: singleBatchWeight,
     unitWeightG: unitWeight,
     batchCount,
-    piecesPerBatch,
-  }), [batchCount, piecesPerBatch, totalWeight, unitWeight])
-  const weightPieces = useMemo(() => piecesFromWeight(totalWeight, unitWeight), [totalWeight, unitWeight])
-  const batchPieces = useMemo(() => piecesFromBatchCount(batchCount, piecesPerBatch), [batchCount, piecesPerBatch])
-  const batchMismatch = Boolean(weightPieces && batchPieces && weightPieces !== batchPieces)
+  }), [batchCount, singleBatchWeight, unitWeight])
+  const singleBatchPieces = useMemo(() => piecesFromWeight(singleBatchWeight, unitWeight), [singleBatchWeight, unitWeight])
+  const effectiveBatchCount = useMemo(() => {
+    const parsed = numeric(batchCount)
+    return parsed && Number.isInteger(parsed) && parsed > 0 ? parsed : 1
+  }, [batchCount])
+  const standardTotalPieces = useMemo(
+    () => piecesFromBatchCount(effectiveBatchCount, processCardShipmentQuantity),
+    [effectiveBatchCount, processCardShipmentQuantity],
+  )
+  const quantityUpperLimit = useMemo(() => {
+    return processCardQuantityUpperLimit(processCardShipmentQuantity, TOLERANCE_PERCENT)
+  }, [processCardShipmentQuantity])
+  const repeatedTotalWeight = useMemo(() => {
+    const weight = numeric(singleBatchWeight)
+    return weight && weight > 0 ? weight * effectiveBatchCount : 0
+  }, [effectiveBatchCount, singleBatchWeight])
+  const quantityOverLimit = Boolean(
+    singleBatchPieces
+    && processCardShipmentQuantity
+    && !shipmentQuantityWithinFlowCardLimit(singleBatchPieces, processCardShipmentQuantity, TOLERANCE_PERCENT),
+  )
 
   const lineMetrics = useMemo(() => lines.reduce((result, line) => {
-    const expected = expectedWeightKg(line.quantity, line.unit_weight_g)
-    const actual = numeric(line.net_weight_kg)
-    const upper = weightUpperLimitKg(expected, TOLERANCE_PERCENT)
-    const validActual = actual != null && actual > 0
+    const metrics = editableLineMetrics(line)
     return {
-      quantity: result.quantity + (numeric(line.quantity) || 0),
-      expected: result.expected + (expected || 0),
-      actual: result.actual + (validActual ? actual : 0),
-      missing: result.missing || !numeric(line.quantity) || !numeric(line.unit_weight_g) || !validActual,
-      over: result.over || (validActual && upper != null && actual > upper),
-      under: result.under || (validActual && expected != null && actual < expected),
+      quantity: result.quantity + (metrics.quantity || 0),
+      expected: result.expected + (metrics.expected || 0),
+      actual: result.actual + (metrics.actual || 0),
+      missing: result.missing || metrics.missing,
+      over: result.over || metrics.over,
+      under: result.under || metrics.under,
     }
   }, { quantity: 0, expected: 0, actual: 0, missing: false, over: false, under: false }), [lines])
 
   const totalExpected = isLineMode
     ? lineMetrics.expected
-    : expectedWeightKg(calculatedPieces, unitWeight) || 0
-  const totalActual = isLineMode ? lineMetrics.actual : numeric(totalWeight) || 0
+    : expectedWeightKg(standardTotalPieces || calculatedPieces, unitWeight) || 0
+  const totalActual = isLineMode ? lineMetrics.actual : repeatedTotalWeight
   const overLimit = isLineMode
     ? lineMetrics.over
-    : totalExpected > 0 && totalActual > (weightUpperLimitKg(totalExpected, TOLERANCE_PERCENT) || Infinity)
+    : quantityOverLimit
   const underLimit = isLineMode
     ? lineMetrics.under
-    : totalExpected > 0 && totalActual > 0 && totalActual < totalExpected
+    : Boolean(singleBatchPieces && numeric(processCardShipmentQuantity) && singleBatchPieces < Number(processCardShipmentQuantity))
 
   useEffect(() => {
     if (!open) return
@@ -372,6 +452,11 @@ export function QualityWeightShipmentDrawer({
       ?? (fallbackOrder ? orderUnitWeightG(fallbackOrder) : null)
     const sourceTotal = numeric(source?.total_net_weight_kg ?? source?.net_weight_kg)
     const sourceBatchCount = numeric(source?.product_batch_count ?? source?.batch_count)
+    const sourceSingleBatchWeight = numeric(source?.single_batch_net_weight_kg)
+      ?? (sourceTotal != null && sourceBatchCount != null && sourceBatchCount > 0
+        ? sourceTotal / sourceBatchCount
+        : sourceTotal)
+    const sourceProcessCardQuantity = numeric(source?.process_card_shipment_quantity ?? source?.pieces_per_batch)
     form.setFieldsValue({
       shipment_no: source?.shipment_no || '',
       // A server draft may intentionally have no date.  Keep that blank so
@@ -391,12 +476,13 @@ export function QualityWeightShipmentDrawer({
       material_snapshot: sourceMaterial,
       unit_weight_g: sourceWeight,
       unit_weight_g_snapshot: sourceWeight,
+      single_batch_net_weight_kg: sourceSingleBatchWeight,
       total_net_weight_kg: sourceTotal,
       net_weight_kg: sourceTotal,
       piece_quantity: numeric(source?.piece_quantity),
-      product_batch_count: sourceBatchCount,
-      batch_count: sourceBatchCount,
-      pieces_per_batch: numeric(source?.pieces_per_batch),
+      product_batch_count: sourceBatchCount ?? (source ? undefined : 1),
+      batch_count: sourceBatchCount ?? (source ? undefined : 1),
+      process_card_shipment_quantity: sourceProcessCardQuantity,
       inspector_ids: inspectorIds(source),
       inspector_id: source?.inspector_id ?? inspectorIds(source)[0],
       customer: source?.customer || '',
@@ -595,9 +681,11 @@ export function QualityWeightShipmentDrawer({
   const submit = async () => {
     const values = await form.validateFields()
     const shipmentNo = text(values.shipment_no)
-    const duplicateFound = await checkShipmentNumber(shipmentNo)
+    const duplicateFound = shipmentNo ? await checkShipmentNumber(shipmentNo) : false
     const editingDraft = Boolean(activeBatch?.id && activeBatch.status !== 'CONFIRMED' && activeBatch.status !== 'VOID')
-    const localMatch = localDuplicateRecord(shipmentNo, shipment, activeBatch, existingShipments, existingBatches)
+    const localMatch = shipmentNo
+      ? localDuplicateRecord(shipmentNo, shipment, activeBatch, existingShipments, existingBatches)
+      : undefined
     if ((localMatch && localMatch.status !== 'DRAFT' && !editingDraft) || duplicateFound) {
       message.error('出货单号已存在且已确认或已作废，请更换后再提交。')
       return
@@ -611,21 +699,17 @@ export function QualityWeightShipmentDrawer({
       return
     }
     const topUnit = numeric(values.unit_weight_g)
-    const topTotal = numeric(values.total_net_weight_kg)
-    const topBatchCount = numeric(values.product_batch_count ?? values.batch_count)
-    const topPiecesPerBatch = numeric(values.pieces_per_batch)
+    const topSingleBatchWeight = numeric(values.single_batch_net_weight_kg)
+    const topBatchCount = numeric(values.product_batch_count ?? values.batch_count) || 1
+    const topProcessCardQuantity = numeric(values.process_card_shipment_quantity ?? values.pieces_per_batch)
+    const topTotal = topSingleBatchWeight == null ? null : topSingleBatchWeight * topBatchCount
     const topPieces = shipmentPieceQuantity({
-      totalNetWeightKg: topTotal,
+      totalNetWeightKg: topSingleBatchWeight,
       unitWeightG: topUnit,
       batchCount: topBatchCount,
-      piecesPerBatch: topPiecesPerBatch,
     }) ?? numeric(values.piece_quantity)
-    if (!isLineMode && (!topUnit || !topTotal || !topPieces)) {
-      message.warning('请填写成品单重和总净重，系统才能自动计算件数。')
-      return
-    }
-    if (!isLineMode && batchMismatch) {
-      message.warning('批数换算件数与称重件数不一致。请修正批数/每批件数或清空这两个可选字段；称重结果为最终依据。')
+    if (!isLineMode && (!topUnit || !topSingleBatchWeight || !topPieces || !topProcessCardQuantity)) {
+      message.warning('请填写成品单重、单批实称净重和流程卡出货数量，系统才能计算本次总出货数。')
       return
     }
     if (isLineMode && lineMetrics.missing) {
@@ -640,7 +724,7 @@ export function QualityWeightShipmentDrawer({
     const snapshotSpec = text(values.specification_snapshot || values.specification)
     const snapshotMaterial = text(values.material_snapshot || values.material)
     const payload: QualityShipmentBatchInput = {
-      shipment_no: shipmentNo,
+      shipment_no: shipmentNo || undefined,
       shipment_date: values.shipment_date?.format('YYYY-MM-DD') || null,
       order_id: numeric(values.order_id),
       order_ids: numeric(values.order_id) == null ? [] : [Number(values.order_id)],
@@ -652,32 +736,39 @@ export function QualityWeightShipmentDrawer({
       material_snapshot: snapshotMaterial,
       unit_weight_g: topUnit,
       unit_weight_g_snapshot: topUnit,
-      total_net_weight_kg: topTotal,
-      net_weight_kg: topTotal,
-      product_batch_count: topBatchCount,
-      batch_count: topBatchCount,
-      pieces_per_batch: topPiecesPerBatch,
-      piece_quantity: topPieces,
+      single_batch_net_weight_kg: isLineMode ? undefined : topSingleBatchWeight,
+      total_net_weight_kg: isLineMode ? undefined : topTotal,
+      net_weight_kg: isLineMode ? undefined : topTotal,
+      product_batch_count: isLineMode ? undefined : topBatchCount,
+      batch_count: isLineMode ? undefined : topBatchCount,
+      process_card_shipment_quantity: isLineMode ? undefined : topProcessCardQuantity,
+      piece_quantity: isLineMode ? undefined : topPieces,
       inspector_ids: inspectorSelection,
       inspector_id: inspectorSelection[0] ?? null,
-      client_key: `quality-weight-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      client_key: activeBatch?.client_key || `quality-weight-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       notes: text(values.notes),
       confirm_warnings: false,
       lines: isLineMode
-        ? lines.map((line) => ({
-          process_card_id: line.process_card_id,
-          order_id: line.order_id,
-          quantity: numeric(line.quantity) || undefined,
-          piece_quantity: numeric(line.quantity) || undefined,
-          unit_weight_g: numeric(line.unit_weight_g),
-          unit_weight_g_snapshot: numeric(line.unit_weight_g),
-          expected_weight_kg: expectedWeightKg(line.quantity, line.unit_weight_g),
-          actual_weight_kg: numeric(line.net_weight_kg) || undefined,
-          net_weight_kg: numeric(line.net_weight_kg) || undefined,
-          specification_snapshot: snapshotSpec,
-          material_snapshot: snapshotMaterial,
-          notes: text(line.notes),
-        }))
+        ? lines.map((line) => {
+          const metrics = editableLineMetrics(line)
+          return {
+            process_card_id: line.process_card_id,
+            order_id: line.order_id,
+            quantity: metrics.quantity || undefined,
+            piece_quantity: metrics.quantity || undefined,
+            unit_weight_g: numeric(line.unit_weight_g),
+            unit_weight_g_snapshot: numeric(line.unit_weight_g),
+            expected_weight_kg: metrics.expected,
+            actual_weight_kg: metrics.actual || undefined,
+            net_weight_kg: metrics.actual || undefined,
+            single_batch_net_weight_kg: metrics.singleWeight || undefined,
+            product_batch_count: metrics.batchCount,
+            process_card_shipment_quantity: metrics.standardQuantity || undefined,
+            specification_snapshot: snapshotSpec,
+            material_snapshot: snapshotMaterial,
+            notes: text(line.notes),
+          }
+        })
         : [{
           process_card_id: undefined,
           order_id: numeric(values.order_id) ?? undefined,
@@ -685,9 +776,15 @@ export function QualityWeightShipmentDrawer({
           piece_quantity: topPieces || undefined,
           unit_weight_g: topUnit,
           unit_weight_g_snapshot: topUnit,
-          expected_weight_kg: expectedWeightKg(topPieces, topUnit),
+          expected_weight_kg: expectedWeightKg(
+            topProcessCardQuantity ? topProcessCardQuantity * topBatchCount : topPieces,
+            topUnit,
+          ),
           actual_weight_kg: topTotal || undefined,
           net_weight_kg: topTotal || undefined,
+          single_batch_net_weight_kg: topSingleBatchWeight || undefined,
+          product_batch_count: topBatchCount,
+          process_card_shipment_quantity: topProcessCardQuantity || undefined,
           specification_snapshot: snapshotSpec,
           material_snapshot: snapshotMaterial,
         }],
@@ -746,11 +843,7 @@ export function QualityWeightShipmentDrawer({
       }
     }
     const shipmentNo = text(values.shipment_no)
-    if (!shipmentNo) {
-      message.warning('保存服务器草稿前请先填写出货单号。')
-      return
-    }
-    const duplicateFound = await checkShipmentNumber(shipmentNo)
+    const duplicateFound = shipmentNo ? await checkShipmentNumber(shipmentNo) : false
     const matchedDraft = draftMatchRef.current || draftMatch
     if (matchedDraft && !activeBatch) {
       await continueDraft(matchedDraft)
@@ -763,27 +856,37 @@ export function QualityWeightShipmentDrawer({
     const inspectorSelection = Array.from(new Set((values.inspector_ids || []).map(Number).filter((id: number) => Number.isFinite(id))))
     const snapshotSpec = text(values.specification_snapshot || values.specification)
     const snapshotMaterial = text(values.material_snapshot || values.material)
+    const draftBatchCount = numeric(values.product_batch_count ?? values.batch_count) || 1
+    const draftSingleBatchWeight = numeric(values.single_batch_net_weight_kg)
+    const draftTotalWeight = draftSingleBatchWeight == null ? null : draftSingleBatchWeight * draftBatchCount
+    const draftProcessCardQuantity = numeric(values.process_card_shipment_quantity ?? values.pieces_per_batch)
     const draftLines = lines
       // The current database requires a positive weight for a persisted line.
       // Keep incomplete line inputs in the local fallback, while still saving
       // the batch header on the server so it can be found from another device.
-      .filter((line) => (line.process_card_id != null || line.order_id != null) && (numeric(line.net_weight_kg) || 0) > 0)
-      .map((line) => ({
-        process_card_id: line.process_card_id,
-        order_id: line.order_id,
-        quantity: numeric(line.quantity) || undefined,
-        piece_quantity: numeric(line.quantity) || undefined,
-        unit_weight_g: numeric(line.unit_weight_g),
-        unit_weight_g_snapshot: numeric(line.unit_weight_g),
-        expected_weight_kg: expectedWeightKg(line.quantity, line.unit_weight_g),
-        actual_weight_kg: numeric(line.net_weight_kg) || undefined,
-        net_weight_kg: numeric(line.net_weight_kg) || undefined,
-        specification_snapshot: snapshotSpec,
-        material_snapshot: snapshotMaterial,
-        notes: text(line.notes),
-      }))
+      .filter((line) => (line.process_card_id != null || line.order_id != null) && (editableLineMetrics(line).actual || 0) > 0)
+      .map((line) => {
+        const metrics = editableLineMetrics(line)
+        return {
+          process_card_id: line.process_card_id,
+          order_id: line.order_id,
+          quantity: metrics.quantity || undefined,
+          piece_quantity: metrics.quantity || undefined,
+          unit_weight_g: numeric(line.unit_weight_g),
+          unit_weight_g_snapshot: numeric(line.unit_weight_g),
+          expected_weight_kg: metrics.expected,
+          actual_weight_kg: metrics.actual || undefined,
+          net_weight_kg: metrics.actual || undefined,
+          single_batch_net_weight_kg: metrics.singleWeight || undefined,
+          product_batch_count: metrics.batchCount,
+          process_card_shipment_quantity: metrics.standardQuantity || undefined,
+          specification_snapshot: snapshotSpec,
+          material_snapshot: snapshotMaterial,
+          notes: text(line.notes),
+        }
+      })
     const payload: QualityShipmentBatchInput = {
-      shipment_no: shipmentNo,
+      shipment_no: shipmentNo || undefined,
       shipment_date: values.shipment_date?.format?.('YYYY-MM-DD') || null,
       order_id: numeric(values.order_id),
       product_specification_id: values.product_specification_id ?? selectedOrder?.product_specification_id ?? null,
@@ -794,11 +897,12 @@ export function QualityWeightShipmentDrawer({
       material_snapshot: snapshotMaterial,
       unit_weight_g: numeric(values.unit_weight_g),
       unit_weight_g_snapshot: numeric(values.unit_weight_g),
-      total_net_weight_kg: numeric(values.total_net_weight_kg),
-      net_weight_kg: numeric(values.total_net_weight_kg),
-      product_batch_count: numeric(values.product_batch_count ?? values.batch_count),
-      batch_count: numeric(values.product_batch_count ?? values.batch_count),
-      pieces_per_batch: numeric(values.pieces_per_batch),
+      single_batch_net_weight_kg: draftLines.length ? undefined : draftSingleBatchWeight,
+      total_net_weight_kg: draftLines.length ? undefined : draftTotalWeight,
+      net_weight_kg: draftLines.length ? undefined : draftTotalWeight,
+      product_batch_count: draftLines.length ? undefined : draftBatchCount,
+      batch_count: draftLines.length ? undefined : draftBatchCount,
+      process_card_shipment_quantity: draftLines.length ? undefined : draftProcessCardQuantity,
       inspector_ids: inspectorSelection,
       inspector_id: inspectorSelection[0] ?? null,
       client_key: activeBatch?.client_key || `quality-weight-draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -857,7 +961,7 @@ export function QualityWeightShipmentDrawer({
         type="info"
         showIcon
         message="新出货统一按成品重量登记"
-        description="可选择候选订单，也可手工输入规格和材质。成品单重单位为 g/件，总净重单位为 kg；超过理论重量 +10% 会阻止提交。"
+        description="单批只称重一次，再填写相同称重的出货批数；系统会立即计算最终总件数和累计总净重。单批换算件数超过流程卡标准数量 10% 会阻止提交。"
       />
       {duplicate && <Alert type="error" showIcon message="出货单号重复" description="请更换出货单号；系统不会覆盖已有出货记录。" className="quality-weight-duplicate-alert" />}
       {draftMatch && !activeBatch && <Alert
@@ -872,8 +976,8 @@ export function QualityWeightShipmentDrawer({
         <Card size="small" className="quality-weight-basic-card" title="出货基本信息">
           <Row gutter={14}>
             <Col xs={24} sm={12}>
-              <Form.Item name="shipment_no" label="出货单号" rules={[{ required: true, whitespace: true, message: '请输入出货单号' }]}>
-                <Input allowClear placeholder="例如 CK-202608-001" onBlur={(event) => void checkShipmentNumber(event.target.value)} suffix={checkingNumber ? <Typography.Text type="secondary">查重中</Typography.Text> : undefined} />
+              <Form.Item name="shipment_no" label="出货单号" extra="可留空，保存时由系统自动生成；手工填写时会自动查重。">
+                <Input allowClear placeholder="留空自动生成" onBlur={(event) => void checkShipmentNumber(event.target.value)} suffix={checkingNumber ? <Typography.Text type="secondary">查重中</Typography.Text> : undefined} />
               </Form.Item>
             </Col>
             <Col xs={24} sm={12}>
@@ -906,8 +1010,8 @@ export function QualityWeightShipmentDrawer({
         </Card>
 
         <Card size="small" className="quality-weight-inspector-card" title="品检责任">
-          <Form.Item name="inspector_ids" label="品检员（可多选）" rules={[{ required: true, type: 'array', min: 1, message: '至少选择一名品检员' }]} extra={selectedInspectors.length > 1 ? `已选择 ${selectedInspectors.length} 人，将共同计入本批责任` : '可选择多人共同负责本批出货'}>
-            <Select mode="multiple" showSearch optionFilterProp="label" placeholder="选择一名或多名品检员" options={inspectorOptions} maxTagCount="responsive" />
+          <Form.Item name="inspector_ids" label="品检员（选填，可后续补录）" extra={selectedInspectors.length > 1 ? `已选择 ${selectedInspectors.length} 人，将共同计入本批责任` : '新增出货时可以留空，确认后仍可在重量出货批次中补录'}>
+            <Select mode="multiple" allowClear showSearch optionFilterProp="label" placeholder="暂不填写或选择一名/多名品检员" options={inspectorOptions} maxTagCount="responsive" />
           </Form.Item>
         </Card>
 
@@ -915,41 +1019,39 @@ export function QualityWeightShipmentDrawer({
           {!isLineMode ? <>
             <Row gutter={14}>
               <Col xs={12} sm={6}><Form.Item name="unit_weight_g" label="成品单重(g/件)" rules={[{ required: true, type: 'number', min: 0.00001, message: '请输入大于0的单重' }]}><InputNumber min={0.00001} precision={5} style={{ width: '100%' }} /></Form.Item></Col>
-              <Col xs={12} sm={6}><Form.Item name="total_net_weight_kg" label="总净重(kg)" rules={[{ required: true, type: 'number', min: 0.001, message: '请输入总净重' }]}><InputNumber min={0.001} precision={3} style={{ width: '100%' }} /></Form.Item></Col>
-              <Col xs={12} sm={6}><Form.Item name="product_batch_count" label="批数"><InputNumber min={1} precision={0} style={{ width: '100%' }} placeholder="可选" /></Form.Item></Col>
-              <Col xs={12} sm={6}><Form.Item name="pieces_per_batch" label="每批件数"><InputNumber min={1} precision={0} style={{ width: '100%' }} placeholder="可选" /></Form.Item></Col>
+              <Col xs={12} sm={6}><Form.Item name="single_batch_net_weight_kg" label="单批实称净重(kg)" rules={[{ required: true, type: 'number', min: 0.001, message: '请输入单批实称净重' }]}><InputNumber min={0.001} precision={3} style={{ width: '100%' }} /></Form.Item></Col>
+              <Col xs={12} sm={6}><Form.Item name="process_card_shipment_quantity" label="流程卡出货数量" rules={[{ required: true, type: 'number', min: 1, message: '请输入流程卡单批出货数量' }]} extra="一批的标准件数"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
+              <Col xs={12} sm={6}><Form.Item name="product_batch_count" label="相同称重批数"><InputNumber min={1} precision={0} style={{ width: '100%' }} placeholder="默认1批" onChange={(value) => form.setFieldValue('batch_count', value)} /></Form.Item></Col>
             </Row>
             <div className="quality-weight-quick-batches" aria-label="批数快捷计算">
               <Typography.Text type="secondary">批数快捷计算：</Typography.Text>
               {[1, 5, 10].map((value) => <Button key={value} size="small" onClick={() => form.setFieldsValue({ product_batch_count: value, batch_count: value })}>{value} 批</Button>)}
-              {selectedOrder && <Button size="small" onClick={() => { const pieces = numeric(form.getFieldValue('pieces_per_batch')) || orderRemaining(selectedOrder); form.setFieldsValue({ product_batch_count: 1, batch_count: 1, pieces_per_batch: pieces }) }}>按剩余量</Button>}
+              {selectedOrder && <Button size="small" onClick={() => { const pieces = numeric(form.getFieldValue('process_card_shipment_quantity')) || orderRemaining(selectedOrder); form.setFieldsValue({ product_batch_count: 1, batch_count: 1, process_card_shipment_quantity: pieces }) }}>按订单剩余量</Button>}
             </div>
             <Row gutter={14} className="quality-weight-derived-row">
-              <Col xs={12} sm={8}><Statistic title="重量换算件数" value={weightPieces || 0} suffix="件" /></Col>
-              <Col xs={12} sm={8}><Statistic title="批数换算件数" value={batchPieces || 0} suffix="件" /></Col>
-              <Col xs={24} sm={8}><Statistic title="本次自动件数" value={calculatedPieces || 0} suffix="件" /></Col>
+              <Col xs={12} sm={6}><Statistic title="单批称重换算" value={singleBatchPieces || 0} suffix="件" /></Col>
+              <Col xs={12} sm={6}><Statistic title="相同称重批数" value={effectiveBatchCount} suffix="批" /></Col>
+              <Col xs={12} sm={6}><Statistic title="最终总出货数" value={calculatedPieces || 0} suffix="件" /></Col>
+              <Col xs={12} sm={6}><Statistic title="累计总净重" value={repeatedTotalWeight} precision={3} suffix="kg" /></Col>
             </Row>
-            {batchMismatch && <Alert className="quality-weight-limit-alert" type="warning" showIcon message="批数换算与称重结果不一致" description={`称重结果为 ${weightPieces} 件，批数快捷计算为 ${batchPieces} 件。请修正或清空批数信息后再提交。`} />}
-            {calculatedPieces && totalWeight && unitWeight && <Typography.Paragraph type="secondary" className="quality-weight-calculation-note">{batchPieces && !batchMismatch ? `${batchCount} 批 × ${piecesPerBatch} 件 = ${calculatedPieces} 件（与称重一致）` : `${totalWeight} kg × 1000 ÷ ${unitWeight} g/件 ≈ ${calculatedPieces} 件`}</Typography.Paragraph>}
+            {quantityOverLimit && <Alert className="quality-weight-limit-alert" type="error" showIcon message="单批换算数量超过流程卡标准 +10%" description={`单批称重换算为 ${singleBatchPieces} 件，流程卡标准为 ${processCardShipmentQuantity} 件，允许上限为 ${qualityNumber(quantityUpperLimit, 1)} 件。请核对单重、净重或流程卡数量。`} />}
+            {calculatedPieces && singleBatchWeight && unitWeight && <Typography.Paragraph type="secondary" className="quality-weight-calculation-note">单批：{singleBatchWeight} kg × 1000 ÷ {unitWeight} g/件 ≈ {singleBatchPieces} 件；合计：{singleBatchPieces} 件 × {effectiveBatchCount} 批 = {calculatedPieces} 件，累计净重 {qualityNumber(repeatedTotalWeight, 3)} kg。</Typography.Paragraph>}
           </> : <>
             <Alert type="info" showIcon message={`已选择 ${lines.length} 张流程卡`} description="每条明细可调整本次件数和实称净重；系统按每条流程卡理论重量 +10% 校验。" />
             <div className="quality-weight-line-list">
               {lines.map((line, index) => {
                 const order = lineOrder(line, orders)
-                const expected = expectedWeightKg(line.quantity, line.unit_weight_g)
-                const upper = weightUpperLimitKg(expected, TOLERANCE_PERCENT)
-                const actual = numeric(line.net_weight_kg)
-                const over = actual != null && upper != null && actual > upper
-                const variance = weightVariancePercent(actual, expected)
-                return <Card key={line.key} size="small" className={`quality-weight-line ${over ? 'is-over' : ''}`}>
-                  <div className="quality-weight-line-heading"><div><strong>{line.card_no || `流程卡 ${line.process_card_id}`}</strong><Typography.Text type="secondary">{order ? ` · ${orderLabel(order)}` : ''}</Typography.Text></div>{over ? <Tag color="error">超上限</Tag> : <Tag color="success">可提交</Tag>}</div>
+                const metrics = editableLineMetrics(line)
+                const variance = weightVariancePercent(metrics.actual, metrics.expected)
+                return <Card key={line.key} size="small" className={`quality-weight-line ${metrics.over ? 'is-over' : ''}`}>
+                  <div className="quality-weight-line-heading"><div><strong>{line.card_no || `流程卡 ${line.process_card_id}`}</strong><Typography.Text type="secondary">{order ? ` · ${orderLabel(order)}` : ''}</Typography.Text></div>{metrics.over ? <Tag color="error">超上限</Tag> : <Tag color="success">可提交</Tag>}</div>
                   <Row gutter={10}>
-                    <Col xs={12} sm={6}><Form.Item label="本次件数"><InputNumber min={1} max={numeric(line.remaining_quantity) || undefined} precision={0} value={line.quantity ?? undefined} onChange={(value) => updateLine(index, { quantity: numeric(value) })} style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col xs={12} sm={6}><Form.Item label="流程卡出货数量"><InputNumber min={1} max={numeric(line.remaining_quantity) || undefined} precision={0} value={line.process_card_shipment_quantity ?? undefined} onChange={(value) => updateLine(index, { process_card_shipment_quantity: numeric(value) })} style={{ width: '100%' }} /></Form.Item></Col>
                     <Col xs={12} sm={6}><Form.Item label="单重(g)"><InputNumber min={0.00001} precision={5} value={line.unit_weight_g ?? undefined} onChange={(value) => updateLine(index, { unit_weight_g: numeric(value) })} style={{ width: '100%' }} /></Form.Item></Col>
-                    <Col xs={12} sm={6}><Form.Item label="理论重量(kg)"><InputNumber value={expected ?? undefined} disabled precision={3} style={{ width: '100%' }} /></Form.Item></Col>
-                    <Col xs={12} sm={6}><Form.Item label="实称净重(kg)"><InputNumber min={0.001} precision={3} value={line.net_weight_kg ?? undefined} onChange={(value) => updateLine(index, { net_weight_kg: numeric(value) })} style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col xs={12} sm={6}><Form.Item label="单批实称净重(kg)"><InputNumber min={0.001} precision={3} value={line.single_batch_net_weight_kg ?? undefined} onChange={(value) => updateLine(index, { single_batch_net_weight_kg: numeric(value) })} style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col xs={12} sm={6}><Form.Item label="相同称重批数"><InputNumber min={1} precision={0} value={line.product_batch_count} onChange={(value) => updateLine(index, { product_batch_count: numeric(value) || 1 })} style={{ width: '100%' }} /></Form.Item></Col>
                   </Row>
-                  <Typography.Text type="secondary">允许上限 {upper == null ? '-' : `${upper.toFixed(3)} kg`} · 偏差 {variance == null ? '-' : `${variance >= 0 ? '+' : ''}${variance.toFixed(2)}%`}</Typography.Text>
+                  <Typography.Text type="secondary">单批换算 {metrics.singlePieces || '-'} 件（允许上限 {metrics.quantityUpper ?? '-'} 件） · 最终 {metrics.quantity || '-'} 件 / {metrics.actual == null ? '-' : metrics.actual.toFixed(3)} kg · 偏差 {variance == null ? '-' : `${variance >= 0 ? '+' : ''}${variance.toFixed(2)}%`}</Typography.Text>
                 </Card>
               })}
             </div>

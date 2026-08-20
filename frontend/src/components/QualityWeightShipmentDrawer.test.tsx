@@ -73,29 +73,60 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(screen.getByText('新增重量出货')).toBeInTheDocument()
     expect(screen.getByLabelText('规格')).toBeInTheDocument()
     expect(screen.getByLabelText('材质 / 胶料')).toBeInTheDocument()
-    expect(screen.getByLabelText('品检员（可多选）')).toBeInTheDocument()
+    expect(screen.getByLabelText(/品检员（选填，可后续补录）/)).toBeInTheDocument()
+    expect(screen.getByLabelText('流程卡出货数量')).toBeInTheDocument()
     expect(screen.getByText('批数快捷计算：')).toBeInTheDocument()
   })
 
-  it('calculates pieces from total weight and submits snapshots plus inspector ids', async () => {
+  it('calculates pieces from one weighed batch and submits snapshots plus inspector ids', async () => {
     const user = userEvent.setup()
     const { onSubmit } = renderDrawer()
-    fireEvent.change(screen.getByLabelText('出货单号'), { target: { value: 'CK-202608-001' } })
+    fireEvent.change(screen.getByLabelText(/出货单号/), { target: { value: 'CK-202608-001' } })
     fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '25' } })
-    fireEvent.change(screen.getByLabelText('总净重(kg)'), { target: { value: '2.5' } })
+    fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '2.5' } })
+    fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '100' } })
     fireEvent.change(screen.getByLabelText('规格'), { target: { value: '手工规格' } })
     fireEvent.change(screen.getByLabelText('材质 / 胶料'), { target: { value: '手工材质' } })
-    await user.click(screen.getByRole('combobox', { name: '品检员（可多选）' }))
+    await user.click(screen.getByRole('combobox', { name: /品检员（选填，可后续补录）/ }))
     await user.click(await screen.findByText(/Q001 · 张三/))
     await user.click(screen.getByRole('button', { name: '确认出货' }))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     const payload = onSubmit.mock.calls[0][0]
     expect(payload.piece_quantity).toBe(100)
+    expect(payload.single_batch_net_weight_kg).toBe(2.5)
+    expect(payload.total_net_weight_kg).toBe(2.5)
+    expect(payload.process_card_shipment_quantity).toBe(100)
     expect(payload.inspector_ids).toEqual([1])
     expect(payload.specification_snapshot).toBe('手工规格')
     expect(payload.material_snapshot).toBe('手工材质')
     expect(payload.lines[0].net_weight_kg).toBe(2.5)
+  }, 20_000)
+
+  it('updates final pieces and cumulative weight immediately when batch count changes', async () => {
+    const user = userEvent.setup()
+    const { onSubmit } = renderDrawer()
+    fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '25' } })
+    fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '2.5' } })
+    fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '100' } })
+    fireEvent.change(screen.getByLabelText(/相同称重批数/), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText('规格'), { target: { value: '批量规格' } })
+    fireEvent.change(screen.getByLabelText('材质 / 胶料'), { target: { value: '批量材质' } })
+
+    await waitFor(() => expect(screen.getByText('最终总出货数').closest('.ant-statistic')).toHaveTextContent('300'))
+    expect(screen.getByText('累计总净重').closest('.ant-statistic')).toHaveTextContent('7.500')
+    await user.click(screen.getByRole('button', { name: '确认出货' }))
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({
+      shipment_no: undefined,
+      inspector_ids: [],
+      single_batch_net_weight_kg: 2.5,
+      total_net_weight_kg: 7.5,
+      process_card_shipment_quantity: 100,
+      product_batch_count: 3,
+      piece_quantity: 300,
+    })
   }, 20_000)
 
   it('saves an unfinished shipment as a server-side draft', async () => {
@@ -104,7 +135,7 @@ describe('QualityWeightShipmentDrawer', () => {
     apiMocks.createShipmentBatch.mockResolvedValue(draft)
     renderDrawer(vi.fn(), { onSaved })
 
-    fireEvent.change(screen.getByLabelText('出货单号'), { target: { value: draft.shipment_no } })
+    fireEvent.change(screen.getByLabelText(/出货单号/), { target: { value: draft.shipment_no } })
     fireEvent.click(screen.getByRole('button', { name: '保存草稿' }))
 
     await waitFor(() => expect(apiMocks.createShipmentBatch).toHaveBeenCalledTimes(1))
@@ -146,11 +177,12 @@ describe('QualityWeightShipmentDrawer', () => {
     apiMocks.confirmShipmentBatch.mockResolvedValue({ ...draft, status: 'CONFIRMED' })
     renderDrawer(vi.fn(), { existingBatches: [draft], onSaved })
 
-    fireEvent.change(screen.getByLabelText('出货单号'), { target: { value: draft.shipment_no } })
-    fireEvent.blur(screen.getByLabelText('出货单号'))
+    fireEvent.change(screen.getByLabelText(/出货单号/), { target: { value: draft.shipment_no } })
+    fireEvent.blur(screen.getByLabelText(/出货单号/))
     expect(await screen.findByText(`发现未完成草稿：${draft.shipment_no}`)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '继续填写草稿' }))
     expect(await screen.findByText(`继续填写草稿 · ${draft.shipment_no}`)).toBeInTheDocument()
+    expect(await screen.findByText('已选择 1 张流程卡')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '确认出货' }))
     await waitFor(() => expect(apiMocks.updateShipmentBatch).toHaveBeenCalledWith(88, expect.any(Object)))

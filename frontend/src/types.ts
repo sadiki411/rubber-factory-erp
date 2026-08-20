@@ -671,10 +671,12 @@ export interface QualityShipment {
   unit_weight_g?: number | string | null
   unit_weight_g_snapshot?: number | string | null
   total_net_weight_kg?: number | string | null
+  single_batch_net_weight_kg?: number | string | null
   net_weight_kg?: number | string | null
   product_batch_count?: number | null
   batch_count?: number | null
   pieces_per_batch?: number | null
+  process_card_shipment_quantity?: number | null
   piece_quantity?: number | null
   inspection_quantity: number
   qualified_quantity: number
@@ -795,9 +797,11 @@ export interface QualityShipmentBatchLineInput {
   net_weight_kg?: number
   piece_quantity?: number
   total_net_weight_kg?: number
+  single_batch_net_weight_kg?: number
   product_batch_count?: number
   batch_count?: number
   pieces_per_batch?: number
+  process_card_shipment_quantity?: number
   tolerance_percent?: number
   notes?: string
 }
@@ -817,10 +821,14 @@ export interface QualityShipmentBatchInput {
   unit_weight_g?: number | null
   unit_weight_g_snapshot?: number | null
   total_net_weight_kg?: number | null
+  /** One scale reading; the server multiplies it by product_batch_count. */
+  single_batch_net_weight_kg?: number | null
   net_weight_kg?: number | null
   product_batch_count?: number | null
   batch_count?: number | null
   pieces_per_batch?: number | null
+  /** Standard quantity shown on one flow card / repeated weighed batch. */
+  process_card_shipment_quantity?: number | null
   piece_quantity?: number | null
   inspector_id?: number | null
   inspector_ids?: number[]
@@ -848,10 +856,12 @@ export interface QualityShipmentBatchResult {
   unit_weight_g?: number | string | null
   unit_weight_g_snapshot?: number | string | null
   total_net_weight_kg?: number | string | null
+  single_batch_net_weight_kg?: number | string | null
   net_weight_kg?: number | string | null
   product_batch_count?: number | null
   batch_count?: number | null
   pieces_per_batch?: number | null
+  process_card_shipment_quantity?: number | null
   piece_quantity?: number | null
   inspector_id?: number | null
   inspector_ids?: number[]
@@ -911,6 +921,10 @@ export interface QualityShipmentBatchLine {
   specification_snapshot?: string
   material_snapshot?: string
   net_weight_kg: number | string
+  single_batch_net_weight_kg?: number | string | null
+  product_batch_count?: number | null
+  pieces_per_batch?: number | null
+  process_card_shipment_quantity?: number | null
   piece_quantity?: number | null
   theoretical_weight_kg_snapshot?: number | string | null
   max_allowed_weight_kg_snapshot?: number | string | null

@@ -111,10 +111,10 @@ export function piecesFromBatchCount(
 }
 
 /**
- * Finished-product net weight and unit weight are the authoritative quantity
- * source. Batch-count input is only a convenience/cross-check and is used as
- * a fallback when no usable scale reading exists. Keeping this policy in one
- * helper prevents an optional batch shortcut from overwriting weighed stock.
+ * Calculate the final shipped quantity for repeated, identical weighings.
+ * `totalNetWeightKg` is the scale reading for one batch; an omitted batch
+ * count means one batch.  This mirrors the workshop workflow: weigh one
+ * identical batch once, then enter how many batches were shipped.
  */
 export function shipmentPieceQuantity(values: {
   totalNetWeightKg?: number | string | null
@@ -122,8 +122,15 @@ export function shipmentPieceQuantity(values: {
   batchCount?: number | string | null
   piecesPerBatch?: number | string | null
 }) {
-  const byWeight = piecesFromWeight(values.totalNetWeightKg, values.unitWeightG)
-  return byWeight ?? piecesFromBatchCount(values.batchCount, values.piecesPerBatch)
+  const singleBatchPieces = piecesFromWeight(values.totalNetWeightKg, values.unitWeightG)
+  if (singleBatchPieces != null) {
+    const parsedBatchCount = Number(values.batchCount)
+    const batchCount = Number.isInteger(parsedBatchCount) && parsedBatchCount > 0
+      ? parsedBatchCount
+      : 1
+    return singleBatchPieces * batchCount
+  }
+  return piecesFromBatchCount(values.batchCount, values.piecesPerBatch)
 }
 
 export function weightUpperLimitKg(expectedKg: number | null | undefined, tolerancePercent = 10) {
@@ -148,4 +155,25 @@ export function weightWithinUpperLimit(
   const actual = Number(actualKg)
   const upper = weightUpperLimitKg(expectedKg, tolerancePercent)
   return Number.isFinite(actual) && actual >= 0 && upper !== null && actual <= upper
+}
+
+/** Whole-piece upper cap for one flow-card shipment (for example 100 -> 110). */
+export function processCardQuantityUpperLimit(
+  standardQuantity: number | string | null | undefined,
+  tolerancePercent = 10,
+) {
+  const standard = Number(standardQuantity)
+  const tolerance = Number(tolerancePercent)
+  if (!Number.isInteger(standard) || standard <= 0 || !Number.isFinite(tolerance) || tolerance < 0) return null
+  return Math.floor(standard * (1 + tolerance / 100))
+}
+
+export function shipmentQuantityWithinFlowCardLimit(
+  singleBatchPieces: number | string | null | undefined,
+  standardQuantity: number | string | null | undefined,
+  tolerancePercent = 10,
+) {
+  const actual = Number(singleBatchPieces)
+  const upper = processCardQuantityUpperLimit(standardQuantity, tolerancePercent)
+  return Number.isInteger(actual) && actual > 0 && upper !== null && actual <= upper
 }

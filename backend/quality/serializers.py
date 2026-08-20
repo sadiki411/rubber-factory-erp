@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -516,6 +516,13 @@ class QualityShipmentLineSerializer(ValidatedModelSerializer):
     unit_weight_g_snapshot = serializers.DecimalField(
         max_digits=14, decimal_places=5, required=False, allow_null=True
     )
+    single_batch_net_weight_kg = serializers.DecimalField(
+        max_digits=14, decimal_places=3, required=False, allow_null=True,
+        min_value=Decimal("0.001"),
+    )
+    process_card_shipment_quantity = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1
+    )
     product_batch_count = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     pieces_per_batch = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     # A batch-level ``total_net_weight_kg`` may be used by the one-line form;
@@ -533,7 +540,8 @@ class QualityShipmentLineSerializer(ValidatedModelSerializer):
         fields = [
             "id", "batch_id", "process_card", "process_card_id", "order_id",
             "product_specification_id", "specification_snapshot", "material_snapshot",
-            "net_weight_kg", "piece_quantity", "unit_weight_g_snapshot",
+            "net_weight_kg", "single_batch_net_weight_kg", "piece_quantity",
+            "unit_weight_g_snapshot", "process_card_shipment_quantity",
             "product_batch_count", "pieces_per_batch", "theoretical_weight_kg_snapshot",
             "max_allowed_weight_kg_snapshot", "notes", "created_at", "updated_at",
         ]
@@ -558,10 +566,34 @@ class QualityShipmentLineSerializer(ValidatedModelSerializer):
             data["net_weight_kg"] = data.pop("total_net_weight_kg")
         if "unit_weight_g_snapshot" not in data and "unit_weight_g" in data:
             data["unit_weight_g_snapshot"] = data.get("unit_weight_g")
+        if "single_batch_net_weight_kg" not in data:
+            for alias in ("single_batch_weight_kg", "per_batch_net_weight_kg"):
+                if alias in data:
+                    data["single_batch_net_weight_kg"] = data.pop(alias)
+                    break
+        if "process_card_shipment_quantity" not in data:
+            for alias in ("process_card_quantity", "card_shipment_quantity"):
+                if alias in data:
+                    data["process_card_shipment_quantity"] = data.pop(alias)
+                    break
         if "piece_quantity" not in data and "quantity" in data:
             data["piece_quantity"] = data.pop("quantity")
         if "product_batch_count" not in data and "batch_count" in data:
             data["product_batch_count"] = data.pop("batch_count")
+        # Model validation runs after DRF field validation.  Expand the
+        # repeated single-batch reading here so a payload can omit the legacy
+        # total-weight field without being rejected as null.
+        single_weight = data.get("single_batch_net_weight_kg")
+        if single_weight not in (None, ""):
+            try:
+                repeat_count = int(data.get("product_batch_count") or 1)
+                data["net_weight_kg"] = str(
+                    (Decimal(str(single_weight)) * Decimal(repeat_count)).quantize(
+                        Decimal("0.001"), rounding=ROUND_HALF_UP
+                    )
+                )
+            except (ArithmeticError, TypeError, ValueError):
+                pass
         return super().to_internal_value(data)
 
     def validate(self, attrs):
@@ -603,6 +635,9 @@ class QualityShipmentLineSerializer(ValidatedModelSerializer):
 
 
 class QualityShipmentBatchSerializer(ValidatedModelSerializer):
+    shipment_no = serializers.CharField(
+        required=False, allow_blank=True, validators=[]
+    )
     client_key = serializers.CharField(required=False, allow_blank=True, validators=[])
     order_id = serializers.PrimaryKeyRelatedField(
         source="order", queryset=QualityOrder.objects.all(), required=False,
@@ -629,6 +664,13 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
     total_net_weight_kg = serializers.DecimalField(
         max_digits=14, decimal_places=3, required=False, allow_null=True
     )
+    single_batch_net_weight_kg = serializers.DecimalField(
+        max_digits=14, decimal_places=3, required=False, allow_null=True,
+        min_value=Decimal("0.001"),
+    )
+    process_card_shipment_quantity = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1
+    )
     actual_weight_kg = serializers.DecimalField(max_digits=14, decimal_places=3, read_only=True)
     shipped_quantity = serializers.IntegerField(read_only=True)
     # Accepted as a legacy one-line input alias; the line serializer still
@@ -642,7 +684,8 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
         fields = [
             "id", "shipment_no", "client_key", "shipment_date", "order_id",
             "product_specification_id", "product_name_snapshot", "specification_snapshot",
-            "material_snapshot", "unit_weight_g", "product_batch_count", "pieces_per_batch",
+            "material_snapshot", "unit_weight_g", "single_batch_net_weight_kg",
+            "process_card_shipment_quantity", "product_batch_count", "pieces_per_batch",
             "inspector", "inspector_id", "inspectors", "inspector_ids", "status", "customer",
             "delivery_info", "backfill_reason", "notes", "lines", "net_weight_kg",
             "total_net_weight_kg", "actual_weight_kg", "shipped_quantity", "piece_quantity",
@@ -679,6 +722,19 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
         # canonical values are copied to the line during create/update below.
         if "product_batch_count" not in data and "batch_count" in data:
             data["product_batch_count"] = data.get("batch_count")
+        if "single_batch_net_weight_kg" not in data:
+            for alias in ("single_batch_weight_kg", "per_batch_net_weight_kg"):
+                if alias in data:
+                    data["single_batch_net_weight_kg"] = data.get(alias)
+                    break
+        # During the rolling upgrade, the existing form still calls its one
+        # scale reading ``total_net_weight_kg``.  Preserve that input as the
+        # single-batch snapshot; the line stores the expanded actual total.
+        if "process_card_shipment_quantity" not in data:
+            for alias in ("process_card_quantity", "card_shipment_quantity"):
+                if alias in data:
+                    data["process_card_shipment_quantity"] = data.get(alias)
+                    break
         if "unit_weight_g" not in data and "unit_weight_g_snapshot" in data:
             data["unit_weight_g"] = data.get("unit_weight_g_snapshot")
         return super().to_internal_value(data)
@@ -861,6 +917,8 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
                     "specification_snapshot": instance.specification_snapshot,
                     "material_snapshot": instance.material_snapshot,
                     "unit_weight_g": instance.unit_weight_g,
+                    "single_batch_net_weight_kg": instance.single_batch_net_weight_kg,
+                    "process_card_shipment_quantity": instance.process_card_shipment_quantity,
                     "product_batch_count": instance.product_batch_count,
                     "pieces_per_batch": instance.pieces_per_batch,
                     "_total_net_weight_kg_input": batch_total_weight,
@@ -898,6 +956,8 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
             "specification_snapshot": batch_data.get("specification_snapshot", ""),
             "material_snapshot": batch_data.get("material_snapshot", ""),
             "unit_weight_g_snapshot": batch_data.get("unit_weight_g"),
+            "single_batch_net_weight_kg": batch_data.get("single_batch_net_weight_kg"),
+            "process_card_shipment_quantity": batch_data.get("process_card_shipment_quantity"),
             "product_batch_count": batch_data.get("product_batch_count"),
             "pieces_per_batch": batch_data.get("pieces_per_batch"),
             "piece_quantity": batch_piece_quantity,
@@ -905,7 +965,8 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
         # ``total_net_weight_kg`` is a write-only batch input.  A line's own
         # value always wins; otherwise use it for the one-line form.
         total = batch_data.get("_total_net_weight_kg_input", batch_data.get("total_net_weight_kg"))
-        if total is not None and len(lines) != 1:
+        single = batch_data.get("single_batch_net_weight_kg")
+        if (total is not None or single is not None) and len(lines) != 1:
             raise serializers.ValidationError(
                 {
                     "total_net_weight_kg": (
@@ -917,15 +978,59 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
         # total weight.  The server remains authoritative: when no explicit
         # batch-count calculation was requested, discard a client-supplied
         # quantity and let QualityShipmentLine.clean derive it from kg / g.
-        force_weight_quantity = total is not None
         for line in lines:
             for key, value in defaults.items():
                 if value is not None and value != "" and line.get(key) in (None, ""):
                     line[key] = value
-            if total is not None and line.get("net_weight_kg") in (None, ""):
+            line_single = line.get("single_batch_net_weight_kg")
+            if line_single is None and single is not None:
+                line_single = single
+                line["single_batch_net_weight_kg"] = single
+            if line_single is not None:
+                repeat_count = int(line.get("product_batch_count") or 1)
+                card = line.get("process_card")
+                if line.get("process_card_shipment_quantity") is None and card is not None:
+                    line["process_card_shipment_quantity"] = card.quantity
+                if line.get("process_card_shipment_quantity") is None:
+                    raise serializers.ValidationError(
+                        {
+                            "process_card_shipment_quantity": (
+                                "重复称重出货必须填写单批流程卡出货数量。"
+                            )
+                        }
+                    )
+                line["net_weight_kg"] = (
+                    Decimal(line_single) * Decimal(repeat_count)
+                ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+                unit = line.get("unit_weight_g_snapshot")
+                if unit is None and card is not None:
+                    unit = card.unit_weight_g
+                if unit:
+                    single_pieces = int(
+                        (
+                            Decimal(line_single) * Decimal("1000") / Decimal(unit)
+                        ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                    )
+                    line["pieces_per_batch"] = single_pieces
+                    line["piece_quantity"] = single_pieces * repeat_count
+                    standard = line.get("process_card_shipment_quantity")
+                    if (
+                        standard is not None
+                        and Decimal(single_pieces) > Decimal(standard) * Decimal("1.10")
+                    ):
+                        raise serializers.ValidationError(
+                            {
+                                "process_card_shipment_quantity": (
+                                    "单批实际出货数量不能超过流程卡出货数量的110%。"
+                                )
+                            }
+                        )
+                else:
+                    # Model validation will return the existing unit-weight
+                    # error with the correct process-card/order context.
+                    line["piece_quantity"] = None
+            elif total is not None and line.get("net_weight_kg") in (None, ""):
                 line["net_weight_kg"] = total
-            if force_weight_quantity and line.get("process_card") is None:
-                line["piece_quantity"] = None
 
 
 class QualityReworkCaseSerializer(ValidatedModelSerializer):

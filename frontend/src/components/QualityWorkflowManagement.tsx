@@ -25,6 +25,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { PlusOutlined } from '@ant-design/icons'
 import { qualityWorkflowApi } from '../api/client'
 import type {
+  QualityEmployee,
   QualityOrder,
   QualityProcessCard,
   QualityReworkCase,
@@ -34,6 +35,7 @@ import type {
 
 interface Props {
   orders: QualityOrder[]
+  employees: QualityEmployee[]
   cards: QualityProcessCard[]
   unitWeights: QualityUnitWeight[]
   batches: QualityShipmentBatch[]
@@ -53,11 +55,13 @@ function dateText(value?: string | null) {
 function ShipmentBatchReviewDrawer({
   open,
   item,
+  employees,
   onClose,
   onSaved,
 }: {
   open: boolean
   item?: QualityShipmentBatch
+  employees: QualityEmployee[]
   onClose: () => void
   onSaved: () => Promise<void>
 }) {
@@ -70,6 +74,11 @@ function ShipmentBatchReviewDrawer({
     form.resetFields()
     form.setFieldsValue({
       shipment_date: dateValue(item?.shipment_date),
+      inspector_ids: Array.from(new Set([
+        ...(item?.inspector_ids || []),
+        ...(item?.inspectors || []).map((inspector) => inspector.id),
+        ...(item?.inspector_id == null ? [] : [item.inspector_id]),
+      ])),
       backfill_reason: item?.backfill_reason || '',
       notes: item?.notes || '',
     })
@@ -81,15 +90,22 @@ function ShipmentBatchReviewDrawer({
     const shipmentDate = values.shipment_date as Dayjs | undefined
     const body = {
       shipment_date: shipmentDate?.format('YYYY-MM-DD') || null,
+      inspector_ids: Array.isArray(values.inspector_ids) ? values.inspector_ids : [],
       backfill_reason: values.backfill_reason || '',
       notes: values.notes || '',
     }
     setSaving(true)
     try {
-      await qualityWorkflowApi.updateShipmentBatch(item.id, body)
-      if (confirm) await qualityWorkflowApi.confirmShipmentBatch(item.id)
+      if (item.status === 'CONFIRMED') {
+        await qualityWorkflowApi.assignShipmentBatchInspectors(item.id, body.inspector_ids.map(Number))
+      } else {
+        await qualityWorkflowApi.updateShipmentBatch(item.id, body)
+        if (confirm) await qualityWorkflowApi.confirmShipmentBatch(item.id)
+      }
       await onSaved()
-      message.success(confirm ? '出货日期已补齐并确认入账' : '出货批次草稿已保存')
+      message.success(item.status === 'CONFIRMED'
+        ? '品检员已补录'
+        : confirm ? '出货日期已补齐并确认入账' : '出货批次草稿已保存')
       onClose()
     } catch (error) {
       message.error((error as Error).message || '出货批次保存失败')
@@ -117,14 +133,19 @@ function ShipmentBatchReviewDrawer({
     open={open}
     onClose={onClose}
     width={500}
-    title={item ? `补充出货批次 ${item.shipment_no}` : '出货批次'}
-    footer={<Space className="drawer-footer-actions"><Popconfirm title="确定作废这个草稿批次吗？" onConfirm={() => void voidDraft()}><Button danger loading={saving}>作废草稿</Button></Popconfirm><Button onClick={onClose}>取消</Button><Button loading={saving} onClick={() => void submit(false)}>保存草稿</Button><Button type="primary" loading={saving} onClick={() => void submit(true)}>保存并确认</Button></Space>}
+    title={item ? `${item.status === 'CONFIRMED' ? '补录品检员' : '补充出货批次'} ${item.shipment_no}` : '出货批次'}
+    footer={item?.status === 'CONFIRMED'
+      ? <Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} onClick={() => void submit(false)}>保存品检员</Button></Space>
+      : <Space className="drawer-footer-actions"><Popconfirm title="确定作废这个草稿批次吗？" onConfirm={() => void voidDraft()}><Button danger loading={saving}>作废草稿</Button></Popconfirm><Button onClick={onClose}>取消</Button><Button loading={saving} onClick={() => void submit(false)}>保存草稿</Button><Button type="primary" loading={saving} onClick={() => void submit(true)}>保存并确认</Button></Space>}
   >
-    <Alert type="info" showIcon message="出货日期必须与实际单据一致" description="如果补录历史日期，请填写补录原因；未填写日期的草稿不能确认入账。" />
+    <Alert type="info" showIcon message={item?.status === 'CONFIRMED' ? '品检员可以在确认出货后补录' : '出货日期必须与实际单据一致'} description={item?.status === 'CONFIRMED' ? '可选择一人或多人；留空保存也不会改变出货数量和重量。' : '如果补录历史日期，请填写补录原因；未填写日期的草稿不能确认入账。'} />
     <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
-      <Form.Item name="shipment_date" label="实际出货日期" rules={[{ required: true, message: '请选择实际出货日期' }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
-      <Form.Item name="backfill_reason" label="历史日期补录原因" extra="仅补录早于今天的日期时必填"><Input.TextArea rows={2} maxLength={300} showCount /></Form.Item>
-      <Form.Item name="notes" label="备注"><Input.TextArea rows={3} maxLength={300} showCount /></Form.Item>
+      <Form.Item name="inspector_ids" label="品检员（选填，可多选）"><Select mode="multiple" allowClear showSearch optionFilterProp="label" placeholder="选择品检员或暂时留空" options={employees.filter((employee) => employee.is_active && ['INSPECTOR', 'BOTH'].includes(employee.role)).map((employee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}${employee.team ? ` · ${employee.team}` : ''}` }))} /></Form.Item>
+      {item?.status !== 'CONFIRMED' && <>
+        <Form.Item name="shipment_date" label="实际出货日期" rules={[{ required: true, message: '请选择实际出货日期' }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
+        <Form.Item name="backfill_reason" label="历史日期补录原因" extra="仅补录早于今天的日期时必填"><Input.TextArea rows={2} maxLength={300} showCount /></Form.Item>
+        <Form.Item name="notes" label="备注"><Input.TextArea rows={3} maxLength={300} showCount /></Form.Item>
+      </>}
     </Form>
     <Typography.Paragraph type="secondary">本批次包含 {item?.line_count || item?.lines?.length || 0} 条流程卡明细，净重 {item?.net_weight_kg || item?.actual_weight_kg || 0} kg。</Typography.Paragraph>
   </Drawer>
@@ -364,7 +385,7 @@ function AttemptDrawer({
   </Drawer>
 }
 
-export function QualityWorkflowManagement({ orders, cards, unitWeights, batches, shipmentOptions = batches, reworkCases, onRefresh }: Props) {
+export function QualityWorkflowManagement({ orders, employees, cards, unitWeights, batches, shipmentOptions = batches, reworkCases, onRefresh }: Props) {
   const [weightItem, setWeightItem] = useState<QualityUnitWeight | null | undefined>(undefined)
   const [caseItem, setCaseItem] = useState<QualityReworkCase | null | undefined>(undefined)
   const [attemptCase, setAttemptCase] = useState<QualityReworkCase | undefined>(undefined)
@@ -384,8 +405,16 @@ export function QualityWorkflowManagement({ orders, cards, unitWeights, batches,
     { title: '客户/说明', key: 'info', render: (_, row) => `${row.customer || '-'}${row.delivery_info ? ` · ${row.delivery_info}` : ''}` },
     { title: '明细', dataIndex: 'line_count', render: (value) => `${value || 0} 行` },
     { title: '净重', dataIndex: 'net_weight_kg', render: (value) => `${value || 0} kg` },
+    { title: '品检员', key: 'inspectors', render: (_, row) => {
+      const names = (row.inspectors || []).map((inspector) => inspector.name)
+      return names.length ? names.join('、') : <Tag color="warning">待补录</Tag>
+    } },
     { title: '状态', dataIndex: 'status', render: (value) => <Tag color={value === 'CONFIRMED' ? 'success' : value === 'VOID' ? 'default' : 'warning'}>{value === 'CONFIRMED' ? '已确认' : value === 'VOID' ? '已作废' : '草稿'}</Tag> },
-    { title: '操作', key: 'action', render: (_, row) => row.status === 'DRAFT' ? <Button type="link" onClick={() => setBatchItem(row)}>补日期 / 确认</Button> : <Typography.Text type="secondary">-</Typography.Text> },
+    { title: '操作', key: 'action', render: (_, row) => row.status === 'DRAFT'
+      ? <Button type="link" onClick={() => setBatchItem(row)}>补日期 / 确认</Button>
+      : row.status === 'CONFIRMED'
+        ? <Button type="link" onClick={() => setBatchItem(row)}>{(row.inspectors || []).length ? '修改品检员' : '补录品检员'}</Button>
+        : <Typography.Text type="secondary">-</Typography.Text> },
   ]
   const caseColumns: TableColumnsType<QualityReworkCase> = [
     { title: '主案', dataIndex: 'case_no', render: (value, row) => <span><strong>{value}</strong><br /><Typography.Text type="secondary">{row.origin === 'INTERNAL' ? '内部返工' : '客户退回'} · {dateText(row.opened_on)}</Typography.Text></span> },
@@ -403,7 +432,7 @@ export function QualityWorkflowManagement({ orders, cards, unitWeights, batches,
       { key: 'rework', label: `返工主案（${reworkCases.length}）`, children: <Card title="内部返工 / 客户退回返工" extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setCaseItem(null)}>新增返工主案</Button>}><Typography.Paragraph type="secondary">每个主案可追加 R1、R2、R3…；客户退回会保留出货历史并返还可重发额度。</Typography.Paragraph>{reworkCases.length ? <Table rowKey="id" dataSource={reworkCases} columns={caseColumns} scroll={{ x: 900 }} pagination={{ pageSize: 8 }} /> : <Empty description="暂无返工主案" />}</Card> },
     ]} />
     <WeightDrawer open={weightItem !== undefined} item={weightItem || undefined} orders={orders} onClose={() => setWeightItem(undefined)} onSaved={onRefresh} />
-    <ShipmentBatchReviewDrawer open={!!batchItem} item={batchItem} onClose={() => setBatchItem(undefined)} onSaved={onRefresh} />
+    <ShipmentBatchReviewDrawer open={!!batchItem} item={batchItem} employees={employees} onClose={() => setBatchItem(undefined)} onSaved={onRefresh} />
     <ReworkCaseDrawer open={caseItem !== undefined} item={caseItem || undefined} cards={cards} batches={batches} shipmentOptions={shipmentOptions} onClose={() => setCaseItem(undefined)} onSaved={onRefresh} />
     <AttemptDrawer open={!!attemptCase} item={attemptCase} onClose={() => setAttemptCase(undefined)} onSaved={onRefresh} />
   </div>

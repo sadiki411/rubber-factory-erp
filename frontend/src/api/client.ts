@@ -552,6 +552,11 @@ export const qualityWorkflowApi = {
       body: JSON.stringify(body),
     }),
   confirmShipmentBatch: (id: number | string) => apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/confirm/`, { method: 'POST', body: JSON.stringify({}) }),
+  assignShipmentBatchInspectors: (id: number | string, inspectorIds: number[]) =>
+    apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/assign-inspectors/`, {
+      method: 'POST',
+      body: JSON.stringify({ inspector_ids: inspectorIds }),
+    }),
   voidShipmentBatch: (id: number | string) => apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/void/`, { method: 'POST', body: JSON.stringify({}) }),
   createAndConfirmShipmentBatch: async (body: QualityShipmentBatchInput) => {
     const draft = await qualityWorkflowApi.createShipmentBatch(body)
