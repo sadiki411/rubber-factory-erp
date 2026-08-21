@@ -32,6 +32,7 @@ import type {
   QualityProcessCard,
   QualityReworkCase,
   QualityShipmentBatch,
+  QualityShipmentBatchLine,
   QualityUnitWeight,
 } from '../types'
 
@@ -64,6 +65,10 @@ function shipmentStatusText(status?: QualityShipmentBatch['status']) {
   return '草稿'
 }
 
+function lineHasAutoAllocationNote(line: QualityShipmentBatchLine) {
+  return String(line.notes || '').includes('系统自动分配')
+}
+
 export interface ShipmentBatchReviewDrawerProps {
   open: boolean
   item?: QualityShipmentBatch
@@ -86,6 +91,11 @@ export function ShipmentBatchReviewDrawer({
   const firstLine = lines[0]
   const firstCard = firstLine?.process_card
   const order = item?.order || firstLine?.order || firstCard?.order
+  const linkedOrders = [...new Map([
+    item?.order,
+    ...lines.map((line) => line.order || line.process_card?.order),
+  ].filter((linked): linked is QualityOrder => Boolean(linked)).map((linked) => [linked.id, linked])).values()]
+  const hasAutoAllocation = lines.some(lineHasAutoAllocationNote)
   const productSpecification = item?.product_specification
   const productName = item?.product_name_snapshot
     || item?.product_name
@@ -135,8 +145,9 @@ export function ShipmentBatchReviewDrawer({
       width: 190,
       render: (_, line) => {
         const lineOrder = line.order || line.process_card?.order
+        const autoAllocated = !line.process_card_id && hasAutoAllocation
         return <span>
-          <strong>{line.process_card?.card_no || line.card_no || '-'}</strong>
+          <strong>{line.process_card?.card_no || line.card_no || (autoAllocated ? '自动分配订单' : '订单出货')}</strong>
           <br />
           <Typography.Text type="secondary">{lineOrder?.order_no || item?.order?.order_no || '-'} / {lineOrder?.item_no || item?.order?.item_no || '-'}</Typography.Text>
         </span>
@@ -157,11 +168,13 @@ export function ShipmentBatchReviewDrawer({
     },
     { title: '单重', key: 'unitWeight', width: 110, render: (_, line) => valueText(line.unit_weight_g_snapshot ?? line.unit_weight_g ?? unitWeight, ' g/件') },
     { title: '单批净重', dataIndex: 'single_batch_net_weight_kg', width: 115, render: (value) => valueText(value, ' kg') },
-    { title: '批数', dataIndex: 'product_batch_count', width: 75, render: (value) => valueText(value ?? 1, ' 批') },
+    { title: '批数 / 分配', dataIndex: 'product_batch_count', width: 115, render: (value, line) => value == null
+      ? (!line.process_card_id && hasAutoAllocation ? <Tag color="blue">自动分配订单</Tag> : '-')
+      : valueText(value, ' 批') },
     { title: '单批件数', dataIndex: 'pieces_per_batch', width: 100, render: (value) => valueText(value, ' 件') },
     { title: '流程卡标准', dataIndex: 'process_card_shipment_quantity', width: 115, render: (value) => valueText(value, ' 件/批') },
-    { title: '最终总件数', dataIndex: 'piece_quantity', width: 110, render: (value) => valueText(value, ' 件') },
-    { title: '累计净重', dataIndex: 'net_weight_kg', width: 110, render: (value) => valueText(value, ' kg') },
+    { title: '出货 / 分配件数', dataIndex: 'piece_quantity', width: 125, render: (value, line) => !line.process_card_id && hasAutoAllocation ? <strong>{valueText(value, ' 件')}</strong> : valueText(value, ' 件') },
+    { title: '分配净重', dataIndex: 'net_weight_kg', width: 110, render: (value, line) => !line.process_card_id && hasAutoAllocation ? <strong>{valueText(value, ' kg')}</strong> : valueText(value, ' kg') },
   ]
 
   useEffect(() => {
@@ -235,6 +248,22 @@ export function ShipmentBatchReviewDrawer({
       ? <Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} onClick={() => void submit(false)}>保存品检员</Button></Space>
       : <Space className="drawer-footer-actions"><Popconfirm title="确定作废这个草稿批次吗？" onConfirm={() => void voidDraft()}><Button danger loading={saving}>作废草稿</Button></Popconfirm><Button onClick={onClose}>取消</Button><Button loading={saving} onClick={() => void submit(false)}>保存草稿</Button><Button type="primary" loading={saving} onClick={() => void submit(true)}>保存并确认</Button></Space>}
   >
+    {hasAutoAllocation && <Alert
+      className="quality-batch-allocation-alert"
+      type="info"
+      showIcon
+      message={`本批已自动分配到 ${linkedOrders.length} 个订单`}
+      description={<Space direction="vertical" size={2}>
+        {lines.filter((line) => !line.process_card_id).map((line) => {
+          const lineOrder = line.order
+          return <span key={line.id}>
+            <Tag color="blue">自动分配订单</Tag>
+            {lineOrder?.order_no || `订单#${line.order_id || '-'}`} / {lineOrder?.item_no || '-'}：
+            <strong>{valueText(line.piece_quantity, ' 件')}</strong> · {valueText(line.net_weight_kg, ' kg')}
+          </span>
+        })}
+      </Space>}
+    />}
     <Descriptions
       bordered
       size="small"
@@ -255,12 +284,18 @@ export function ShipmentBatchReviewDrawer({
         { key: 'standardQuantity', label: '流程卡标准', children: valueText(standardQuantity, ' 件/批') },
         { key: 'finalPieces', label: '最终总件数', children: valueText(finalPieces, ' 件') },
         { key: 'totalWeight', label: '累计净重', children: valueText(totalNetWeight, ' kg') },
+        ...(hasAutoAllocation ? [{
+          key: 'allocatedOrders',
+          label: '自动分配订单',
+          children: linkedOrders.map((linked) => `${linked.order_no} / ${linked.item_no || '-'}`).join('；') || '-',
+          span: 3,
+        }] : []),
         { key: 'notes', label: '备注', children: item?.notes || '-', span: 3 },
       ]}
     />
     {lines.length > 0 && <>
-      <Divider titlePlacement="start">出货明细（{lines.length}行）</Divider>
-      <Table rowKey="id" size="small" dataSource={lines} columns={lineColumns} pagination={false} scroll={{ x: 1145 }} />
+      <Divider titlePlacement="start">{hasAutoAllocation ? '出货与订单分配明细' : '出货明细'}（{lines.length}行）</Divider>
+      <Table rowKey="id" size="small" dataSource={lines} columns={lineColumns} pagination={false} scroll={{ x: 1225 }} />
     </>}
     <Divider titlePlacement="start">{item?.status === 'CONFIRMED' ? '补录或修改品检员' : item?.status === 'VOID' ? '记录状态' : '补充出货资料'}</Divider>
     {item?.status === 'VOID'

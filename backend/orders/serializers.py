@@ -1,9 +1,9 @@
 import re
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Q, Sum
+from django.db.models import Sum
 from rest_framework import serializers
 
 from molds.models import MoldModel
@@ -383,40 +383,30 @@ class BusinessOrderSerializer(AuditedModelSerializer):
         value = getattr(obj, "last_data_updated_at_value", None) or obj.updated_at
         return serializers.DateTimeField().to_representation(value) if value else None
 
-    @staticmethod
-    def _weighted_lines(obj):
-        from quality.models import QualityShipmentBatch, QualityShipmentLine
-
-        return QualityShipmentLine.objects.filter(
-            batch__status=QualityShipmentBatch.Status.CONFIRMED,
-        ).filter(
-            Q(order_id=obj.pk) | Q(process_card__order_id=obj.pk)
-        ).distinct().only(
-            "piece_quantity", "net_weight_kg", "unit_weight_g_snapshot"
-        )
-
     def get_weighted_shipped_quantity(self, obj) -> int:
-        total = 0
-        for line in self._weighted_lines(obj):
-            quantity = line.piece_quantity
-            if quantity is None and line.unit_weight_g_snapshot:
-                quantity = int(
-                    (Decimal(line.net_weight_kg) * Decimal("1000") / Decimal(line.unit_weight_g_snapshot))
-                    .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-                )
-            total += max(
-                int(quantity or 0) - int(line.returned_piece_quantity or 0),
-                0,
-            )
-        return total
+        # Despite the legacy field name, this is the canonical delivered
+        # quantity used everywhere: confirmed weighted rows plus historical
+        # shipments, less valid customer returns.
+        return self._delivered_quantity(obj)
+
+    def _delivered_quantity(self, obj) -> int:
+        from quality.services import delivered_quantities_by_order
+
+        supplied = self.context.get("delivered_quantities_by_order")
+        if supplied is not None and obj.pk in supplied:
+            return int(supplied[obj.pk] or 0)
+        cache = self.context.setdefault("_order_delivered_quantity_cache", {})
+        if obj.pk not in cache:
+            cache[obj.pk] = delivered_quantities_by_order([obj.pk]).get(obj.pk, 0)
+        return int(cache[obj.pk] or 0)
 
     def get_weighted_remaining_quantity(self, obj) -> int:
-        return max(int(obj.order_quantity or 0) - self.get_weighted_shipped_quantity(obj), 0)
+        return max(int(obj.order_quantity or 0) - self._delivered_quantity(obj), 0)
 
     def get_shipment_status(self, obj) -> str:
         if obj.status == QualityOrder.Status.CANCELLED:
             return "CANCELLED"
-        shipped = self.get_weighted_shipped_quantity(obj)
+        shipped = self._delivered_quantity(obj)
         if shipped <= 0:
             return "UNSHIPPED"
         if shipped >= int(obj.order_quantity or 0):

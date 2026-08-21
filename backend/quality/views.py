@@ -28,6 +28,12 @@ from .serializers import (
     ProductUnitWeightSerializer, ProcessCardSerializer, QualityShipmentBatchSerializer,
     QualityShipmentLineSerializer, QualityReworkCaseSerializer, QualityReworkAttemptSerializer,
 )
+from .services import (
+    build_order_allocation_plan,
+    delivered_quantities_by_order,
+    serialize_order_allocation_plan,
+    shipment_line_piece_quantity,
+)
 
 
 class QualityPagination(PageNumberPagination):
@@ -225,42 +231,18 @@ class QualityShippingCandidatesView(APIView):
                 | Q(specification__icontains=q)
                 | Q(material__icontains=q)
             )
-        # An order is a candidate only while at least one process card or the
-        # order itself has remaining pieces.  Legacy quantity shipments are
-        # included in the same remainder to keep old and new entry forms in
-        # agreement.
+        # One shared balance service keeps the dropdown, order detail and
+        # confirmation-time allocator in agreement, including customer returns
+        # and pre-weight-workflow shipment records.
         order_ids = list(queryset.values_list("id", flat=True))
-        # Process-card lines may also carry ``order_id`` in the newer schema.
-        # Aggregate the union in Python so a row is counted exactly once, yet
-        # old rows with only ``process_card_id`` still resolve to their order.
-        shipped_by_order = {}
-        weighted_lines = QualityShipmentLine.objects.filter(
-            batch__status=QualityShipmentBatch.Status.CONFIRMED,
-        ).filter(
-            Q(order_id__in=order_ids) | Q(process_card__order_id__in=order_ids)
-        ).select_related("process_card")
-        for line in weighted_lines:
-            order_id = line.order_id or (
-                line.process_card.order_id if line.process_card_id else None
-            )
-            if order_id is None:
-                continue
-            quantity = line.piece_quantity
-            if quantity is None and line.unit_weight_g_snapshot and line.net_weight_kg:
-                quantity = int(
-                    (Decimal(line.net_weight_kg) * Decimal("1000") / Decimal(line.unit_weight_g_snapshot))
-                    .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-                )
-            returned = line.returned_piece_quantity
-            delivered = max(0, int(quantity or 0) - int(returned or 0))
-            shipped_by_order[order_id] = shipped_by_order.get(order_id, 0) + delivered
-        legacy_totals = {}
-        for shipment in QualityShipment.objects.filter(order_id__in=order_ids).prefetch_related("reworks"):
-            delivered = max(0, int(shipment.shipped_quantity or 0) - int(shipment.returned_quantity or 0))
-            legacy_totals[shipment.order_id] = legacy_totals.get(shipment.order_id, 0) + delivered
+        delivered_by_order = delivered_quantities_by_order(order_ids)
         rows = []
-        for order in queryset.order_by("due_date", "order_date", "id"):
-            shipped = int(shipped_by_order.get(order.pk, 0) or 0) + int(legacy_totals.get(order.pk, 0) or 0)
+        for order in queryset.order_by(
+            F("due_date").asc(nulls_last=True),
+            F("order_date").asc(nulls_last=True),
+            "id",
+        ):
+            shipped = int(delivered_by_order.get(order.pk, 0) or 0)
             remaining = max(0, int(order.order_quantity or 0) - shipped)
             if remaining <= 0:
                 continue
@@ -282,7 +264,11 @@ class QualityShippingCandidatesView(APIView):
                     "id": order.pk,
                     "order_id": order.pk,
                     "order": QualityOrderSerializer(
-                        order, context={"request": request}
+                        order,
+                        context={
+                            "request": request,
+                            "delivered_quantities_by_order": delivered_by_order,
+                        },
                     ).data,
                     "order_no": order.order_no,
                     "item_no": order.item_no,
@@ -569,7 +555,6 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             # Lock cards and check existing confirmed deliveries plus all lines
             # in this batch atomically.
             by_card = {}
-            by_order = {}
             by_pieces = {}
             for line in lines:
                 # Re-derive all historical values inside the confirmation
@@ -586,13 +571,16 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                     or batch.unit_weight_g
                 )
                 if unit:
+                    if not card and line.unit_weight_g_snapshot is None:
+                        # Rolling-upgrade drafts may carry the measured unit
+                        # weight only on the batch header.  Allocation happens
+                        # before the direct-line history save, so copy the
+                        # authoritative fallback onto the in-memory line now.
+                        line.unit_weight_g_snapshot = unit
                     self._normalize_repeat_line(line, unit)
                 if card:
                     by_card.setdefault(card.pk, Decimal("0"))
                     by_card[card.pk] += Decimal(line.net_weight_kg)
-                else:
-                    by_order.setdefault(order.pk, Decimal("0"))
-                    by_order[order.pk] += Decimal(line.net_weight_kg)
                 if line.piece_quantity is not None:
                     key = ("card", card.pk) if card else ("order", order.pk)
                     by_pieces.setdefault(key, 0)
@@ -672,137 +660,56 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                         > maximum_card_pieces
                     ):
                         raise DRFValidationError({"lines": f"流程卡 {card.card_no} 累计出货件数不能超过卡上数量的110%。"})
-            # Resolve direct-order lines first.  Their cap is checked below
-            # against *all* confirmed weighted lines for the order (including
-            # process-card lines), not just other direct-order rows.
-            locked_orders = {}
-            for order_id in sorted(by_order):
-                order = QualityOrder.objects.select_for_update().get(pk=order_id)
-                locked_orders[order_id] = order
-                order_lines = [
-                    line for line in lines
-                    if not line.process_card_id and line.order_id == order_id
-                ]
-                for line in order_lines:
-                    unit = line.unit_weight_g_snapshot or batch.unit_weight_g
-                    if unit is None or unit <= 0:
-                        raise DRFValidationError({"lines": "自由出货明细必须填写大于 0 的成品单重。"})
-                    line.unit_weight_g_snapshot = unit
-                    self._normalize_repeat_line(line, unit)
-                    quantity = int(line.piece_quantity or 0)
-                    theoretical_quantity = int(
-                        (
-                            line.process_card_shipment_quantity
-                            * int(line.product_batch_count or 1)
-                            if line.process_card_shipment_quantity is not None
-                            else quantity
-                        )
-                    )
-                    line.theoretical_weight_kg_snapshot = (
-                        Decimal(theoretical_quantity) * Decimal(unit) / Decimal("1000")
-                    ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
-                    line.max_allowed_weight_kg_snapshot = (
-                        line.theoretical_weight_kg_snapshot * Decimal("1.10")
-                    ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
-                    self._save_line_history(
-                        line, card=None, order=order, created_by=request.user,
-                        measured_on=batch.shipment_date,
-                    )
-
-            # An order can be shipped through several process cards and/or
-            # direct lines.  Enforce one cumulative quantity and weight cap so
-            # a direct entry cannot bypass quantities already shipped from a
-            # process-card entry.  The OR query returns each line once even
-            # when the newer schema also stores ``line.order_id``.
-            # Process-card workflows have their own per-card allowance and
-            # historically permit several cards for the same order (for
-            # example, duplicate physical cards covering separate runs).
-            # The order-level cap below is specifically for the new
-            # free-form order workflow; when a batch contains a direct line,
-            # include prior card deliveries in its allowance so that direct
-            # entry cannot bypass an already shipped order.
-            order_ids = sorted({
+            # Only the lightweight, single direct-order form is eligible for
+            # automatic order allocation.  Explicit multi-line and process-card
+            # workflows retain their historical associations exactly as entered.
+            lines, auto_allocated = self._auto_allocate_direct_order_line(
+                batch, lines, created_by=request.user
+            )
+            direct_order_ids = sorted({
                 line.order_id
                 for line in lines
                 if not line.process_card_id and line.order_id
             })
-            for order_id in order_ids:
-                order = locked_orders.get(order_id)
-                if order is None:
-                    order = QualityOrder.objects.select_for_update().get(pk=order_id)
-                    locked_orders[order_id] = order
-                current_order_lines = [
-                    line for line in lines
-                    if (line.order_id or (line.process_card.order_id if line.process_card_id else None)) == order_id
-                ]
-                incoming_weight = sum(
-                    (Decimal(line.net_weight_kg) for line in current_order_lines),
-                    Decimal("0"),
-                )
-                incoming_pieces = sum(int(line.piece_quantity or 0) for line in current_order_lines)
-                unit_candidates = [
-                    line.unit_weight_g_snapshot for line in current_order_lines
-                    if line.unit_weight_g_snapshot and line.unit_weight_g_snapshot > 0
-                ]
-                previous = list(
-                    QualityShipmentLine.objects.filter(
-                        batch__status=QualityShipmentBatch.Status.CONFIRMED,
-                    )
-                    .exclude(batch_id=batch.pk)
-                    .filter(Q(order_id=order_id) | Q(process_card__order_id=order_id))
-                    .select_related("process_card")
-                )
-                previous_weight = sum(
-                    (Decimal(line.delivered_net_weight_kg) for line in previous),
-                    Decimal("0"),
-                )
-                previous_pieces = 0
-                for line in previous:
-                    quantity = line.piece_quantity
-                    if quantity is None and line.unit_weight_g_snapshot and line.net_weight_kg:
-                        quantity = int(
-                            (Decimal(line.net_weight_kg) * Decimal("1000") / Decimal(line.unit_weight_g_snapshot))
-                            .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-                        )
-                    previous_pieces += max(
-                        int(quantity or 0) - int(line.returned_piece_quantity or 0),
-                        0,
-                    )
-                    if line.unit_weight_g_snapshot and line.unit_weight_g_snapshot > 0:
-                        unit_candidates.append(line.unit_weight_g_snapshot)
-
-                # Legacy quantity-only shipments predate the weighted lines;
-                # include them in the same order allowance when present.
-                legacy_pieces = sum(
-                    max(
-                        int(shipment.shipped_quantity or 0)
-                        - int(shipment.returned_quantity or 0),
-                        0,
-                    )
-                    for shipment in QualityShipment.objects.filter(
-                        order_id=order_id
-                    ).prefetch_related("reworks")
-                )
-                previous_pieces += legacy_pieces
-                unit = unit_candidates[0] if unit_candidates else None
-                if unit is None and order.product_specification_id:
-                    unit = ProductUnitWeight.objects.filter(
-                        product_specification_id=order.product_specification_id,
-                        is_active=True,
-                    ).order_by("-measured_on", "-id").values_list("unit_weight_g", flat=True).first()
+            # Acquire every direct-order lock in one stable primary-key order.
+            # The allocator already used this same ordering; this avoids the
+            # source-first/candidates-second inversion that can deadlock when
+            # two simultaneous shipments use each other's source order.
+            locked_orders = {
+                order.pk: order
+                for order in QualityOrder.objects.select_for_update()
+                .filter(pk__in=direct_order_ids)
+                .order_by("pk")
+            }
+            for line in lines:
+                if line.process_card_id or not line.order_id:
+                    continue
+                order = locked_orders[line.order_id]
+                unit = line.unit_weight_g_snapshot or batch.unit_weight_g
                 if unit is None or unit <= 0:
-                    raise DRFValidationError({"lines": f"订单 {order.order_no} 尚未填写大于 0 的成品单重。"})
-                legacy_weight = Decimal(legacy_pieces) * Decimal(unit) / Decimal("1000")
-                max_weight = (
-                    Decimal(order.order_quantity) * Decimal(unit) / Decimal("1000") * Decimal("1.10")
+                    raise DRFValidationError({"lines": "自由出货明细必须填写大于 0 的成品单重。"})
+                line.unit_weight_g_snapshot = unit
+                self._normalize_repeat_line(line, unit)
+                quantity = int(line.piece_quantity or 0)
+                theoretical_quantity = int(
+                    (
+                        line.process_card_shipment_quantity
+                        * int(line.product_batch_count or 1)
+                        if line.process_card_shipment_quantity is not None
+                        else quantity
+                    )
+                )
+                line.theoretical_weight_kg_snapshot = (
+                    Decimal(theoretical_quantity) * Decimal(unit) / Decimal("1000")
                 ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
-                if previous_weight + legacy_weight + incoming_weight > max_weight:
-                    raise DRFValidationError({"lines": f"订单 {order.order_no} 累计出货净重不能超过理论重量的110%。"})
-                if (
-                    Decimal(previous_pieces + incoming_pieces)
-                    > Decimal(order.order_quantity) * Decimal("1.10")
-                ):
-                    raise DRFValidationError({"lines": f"订单 {order.order_no} 累计出货件数不能超过订单数量的110%。"})
+                line.max_allowed_weight_kg_snapshot = (
+                    line.theoretical_weight_kg_snapshot * Decimal("1.10")
+                ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+                self._save_line_history(
+                    line, card=None, order=order, created_by=request.user,
+                    measured_on=batch.shipment_date,
+                    preserve_piece_quantity=auto_allocated,
+                )
             # Ensure batch-level context is also frozen for manually entered
             # rows, and preserve an exact product specification history.
             if lines:
@@ -826,6 +733,195 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             for card_id in by_card:
                 ProcessCard.objects.get(pk=card_id).refresh_shipping_status()
         return Response(self.get_serializer(batch).data)
+
+    @staticmethod
+    def _split_allocation_weights(total_weight, quantities):
+        """Split a three-decimal physical weight while preserving its sum."""
+
+        total = Decimal(total_weight).quantize(
+            Decimal("0.001"), rounding=ROUND_HALF_UP
+        )
+        quantities = [int(value) for value in quantities]
+        if len(quantities) == 1:
+            return [total]
+        quantum = Decimal("0.001")
+        if total < quantum * len(quantities):
+            raise DRFValidationError(
+                {
+                    "lines": (
+                        "本次净重过小，无法按当前重量精度分配给多个订单。"
+                    )
+                }
+            )
+        total_pieces = sum(quantities)
+        remaining_weight = total
+        result = []
+        for index, quantity in enumerate(quantities[:-1]):
+            remaining_lines = len(quantities) - index - 1
+            proportional = (
+                total * Decimal(quantity) / Decimal(total_pieces)
+            ).quantize(quantum, rounding=ROUND_HALF_UP)
+            maximum = remaining_weight - quantum * remaining_lines
+            allocated = min(max(proportional, quantum), maximum)
+            result.append(allocated)
+            remaining_weight -= allocated
+        result.append(remaining_weight)
+        return result
+
+    def _auto_allocate_direct_order_line(self, batch, lines, *, created_by):
+        """Turn one physical direct-order row into order allocation rows."""
+
+        if (
+            len(lines) != 1
+            or lines[0].process_card_id
+            or not lines[0].order_id
+        ):
+            return lines, False
+        source_line = lines[0]
+        quantity = int(source_line.piece_quantity or 0)
+        if quantity < 1:
+            raise DRFValidationError({"lines": "本次出货件数必须大于0。"})
+        unit_value = source_line.unit_weight_g_snapshot or batch.unit_weight_g
+        if unit_value is None or Decimal(unit_value) <= 0:
+            # Old drafts can predate both line- and batch-level unit snapshots.
+            # Return the same business validation used by direct-order history
+            # confirmation before any split attempts Decimal(None).
+            raise DRFValidationError(
+                {"lines": "自由出货明细必须填写大于 0 的成品单重。"}
+            )
+        source_line.unit_weight_g_snapshot = unit_value
+        try:
+            plan = build_order_allocation_plan(
+                source_line.order, quantity, lock=True
+            )
+        except ValueError as exc:
+            raise DRFValidationError({"lines": str(exc)}) from exc
+        allocation_items = plan["allocations"]
+        if plan["total_allocated_quantity"] != quantity:
+            raise DRFValidationError({"lines": "自动分配件数与本次出货总数不一致。"})
+
+        source_order = plan["source_order"]
+        if (
+            len(allocation_items) == 1
+            and allocation_items[0]["order"].pk == source_order.pk
+        ):
+            # No matching order consumed any excess.  The source line retains
+            # the original repeat-weighing facts and may exceed its order.
+            return lines, False
+
+        quantities = [item["allocated_quantity"] for item in allocation_items]
+        weights = self._split_allocation_weights(
+            source_line.net_weight_kg, quantities
+        )
+        if sum(weights, Decimal("0")) != Decimal(source_line.net_weight_kg):
+            raise DRFValidationError({"lines": "自动分配净重与本次称重总数不一致。"})
+
+        # Some older/mobile clients put repeat-weighing facts only on the
+        # single line.  Allocation rows intentionally clear those fields, so
+        # freeze every missing physical fact on the batch header first.
+        for field_name in (
+            "single_batch_net_weight_kg",
+            "process_card_shipment_quantity",
+            "product_batch_count",
+            "pieces_per_batch",
+        ):
+            if getattr(batch, field_name) is None:
+                value = getattr(source_line, field_name)
+                if value is not None:
+                    setattr(batch, field_name, value)
+
+        original_notes = str(source_line.notes or "").strip()
+        unit = Decimal(unit_value)
+        source_label = source_order.order_no
+        split_rows = []
+        for index, (item, weight) in enumerate(zip(allocation_items, weights)):
+            order = item["order"]
+            allocated_quantity = int(item["allocated_quantity"])
+            theoretical = (
+                Decimal(allocated_quantity) * unit / Decimal("1000")
+            ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+            maximum = (theoretical * Decimal("1.10")).quantize(
+                Decimal("0.001"), rounding=ROUND_HALF_UP
+            )
+            if order.pk == source_order.pk:
+                notes = original_notes
+                if plan["matching_allocated_quantity"]:
+                    system_note = (
+                        f"系统自动分配：本批其余 "
+                        f"{plan['matching_allocated_quantity']} 件已补入相同规格和材质的其他订单。"
+                    )
+                    notes = "\n".join(value for value in (notes, system_note) if value)
+            else:
+                system_note = (
+                    f"系统自动分配：由订单 {source_label} 超出部分补入 "
+                    f"{allocated_quantity} 件。"
+                )
+                notes = "\n".join(value for value in (system_note, original_notes) if value)
+            values = {
+                "order_id": order.pk,
+                "product_specification_id": (
+                    order.product_specification_id
+                    or source_line.product_specification_id
+                ),
+                "specification_snapshot": order.specification,
+                "material_snapshot": order.material,
+                "net_weight_kg": weight,
+                "piece_quantity": allocated_quantity,
+                "unit_weight_g_snapshot": unit,
+                # The batch header keeps the one physical scale reading and
+                # repeat count.  Logical allocation rows must not repeat those
+                # inputs or model normalization would multiply the total.
+                "single_batch_net_weight_kg": None,
+                "process_card_shipment_quantity": None,
+                "product_batch_count": None,
+                "pieces_per_batch": None,
+                "theoretical_weight_kg_snapshot": theoretical,
+                "max_allowed_weight_kg_snapshot": maximum,
+                "notes": notes,
+            }
+            if index == 0:
+                QualityShipmentLine.objects.filter(pk=source_line.pk).update(
+                    **values, updated_at=timezone.now()
+                )
+            else:
+                split_rows.append(
+                    QualityShipmentLine(batch=batch, **values)
+                )
+            product_specification_id = (
+                order.product_specification_id
+                or source_line.product_specification_id
+            )
+            if product_specification_id:
+                ProductUnitWeight.objects.get_or_create(
+                    product_specification_id=product_specification_id,
+                    unit_weight_g=unit,
+                    is_active=True,
+                    defaults={
+                        "measured_on": batch.shipment_date,
+                        "backfill_reason": "出货自动分配保存历史单重",
+                        "created_by": created_by,
+                        "notes": "由出货自动分配保存的单重历史",
+                    },
+                )
+        if split_rows:
+            # All values above were derived from a previously validated source
+            # line.  bulk_create intentionally avoids re-running the direct-line
+            # kg/g derivation, which would destroy the exact piece allocation.
+            QualityShipmentLine.objects.bulk_create(split_rows)
+
+        allocated_order_ids = {
+            item["order"].pk for item in allocation_items
+        }
+        if source_order.pk not in allocated_order_ids:
+            batch.order = allocation_items[0]["order"]
+        return (
+            list(
+                batch.lines.select_related(
+                    "process_card", "order", "product_specification"
+                ).order_by("id")
+            ),
+            True,
+        )
 
     @staticmethod
     def _normalize_repeat_line(line, unit_weight):
@@ -915,7 +1011,15 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
         return Response(self.get_serializer(batch).data)
 
     @staticmethod
-    def _save_line_history(line, *, card, order, created_by=None, measured_on=None):
+    def _save_line_history(
+        line,
+        *,
+        card,
+        order,
+        created_by=None,
+        measured_on=None,
+        preserve_piece_quantity=False,
+    ):
         """Persist immutable snapshots and resolve/create exact product specs."""
         spec = str(line.specification_snapshot or "").strip()
         material = str(line.material_snapshot or "").strip()
@@ -965,6 +1069,11 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                     "notes": "由出货确认自动保存的单重历史",
                 },
             )
+        allocated_piece_quantity = (
+            int(line.piece_quantity)
+            if preserve_piece_quantity and line.piece_quantity is not None
+            else None
+        )
         line.save(update_fields=[
             "product_specification", "specification_snapshot", "material_snapshot",
             "unit_weight_g_snapshot", "single_batch_net_weight_kg", "net_weight_kg",
@@ -972,6 +1081,19 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             "piece_quantity", "theoretical_weight_kg_snapshot",
             "max_allowed_weight_kg_snapshot", "updated_at",
         ])
+        if (
+            allocated_piece_quantity is not None
+            and line.piece_quantity != allocated_piece_quantity
+        ):
+            # Direct-line model validation normally derives pieces from kg/g to
+            # reject a client-supplied count.  Auto-allocation is server-derived
+            # after that validation and must preserve its exact integer split,
+            # even when three-decimal kg rounding sits on an order boundary.
+            QualityShipmentLine.objects.filter(pk=line.pk).update(
+                piece_quantity=allocated_piece_quantity,
+                updated_at=timezone.now(),
+            )
+            line.piece_quantity = allocated_piece_quantity
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
@@ -988,6 +1110,30 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
     @action(detail=False, methods=["get"], url_path="candidates")
     def candidates(self, request):
         return QualityShippingCandidatesView().get(request)
+
+    @extend_schema(request=dict, responses=dict)
+    @action(detail=False, methods=["post"], url_path="allocation-preview")
+    def allocation_preview(self, request):
+        try:
+            order_id = int(request.data.get("order_id"))
+            piece_quantity = int(request.data.get("piece_quantity"))
+        except (TypeError, ValueError):
+            raise DRFValidationError(
+                {"detail": "请提供有效的订单和大于0的出货数量。"}
+            )
+        if piece_quantity < 1:
+            raise DRFValidationError({"piece_quantity": "出货数量必须大于0。"})
+        try:
+            source_order = QualityOrder.objects.select_related(
+                "product_specification"
+            ).get(pk=order_id)
+        except QualityOrder.DoesNotExist:
+            raise DRFValidationError({"order_id": "所选订单不存在。"})
+        try:
+            plan = build_order_allocation_plan(source_order, piece_quantity)
+        except ValueError as exc:
+            raise DRFValidationError({"detail": str(exc)}) from exc
+        return Response(serialize_order_allocation_plan(plan))
 
     @action(detail=False, methods=["get"], url_path="check-shipment-no")
     def check_shipment_no(self, request):
@@ -1201,76 +1347,16 @@ def _batch_orders(batch, lines):
 
 
 def _line_piece_quantity(line):
-    quantity = line.piece_quantity
-    unit = line.unit_weight_g_snapshot or (
-        line.process_card.unit_weight_g if line.process_card_id else None
-    )
-    if quantity is None and unit and line.net_weight_kg:
-        quantity = int(
-            (
-                Decimal(line.net_weight_kg)
-                * Decimal("1000")
-                / Decimal(unit)
-            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-        )
-    return max(0, int(quantity or 0))
+    return shipment_line_piece_quantity(line)
 
 
 def _order_delivery_statuses(orders):
     """Calculate whole-order delivery states without changing source rows."""
 
     by_id = {order.pk: order for order in orders}
-    delivered = {order_id: 0 for order_id in by_id}
     if not by_id:
         return {}
-
-    legacy_shipments = QualityShipment.objects.filter(
-        order_id__in=by_id
-    ).prefetch_related("reworks")
-    for shipment in legacy_shipments:
-        returned = sum(
-            int(rework.returned_quantity or 0) for rework in shipment.reworks.all()
-        )
-        delivered[shipment.order_id] += max(
-            0, int(shipment.shipped_quantity or 0) - returned
-        )
-
-    weighted_lines = (
-        QualityShipmentLine.objects.filter(
-            batch__status=QualityShipmentBatch.Status.CONFIRMED
-        )
-        .filter(
-            Q(order_id__in=by_id) | Q(process_card__order_id__in=by_id)
-        )
-        .select_related("order", "process_card__order")
-        .prefetch_related("rework_cases")
-        .distinct()
-    )
-    for line in weighted_lines:
-        order = _line_order(line)
-        if order is None or order.pk not in delivered:
-            continue
-        returned = 0
-        unit = line.unit_weight_g_snapshot or (
-            line.process_card.unit_weight_g if line.process_card_id else None
-        )
-        for case in line.rework_cases.all():
-            if (
-                case.origin != QualityReworkCase.Origin.CUSTOMER_RETURN
-                or case.status == QualityReworkCase.Status.CANCELLED
-            ):
-                continue
-            if case.affected_quantity is not None:
-                returned += int(case.affected_quantity)
-            elif case.affected_weight_kg is not None and unit:
-                returned += int(
-                    (
-                        Decimal(case.affected_weight_kg)
-                        * Decimal("1000")
-                        / Decimal(unit)
-                    ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-                )
-        delivered[order.pk] += max(0, _line_piece_quantity(line) - returned)
+    delivered = delivered_quantities_by_order(by_id)
 
     result = {}
     for order_id, order in by_id.items():

@@ -911,6 +911,32 @@ export interface QualityShipmentCandidate {
   reason?: string
 }
 
+/** One server-calculated step in a weighted shipment's order allocation. */
+export interface QualityShipmentAllocation {
+  order_id: number
+  order_no: string
+  item_no?: string
+  due_date?: string | null
+  remaining_before: number
+  allocated_quantity: number
+  remaining_after: number
+  is_source: boolean
+  /** True when all matching open orders are full and the source order is intentionally exceeded. */
+  is_overflow: boolean
+}
+
+/** Read-only preview; confirmation recalculates the same plan transactionally. */
+export interface QualityShipmentAllocationPreview {
+  source_order_id: number
+  requested_quantity: number
+  specification: string
+  material: string
+  allocations: QualityShipmentAllocation[]
+  matching_allocated_quantity: number
+  overflow_quantity: number
+  total_allocated_quantity: number
+}
+
 export interface QualityShipmentBatchLine {
   id: string | number
   process_card_id?: string | number

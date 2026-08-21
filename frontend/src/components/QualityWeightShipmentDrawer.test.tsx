@@ -1,6 +1,6 @@
 import { App } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { QualityEmployee, QualityOrder, QualityShipmentBatch } from '../types'
 import { QualityWeightShipmentDrawer } from './QualityWeightShipmentDrawer'
@@ -15,6 +15,7 @@ globalThis.ResizeObserver = ResizeObserverMock
 const apiMocks = vi.hoisted(() => ({
   checkShipmentNo: vi.fn(),
   listShipmentCandidates: vi.fn(),
+  previewShipmentAllocation: vi.fn(),
   getShipmentBatch: vi.fn(),
   createShipmentBatch: vi.fn(),
   updateShipmentBatch: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock('../api/client', () => ({
   qualityWorkflowApi: {
     checkShipmentNo: apiMocks.checkShipmentNo,
     listShipmentCandidates: apiMocks.listShipmentCandidates,
+    previewShipmentAllocation: apiMocks.previewShipmentAllocation,
     getShipmentBatch: apiMocks.getShipmentBatch,
     createShipmentBatch: apiMocks.createShipmentBatch,
     updateShipmentBatch: apiMocks.updateShipmentBatch,
@@ -62,6 +64,7 @@ describe('QualityWeightShipmentDrawer', () => {
   beforeEach(() => {
     apiMocks.checkShipmentNo.mockReset().mockResolvedValue({ exists: false })
     apiMocks.listShipmentCandidates.mockReset().mockResolvedValue([])
+    apiMocks.previewShipmentAllocation.mockReset()
     apiMocks.getShipmentBatch.mockReset()
     apiMocks.createShipmentBatch.mockReset()
     apiMocks.updateShipmentBatch.mockReset()
@@ -129,6 +132,145 @@ describe('QualityWeightShipmentDrawer', () => {
     })
   }, 20_000)
 
+  it('uses only authoritative candidates so completed or stale local orders cannot return to the selector', async () => {
+    const user = userEvent.setup()
+    const completedOrder: QualityOrder = {
+      ...order,
+      id: 8,
+      order_no: 'FULL-ORDER-008',
+      item_no: '80',
+      weighted_remaining_quantity: 0,
+      shipment_status: 'SHIPPED',
+    }
+    apiMocks.listShipmentCandidates.mockResolvedValue([{ ...order, remaining_quantity: 240 }])
+    renderDrawer(undefined, { orders: [order, completedOrder] })
+
+    await waitFor(() => expect(apiMocks.listShipmentCandidates).toHaveBeenCalled())
+    await user.click(screen.getByRole('combobox', { name: /候选订单/ }))
+
+    expect(await screen.findByRole('option', { name: /TEST-ORDER-001/ })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /FULL-ORDER-008/ })).not.toBeInTheDocument()
+  }, 20_000)
+
+  it('does not fall back to cached orders when the authoritative candidate request fails', async () => {
+    const user = userEvent.setup()
+    apiMocks.listShipmentCandidates.mockRejectedValue(new Error('候选服务暂不可用'))
+    renderDrawer()
+
+    expect(await screen.findByText('候选订单暂时读取失败')).toBeInTheDocument()
+    await user.click(screen.getByRole('combobox', { name: /候选订单/ }))
+
+    expect(await screen.findByRole('option', { name: /手工输入/ })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /TEST-ORDER-001/ })).not.toBeInTheDocument()
+  }, 20_000)
+
+  it('clears order search, reloads exact specification/material candidates, and refreshes allocation when batch count changes', async () => {
+    const user = userEvent.setup()
+    const sourceOrder: QualityOrder = { ...order, remaining_quantity: 100 }
+    const matchingOrder: QualityOrder = {
+      ...order,
+      id: 9,
+      order_no: 'MATCH-ORDER-009',
+      item_no: '20',
+      due_date: '2026-08-15',
+      remaining_quantity: 500,
+    }
+    apiMocks.listShipmentCandidates.mockResolvedValue([sourceOrder, matchingOrder])
+    apiMocks.previewShipmentAllocation.mockImplementation(async ({ piece_quantity }: { piece_quantity: number }) => ({
+      source_order_id: sourceOrder.id,
+      requested_quantity: piece_quantity,
+      specification: sourceOrder.specification,
+      material: sourceOrder.material,
+      allocations: [
+        { order_id: sourceOrder.id, order_no: sourceOrder.order_no, item_no: sourceOrder.item_no, due_date: sourceOrder.due_date, remaining_before: 100, allocated_quantity: Math.min(100, piece_quantity), remaining_after: Math.max(0, 100 - piece_quantity), is_source: true, is_overflow: false },
+        ...(piece_quantity > 100 ? [{ order_id: matchingOrder.id, order_no: matchingOrder.order_no, item_no: matchingOrder.item_no, due_date: matchingOrder.due_date, remaining_before: 500, allocated_quantity: piece_quantity - 100, remaining_after: 600 - piece_quantity, is_source: false, is_overflow: false }] : []),
+      ],
+      matching_allocated_quantity: Math.max(0, piece_quantity - 100),
+      overflow_quantity: 0,
+      total_allocated_quantity: piece_quantity,
+    }))
+    const confirmed = {
+      id: 77,
+      shipment_no: 'QS-AUTO-ALLOCATED',
+      lines: [
+        { id: 1, order_id: sourceOrder.id, order: sourceOrder, piece_quantity: 100, net_weight_kg: 2.5 },
+        { id: 2, order_id: matchingOrder.id, order: matchingOrder, piece_quantity: 200, net_weight_kg: 5 },
+      ],
+    }
+    const onSubmit = vi.fn().mockResolvedValue(confirmed)
+    const onSaved = vi.fn().mockResolvedValue(undefined)
+    renderDrawer(onSubmit, { orders: [sourceOrder, matchingOrder], onSaved })
+
+    await waitFor(() => expect(apiMocks.listShipmentCandidates).toHaveBeenCalled())
+    const orderSelector = screen.getByRole('combobox', { name: /候选订单/ })
+    await user.click(orderSelector)
+    await user.type(orderSelector, 'TEST-ORDER')
+    const searchedOrderOption = await screen.findByText((_, element) => Boolean(
+      element?.classList.contains('ant-select-item-option-content')
+      && element.textContent?.includes('TEST-ORDER-001'),
+    ))
+    await user.click(searchedOrderOption)
+
+    await waitFor(() => expect(apiMocks.listShipmentCandidates).toHaveBeenCalledWith(expect.objectContaining({
+      q: undefined,
+      specification: order.specification,
+      material: order.material,
+    })))
+    expect(orderSelector).toHaveValue('')
+    expect(await screen.findByText('剩余数量')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '25' } })
+    fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '2.5' } })
+    fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '100' } })
+    fireEvent.change(screen.getByLabelText(/相同称重批数/), { target: { value: '3' } })
+
+    await waitFor(() => expect(apiMocks.previewShipmentAllocation).toHaveBeenLastCalledWith({ order_id: sourceOrder.id, piece_quantity: 300 }))
+    const previewCard = screen.getByText('订单自动分配预览').closest('.ant-card') as HTMLElement
+    expect(within(previewCard).getByText(/MATCH-ORDER-009/)).toBeInTheDocument()
+    expect(within(previewCard).getByText('200 件')).toBeInTheDocument()
+    expect(within(previewCard).getByText(/超出部分已预分配 200 件/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '确认出货' }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(confirmed))
+    expect(await screen.findByText('重量出货已保存，系统已自动分配到 2 个订单')).toBeInTheDocument()
+  }, 30_000)
+
+  it('clearly allows overflow on the source order when no matching order can receive it', async () => {
+    const user = userEvent.setup()
+    const sourceOrder: QualityOrder = { ...order, remaining_quantity: 100 }
+    apiMocks.listShipmentCandidates.mockResolvedValue([sourceOrder])
+    apiMocks.previewShipmentAllocation.mockResolvedValue({
+      source_order_id: sourceOrder.id,
+      requested_quantity: 300,
+      specification: sourceOrder.specification,
+      material: sourceOrder.material,
+      allocations: [
+        { order_id: sourceOrder.id, order_no: sourceOrder.order_no, item_no: sourceOrder.item_no, due_date: sourceOrder.due_date, remaining_before: 100, allocated_quantity: 300, remaining_after: 0, is_source: true, is_overflow: true },
+      ],
+      matching_allocated_quantity: 0,
+      overflow_quantity: 200,
+      total_allocated_quantity: 300,
+    })
+    renderDrawer(undefined, { orders: [sourceOrder] })
+
+    await waitFor(() => expect(apiMocks.listShipmentCandidates).toHaveBeenCalled())
+    await user.click(screen.getByRole('combobox', { name: /候选订单/ }))
+    const sourceOrderOption = await screen.findByText((_, element) => Boolean(
+      element?.classList.contains('ant-select-item-option-content')
+      && element.textContent?.includes('TEST-ORDER-001'),
+    ))
+    await user.click(sourceOrderOption)
+    expect(await screen.findByText('剩余数量')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '25' } })
+    fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '2.5' } })
+    fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '100' } })
+    fireEvent.change(screen.getByLabelText(/相同称重批数/), { target: { value: '3' } })
+
+    expect(await screen.findByText('没有可补足的匹配订单，允许当前订单超额出货')).toBeInTheDocument()
+    expect(screen.getByText(/仍有 200 件，将作为当前订单超额数量记录/)).toBeInTheDocument()
+    expect(screen.getByText('当前订单超额')).toBeInTheDocument()
+  }, 20_000)
+
   it('saves an unfinished shipment as a server-side draft', async () => {
     const onSaved = vi.fn().mockResolvedValue(undefined)
     const draft = { id: 77, shipment_no: 'CK-DRAFT-SAVE', status: 'DRAFT' }
@@ -149,16 +291,17 @@ describe('QualityWeightShipmentDrawer', () => {
   it('loads an existing draft number, updates that row, confirms it, and notifies the parent', async () => {
     const user = userEvent.setup()
     const onSaved = vi.fn().mockResolvedValue(undefined)
+    const draftOrder: QualityOrder = { ...order, weighted_remaining_quantity: 0, shipment_status: 'SHIPPED' }
     const draft: QualityShipmentBatch = {
       id: 88,
       shipment_no: 'CK-DRAFT-001',
       shipment_date: '2026-08-20',
       status: 'DRAFT',
       order_id: order.id,
-      order,
-      product_name_snapshot: order.product_name,
-      specification_snapshot: order.specification,
-      material_snapshot: order.material,
+      order: draftOrder,
+      product_name_snapshot: draftOrder.product_name,
+      specification_snapshot: draftOrder.specification,
+      material_snapshot: draftOrder.material,
       unit_weight_g: 25,
       total_net_weight_kg: 2.5,
       inspector_ids: [1],
@@ -168,14 +311,14 @@ describe('QualityWeightShipmentDrawer', () => {
         net_weight_kg: 2.5,
         piece_quantity: 100,
         unit_weight_g_snapshot: 25,
-        specification_snapshot: order.specification,
-        material_snapshot: order.material,
+        specification_snapshot: draftOrder.specification,
+        material_snapshot: draftOrder.material,
       }],
     }
     apiMocks.getShipmentBatch.mockResolvedValue(draft)
     apiMocks.updateShipmentBatch.mockResolvedValue(draft)
     apiMocks.confirmShipmentBatch.mockResolvedValue({ ...draft, status: 'CONFIRMED' })
-    renderDrawer(vi.fn(), { existingBatches: [draft], onSaved })
+    renderDrawer(vi.fn(), { orders: [draftOrder], existingBatches: [draft], onSaved })
 
     fireEvent.change(screen.getByLabelText(/出货单号/), { target: { value: draft.shipment_no } })
     fireEvent.blur(screen.getByLabelText(/出货单号/))
@@ -183,6 +326,8 @@ describe('QualityWeightShipmentDrawer', () => {
     await user.click(screen.getByRole('button', { name: '继续填写草稿' }))
     expect(await screen.findByText(`继续填写草稿 · ${draft.shipment_no}`)).toBeInTheDocument()
     expect(await screen.findByText('已选择 1 张流程卡')).toBeInTheDocument()
+    await user.click(screen.getByRole('combobox', { name: /候选订单/ }))
+    expect(await screen.findByRole('option', { name: /TEST-ORDER-001.*原草稿订单/ })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '确认出货' }))
     await waitFor(() => expect(apiMocks.updateShipmentBatch).toHaveBeenCalledWith(88, expect.any(Object)))

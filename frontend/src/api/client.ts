@@ -30,6 +30,7 @@ import type {
   QualityShipmentBatch,
   QualityShipmentBatchInput,
   QualityShipmentBatchResult,
+  QualityShipmentAllocationPreview,
   QualityReworkCase,
   QualityReworkAttempt,
   QualityShipment,
@@ -547,6 +548,11 @@ export const qualityWorkflowApi = {
   listShipmentBatches: (filters: QualityListFilters = {}) => apiFetch<ApiList<QualityShipmentBatch> | QualityShipmentBatch[]>(`/api/quality/shipment-batches/${queryString(filters)}`),
   listShipmentCandidates: (filters: QualityListFilters = {}) =>
     apiFetch<ApiList<QualityShipmentCandidate> | QualityShipmentCandidate[]>(`/api/quality/shipment-batches/candidates/${queryString(filters)}`),
+  previewShipmentAllocation: (body: { order_id: number; piece_quantity: number }) =>
+    apiFetch<QualityShipmentAllocationPreview>('/api/quality/shipment-batches/allocation-preview/', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   checkShipmentNo: (shipmentNo: string, excludeId?: number | string) =>
     apiFetch<{ exists?: boolean; duplicate?: boolean; shipment?: QualityShipmentBatch }>(`/api/quality/shipment-batches/check-shipment-no/${queryString({ shipment_no: shipmentNo, exclude_id: excludeId })}`),
   getShipmentBatch: (id: number | string) => apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/`),

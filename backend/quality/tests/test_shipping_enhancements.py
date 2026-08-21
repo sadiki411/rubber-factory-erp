@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.db.models import Sum
 from django.test import TestCase
 from django.utils import timezone
 
@@ -259,7 +260,7 @@ class ShippingEnhancementApiTests(QualityTestMixin, TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
-    def test_free_order_cumulative_quantity_and_weight_caps_include_previous_lines(self):
+    def test_free_order_can_exceed_order_after_previous_delivery_when_no_match_exists(self):
         first = self.client.post(
             "/api/quality/shipment-batches/",
             {
@@ -299,8 +300,14 @@ class ShippingEnhancementApiTests(QualityTestMixin, TestCase):
         confirmed = self.client.post(
             f"/api/quality/shipment-batches/{second.json()['id']}/confirm/", {}, format="json"
         )
-        self.assertEqual(confirmed.status_code, 400, confirmed.content)
-        self.assertIn("订单", str(confirmed.json()))
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        self.assertEqual(
+            QualityShipmentLine.objects.filter(
+                order=self.order,
+                batch__status=QualityShipmentBatch.Status.CONFIRMED,
+            ).aggregate(total=Sum("piece_quantity"))["total"],
+            1150,
+        )
 
     def test_repeat_count_expands_single_weight_and_uses_per_batch_card_standard(self):
         self.order.order_quantity = 5000
