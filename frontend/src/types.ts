@@ -721,7 +721,9 @@ export type QualityProcessCardStatus = 'OPEN' | 'PARTIAL_SHIPPED' | 'SHIPPED' | 
 export interface QualityUnitWeight {
   id: number | string
   product_specification_id?: number | null
+  product_specification?: ProductSpecification | null
   mold_model_id?: number | null
+  mold_model?: MoldModel | null
   unit_weight_g: number | string | null
   sample_count?: number | null
   sample_total_weight_g?: number | string | null
@@ -849,6 +851,7 @@ export interface QualityShipmentBatchResult {
   product_name?: string
   product_name_snapshot?: string
   product_specification_id?: number | null
+  product_specification?: ProductSpecification | null
   specification?: string
   material?: string
   specification_snapshot?: string
@@ -864,6 +867,7 @@ export interface QualityShipmentBatchResult {
   process_card_shipment_quantity?: number | null
   piece_quantity?: number | null
   inspector_id?: number | null
+  inspector?: QualityEmployee | null
   inspector_ids?: number[]
   inspectors?: QualityEmployee[]
   line_count?: number
@@ -913,6 +917,8 @@ export interface QualityShipmentBatchLine {
   process_card?: QualityProcessCard
   order_id?: number | null
   order?: QualityOrder | null
+  product_specification_id?: number | null
+  product_specification?: ProductSpecification | null
   card_no?: string
   unit_weight_g?: number | string | null
   unit_weight_g_snapshot?: number | string | null
@@ -929,6 +935,41 @@ export interface QualityShipmentBatchLine {
   theoretical_weight_kg_snapshot?: number | string | null
   max_allowed_weight_kg_snapshot?: number | string | null
   notes?: string
+}
+
+export type QualityShipmentLedgerSource = 'LEGACY' | 'WEIGHTED'
+export type QualityShipmentLedgerStatus = 'CONFIRMED' | 'DRAFT' | 'VOID'
+
+/** A read-only row from the unified historical and weighted shipment ledger. */
+export interface QualityShipmentLedgerRow {
+  key: string
+  source_type: QualityShipmentLedgerSource
+  source_id: number | string
+  status: QualityShipmentLedgerStatus
+  status_display?: string
+  shipment_no: string
+  shipment_date?: string | null
+  order_nos?: string[]
+  item_nos?: string[]
+  product_names?: string[]
+  specifications?: string[]
+  materials?: string[]
+  due_dates?: string[]
+  order_statuses?: string[]
+  delivery_statuses?: string[]
+  customers?: string[]
+  inspectors?: QualityEmployee[]
+  inspection_quantity?: number | null
+  qualified_quantity?: number | null
+  defective_quantity?: number | null
+  shipped_quantity?: number | null
+  returned_quantity?: number | null
+  rework_count?: number | null
+  net_weight_kg?: number | string | null
+  line_count?: number
+  shipment?: QualityShipment | null
+  batch?: QualityShipmentBatch | null
+  record?: QualityShipment | QualityShipmentBatch | null
 }
 
 export type QualityReworkOrigin = 'INTERNAL' | 'CUSTOMER_RETURN'

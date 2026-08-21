@@ -68,6 +68,7 @@ interface WorkflowProps {
   shipments: QualityShipment[]
   batches?: QualityShipmentBatch[]
   reworks: ReturnRework[]
+  searchText?: string
   loading?: boolean
   onOpenRework: (rework?: ReturnRework) => void
   onOpenTimeline: (card: WorkflowCard) => void
@@ -248,14 +249,21 @@ function ProcessCardDrawer({ open, card, orders, onClose, onSave }: { open: bool
   </Drawer>
 }
 
-export function QualityShippingWorkflow({ orders, employees = [], processCards = [], shipments, batches = [], reworks, loading, onOpenRework, onOpenTimeline, onSubmitBatch, onOpenShipment, onSaveProcessCard }: WorkflowProps) {
+export function QualityShippingWorkflow({ orders, employees = [], processCards = [], shipments, batches = [], reworks, searchText = '', loading, onOpenRework, onOpenTimeline, onSubmitBatch, onOpenShipment, onSaveProcessCard }: WorkflowProps) {
   const [selectedKeys, setSelectedKeys] = useState<React.Key[]>([])
   const [basketOpen, setBasketOpen] = useState(false)
   const [onlyAlerts, setOnlyAlerts] = useState(false)
   const [timelineCard, setTimelineCard] = useState<WorkflowCard>()
   const [processCardForm, setProcessCardForm] = useState<QualityProcessCard | null | undefined>(undefined)
   const cards = useMemo(() => {
-    if (!processCards.length) return orders.map((order) => cardForOrder(order, shipments, reworks)).filter((card) => card.quantity > 0)
+    if (!processCards.length) {
+      const keyword = searchText.trim().toLowerCase()
+      const fallbackOrders = keyword
+        ? orders.filter((order) => [order.order_no, order.item_no, order.batch_no, order.product_code, order.product_name, order.specification, order.material]
+          .some((value) => String(value || '').toLowerCase().includes(keyword)))
+        : orders
+      return fallbackOrders.map((order) => cardForOrder(order, shipments, reworks)).filter((card) => card.quantity > 0)
+    }
     return processCards.map((item) => {
       const order = item.order || orders.find((candidate) => candidate.id === item.order_id)
       if (!order) return null
@@ -277,7 +285,7 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
       const missingDate = shippedWeightKg > 0 && batches.some((batch) => !batch.shipment_date && (batch.lines || []).some((line) => String(line.process_card_id || line.process_card?.id) === String(item.id)))
       return { key: String(item.id), cardNo: item.card_no, processCard: item, order, quantity, shippedQuantity, remainingQuantity, unitWeightG, expectedWeightKg: expectedWeightKg(remainingQuantity, unitWeightG), shippedWeightKg, maxAllowedWeightKg, dueDate, reworkCount, missingDate, overdue: Boolean(remainingQuantity && due?.isValid() && due.isBefore(dayjs().startOf('day'))), status: remainingQuantity <= 0 ? 'SHIPPED' : shippedQuantity ? 'PARTIAL' : 'READY' } satisfies WorkflowCard
     }).filter(Boolean).filter((item) => (item as WorkflowCard).quantity > 0) as WorkflowCard[]
-  }, [orders, processCards, reworks, shipments, batches])
+  }, [orders, processCards, reworks, shipments, batches, searchText])
   const visibleCards = useMemo(() => onlyAlerts ? cards.filter((card) => card.overdue || card.missingDate || card.reworkCount > 0) : cards, [cards, onlyAlerts])
   const selectedCards = cards.filter((card) => card.processCard && selectedKeys.includes(card.key))
   const pendingCards = cards.filter((card) => card.remainingQuantity > 0)

@@ -33,6 +33,7 @@ import type {
   QualityReworkCase,
   QualityReworkAttempt,
   QualityShipment,
+  QualityShipmentLedgerRow,
   QualityShipmentCandidate,
   QualitySummary,
   RackConfigInput,
@@ -455,6 +456,9 @@ export const productionImportApi = {
 export interface QualityListFilters {
   q?: string
   status?: string
+  shipment_status?: string
+  order_status?: string
+  delivery_status?: string
   role?: string
   active?: boolean
   order?: number
@@ -466,6 +470,9 @@ export interface QualityListFilters {
   reason_category?: string
   date_from?: string
   date_to?: string
+  due_date_from?: string
+  due_date_to?: string
+  ordering?: string
   page?: number
   page_size?: number
   shipment_no?: string
@@ -489,6 +496,8 @@ export const qualityApi = {
 
   listShipments: (filters: QualityListFilters = {}) =>
     apiFetch<ApiList<QualityShipment> | QualityShipment[]>(`/api/quality/shipments/${queryString(filters)}`),
+  listShipmentLedger: (filters: QualityListFilters = {}) =>
+    apiFetch<ApiList<QualityShipmentLedgerRow> | QualityShipmentLedgerRow[]>(`/api/quality/shipment-ledger/${queryString(filters)}`),
   createShipment: (body: Record<string, unknown>) => apiFetch<QualityShipment>('/api/quality/shipments/', {
     method: 'POST',
     body: JSON.stringify(body),

@@ -5,6 +5,8 @@ import {
   Card,
   Col,
   DatePicker,
+  Descriptions,
+  Divider,
   Drawer,
   Empty,
   Form,
@@ -52,22 +54,115 @@ function dateText(value?: string | null) {
   return value ? dayjs(value).format('YYYY-MM-DD') : '-'
 }
 
-function ShipmentBatchReviewDrawer({
-  open,
-  item,
-  employees,
-  onClose,
-  onSaved,
-}: {
+function valueText(value: unknown, suffix = '') {
+  return value == null || value === '' ? '-' : `${String(value)}${suffix}`
+}
+
+function shipmentStatusText(status?: QualityShipmentBatch['status']) {
+  if (status === 'CONFIRMED') return '已确认'
+  if (status === 'VOID') return '已作废'
+  return '草稿'
+}
+
+export interface ShipmentBatchReviewDrawerProps {
   open: boolean
   item?: QualityShipmentBatch
   employees: QualityEmployee[]
   onClose: () => void
   onSaved: () => Promise<void>
-}) {
+}
+
+export function ShipmentBatchReviewDrawer({
+  open,
+  item,
+  employees,
+  onClose,
+  onSaved,
+}: ShipmentBatchReviewDrawerProps) {
   const [form] = Form.useForm<Record<string, unknown>>()
   const [saving, setSaving] = useState(false)
   const { message } = App.useApp()
+  const lines = item?.lines || []
+  const firstLine = lines[0]
+  const firstCard = firstLine?.process_card
+  const order = item?.order || firstLine?.order || firstCard?.order
+  const productSpecification = item?.product_specification
+  const productName = item?.product_name_snapshot
+    || item?.product_name
+    || productSpecification?.product_name
+    || order?.product_name
+    || firstCard?.product_name_snapshot
+    || '-'
+  const specification = item?.specification_snapshot
+    || item?.specification
+    || productSpecification?.specification
+    || order?.specification
+    || firstLine?.specification_snapshot
+    || firstCard?.specification_snapshot
+    || '-'
+  const material = item?.material_snapshot
+    || item?.material
+    || productSpecification?.material
+    || order?.material
+    || firstLine?.material_snapshot
+    || firstCard?.material_snapshot
+    || '-'
+  const unitWeight = item?.unit_weight_g_snapshot
+    ?? item?.unit_weight_g
+    ?? firstLine?.unit_weight_g_snapshot
+    ?? firstLine?.unit_weight_g
+  const singleBatchWeight = item?.single_batch_net_weight_kg
+    ?? firstLine?.single_batch_net_weight_kg
+  const batchCount = item?.product_batch_count
+    ?? item?.batch_count
+    ?? firstLine?.product_batch_count
+    ?? 1
+  const piecesPerBatch = item?.pieces_per_batch
+    ?? firstLine?.pieces_per_batch
+  const standardQuantity = item?.process_card_shipment_quantity
+    ?? firstLine?.process_card_shipment_quantity
+  const finalPieces = item?.shipped_quantity
+    ?? item?.piece_quantity
+    ?? (lines.length ? lines.reduce((sum, line) => sum + Number(line.piece_quantity || 0), 0) : null)
+  const totalNetWeight = item?.total_net_weight_kg
+    ?? item?.net_weight_kg
+    ?? item?.actual_weight_kg
+
+  const lineColumns: TableColumnsType<(typeof lines)[number]> = [
+    {
+      title: '流程卡 / 订单',
+      key: 'reference',
+      width: 190,
+      render: (_, line) => {
+        const lineOrder = line.order || line.process_card?.order
+        return <span>
+          <strong>{line.process_card?.card_no || line.card_no || '-'}</strong>
+          <br />
+          <Typography.Text type="secondary">{lineOrder?.order_no || item?.order?.order_no || '-'} / {lineOrder?.item_no || item?.order?.item_no || '-'}</Typography.Text>
+        </span>
+      },
+    },
+    {
+      title: '产品 / 规格 / 材质',
+      key: 'product',
+      width: 220,
+      render: (_, line) => {
+        const lineOrder = line.order || line.process_card?.order
+        return <span>
+          {lineOrder?.product_name || line.process_card?.product_name_snapshot || productName}
+          <br />
+          <Typography.Text type="secondary">{line.specification_snapshot || line.process_card?.specification_snapshot || lineOrder?.specification || specification} · {line.material_snapshot || line.process_card?.material_snapshot || lineOrder?.material || material}</Typography.Text>
+        </span>
+      },
+    },
+    { title: '单重', key: 'unitWeight', width: 110, render: (_, line) => valueText(line.unit_weight_g_snapshot ?? line.unit_weight_g ?? unitWeight, ' g/件') },
+    { title: '单批净重', dataIndex: 'single_batch_net_weight_kg', width: 115, render: (value) => valueText(value, ' kg') },
+    { title: '批数', dataIndex: 'product_batch_count', width: 75, render: (value) => valueText(value ?? 1, ' 批') },
+    { title: '单批件数', dataIndex: 'pieces_per_batch', width: 100, render: (value) => valueText(value, ' 件') },
+    { title: '流程卡标准', dataIndex: 'process_card_shipment_quantity', width: 115, render: (value) => valueText(value, ' 件/批') },
+    { title: '最终总件数', dataIndex: 'piece_quantity', width: 110, render: (value) => valueText(value, ' 件') },
+    { title: '累计净重', dataIndex: 'net_weight_kg', width: 110, render: (value) => valueText(value, ' kg') },
+  ]
 
   useEffect(() => {
     if (!open) return
@@ -132,22 +227,55 @@ function ShipmentBatchReviewDrawer({
   return <Drawer
     open={open}
     onClose={onClose}
-    width={500}
-    title={item ? `${item.status === 'CONFIRMED' ? '补录品检员' : '补充出货批次'} ${item.shipment_no}` : '出货批次'}
-    footer={item?.status === 'CONFIRMED'
+    width="min(960px, 100vw)"
+    title={item ? `出货批次详情 · ${item.shipment_no}` : '出货批次详情'}
+    footer={item?.status === 'VOID'
+      ? <Button onClick={onClose}>关闭</Button>
+      : item?.status === 'CONFIRMED'
       ? <Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} onClick={() => void submit(false)}>保存品检员</Button></Space>
       : <Space className="drawer-footer-actions"><Popconfirm title="确定作废这个草稿批次吗？" onConfirm={() => void voidDraft()}><Button danger loading={saving}>作废草稿</Button></Popconfirm><Button onClick={onClose}>取消</Button><Button loading={saving} onClick={() => void submit(false)}>保存草稿</Button><Button type="primary" loading={saving} onClick={() => void submit(true)}>保存并确认</Button></Space>}
   >
-    <Alert type="info" showIcon message={item?.status === 'CONFIRMED' ? '品检员可以在确认出货后补录' : '出货日期必须与实际单据一致'} description={item?.status === 'CONFIRMED' ? '可选择一人或多人；留空保存也不会改变出货数量和重量。' : '如果补录历史日期，请填写补录原因；未填写日期的草稿不能确认入账。'} />
-    <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
-      <Form.Item name="inspector_ids" label="品检员（选填，可多选）"><Select mode="multiple" allowClear showSearch optionFilterProp="label" placeholder="选择品检员或暂时留空" options={employees.filter((employee) => employee.is_active && ['INSPECTOR', 'BOTH'].includes(employee.role)).map((employee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}${employee.team ? ` · ${employee.team}` : ''}` }))} /></Form.Item>
-      {item?.status !== 'CONFIRMED' && <>
-        <Form.Item name="shipment_date" label="实际出货日期" rules={[{ required: true, message: '请选择实际出货日期' }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
-        <Form.Item name="backfill_reason" label="历史日期补录原因" extra="仅补录早于今天的日期时必填"><Input.TextArea rows={2} maxLength={300} showCount /></Form.Item>
-        <Form.Item name="notes" label="备注"><Input.TextArea rows={3} maxLength={300} showCount /></Form.Item>
+    <Descriptions
+      bordered
+      size="small"
+      column={{ xs: 1, sm: 2, lg: 3 }}
+      items={[
+        { key: 'shipmentNo', label: '出货单号', children: <strong>{item?.shipment_no || '-'}</strong> },
+        { key: 'shipmentDate', label: '出货日期', children: dateText(item?.shipment_date) },
+        { key: 'status', label: '状态', children: <Tag color={item?.status === 'CONFIRMED' ? 'success' : item?.status === 'VOID' ? 'default' : 'warning'}>{shipmentStatusText(item?.status)}</Tag> },
+        { key: 'order', label: '订单 / 项次', children: order ? `${order.order_no} / ${order.item_no || '-'}` : '-' },
+        { key: 'dueDate', label: '交期', children: dateText(order?.due_date) },
+        { key: 'product', label: '产品', children: productName },
+        { key: 'specification', label: '规格', children: specification },
+        { key: 'material', label: '材质', children: material },
+        { key: 'unitWeight', label: '产品单重', children: valueText(unitWeight, ' g/件') },
+        { key: 'singleWeight', label: '单批净重', children: valueText(singleBatchWeight, ' kg') },
+        { key: 'batchCount', label: '批数', children: valueText(batchCount, ' 批') },
+        { key: 'piecesPerBatch', label: '单批件数', children: valueText(piecesPerBatch, ' 件') },
+        { key: 'standardQuantity', label: '流程卡标准', children: valueText(standardQuantity, ' 件/批') },
+        { key: 'finalPieces', label: '最终总件数', children: valueText(finalPieces, ' 件') },
+        { key: 'totalWeight', label: '累计净重', children: valueText(totalNetWeight, ' kg') },
+        { key: 'notes', label: '备注', children: item?.notes || '-', span: 3 },
+      ]}
+    />
+    {lines.length > 0 && <>
+      <Divider titlePlacement="start">出货明细（{lines.length}行）</Divider>
+      <Table rowKey="id" size="small" dataSource={lines} columns={lineColumns} pagination={false} scroll={{ x: 1145 }} />
+    </>}
+    <Divider titlePlacement="start">{item?.status === 'CONFIRMED' ? '补录或修改品检员' : item?.status === 'VOID' ? '记录状态' : '补充出货资料'}</Divider>
+    {item?.status === 'VOID'
+      ? <Alert type="info" showIcon message="该出货批次已作废" description="作废记录仅供查询，不能再修改或确认。" />
+      : <>
+        <Alert type="info" showIcon message={item?.status === 'CONFIRMED' ? '品检员可以在确认出货后补录' : '出货日期必须与实际单据一致'} description={item?.status === 'CONFIRMED' ? '可选择一人或多人；留空保存也不会改变出货数量和重量。' : '如果补录历史日期，请填写补录原因；未填写日期的草稿不能确认入账。'} />
+        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item name="inspector_ids" label="品检员（选填，可多选）"><Select mode="multiple" allowClear showSearch optionFilterProp="label" placeholder="选择品检员或暂时留空" options={employees.filter((employee) => employee.is_active && ['INSPECTOR', 'BOTH'].includes(employee.role)).map((employee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}${employee.team ? ` · ${employee.team}` : ''}` }))} /></Form.Item>
+          {item?.status !== 'CONFIRMED' && <>
+            <Form.Item name="shipment_date" label="实际出货日期" rules={[{ required: true, message: '请选择实际出货日期' }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
+            <Form.Item name="backfill_reason" label="历史日期补录原因" extra="仅补录早于今天的日期时必填"><Input.TextArea rows={2} maxLength={300} showCount /></Form.Item>
+            <Form.Item name="notes" label="备注"><Input.TextArea rows={3} maxLength={300} showCount /></Form.Item>
+          </>}
+        </Form>
       </>}
-    </Form>
-    <Typography.Paragraph type="secondary">本批次包含 {item?.line_count || item?.lines?.length || 0} 条流程卡明细，净重 {item?.net_weight_kg || item?.actual_weight_kg || 0} kg。</Typography.Paragraph>
   </Drawer>
 }
 
@@ -390,10 +518,19 @@ export function QualityWorkflowManagement({ orders, employees, cards, unitWeight
   const [caseItem, setCaseItem] = useState<QualityReworkCase | null | undefined>(undefined)
   const [attemptCase, setAttemptCase] = useState<QualityReworkCase | undefined>(undefined)
   const [batchItem, setBatchItem] = useState<QualityShipmentBatch | undefined>(undefined)
-  const specLabels = useMemo(() => new Map(orders.flatMap((order) => order.product_specification?.id ? [[order.product_specification.id, order.product_specification.product_name || order.product_name]] as [number, string][] : [])), [orders])
   const cardLabels = useMemo(() => new Map(cards.map((card) => [String(card.id), card.card_no])), [cards])
   const weightColumns: TableColumnsType<QualityUnitWeight> = [
-    { title: '产品规格', key: 'spec', render: (_, row) => row.product_specification_id ? (specLabels.get(row.product_specification_id) || `规格#${row.product_specification_id}`) : '通用/模具型号' },
+    { title: '产品 / 材质', key: 'spec', render: (_, row) => {
+      const product = row.product_specification
+      if (product) {
+        const primary = [product.product_name, product.material].filter(Boolean).join(' · ') || '未命名产品'
+        return <span><strong>{primary}</strong><br /><Typography.Text type="secondary">{product.specification || '未填写规格'}</Typography.Text></span>
+      }
+      if (row.mold_model) {
+        return <span><strong>{row.mold_model.product_name || '模具型号'}</strong><br /><Typography.Text type="secondary">{row.mold_model.code || '未填写型号'}</Typography.Text></span>
+      }
+      return <Typography.Text type="secondary">未关联产品规格</Typography.Text>
+    } },
     { title: '标准单重', dataIndex: 'unit_weight_g', render: (value) => value == null ? '-' : `${value} g/件` },
     { title: '抽样', key: 'sample', render: (_, row) => row.sample_count && row.sample_total_weight_g ? `${row.sample_count}件 / ${row.sample_total_weight_g}g` : '直接录入' },
     { title: '测量日期', dataIndex: 'measured_on', render: dateText },
@@ -401,19 +538,54 @@ export function QualityWorkflowManagement({ orders, employees, cards, unitWeight
     { title: '操作', key: 'action', render: (_, row) => <Button type="link" onClick={() => setWeightItem(row)}>编辑</Button> },
   ]
   const batchColumns: TableColumnsType<QualityShipmentBatch> = [
-    { title: '批次', dataIndex: 'shipment_no', render: (value, row) => <span><strong>{value}</strong><br /><Typography.Text type="secondary">{dateText(row.shipment_date)}</Typography.Text></span> },
-    { title: '客户/说明', key: 'info', render: (_, row) => `${row.customer || '-'}${row.delivery_info ? ` · ${row.delivery_info}` : ''}` },
-    { title: '明细', dataIndex: 'line_count', render: (value) => `${value || 0} 行` },
-    { title: '净重', dataIndex: 'net_weight_kg', render: (value) => `${value || 0} kg` },
-    { title: '品检员', key: 'inspectors', render: (_, row) => {
-      const names = (row.inspectors || []).map((inspector) => inspector.name)
+    { title: '批次', dataIndex: 'shipment_no', width: 205, render: (value, row) => <span><Button type="link" className="table-primary-link" onClick={() => setBatchItem(row)}><strong>{value}</strong></Button><br /><Typography.Text type="secondary">{dateText(row.shipment_date)}</Typography.Text></span> },
+    { title: '订单 / 项次', key: 'orders', width: 190, render: (_, row) => {
+      const linked = [row.order, ...(row.lines || []).map((line) => line.order || line.process_card?.order)]
+        .filter((order): order is QualityOrder => Boolean(order))
+      const summaries = [...new Map(linked.map((order) => [`${order.id}:${order.item_no || ''}`, `${order.order_no} / ${order.item_no || '-'}`])).values()]
+      if (!summaries.length && row.order_no) summaries.push(row.order_no)
+      return summaries.length ? <Space direction="vertical" size={0}>{summaries.map((summary) => <span key={summary}>{summary}</span>)}</Space> : '-'
+    } },
+    { title: '产品 / 材质', key: 'products', width: 220, render: (_, row) => {
+      const summaries = [
+        {
+          product: row.product_name_snapshot || row.product_name || row.product_specification?.product_name || row.order?.product_name || '',
+          material: row.material_snapshot || row.material || row.product_specification?.material || row.order?.material || '',
+          specification: row.specification_snapshot || row.specification || row.product_specification?.specification || row.order?.specification || '',
+        },
+        ...(row.lines || []).map((line) => {
+          const lineOrder = line.order || line.process_card?.order
+          return {
+            product: line.product_specification?.product_name || lineOrder?.product_name || line.process_card?.product_name_snapshot || '',
+            material: line.material_snapshot || line.product_specification?.material || lineOrder?.material || line.process_card?.material_snapshot || '',
+            specification: line.specification_snapshot || line.product_specification?.specification || lineOrder?.specification || line.process_card?.specification_snapshot || '',
+          }
+        }),
+      ].filter((summary) => summary.product || summary.material || summary.specification)
+      const unique = [...new Map(summaries.map((summary) => [`${summary.product}\u0000${summary.material}\u0000${summary.specification}`, summary])).values()]
+      return unique.length ? <Space direction="vertical" size={2}>{unique.map((summary) => <span key={`${summary.product}\u0000${summary.material}\u0000${summary.specification}`}><strong>{summary.product || '-'} · {summary.material || '-'}</strong><br /><Typography.Text type="secondary">{summary.specification || '未填写规格'}</Typography.Text></span>)}</Space> : '-'
+    } },
+    { title: '交期', key: 'dueDates', width: 115, render: (_, row) => {
+      const dates = [
+        row.order?.due_date,
+        ...(row.lines || []).flatMap((line) => [line.order?.due_date, line.process_card?.order?.due_date, line.process_card?.due_date, line.process_card?.demand_date]),
+      ].filter((value): value is string => Boolean(value))
+      const unique = [...new Set(dates)].sort()
+      return unique.length ? <Space direction="vertical" size={0}>{unique.map((value) => <span key={value}>{dateText(value)}</span>)}</Space> : '-'
+    } },
+    { title: '客户/说明', key: 'info', width: 175, render: (_, row) => `${row.customer || '-'}${row.delivery_info ? ` · ${row.delivery_info}` : ''}` },
+    { title: '明细', dataIndex: 'line_count', width: 105, render: (value, row) => <Button type="link" onClick={() => setBatchItem(row)}>明细 {value || row.lines?.length || 0} 行</Button> },
+    { title: '净重', dataIndex: 'net_weight_kg', width: 105, render: (value) => `${value || 0} kg` },
+    { title: '品检员', key: 'inspectors', width: 130, render: (_, row) => {
+      const people = (row.inspectors || []).length ? row.inspectors || [] : row.inspector ? [row.inspector] : []
+      const names = people.map((inspector) => inspector.name)
       return names.length ? names.join('、') : <Tag color="warning">待补录</Tag>
     } },
-    { title: '状态', dataIndex: 'status', render: (value) => <Tag color={value === 'CONFIRMED' ? 'success' : value === 'VOID' ? 'default' : 'warning'}>{value === 'CONFIRMED' ? '已确认' : value === 'VOID' ? '已作废' : '草稿'}</Tag> },
-    { title: '操作', key: 'action', render: (_, row) => row.status === 'DRAFT'
+    { title: '状态', dataIndex: 'status', width: 90, render: (value) => <Tag color={value === 'CONFIRMED' ? 'success' : value === 'VOID' ? 'default' : 'warning'}>{value === 'CONFIRMED' ? '已确认' : value === 'VOID' ? '已作废' : '草稿'}</Tag> },
+    { title: '操作', key: 'action', width: 115, render: (_, row) => row.status === 'DRAFT'
       ? <Button type="link" onClick={() => setBatchItem(row)}>补日期 / 确认</Button>
       : row.status === 'CONFIRMED'
-        ? <Button type="link" onClick={() => setBatchItem(row)}>{(row.inspectors || []).length ? '修改品检员' : '补录品检员'}</Button>
+        ? <Button type="link" onClick={() => setBatchItem(row)}>{(row.inspectors || []).length || row.inspector ? '修改品检员' : '补录品检员'}</Button>
         : <Typography.Text type="secondary">-</Typography.Text> },
   ]
   const caseColumns: TableColumnsType<QualityReworkCase> = [
@@ -428,7 +600,7 @@ export function QualityWorkflowManagement({ orders, employees, cards, unitWeight
   return <div className="quality-workflow-management">
     <Tabs items={[
       { key: 'weights', label: `成品单重标准（${unitWeights.length}）`, children: <Card title="成品单重标准" extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setWeightItem(null)}>新增标准</Button>}><Typography.Paragraph type="secondary">按产品规格/模具型号维护成品单重；流程卡建立时保存快照，后续修改不会改变历史出货计算。</Typography.Paragraph>{unitWeights.length ? <Table rowKey="id" dataSource={unitWeights} columns={weightColumns} scroll={{ x: 720 }} pagination={{ pageSize: 8 }} /> : <Empty description="尚未维护单重标准，可直接在流程卡上填写单重" />}</Card> },
-      { key: 'batches', label: `重量出货批次（${batches.length}）`, children: <Card title="重量出货批次" extra={<Tag color="blue">超过理论+10%会阻断</Tag>}>{batches.length ? <Table rowKey="id" dataSource={batches} columns={batchColumns} scroll={{ x: 760 }} pagination={{ pageSize: 8 }} /> : <Empty description="暂无重量出货批次" />}</Card> },
+      { key: 'batches', label: `重量出货批次（${batches.length}）`, children: <Card title="重量出货批次" extra={<Tag color="blue">超过理论+10%会阻断</Tag>}>{batches.length ? <Table rowKey="id" dataSource={batches} columns={batchColumns} scroll={{ x: 1550 }} pagination={{ pageSize: 8 }} /> : <Empty description="暂无重量出货批次" />}</Card> },
       { key: 'rework', label: `返工主案（${reworkCases.length}）`, children: <Card title="内部返工 / 客户退回返工" extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setCaseItem(null)}>新增返工主案</Button>}><Typography.Paragraph type="secondary">每个主案可追加 R1、R2、R3…；客户退回会保留出货历史并返还可重发额度。</Typography.Paragraph>{reworkCases.length ? <Table rowKey="id" dataSource={reworkCases} columns={caseColumns} scroll={{ x: 900 }} pagination={{ pageSize: 8 }} /> : <Empty description="暂无返工主案" />}</Card> },
     ]} />
     <WeightDrawer open={weightItem !== undefined} item={weightItem || undefined} orders={orders} onClose={() => setWeightItem(undefined)} onSaved={onRefresh} />

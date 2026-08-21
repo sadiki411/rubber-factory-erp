@@ -9,7 +9,7 @@ from .views import (
     ReturnReworkViewSet,
     ProductUnitWeightViewSet, ProcessCardViewSet, QualityShipmentBatchViewSet,
     QualityShipmentLineViewSet, QualityReworkCaseViewSet, QualityReworkAttemptViewSet,
-    QualityShippingCandidatesView,
+    QualityShippingCandidatesView, QualityShipmentLedgerView,
 )
 
 
@@ -29,6 +29,7 @@ router.register("rework-attempts", QualityReworkAttemptViewSet, basename="qualit
 
 urlpatterns = [
     path("summary/", QualitySummaryView.as_view(), name="quality-summary"),
+    path("shipment-ledger/", QualityShipmentLedgerView.as_view(), name="quality-shipment-ledger"),
     # Canonical candidate endpoint plus the two additive aliases used by
     # older/mobile clients during rollout.
     path("shipping-candidates/", QualityShippingCandidatesView.as_view(), name="quality-shipping-candidates"),

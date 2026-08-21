@@ -1,9 +1,9 @@
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count, IntegerField, Prefetch, Q, Sum, Value
-from django.db.models.functions import Coalesce
+from django.db.models import Case, Count, DateField, F, IntegerField, Min, Prefetch, Q, Sum, Value, When
+from django.db.models.functions import Coalesce, Least
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from drf_spectacular.utils import OpenApiParameter, extend_schema
@@ -111,8 +111,10 @@ class ProductUnitWeightViewSet(WorkflowModelViewSet):
             queryset = queryset.filter(
                 Q(product_specification__product_name__icontains=q)
                 | Q(product_specification__specification__icontains=q)
+                | Q(product_specification__material__icontains=q)
                 | Q(product_specification__customer_product_no__icontains=q)
                 | Q(mold_model__code__icontains=q)
+                | Q(mold_model__product_name__icontains=q)
             )
         active = str(self.request.query_params.get("active", "")).lower()
         if active in {"1", "true", "yes"}:
@@ -332,27 +334,207 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
 
     def get_queryset(self):
         queryset = QualityShipmentBatch.objects.select_related(
-            "inspector", "created_by", "order", "product_specification"
-        ).prefetch_related("inspectors", "lines__process_card", "lines__order", "lines__product_specification").all()
-        q = str(self.request.query_params.get("q", "")).strip()
+            "inspector",
+            "created_by",
+            "order__product_specification__mold_model",
+            "product_specification__mold_model",
+        ).prefetch_related(
+            "inspectors",
+            "lines__process_card__product_specification__mold_model",
+            "lines__process_card__order__product_specification__mold_model",
+            "lines__order__product_specification__mold_model",
+            "lines__product_specification__mold_model",
+        ).all()
+        params = self.request.query_params
+        q = str(params.get("q", "")).strip()
         if q:
             queryset = queryset.filter(
                 Q(shipment_no__icontains=q)
                 | Q(client_key__icontains=q)
                 | Q(customer__icontains=q)
+                | Q(delivery_info__icontains=q)
+                | Q(product_name_snapshot__icontains=q)
+                | Q(specification_snapshot__icontains=q)
+                | Q(material_snapshot__icontains=q)
+                | Q(order__order_no__icontains=q)
+                | Q(order__item_no__icontains=q)
+                | Q(order__batch_no__icontains=q)
+                | Q(order__product_code__icontains=q)
+                | Q(order__product_name__icontains=q)
+                | Q(order__specification__icontains=q)
+                | Q(order__material__icontains=q)
+                | Q(inspector__employee_no__icontains=q)
+                | Q(inspector__name__icontains=q)
+                | Q(inspectors__employee_no__icontains=q)
+                | Q(inspectors__name__icontains=q)
                 | Q(lines__process_card__card_no__icontains=q)
+                | Q(lines__process_card__source_order_no__icontains=q)
+                | Q(lines__process_card__product_name_snapshot__icontains=q)
+                | Q(lines__process_card__product_code_snapshot__icontains=q)
+                | Q(lines__process_card__specification_snapshot__icontains=q)
+                | Q(lines__process_card__material_snapshot__icontains=q)
+                | Q(lines__process_card__order__order_no__icontains=q)
+                | Q(lines__process_card__order__item_no__icontains=q)
+                | Q(lines__process_card__order__batch_no__icontains=q)
+                | Q(lines__process_card__order__product_code__icontains=q)
+                | Q(lines__process_card__order__product_name__icontains=q)
+                | Q(lines__process_card__order__specification__icontains=q)
+                | Q(lines__process_card__order__material__icontains=q)
+                | Q(lines__order__order_no__icontains=q)
+                | Q(lines__order__item_no__icontains=q)
+                | Q(lines__order__batch_no__icontains=q)
+                | Q(lines__order__product_code__icontains=q)
+                | Q(lines__order__product_name__icontains=q)
+                | Q(lines__specification_snapshot__icontains=q)
+                | Q(lines__material_snapshot__icontains=q)
             ).distinct()
-        date_from, date_to = _date_range(self.request.query_params)
+        date_from, date_to = _date_range(params)
         if date_from:
             queryset = queryset.filter(Q(shipment_date__gte=date_from) | Q(shipment_date__isnull=True))
         if date_to:
             queryset = queryset.filter(Q(shipment_date__lte=date_to) | Q(shipment_date__isnull=True))
-        status = str(self.request.query_params.get("status", "")).strip().upper()
+        status = str(params.get("status", params.get("shipment_status", ""))).strip().upper()
         if status:
             if status not in QualityShipmentBatch.Status.values:
                 raise DRFValidationError({"status": "无效的出货批次状态。"})
             queryset = queryset.filter(status=status)
-        return queryset
+        order_status = str(params.get("order_status", "")).strip().upper()
+        if order_status:
+            if order_status not in QualityOrder.Status.values:
+                raise DRFValidationError({"order_status": "无效的订单状态。"})
+            queryset = queryset.filter(
+                Q(order__status=order_status)
+                | Q(lines__order__status=order_status)
+                | Q(lines__process_card__order__status=order_status)
+            ).distinct()
+
+        delivery_status = str(params.get("delivery_status", "")).strip().upper()
+        if delivery_status:
+            valid_delivery_statuses = {"UNSHIPPED", "PARTIAL", "SHIPPED", "CANCELLED"}
+            if delivery_status not in valid_delivery_statuses:
+                raise DRFValidationError({"delivery_status": "无效的订单出货状态。"})
+            all_orders = list(
+                QualityOrder.objects.only("id", "status", "order_quantity")
+            )
+            delivery_by_order = _order_delivery_statuses(all_orders)
+            matching_order_ids = [
+                order_id
+                for order_id, value in delivery_by_order.items()
+                if value == delivery_status
+            ]
+            queryset = queryset.filter(
+                Q(order_id__in=matching_order_ids)
+                | Q(lines__order_id__in=matching_order_ids)
+                | Q(lines__process_card__order_id__in=matching_order_ids)
+            ).distinct()
+
+        due_from = _parsed_date(str(params.get("due_date_from", "")).strip(), "due_date_from")
+        due_to = _parsed_date(str(params.get("due_date_to", "")).strip(), "due_date_to")
+        if due_from and due_to and due_from > due_to:
+            raise DRFValidationError({"due_date_to": "交期结束日期不能早于开始日期。"})
+        if due_from or due_to:
+            # Keep both bounds on the same associated order.  Applying the
+            # lower and upper bounds in separate filters lets two different
+            # lines satisfy opposite sides of the range in a multi-order batch.
+            due_filter = Q()
+            for field in (
+                "order__due_date",
+                "lines__order__due_date",
+                "lines__process_card__order__due_date",
+            ):
+                lookups = {}
+                if due_from:
+                    lookups[f"{field}__gte"] = due_from
+                if due_to:
+                    lookups[f"{field}__lte"] = due_to
+                due_filter |= Q(**lookups)
+            queryset = queryset.filter(due_filter).distinct()
+
+        material = str(params.get("material", "")).strip()
+        if material:
+            queryset = queryset.filter(
+                Q(material_snapshot__icontains=material)
+                | Q(order__material__icontains=material)
+                | Q(lines__material_snapshot__icontains=material)
+                | Q(lines__order__material__icontains=material)
+                | Q(lines__process_card__material_snapshot__icontains=material)
+                | Q(lines__process_card__order__material__icontains=material)
+            ).distinct()
+
+        order_value = str(params.get("order", params.get("order_no", ""))).strip()
+        if order_value:
+            order_filter = (
+                Q(order__order_no__iexact=order_value)
+                | Q(order__item_no__iexact=order_value)
+                | Q(order__batch_no__iexact=order_value)
+                | Q(lines__order__order_no__iexact=order_value)
+                | Q(lines__order__item_no__iexact=order_value)
+                | Q(lines__order__batch_no__iexact=order_value)
+                | Q(lines__process_card__order__order_no__iexact=order_value)
+                | Q(lines__process_card__order__item_no__iexact=order_value)
+                | Q(lines__process_card__order__batch_no__iexact=order_value)
+            )
+            if order_value.isdigit():
+                order_id = int(order_value)
+                order_filter |= (
+                    Q(order_id=order_id)
+                    | Q(lines__order_id=order_id)
+                    | Q(lines__process_card__order_id=order_id)
+                )
+            queryset = queryset.filter(order_filter).distinct()
+
+        inspector_value = str(params.get("inspector", params.get("employee", ""))).strip()
+        if inspector_value:
+            inspector_filter = (
+                Q(inspector__employee_no__iexact=inspector_value)
+                | Q(inspector__name__icontains=inspector_value)
+                | Q(inspectors__employee_no__iexact=inspector_value)
+                | Q(inspectors__name__icontains=inspector_value)
+            )
+            if inspector_value.isdigit():
+                inspector_id = int(inspector_value)
+                inspector_filter |= Q(inspector_id=inspector_id) | Q(inspectors__id=inspector_id)
+            queryset = queryset.filter(inspector_filter).distinct()
+
+        ordering = str(params.get("ordering", "")).strip()
+        if ordering in {"due_date", "-due_date"}:
+            # A shipment batch can reference orders at three levels.  Use its
+            # earliest linked due date as the row's due date for both ascending
+            # and descending sorts so the batch list matches the unified ledger.
+            queryset = queryset.annotate(
+                _batch_due_date=F("order__due_date"),
+                _line_due_date=Min("lines__order__due_date"),
+                _card_due_date=Min("lines__process_card__order__due_date"),
+            ).annotate(
+                _earliest_due_date=Case(
+                    When(
+                        _batch_due_date__isnull=True,
+                        _line_due_date__isnull=True,
+                        _card_due_date__isnull=True,
+                        then=Value(None, output_field=DateField()),
+                    ),
+                    default=Least(
+                        Coalesce("_batch_due_date", Value(date.max)),
+                        Coalesce("_line_due_date", Value(date.max)),
+                        Coalesce("_card_due_date", Value(date.max)),
+                    ),
+                    output_field=DateField(),
+                )
+            )
+        ordering_map = {
+            "shipment_date": F("shipment_date").asc(nulls_last=True),
+            "-shipment_date": F("shipment_date").desc(nulls_last=True),
+            "due_date": F("_earliest_due_date").asc(nulls_last=True),
+            "-due_date": F("_earliest_due_date").desc(nulls_last=True),
+            "created_at": "created_at",
+            "-created_at": "-created_at",
+            "shipment_no": "shipment_no",
+            "-shipment_no": "-shipment_no",
+        }
+        primary_ordering = ordering_map.get(
+            ordering, F("shipment_date").desc(nulls_last=True)
+        )
+        return queryset.order_by(primary_ordering, "-id")
 
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
@@ -959,6 +1141,297 @@ def _shipment_queryset():
     )
 
 
+def _weighted_shipment_queryset():
+    """Fully hydrated batches used by the ledger and detail serializers."""
+
+    return (
+        QualityShipmentBatch.objects.select_related(
+            "inspector",
+            "created_by",
+            "order__created_by",
+            "order__product_specification__mold_model",
+            "product_specification__mold_model",
+        )
+        .prefetch_related(
+            "inspectors",
+            "lines__product_specification__mold_model",
+            "lines__order__created_by",
+            "lines__order__product_specification__mold_model",
+            "lines__process_card__product_specification__mold_model",
+            "lines__process_card__order__created_by",
+            "lines__process_card__order__product_specification__mold_model",
+        )
+    )
+
+
+def _unique_ledger_values(values):
+    result = []
+    seen = set()
+    for value in values:
+        if value is None:
+            continue
+        if hasattr(value, "isoformat"):
+            value = value.isoformat()
+        value = str(value).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _line_order(line):
+    return line.order or (line.process_card.order if line.process_card_id else None)
+
+
+def _batch_lines(batch):
+    prefetched = getattr(batch, "_prefetched_objects_cache", {}).get("lines")
+    return list(prefetched if prefetched is not None else batch.lines.all())
+
+
+def _batch_orders(batch, lines):
+    orders = []
+    seen = set()
+    for order in [batch.order, *(_line_order(line) for line in lines)]:
+        if order is None or order.pk in seen:
+            continue
+        seen.add(order.pk)
+        orders.append(order)
+    return orders
+
+
+def _line_piece_quantity(line):
+    quantity = line.piece_quantity
+    unit = line.unit_weight_g_snapshot or (
+        line.process_card.unit_weight_g if line.process_card_id else None
+    )
+    if quantity is None and unit and line.net_weight_kg:
+        quantity = int(
+            (
+                Decimal(line.net_weight_kg)
+                * Decimal("1000")
+                / Decimal(unit)
+            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        )
+    return max(0, int(quantity or 0))
+
+
+def _order_delivery_statuses(orders):
+    """Calculate whole-order delivery states without changing source rows."""
+
+    by_id = {order.pk: order for order in orders}
+    delivered = {order_id: 0 for order_id in by_id}
+    if not by_id:
+        return {}
+
+    legacy_shipments = QualityShipment.objects.filter(
+        order_id__in=by_id
+    ).prefetch_related("reworks")
+    for shipment in legacy_shipments:
+        returned = sum(
+            int(rework.returned_quantity or 0) for rework in shipment.reworks.all()
+        )
+        delivered[shipment.order_id] += max(
+            0, int(shipment.shipped_quantity or 0) - returned
+        )
+
+    weighted_lines = (
+        QualityShipmentLine.objects.filter(
+            batch__status=QualityShipmentBatch.Status.CONFIRMED
+        )
+        .filter(
+            Q(order_id__in=by_id) | Q(process_card__order_id__in=by_id)
+        )
+        .select_related("order", "process_card__order")
+        .prefetch_related("rework_cases")
+        .distinct()
+    )
+    for line in weighted_lines:
+        order = _line_order(line)
+        if order is None or order.pk not in delivered:
+            continue
+        returned = 0
+        unit = line.unit_weight_g_snapshot or (
+            line.process_card.unit_weight_g if line.process_card_id else None
+        )
+        for case in line.rework_cases.all():
+            if (
+                case.origin != QualityReworkCase.Origin.CUSTOMER_RETURN
+                or case.status == QualityReworkCase.Status.CANCELLED
+            ):
+                continue
+            if case.affected_quantity is not None:
+                returned += int(case.affected_quantity)
+            elif case.affected_weight_kg is not None and unit:
+                returned += int(
+                    (
+                        Decimal(case.affected_weight_kg)
+                        * Decimal("1000")
+                        / Decimal(unit)
+                    ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                )
+        delivered[order.pk] += max(0, _line_piece_quantity(line) - returned)
+
+    result = {}
+    for order_id, order in by_id.items():
+        if order.status == QualityOrder.Status.CANCELLED:
+            result[order_id] = "CANCELLED"
+        elif delivered[order_id] <= 0:
+            result[order_id] = "UNSHIPPED"
+        elif delivered[order_id] >= int(order.order_quantity or 0):
+            result[order_id] = "SHIPPED"
+        else:
+            result[order_id] = "PARTIAL"
+    return result
+
+
+def _ledger_order_fields(orders, delivery_statuses):
+    return {
+        "order_ids": [order.pk for order in orders],
+        "order_nos": _unique_ledger_values(order.order_no for order in orders),
+        "item_nos": _unique_ledger_values(order.item_no for order in orders),
+        "due_dates": _unique_ledger_values(order.due_date for order in orders),
+        "order_statuses": _unique_ledger_values(order.status for order in orders),
+        "delivery_statuses": _unique_ledger_values(
+            delivery_statuses.get(order.pk) for order in orders
+        ),
+    }
+
+
+def _legacy_ledger_row(shipment, request, delivery_statuses):
+    order = shipment.order
+    people = list(shipment.inspectors.all())
+    if not people and shipment.inspector_id:
+        people = [shipment.inspector]
+    people = list({person.pk: person for person in people}.values())
+    record = QualityShipmentSerializer(
+        shipment, context={"request": request}
+    ).data
+    row = {
+        "key": f"LEGACY:{shipment.pk}",
+        "source_type": "LEGACY",
+        "source_id": shipment.pk,
+        "status": "CONFIRMED",
+        "status_display": "已确认",
+        "shipment_no": shipment.shipment_no,
+        "shipment_date": shipment.shipment_date.isoformat(),
+        **_ledger_order_fields([order], delivery_statuses),
+        "product_names": _unique_ledger_values([order.product_name]),
+        "specifications": _unique_ledger_values([order.specification]),
+        "materials": _unique_ledger_values([order.material]),
+        "inspectors": QualityEmployeeSerializer(
+            people, many=True, context={"request": request}
+        ).data,
+        "inspection_quantity": int(record.get("inspection_quantity") or 0),
+        "qualified_quantity": int(record.get("qualified_quantity") or 0),
+        "defective_quantity": int(record.get("defective_quantity") or 0),
+        "shipped_quantity": int(shipment.shipped_quantity or 0),
+        "returned_quantity": int(record.get("returned_quantity") or 0),
+        "rework_count": int(record.get("rework_count") or 0),
+        "net_weight_kg": None,
+        "line_count": 1,
+        "record": record,
+        "shipment": record,
+        "batch": None,
+        "created_at": shipment.created_at.isoformat(),
+    }
+    row["_search_text"] = " ".join(
+        [
+            shipment.shipment_no,
+            order.order_no,
+            order.item_no,
+            order.batch_no,
+            order.product_code,
+            order.product_name,
+            order.specification,
+            order.material,
+            *(person.employee_no for person in people),
+            *(person.name for person in people),
+        ]
+    ).casefold()
+    return row
+
+
+def _weighted_ledger_row(batch, request, delivery_statuses):
+    lines = _batch_lines(batch)
+    orders = _batch_orders(batch, lines)
+    people = list(batch.inspectors.all())
+    if not people and batch.inspector_id:
+        people = [batch.inspector]
+    people = list({person.pk: person for person in people}.values())
+    product_names = [batch.product_name_snapshot]
+    specifications = [batch.specification_snapshot]
+    materials = [batch.material_snapshot]
+    for line in lines:
+        order = _line_order(line)
+        card = line.process_card if line.process_card_id else None
+        product_names.append(
+            (card.product_name_snapshot if card else "")
+            or (order.product_name if order else "")
+        )
+        specifications.append(
+            line.specification_snapshot
+            or (card.specification_snapshot if card else "")
+            or (order.specification if order else "")
+        )
+        materials.append(
+            line.material_snapshot
+            or (card.material_snapshot if card else "")
+            or (order.material if order else "")
+        )
+    record = QualityShipmentBatchSerializer(
+        batch, context={"request": request}
+    ).data
+    status_display = {
+        QualityShipmentBatch.Status.DRAFT: "草稿",
+        QualityShipmentBatch.Status.CONFIRMED: "已确认",
+        QualityShipmentBatch.Status.VOID: "已作废",
+    }[batch.status]
+    row = {
+        "key": f"WEIGHTED:{batch.pk}",
+        "source_type": "WEIGHTED",
+        "source_id": batch.pk,
+        "status": batch.status,
+        "status_display": status_display,
+        "shipment_no": batch.shipment_no,
+        "shipment_date": batch.shipment_date.isoformat() if batch.shipment_date else None,
+        **_ledger_order_fields(orders, delivery_statuses),
+        "product_names": _unique_ledger_values(product_names),
+        "specifications": _unique_ledger_values(specifications),
+        "materials": _unique_ledger_values(materials),
+        "inspectors": QualityEmployeeSerializer(
+            people, many=True, context={"request": request}
+        ).data,
+        "shipped_quantity": sum(_line_piece_quantity(line) for line in lines),
+        "net_weight_kg": format(
+            sum((Decimal(line.net_weight_kg or 0) for line in lines), Decimal("0")),
+            ".3f",
+        ),
+        "line_count": len(lines),
+        "record": record,
+        "shipment": None,
+        "batch": record,
+        "created_at": batch.created_at.isoformat(),
+    }
+    row["_search_text"] = " ".join(
+        [
+            batch.shipment_no,
+            batch.client_key,
+            batch.customer,
+            batch.delivery_info,
+            *row["order_nos"],
+            *row["item_nos"],
+            *row["product_names"],
+            *row["specifications"],
+            *row["materials"],
+            *(line.process_card.card_no for line in lines if line.process_card_id),
+            *(person.employee_no for person in people),
+            *(person.name for person in people),
+        ]
+    ).casefold()
+    return row
+
+
 class QualityShipmentViewSet(NoDeleteModelViewSet):
     serializer_class = QualityShipmentSerializer
 
@@ -1022,6 +1495,185 @@ class QualityShipmentViewSet(NoDeleteModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+
+class QualityShipmentLedgerView(APIView):
+    """Read-only union of legacy quantity shipments and weighted batches."""
+
+    VALID_DELIVERY_STATUSES = {"UNSHIPPED", "PARTIAL", "SHIPPED", "CANCELLED"}
+
+    @staticmethod
+    def _shipment_statuses(params):
+        raw = str(params.get("shipment_status", params.get("status", ""))).strip().upper()
+        if not raw:
+            return {QualityShipmentBatch.Status.CONFIRMED}, True
+        values = {value.strip() for value in raw.split(",") if value.strip()}
+        if "ALL" in values:
+            return set(QualityShipmentBatch.Status.values), True
+        legacy_aliases = {"LEGACY", "LEGACY_CONFIRMED"}
+        invalid = values - set(QualityShipmentBatch.Status.values) - legacy_aliases
+        if invalid:
+            raise DRFValidationError(
+                {"shipment_status": f"无效的出货状态：{', '.join(sorted(invalid))}。"}
+            )
+        include_legacy = bool(
+            values & legacy_aliases
+            or QualityShipmentBatch.Status.CONFIRMED in values
+        )
+        return values & set(QualityShipmentBatch.Status.values), include_legacy
+
+    @extend_schema(responses=dict)
+    def get(self, request):
+        params = request.query_params
+        weighted_statuses, include_legacy = self._shipment_statuses(params)
+        date_from, date_to = _date_range(params)
+        due_from = _parsed_date(str(params.get("due_date_from", "")).strip(), "due_date_from")
+        due_to = _parsed_date(str(params.get("due_date_to", "")).strip(), "due_date_to")
+        if due_from and due_to and due_from > due_to:
+            raise DRFValidationError({"due_date_to": "交期结束日期不能早于开始日期。"})
+
+        legacy = _shipment_queryset()
+        if not include_legacy:
+            legacy = legacy.none()
+        if date_from:
+            legacy = legacy.filter(shipment_date__gte=date_from)
+        if date_to:
+            legacy = legacy.filter(shipment_date__lte=date_to)
+
+        weighted = _weighted_shipment_queryset().filter(status__in=weighted_statuses)
+        if date_from:
+            date_filter = Q(shipment_date__gte=date_from)
+            if QualityShipmentBatch.Status.DRAFT in weighted_statuses:
+                date_filter |= Q(
+                    status=QualityShipmentBatch.Status.DRAFT,
+                    shipment_date__isnull=True,
+                )
+            weighted = weighted.filter(date_filter)
+        if date_to:
+            date_filter = Q(shipment_date__lte=date_to)
+            if QualityShipmentBatch.Status.DRAFT in weighted_statuses:
+                date_filter |= Q(
+                    status=QualityShipmentBatch.Status.DRAFT,
+                    shipment_date__isnull=True,
+                )
+            weighted = weighted.filter(date_filter)
+
+        legacy_rows = list(legacy)
+        weighted_rows = list(weighted)
+        all_orders = []
+        seen_orders = set()
+        for shipment in legacy_rows:
+            if shipment.order_id not in seen_orders:
+                seen_orders.add(shipment.order_id)
+                all_orders.append(shipment.order)
+        for batch in weighted_rows:
+            for order in _batch_orders(batch, _batch_lines(batch)):
+                if order.pk not in seen_orders:
+                    seen_orders.add(order.pk)
+                    all_orders.append(order)
+        delivery_statuses = _order_delivery_statuses(all_orders)
+
+        rows = [
+            *(
+                _legacy_ledger_row(shipment, request, delivery_statuses)
+                for shipment in legacy_rows
+            ),
+            *(
+                _weighted_ledger_row(batch, request, delivery_statuses)
+                for batch in weighted_rows
+            ),
+        ]
+
+        q = str(params.get("q", "")).strip().casefold()
+        if q:
+            rows = [row for row in rows if q in row["_search_text"]]
+
+        order_status = str(params.get("order_status", "")).strip().upper()
+        if order_status:
+            if order_status not in QualityOrder.Status.values:
+                raise DRFValidationError({"order_status": "无效的订单状态。"})
+            rows = [row for row in rows if order_status in row["order_statuses"]]
+
+        delivery_status = str(params.get("delivery_status", "")).strip().upper()
+        if delivery_status:
+            if delivery_status not in self.VALID_DELIVERY_STATUSES:
+                raise DRFValidationError({"delivery_status": "无效的订单出货状态。"})
+            rows = [row for row in rows if delivery_status in row["delivery_statuses"]]
+
+        if due_from or due_to:
+            def due_matches(row):
+                dates = [parse_date(value) for value in row["due_dates"]]
+                return any(
+                    date is not None
+                    and (due_from is None or date >= due_from)
+                    and (due_to is None or date <= due_to)
+                    for date in dates
+                )
+            rows = [row for row in rows if due_matches(row)]
+
+        material = str(params.get("material", "")).strip().casefold()
+        if material:
+            rows = [
+                row
+                for row in rows
+                if any(material in value.casefold() for value in row["materials"])
+            ]
+
+        order_value = str(params.get("order", params.get("order_no", ""))).strip()
+        if order_value:
+            order_folded = order_value.casefold()
+            rows = [
+                row
+                for row in rows
+                if (
+                    order_value.isdigit()
+                    and int(order_value) in row["order_ids"]
+                )
+                or any(
+                    order_folded == value.casefold()
+                    for value in [*row["order_nos"], *row["item_nos"]]
+                )
+            ]
+
+        inspector_value = str(params.get("inspector", params.get("employee", ""))).strip()
+        if inspector_value:
+            inspector_folded = inspector_value.casefold()
+            rows = [
+                row
+                for row in rows
+                if any(
+                    (
+                        inspector_value.isdigit()
+                        and int(inspector_value) == int(person["id"])
+                    )
+                    or inspector_folded == str(person.get("employee_no", "")).casefold()
+                    or inspector_folded in str(person.get("name", "")).casefold()
+                    for person in row["inspectors"]
+                )
+            ]
+
+        ordering = str(params.get("ordering", "-shipment_date")).strip()
+        ordering_fields = {
+            "shipment_date": lambda row: row["shipment_date"],
+            "due_date": lambda row: min(row["due_dates"]) if row["due_dates"] else None,
+            "created_at": lambda row: row["created_at"],
+            "shipment_no": lambda row: row["shipment_no"],
+        }
+        descending = ordering.startswith("-")
+        field = ordering[1:] if descending else ordering
+        if field not in ordering_fields:
+            raise DRFValidationError({"ordering": "无效的排序字段。"})
+        key = ordering_fields[field]
+        populated = [row for row in rows if key(row) is not None]
+        missing = [row for row in rows if key(row) is None]
+        populated.sort(key=lambda row: (key(row), row["key"]), reverse=descending)
+        rows = populated + missing
+        for row in rows:
+            row.pop("_search_text", None)
+
+        paginator = QualityPagination()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        return paginator.get_paginated_response(page)
 
 
 class ReturnReworkViewSet(NoDeleteModelViewSet):

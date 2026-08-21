@@ -67,6 +67,29 @@ class QualityEmployeeSerializer(ValidatedModelSerializer):
         read_only_fields = ["created_at", "updated_at"]
 
 
+class ProductSpecificationReferenceSerializer(serializers.ModelSerializer):
+    """Small read-only product identity used by quality workflow responses."""
+
+    class Meta:
+        model = ProductSpecification
+        fields = [
+            "id",
+            "product_name",
+            "specification",
+            "material",
+            "customer_product_no",
+            "is_active",
+        ]
+
+
+class MoldModelReferenceSerializer(serializers.ModelSerializer):
+    """Small read-only mold identity used by unit-weight responses."""
+
+    class Meta:
+        model = MoldModel
+        fields = ["id", "code", "product_name", "is_active"]
+
+
 class QualityOrderSerializer(ValidatedModelSerializer):
     source_batch_id = serializers.UUIDField(read_only=True)
     last_source_batch_id = serializers.UUIDField(read_only=True)
@@ -427,11 +450,13 @@ class ReturnReworkSerializer(ValidatedModelSerializer):
 
 
 class ProductUnitWeightSerializer(ValidatedModelSerializer):
+    product_specification = ProductSpecificationReferenceSerializer(read_only=True)
     product_specification_id = serializers.PrimaryKeyRelatedField(source="product_specification", queryset=ProductSpecification.objects.all(), required=False, allow_null=True)
+    mold_model = MoldModelReferenceSerializer(read_only=True)
     mold_model_id = serializers.PrimaryKeyRelatedField(source="mold_model", queryset=MoldModel.objects.all(), required=False, allow_null=True)
     class Meta:
         model = ProductUnitWeight
-        fields = ["id", "product_specification_id", "mold_model_id", "sample_count", "sample_total_weight_g", "unit_weight_g", "measured_on", "backfill_reason", "is_active", "notes", "created_by", "created_at", "updated_at"]
+        fields = ["id", "product_specification", "product_specification_id", "mold_model", "mold_model_id", "sample_count", "sample_total_weight_g", "unit_weight_g", "measured_on", "backfill_reason", "is_active", "notes", "created_by", "created_at", "updated_at"]
         read_only_fields = ["created_by", "created_at", "updated_at"]
 
 
@@ -506,10 +531,12 @@ class QualityShipmentLineSerializer(ValidatedModelSerializer):
         source="order", queryset=QualityOrder.objects.all(), required=False,
         allow_null=True,
     )
+    order = serializers.SerializerMethodField()
     product_specification_id = serializers.PrimaryKeyRelatedField(
         source="product_specification", queryset=ProductSpecification.objects.filter(is_active=True),
         required=False, allow_null=True,
     )
+    product_specification = serializers.SerializerMethodField()
     batch_id = serializers.PrimaryKeyRelatedField(source="batch", queryset=QualityShipmentBatch.objects.all(), required=False, write_only=True)
     specification_snapshot = serializers.CharField(required=False, allow_blank=True)
     material_snapshot = serializers.CharField(required=False, allow_blank=True)
@@ -538,8 +565,8 @@ class QualityShipmentLineSerializer(ValidatedModelSerializer):
     class Meta:
         model = QualityShipmentLine
         fields = [
-            "id", "batch_id", "process_card", "process_card_id", "order_id",
-            "product_specification_id", "specification_snapshot", "material_snapshot",
+            "id", "batch_id", "process_card", "process_card_id", "order", "order_id",
+            "product_specification", "product_specification_id", "specification_snapshot", "material_snapshot",
             "net_weight_kg", "single_batch_net_weight_kg", "piece_quantity",
             "unit_weight_g_snapshot", "process_card_shipment_quantity",
             "product_batch_count", "pieces_per_batch", "theoretical_weight_kg_snapshot",
@@ -549,6 +576,23 @@ class QualityShipmentLineSerializer(ValidatedModelSerializer):
             "theoretical_weight_kg_snapshot", "max_allowed_weight_kg_snapshot",
             "created_at", "updated_at",
         ]
+
+    def get_order(self, obj) -> dict | None:
+        order = obj.order or (obj.process_card.order if obj.process_card_id else None)
+        if order is None:
+            return None
+        return QualityOrderSerializer(order, context=self.context).data
+
+    def get_product_specification(self, obj) -> dict | None:
+        product = obj.product_specification
+        if product is None and obj.process_card_id:
+            product = obj.process_card.product_specification
+        if product is None:
+            order = obj.order or (obj.process_card.order if obj.process_card_id else None)
+            product = order.product_specification if order else None
+        if product is None:
+            return None
+        return ProductSpecificationReferenceSerializer(product, context=self.context).data
 
     def to_internal_value(self, data):
         data = data.copy()
@@ -643,10 +687,12 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
         source="order", queryset=QualityOrder.objects.all(), required=False,
         allow_null=True,
     )
+    order = serializers.SerializerMethodField()
     product_specification_id = serializers.PrimaryKeyRelatedField(
         source="product_specification", queryset=ProductSpecification.objects.filter(is_active=True),
         required=False, allow_null=True,
     )
+    product_specification = serializers.SerializerMethodField()
     inspector_id = serializers.PrimaryKeyRelatedField(source="inspector", queryset=QualityEmployee.objects.filter(is_active=True, role__in=[QualityEmployee.Role.INSPECTOR, QualityEmployee.Role.BOTH]), required=False, allow_null=True)
     inspector = QualityEmployeeSerializer(read_only=True)
     inspectors = QualityEmployeeSerializer(many=True, read_only=True)
@@ -682,8 +728,8 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
     class Meta:
         model = QualityShipmentBatch
         fields = [
-            "id", "shipment_no", "client_key", "shipment_date", "order_id",
-            "product_specification_id", "product_name_snapshot", "specification_snapshot",
+            "id", "shipment_no", "client_key", "shipment_date", "order", "order_id",
+            "product_specification", "product_specification_id", "product_name_snapshot", "specification_snapshot",
             "material_snapshot", "unit_weight_g", "single_batch_net_weight_kg",
             "process_card_shipment_quantity", "product_batch_count", "pieces_per_batch",
             "inspector", "inspector_id", "inspectors", "inspector_ids", "status", "customer",
@@ -741,14 +787,16 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
 
     def to_representation(self, instance):
         payload = super().to_representation(instance)
-        if payload.get("inspector_id") and payload.get("inspector_ids"):
-            primary = payload["inspector_id"]
+        primary = payload.get("inspector_id")
+        if primary:
+            inspector_ids = payload.get("inspector_ids") or []
             payload["inspector_ids"] = [primary] + [
-                value for value in payload["inspector_ids"] if value != primary
+                value for value in inspector_ids if value != primary
             ]
             inspectors = payload.get("inspectors") or []
+            primary_item = payload.get("inspector")
             payload["inspectors"] = [
-                *[item for item in inspectors if item.get("id") == primary],
+                *([primary_item] if primary_item else []),
                 *[item for item in inspectors if item.get("id") != primary],
             ]
         return payload
@@ -764,6 +812,47 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
                 label = card.card_no if card else (line.order.order_no if line.order_id else line.pk)
                 warnings.append(f"{label} 实际净重低于理论重量，请复核称重。")
         return warnings
+
+    def _representative_line(self, obj):
+        prefetched = getattr(obj, "_prefetched_objects_cache", {}).get("lines")
+        if prefetched is not None:
+            return prefetched[0] if prefetched else None
+        return obj.lines.select_related(
+            "order__product_specification",
+            "process_card__order__product_specification",
+            "product_specification",
+        ).order_by("id").first()
+
+    def get_order(self, obj) -> dict | None:
+        order = obj.order
+        if order is None:
+            line = self._representative_line(obj)
+            if line is not None:
+                order = line.order or (
+                    line.process_card.order if line.process_card_id else None
+                )
+        if order is None:
+            return None
+        return QualityOrderSerializer(order, context=self.context).data
+
+    def get_product_specification(self, obj) -> dict | None:
+        product = obj.product_specification
+        if product is None:
+            line = self._representative_line(obj)
+            if line is not None:
+                product = line.product_specification
+                if product is None and line.process_card_id:
+                    product = line.process_card.product_specification
+                if product is None:
+                    order = line.order or (
+                        line.process_card.order if line.process_card_id else None
+                    )
+                    product = order.product_specification if order else None
+        if product is None and obj.order_id:
+            product = obj.order.product_specification
+        if product is None:
+            return None
+        return ProductSpecificationReferenceSerializer(product, context=self.context).data
 
     def validate(self, attrs):
         attrs = super().validate(attrs)

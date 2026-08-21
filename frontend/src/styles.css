@@ -354,7 +354,10 @@ button, input, textarea, select { font: inherit; }
 .production-import-table { margin-top: 16px; }
 
 .quality-filter-row { display: grid; grid-template-columns: minmax(280px, 360px) minmax(280px, 1fr) auto; gap: 12px; align-items: center; }
+.quality-filter-row + .quality-filter-row { margin-top: 12px; }
 .quality-filter-row > .ant-typography { white-space: nowrap; }
+.quality-filter-row > .ant-select { min-width: 180px; }
+.quality-filter-actions { justify-content: flex-end; }
 .quality-page-alert { margin-bottom: 16px; }
 .quality-kpis { margin-bottom: 18px; }
 .quality-kpi { height: 100%; border: 0; overflow: hidden; }
@@ -574,8 +577,9 @@ button, input, textarea, select { font: inherit; }
   .production-settlement .ant-form > .ant-space { display: grid; width: 100%; }
   .production-settlement .ant-form > .ant-space .ant-btn { min-height: 44px; }
   .quality-filter-row { grid-template-columns: 1fr; }
-  .quality-filter-row .ant-picker, .quality-filter-row .ant-input-affix-wrapper { width: 100%; min-height: 44px; }
+  .quality-filter-row .ant-picker, .quality-filter-row .ant-input-affix-wrapper, .quality-filter-row .ant-select, .quality-filter-row .ant-select-selector { width: 100%; min-height: 44px; }
   .quality-filter-row > .ant-typography { white-space: normal; }
+  .quality-filter-actions { width: 100%; justify-content: space-between; }
   .quality-kpi .ant-card-body { padding: 14px; }
   .quality-kpi .ant-statistic-title { font-size: 12px; }
   .quality-kpi .ant-statistic-content { font-size: 21px; }
