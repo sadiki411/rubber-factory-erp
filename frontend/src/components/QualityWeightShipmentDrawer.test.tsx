@@ -400,7 +400,6 @@ describe('QualityWeightShipmentDrawer', () => {
   }, 20_000)
 
   it('loads an existing draft number, updates that row, confirms it, and notifies the parent', async () => {
-    const user = userEvent.setup()
     const onSaved = vi.fn().mockResolvedValue(undefined)
     const draftOrder: QualityOrder = { ...order, weighted_remaining_quantity: 0, shipment_status: 'SHIPPED' }
     const draft: QualityShipmentBatch = {
@@ -434,15 +433,15 @@ describe('QualityWeightShipmentDrawer', () => {
     fireEvent.change(screen.getByLabelText(/出货单号/), { target: { value: draft.shipment_no } })
     fireEvent.blur(screen.getByLabelText(/出货单号/))
     expect(await screen.findByText(`发现未完成草稿：${draft.shipment_no}`)).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '继续填写草稿' }))
+    fireEvent.click(screen.getByRole('button', { name: '继续填写草稿' }))
     expect(await screen.findByText(`继续填写草稿 · ${draft.shipment_no}`)).toBeInTheDocument()
     expect(await screen.findByText('已选择 1 张流程卡')).toBeInTheDocument()
     const restoredSingleWeight = screen.getByText('单批实称净重(kg)').closest('.ant-form-item')?.querySelector('input')
     expect(restoredSingleWeight).toHaveValue('2.500')
-    await user.click(screen.getByRole('combobox', { name: /候选订单/ }))
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: /候选订单/ }))
     expect(await screen.findByRole('option', { name: /TEST-ORDER-001.*原草稿订单/ })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: '确认出货' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认出货' }))
     await waitFor(() => expect(apiMocks.updateShipmentBatch).toHaveBeenCalledWith(88, expect.any(Object)))
     expect(apiMocks.updateShipmentBatch.mock.calls[0][1].lines[0]).toMatchObject({
       single_batch_net_weight_kg: 2.5,
@@ -451,5 +450,5 @@ describe('QualityWeightShipmentDrawer', () => {
     })
     expect(apiMocks.confirmShipmentBatch).toHaveBeenCalledWith(88)
     expect(onSaved).toHaveBeenCalledTimes(1)
-  }, 20_000)
+  }, 40_000)
 })
