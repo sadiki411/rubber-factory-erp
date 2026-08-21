@@ -24,10 +24,12 @@ import { qualityApi, qualityWorkflowApi, toList } from '../api/client'
 import {
   expectedWeightKg,
   orderUnitWeightG,
+  piecesPerBatchFromTotal,
   piecesFromBatchCount,
   piecesFromWeight,
   processCardQuantityUpperLimit,
   qualityNumber,
+  repeatedBatchNetWeightKg,
   shipmentQuantityWithinFlowCardLimit,
   shipmentPieceQuantity,
   weightVariancePercent,
@@ -187,7 +189,7 @@ function seedLines(seeds: QualityWeightShipmentLineSeed[] | undefined, cards: Qu
       const batchCount = numeric(line.product_batch_count) || 1
       const totalWeight = numeric(line.net_weight_kg ?? line.actual_weight_kg)
       const singleWeight = numeric(line.single_batch_net_weight_kg)
-        ?? (totalWeight != null ? totalWeight / batchCount : null)
+        ?? (batchCount === 1 ? totalWeight : null)
       const standardQuantity = numeric(
         line.process_card_shipment_quantity
         ?? line.remaining_quantity
@@ -289,18 +291,25 @@ function editableLineMetrics(line: EditableLine) {
     : 1
   const standardQuantity = numeric(line.process_card_shipment_quantity)
   const singleWeight = numeric(line.single_batch_net_weight_kg)
-  const singlePieces = piecesFromWeight(singleWeight, line.unit_weight_g)
-  const quantity = singlePieces == null ? null : singlePieces * batchCount
-  const actual = singleWeight == null ? null : singleWeight * batchCount
+  const savedTotalWeight = numeric(line.net_weight_kg ?? line.actual_weight_kg)
+  const savedQuantity = numeric(line.piece_quantity ?? line.quantity)
+  const calculatedSinglePieces = piecesFromWeight(singleWeight, line.unit_weight_g)
+  const quantity = calculatedSinglePieces == null
+    ? (savedQuantity ?? piecesFromWeight(savedTotalWeight, line.unit_weight_g))
+    : calculatedSinglePieces * batchCount
+  const singlePieces = calculatedSinglePieces ?? piecesPerBatchFromTotal(quantity, batchCount)
+  const actual = singleWeight == null
+    ? savedTotalWeight
+    : repeatedBatchNetWeightKg(singleWeight, batchCount)
   const expected = expectedWeightKg(
     standardQuantity == null ? null : standardQuantity * batchCount,
     line.unit_weight_g,
   )
   const quantityUpper = processCardQuantityUpperLimit(standardQuantity, TOLERANCE_PERCENT)
   const over = Boolean(
-    singlePieces
-    && standardQuantity
-    && !shipmentQuantityWithinFlowCardLimit(singlePieces, standardQuantity, TOLERANCE_PERCENT),
+    singlePieces != null
+    && quantityUpper != null
+    && singlePieces > quantityUpper,
   )
   return {
     batchCount,
@@ -313,7 +322,7 @@ function editableLineMetrics(line: EditableLine) {
     quantityUpper,
     over,
     under: Boolean(singlePieces && standardQuantity && singlePieces < standardQuantity),
-    missing: !standardQuantity || !numeric(line.unit_weight_g) || !singleWeight || !singlePieces,
+    missing: !standardQuantity || !numeric(line.unit_weight_g) || !actual || !quantity || !singlePieces,
   }
 }
 
@@ -434,8 +443,7 @@ export function QualityWeightShipmentDrawer({
     return processCardQuantityUpperLimit(processCardShipmentQuantity, TOLERANCE_PERCENT)
   }, [processCardShipmentQuantity])
   const repeatedTotalWeight = useMemo(() => {
-    const weight = numeric(singleBatchWeight)
-    return weight && weight > 0 ? weight * effectiveBatchCount : 0
+    return repeatedBatchNetWeightKg(singleBatchWeight, effectiveBatchCount) || 0
   }, [effectiveBatchCount, singleBatchWeight])
   const quantityOverLimit = Boolean(
     singleBatchPieces
@@ -479,9 +487,7 @@ export function QualityWeightShipmentDrawer({
     const sourceTotal = numeric(source?.total_net_weight_kg ?? source?.net_weight_kg)
     const sourceBatchCount = numeric(source?.product_batch_count ?? source?.batch_count)
     const sourceSingleBatchWeight = numeric(source?.single_batch_net_weight_kg)
-      ?? (sourceTotal != null && sourceBatchCount != null && sourceBatchCount > 0
-        ? sourceTotal / sourceBatchCount
-        : sourceTotal)
+      ?? (sourceBatchCount == null || sourceBatchCount === 1 ? sourceTotal : null)
     const sourceProcessCardQuantity = numeric(source?.process_card_shipment_quantity ?? source?.pieces_per_batch)
     form.setFieldsValue({
       shipment_no: source?.shipment_no || '',
@@ -814,7 +820,7 @@ export function QualityWeightShipmentDrawer({
     const topSingleBatchWeight = numeric(values.single_batch_net_weight_kg)
     const topBatchCount = numeric(values.product_batch_count ?? values.batch_count) || 1
     const topProcessCardQuantity = numeric(values.process_card_shipment_quantity ?? values.pieces_per_batch)
-    const topTotal = topSingleBatchWeight == null ? null : topSingleBatchWeight * topBatchCount
+    const topTotal = repeatedBatchNetWeightKg(topSingleBatchWeight, topBatchCount)
     const topPieces = shipmentPieceQuantity({
       totalNetWeightKg: topSingleBatchWeight,
       unitWeightG: topUnit,
@@ -977,7 +983,7 @@ export function QualityWeightShipmentDrawer({
     const snapshotMaterial = text(values.material_snapshot || values.material)
     const draftBatchCount = numeric(values.product_batch_count ?? values.batch_count) || 1
     const draftSingleBatchWeight = numeric(values.single_batch_net_weight_kg)
-    const draftTotalWeight = draftSingleBatchWeight == null ? null : draftSingleBatchWeight * draftBatchCount
+    const draftTotalWeight = repeatedBatchNetWeightKg(draftSingleBatchWeight, draftBatchCount)
     const draftProcessCardQuantity = numeric(values.process_card_shipment_quantity ?? values.pieces_per_batch)
     const draftLines = lines
       // The current database requires a positive weight for a persisted line.
@@ -1227,7 +1233,7 @@ export function QualityWeightShipmentDrawer({
                     <Col xs={12} sm={6}><Form.Item label="单批实称净重(kg)"><InputNumber min={0.001} precision={3} value={line.single_batch_net_weight_kg ?? undefined} onChange={(value) => updateLine(index, { single_batch_net_weight_kg: numeric(value) })} style={{ width: '100%' }} /></Form.Item></Col>
                     <Col xs={12} sm={6}><Form.Item label="相同称重批数"><InputNumber min={1} precision={0} value={line.product_batch_count} onChange={(value) => updateLine(index, { product_batch_count: numeric(value) || 1 })} style={{ width: '100%' }} /></Form.Item></Col>
                   </Row>
-                  <Typography.Text type="secondary">单批换算 {metrics.singlePieces || '-'} 件（允许上限 {metrics.quantityUpper ?? '-'} 件） · 最终 {metrics.quantity || '-'} 件 / {metrics.actual == null ? '-' : metrics.actual.toFixed(3)} kg · 偏差 {variance == null ? '-' : `${variance >= 0 ? '+' : ''}${variance.toFixed(2)}%`}</Typography.Text>
+                  <Typography.Text type="secondary">单批换算 {metrics.singlePieces == null ? '-' : qualityNumber(metrics.singlePieces, Number.isInteger(metrics.singlePieces) ? 0 : 2)} 件（允许上限 {metrics.quantityUpper ?? '-'} 件） · 最终 {metrics.quantity || '-'} 件 / {metrics.actual == null ? '-' : metrics.actual.toFixed(3)} kg · 偏差 {variance == null ? '-' : `${variance >= 0 ? '+' : ''}${variance.toFixed(2)}%`}</Typography.Text>
                 </Card>
               })}
             </div>

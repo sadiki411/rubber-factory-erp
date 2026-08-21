@@ -1,10 +1,13 @@
 import {
   expectedWeightKg,
   isHighReworkCount,
+  normalizeWeightKg,
   orderUnitWeightG,
+  piecesPerBatchFromTotal,
   piecesFromBatchCount,
   piecesFromWeight,
   processCardQuantityUpperLimit,
+  repeatedBatchNetWeightKg,
   reworkQuantitiesValid,
   shipmentPieceQuantity,
   shipmentQuantitiesMatch,
@@ -54,8 +57,18 @@ describe('quality quantity validation', () => {
 
   it('multiplies a single weighing by the entered batch count', () => {
     expect(piecesFromBatchCount(3, 24)).toBe(72)
+    expect(piecesPerBatchFromTotal(3301, 3)).toBe(1100)
     expect(shipmentPieceQuantity({ totalNetWeightKg: 2.5, unitWeightG: 31.25, batchCount: 3, piecesPerBatch: 24 })).toBe(240)
     expect(shipmentPieceQuantity({ totalNetWeightKg: 2.5, unitWeightG: 31.25 })).toBe(80)
+    expect(repeatedBatchNetWeightKg(10.2, 34)).toBe(346.8)
+    expect(String(repeatedBatchNetWeightKg(10.2, 34))).not.toContain('999999')
+    expect(normalizeWeightKg(1 / 3)).toBe(0.333)
+    expect(repeatedBatchNetWeightKg(1 / 3, 3)).toBe(1)
+    expect(normalizeWeightKg(null)).toBeNull()
+    expect(normalizeWeightKg(undefined)).toBeNull()
+    expect(normalizeWeightKg('')).toBeNull()
+    expect(normalizeWeightKg('   ')).toBeNull()
+    expect(normalizeWeightKg(-1.2346)).toBe(-1.235)
   })
 
   it('enforces the flow-card single-batch quantity cap at exactly ten percent', () => {

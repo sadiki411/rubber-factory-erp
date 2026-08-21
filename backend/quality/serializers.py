@@ -773,6 +773,29 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
                 if alias in data:
                     data["single_batch_net_weight_kg"] = data.get(alias)
                     break
+        # Browser number multiplication can expose an IEEE-754 tail before
+        # DRF decimal validation (for example 10.2 * 34 becomes
+        # 346.79999999999995).  The single reading and repeat count are the
+        # authoritative inputs, so derive and quantize only the total before
+        # max_digits checks.  Keep the single reading untouched so its declared
+        # three-decimal field still rejects over-precise operator input.
+        single_weight = data.get("single_batch_net_weight_kg")
+        if single_weight not in (None, ""):
+            try:
+                single_decimal = Decimal(str(single_weight))
+                repeat_value = data.get("product_batch_count")
+                if repeat_value in (None, "") and self.instance is not None:
+                    repeat_value = self.instance.product_batch_count
+                repeat_count = int(repeat_value or 1)
+                data["total_net_weight_kg"] = str(
+                    (single_decimal * Decimal(repeat_count)).quantize(
+                        Decimal("0.001"), rounding=ROUND_HALF_UP
+                    )
+                )
+            except (ArithmeticError, TypeError, ValueError):
+                # Let the declared serializer fields return their existing,
+                # more specific validation messages for malformed inputs.
+                pass
         # During the rolling upgrade, the existing form still calls its one
         # scale reading ``total_net_weight_kg``.  Preserve that input as the
         # single-batch snapshot; the line stores the expanded actual total.

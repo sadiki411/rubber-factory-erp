@@ -110,6 +110,17 @@ export function piecesFromBatchCount(
   return result > 0 ? result : null
 }
 
+/** Mirror the server's positive ROUND_HALF_UP per-batch check for legacy totals. */
+export function piecesPerBatchFromTotal(
+  totalPieces: number | string | null | undefined,
+  batchCount: number | string | null | undefined,
+) {
+  const total = Number(totalPieces)
+  const batches = Number(batchCount)
+  if (!Number.isFinite(total) || total <= 0 || !Number.isInteger(batches) || batches <= 0) return null
+  return Math.round(total / batches)
+}
+
 /**
  * Calculate the final shipped quantity for repeated, identical weighings.
  * `totalNetWeightKg` is the scale reading for one batch; an omitted batch
@@ -131,6 +142,34 @@ export function shipmentPieceQuantity(values: {
     return singleBatchPieces * batchCount
   }
   return piecesFromBatchCount(values.batchCount, values.piecesPerBatch)
+}
+
+/** Normalize a kilogram value to the three-decimal scale used by the API. */
+export function normalizeWeightKg(value: number | string | null | undefined) {
+  if (value == null || (typeof value === 'string' && value.trim() === '')) return null
+  const weight = Number(value)
+  if (!Number.isFinite(weight)) return null
+  return Number(weight.toFixed(3))
+}
+
+/**
+ * Expand one repeated scale reading into the accumulated net weight accepted
+ * by the shipment API. Scale inputs and persisted weights use three decimal
+ * places; normalising here prevents binary floating-point tails such as
+ * `10.2 * 34 === 346.79999999999995` from leaking into a DecimalField payload.
+ */
+export function repeatedBatchNetWeightKg(
+  singleBatchNetWeightKg: number | string | null | undefined,
+  batchCount: number | string | null | undefined,
+) {
+  if (singleBatchNetWeightKg == null || (typeof singleBatchNetWeightKg === 'string' && singleBatchNetWeightKg.trim() === '')) return null
+  const weight = Number(singleBatchNetWeightKg)
+  const parsedBatchCount = Number(batchCount)
+  if (!Number.isFinite(weight)) return null
+  const repeatCount = Number.isInteger(parsedBatchCount) && parsedBatchCount > 0
+    ? parsedBatchCount
+    : 1
+  return normalizeWeightKg(weight * repeatCount)
 }
 
 export function weightUpperLimitKg(expectedKg: number | null | undefined, tolerancePercent = 10) {

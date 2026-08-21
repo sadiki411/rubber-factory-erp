@@ -109,27 +109,40 @@ describe('QualityWeightShipmentDrawer', () => {
   it('updates final pieces and cumulative weight immediately when batch count changes', async () => {
     const user = userEvent.setup()
     const { onSubmit } = renderDrawer()
-    fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '25' } })
-    fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '2.5' } })
-    fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '100' } })
-    fireEvent.change(screen.getByLabelText(/相同称重批数/), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '8.7423' } })
+    fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '10.2' } })
+    fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '1091' } })
+    fireEvent.change(screen.getByLabelText(/相同称重批数/), { target: { value: '34' } })
     fireEvent.change(screen.getByLabelText('规格'), { target: { value: '批量规格' } })
     fireEvent.change(screen.getByLabelText('材质 / 胶料'), { target: { value: '批量材质' } })
 
-    await waitFor(() => expect(screen.getByText('最终总出货数').closest('.ant-statistic')).toHaveTextContent('300'))
-    expect(screen.getByText('累计总净重').closest('.ant-statistic')).toHaveTextContent('7.500')
+    await waitFor(() => expect(screen.getByText('最终总出货数').closest('.ant-statistic')).toHaveTextContent('39,678'))
+    expect(screen.getByText('累计总净重').closest('.ant-statistic')).toHaveTextContent('346.800')
     await user.click(screen.getByRole('button', { name: '确认出货' }))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
-    expect(onSubmit.mock.calls[0][0]).toMatchObject({
+    const payload = onSubmit.mock.calls[0][0]
+    expect(payload).toMatchObject({
       shipment_no: undefined,
       inspector_ids: [],
-      single_batch_net_weight_kg: 2.5,
-      total_net_weight_kg: 7.5,
-      process_card_shipment_quantity: 100,
-      product_batch_count: 3,
-      piece_quantity: 300,
+      unit_weight_g: 8.7423,
+      single_batch_net_weight_kg: 10.2,
+      total_net_weight_kg: 346.8,
+      net_weight_kg: 346.8,
+      process_card_shipment_quantity: 1091,
+      product_batch_count: 34,
+      batch_count: 34,
+      piece_quantity: 39678,
     })
+    expect(payload.lines[0]).toMatchObject({
+      unit_weight_g_snapshot: 8.7423,
+      single_batch_net_weight_kg: 10.2,
+      net_weight_kg: 346.8,
+      product_batch_count: 34,
+      process_card_shipment_quantity: 1091,
+      piece_quantity: 39678,
+    })
+    expect(JSON.stringify(payload)).not.toContain('346.79999999999995')
   }, 20_000)
 
   it('uses only authoritative candidates so completed or stale local orders cannot return to the selector', async () => {
@@ -278,14 +291,112 @@ describe('QualityWeightShipmentDrawer', () => {
     renderDrawer(vi.fn(), { onSaved })
 
     fireEvent.change(screen.getByLabelText(/出货单号/), { target: { value: draft.shipment_no } })
+    fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '8.7423' } })
+    fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '10.2' } })
+    fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '1091' } })
+    fireEvent.change(screen.getByLabelText(/相同称重批数/), { target: { value: '34' } })
     fireEvent.click(screen.getByRole('button', { name: '保存草稿' }))
 
     await waitFor(() => expect(apiMocks.createShipmentBatch).toHaveBeenCalledTimes(1))
     expect(apiMocks.createShipmentBatch.mock.calls[0][0]).toMatchObject({
       shipment_no: draft.shipment_no,
+      single_batch_net_weight_kg: 10.2,
+      total_net_weight_kg: 346.8,
+      net_weight_kg: 346.8,
+      product_batch_count: 34,
+      batch_count: 34,
       lines: [],
     })
     expect(onSaved).toHaveBeenCalledTimes(1)
+  }, 20_000)
+
+  it('preserves a legacy draft total and quantity when no single-batch weight was stored', async () => {
+    const user = userEvent.setup()
+    const draft: QualityShipmentBatch = {
+      id: 79,
+      shipment_no: 'CK-DRAFT-THIRDS',
+      shipment_date: '2026-08-21',
+      status: 'DRAFT',
+      order_id: order.id,
+      order,
+      specification_snapshot: order.specification,
+      material_snapshot: order.material,
+      unit_weight_g: 1,
+      total_net_weight_kg: 1,
+      product_batch_count: 3,
+      process_card_shipment_quantity: 333,
+      lines: [{
+        id: 903,
+        order_id: order.id,
+        order,
+        net_weight_kg: 1,
+        unit_weight_g_snapshot: 1,
+        product_batch_count: 3,
+        process_card_shipment_quantity: 333,
+        piece_quantity: 1000,
+        specification_snapshot: order.specification,
+        material_snapshot: order.material,
+      }],
+    }
+    apiMocks.updateShipmentBatch.mockResolvedValue(draft)
+    apiMocks.confirmShipmentBatch.mockResolvedValue({ ...draft, status: 'CONFIRMED' })
+    renderDrawer(vi.fn(), { batch: draft })
+
+    expect(await screen.findByText('已选择 1 张流程卡')).toBeInTheDocument()
+    const singleWeightField = screen.getByText('单批实称净重(kg)').closest('.ant-form-item')?.querySelector('input')
+    expect(singleWeightField).toHaveValue('')
+    expect(screen.getByText(/最终 1000 件 \/ 1\.000 kg/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '确认出货' }))
+
+    await waitFor(() => expect(apiMocks.updateShipmentBatch).toHaveBeenCalledTimes(1))
+    const payload = apiMocks.updateShipmentBatch.mock.calls[0][1]
+    expect(payload.lines[0]).toMatchObject({
+      single_batch_net_weight_kg: undefined,
+      actual_weight_kg: 1,
+      net_weight_kg: 1,
+      product_batch_count: 3,
+      piece_quantity: 1000,
+    })
+    expect(payload.lines[0]).not.toHaveProperty('single_batch_net_weight_kg', 0.333)
+  }, 20_000)
+
+  it('uses a legacy one-batch header total as the unchanged single weight', async () => {
+    const user = userEvent.setup()
+    const draft: QualityShipmentBatch = {
+      id: 80,
+      shipment_no: 'CK-DRAFT-ONE-BATCH',
+      shipment_date: '2026-08-21',
+      status: 'DRAFT',
+      order_id: order.id,
+      order,
+      specification_snapshot: order.specification,
+      material_snapshot: order.material,
+      unit_weight_g: 25,
+      total_net_weight_kg: 2.5,
+      process_card_shipment_quantity: 100,
+      lines: [],
+    }
+    apiMocks.updateShipmentBatch.mockResolvedValue(draft)
+    apiMocks.confirmShipmentBatch.mockResolvedValue({ ...draft, status: 'CONFIRMED' })
+    renderDrawer(vi.fn(), { batch: draft })
+
+    expect(await screen.findByLabelText('单批实称净重(kg)')).toHaveValue('2.500')
+    expect(screen.getByText('累计总净重').closest('.ant-statistic')).toHaveTextContent('2.500')
+    await user.click(screen.getByRole('button', { name: '确认出货' }))
+
+    await waitFor(() => expect(apiMocks.updateShipmentBatch).toHaveBeenCalledTimes(1))
+    const payload = apiMocks.updateShipmentBatch.mock.calls[0][1]
+    expect(payload).toMatchObject({
+      single_batch_net_weight_kg: 2.5,
+      total_net_weight_kg: 2.5,
+      net_weight_kg: 2.5,
+      product_batch_count: 1,
+    })
+    expect(payload.lines[0]).toMatchObject({
+      single_batch_net_weight_kg: 2.5,
+      net_weight_kg: 2.5,
+      product_batch_count: 1,
+    })
   }, 20_000)
 
   it('loads an existing draft number, updates that row, confirms it, and notifies the parent', async () => {
@@ -326,11 +437,18 @@ describe('QualityWeightShipmentDrawer', () => {
     await user.click(screen.getByRole('button', { name: '继续填写草稿' }))
     expect(await screen.findByText(`继续填写草稿 · ${draft.shipment_no}`)).toBeInTheDocument()
     expect(await screen.findByText('已选择 1 张流程卡')).toBeInTheDocument()
+    const restoredSingleWeight = screen.getByText('单批实称净重(kg)').closest('.ant-form-item')?.querySelector('input')
+    expect(restoredSingleWeight).toHaveValue('2.500')
     await user.click(screen.getByRole('combobox', { name: /候选订单/ }))
     expect(await screen.findByRole('option', { name: /TEST-ORDER-001.*原草稿订单/ })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '确认出货' }))
     await waitFor(() => expect(apiMocks.updateShipmentBatch).toHaveBeenCalledWith(88, expect.any(Object)))
+    expect(apiMocks.updateShipmentBatch.mock.calls[0][1].lines[0]).toMatchObject({
+      single_batch_net_weight_kg: 2.5,
+      net_weight_kg: 2.5,
+      product_batch_count: 1,
+    })
     expect(apiMocks.confirmShipmentBatch).toHaveBeenCalledWith(88)
     expect(onSaved).toHaveBeenCalledTimes(1)
   }, 20_000)
