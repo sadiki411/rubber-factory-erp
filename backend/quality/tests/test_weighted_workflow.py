@@ -101,7 +101,7 @@ class WeightedWorkflowApiTests(QualityTestMixin, TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("process_card", response.json())
 
-    def test_rework_link_rules_auto_rounds_and_cumulative_bounds(self):
+    def test_rework_link_rules_auto_rounds_and_per_round_bounds(self):
         card = self.card("PC-REWORK", quantity=10, unit_weight_g="2")
         internal = self.client.post(
             "/api/quality/rework-cases/",
@@ -110,16 +110,17 @@ class WeightedWorkflowApiTests(QualityTestMixin, TestCase):
         )
         self.assertEqual(internal.status_code, 201, internal.content)
         self.assertTrue(internal.json()["case_no"].startswith("R"))
-        for _ in range(4):
+        # R1/R2/R3 may each process the same complete affected quantity.
+        for _ in range(3):
             attempt = self.client.post(
                 "/api/quality/rework-attempts/",
-                {"case_id": internal.json()["id"], "input_quantity": 1, "reworked_quantity": 1},
+                {"case_id": internal.json()["id"], "input_quantity": 4, "reworked_quantity": 4},
                 format="json",
             )
             self.assertEqual(attempt.status_code, 201, attempt.content)
         too_many = self.client.post(
             "/api/quality/rework-attempts/",
-            {"case_id": internal.json()["id"], "input_quantity": 1, "reworked_quantity": 1},
+            {"case_id": internal.json()["id"], "input_quantity": 5, "reworked_quantity": 5},
             format="json",
         )
         self.assertEqual(too_many.status_code, 400)

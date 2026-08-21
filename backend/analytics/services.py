@@ -2,11 +2,17 @@ from collections import Counter
 from datetime import datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from django.utils import timezone
 
 from production.models import ProductionDailyLog, ProductionRun
-from quality.models import QualityShipment, QualityShipmentBatch, ReturnRework
+from quality.models import (
+    QualityReworkAttempt,
+    QualityReworkCase,
+    QualityShipment,
+    QualityShipmentBatch,
+    ReturnRework,
+)
 
 from .models import ManualFinancialEntry, ManualPerformanceEntry
 
@@ -67,6 +73,91 @@ def _empty_finance():
 def _add_quality(target, source):
     for field in QUALITY_FIELDS:
         target[field] += int(source.get(field, 0) or 0)
+
+
+def _rework_case_order(case):
+    line = case.shipment_line
+    if line is not None:
+        if line.order_id:
+            return line.order
+        if line.process_card_id:
+            return line.process_card.order
+    if case.process_card_id:
+        return case.process_card.order
+    if getattr(case, "shipment_batch_id", None) and case.shipment_batch.order_id:
+        return case.shipment_batch.order
+    return None
+
+
+def _rework_case_order_shares(case):
+    shares = {}
+    allocation_manager = getattr(case, "shipment_allocations", None)
+    allocations = list(allocation_manager.all()) if allocation_manager else []
+    for allocation in allocations:
+        line = allocation.shipment_line
+        order = line.order or (
+            line.process_card.order if line.process_card_id else None
+        )
+        if order is None:
+            continue
+        current = shares.setdefault(order.pk, [order, 0])
+        current[1] += int(allocation.piece_quantity or 0)
+    if shares:
+        return [(order, quantity) for order, quantity in shares.values()]
+    order = _rework_case_order(case)
+    return [(order, _rework_case_returned_quantity(case))] if order else []
+
+
+def _split_integer_by_order_shares(value, shares):
+    value = max(0, int(value or 0))
+    positive = [(order, max(0, int(weight or 0))) for order, weight in shares]
+    total_weight = sum(weight for _, weight in positive)
+    if not positive or total_weight <= 0:
+        return []
+    rows = []
+    allocated = 0
+    for order, weight in positive:
+        base, remainder = divmod(value * weight, total_weight)
+        rows.append([order, base, remainder])
+        allocated += base
+    for row in sorted(rows, key=lambda item: (-item[2], item[0].pk))[
+        : value - allocated
+    ]:
+        row[1] += 1
+    return [(order, amount) for order, amount, _ in rows]
+
+
+def _rework_case_returned_quantity(case):
+    if case.origin != QualityReworkCase.Origin.CUSTOMER_RETURN:
+        return 0
+    if case.affected_quantity is not None:
+        return max(0, int(case.affected_quantity))
+    if case.affected_weight_kg is None or case.shipment_line is None:
+        return 0
+    line = case.shipment_line
+    unit_weight = line.unit_weight_g_snapshot or (
+        line.process_card.unit_weight_g if line.process_card_id else None
+    )
+    if not unit_weight:
+        return 0
+    return max(
+        0,
+        int(
+            (
+                Decimal(case.affected_weight_kg)
+                * Decimal("1000")
+                / Decimal(unit_weight)
+            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        ),
+    )
+
+
+def _rework_attempt_quality(attempt):
+    return {
+        "reworked_quantity": int(attempt.reworked_quantity or 0),
+        "recovered_quantity": int(attempt.recovered_quantity or 0),
+        "scrap_quantity": int(attempt.scrap_quantity or 0),
+    }
 
 
 def _add_finance(target, source):
@@ -442,6 +533,42 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             "shipment__order", "responsible_inspector", "rework_employee"
         )
     )
+    rework_cases = list(
+        QualityReworkCase.objects.exclude(
+            status=QualityReworkCase.Status.CANCELLED
+        )
+        .filter(
+            Q(opened_on__gte=date_from, opened_on__lte=date_to)
+            | Q(
+                attempts__attempt_date__gte=date_from,
+                attempts__attempt_date__lte=date_to,
+            )
+        )
+        .select_related(
+            "responsible_inspector",
+            "process_card__order",
+            "shipment_batch__order",
+            "shipment_line__order",
+            "shipment_line__process_card__order",
+        )
+        .prefetch_related(
+            Prefetch(
+                "attempts",
+                queryset=QualityReworkAttempt.objects.exclude(
+                    status=QualityReworkCase.Status.CANCELLED
+                )
+                .filter(
+                    attempt_date__gte=date_from,
+                    attempt_date__lte=date_to,
+                )
+                .select_related("rework_employee"),
+                to_attr="period_attempts",
+            ),
+            "shipment_allocations__shipment_line__order",
+            "shipment_allocations__shipment_line__process_card__order",
+        )
+        .distinct()
+    )
     manual_entries = list(
         _manual_queryset(
             date_from, date_to, group=group, machine_id=machine_id
@@ -788,6 +915,108 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         _add_quality(row, values)
         row["automatic_record_count"] += 1
 
+    new_rework_count = 0
+    for case in rework_cases:
+        case_in_period = date_from <= case.opened_on <= date_to
+        returned_quantity = (
+            _rework_case_returned_quantity(case) if case_in_period else 0
+        )
+        shares = _rework_case_order_shares(case)
+        order_rows = {
+            order.pk: _ensure_order_row(
+                orders,
+                order_id=order.pk,
+                order_no=order.order_no,
+                product_name=order.product_name,
+                specification=order.specification,
+                material=order.material,
+            )
+            for order, _ in shares
+        }
+        category = case.reason_category
+        reason = reasons.setdefault(
+            category,
+            _reason_row(category, reason_labels.get(category, category)),
+        )
+
+        if case_in_period:
+            case_values = {"returned_quantity": returned_quantity}
+            _add_quality(automatic_quality, case_values)
+            _add_quality(daily[case.opened_on], case_values)
+            returned_by_order = dict(
+                _split_integer_by_order_shares(returned_quantity, shares)
+            )
+            for order, _ in shares:
+                order_row = order_rows[order.pk]
+                _add_quality(
+                    order_row,
+                    {
+                        "returned_quantity": returned_by_order.get(order, 0)
+                    },
+                )
+                order_row["automatic_record_count"] += 1
+            reason["returned_quantity"] += returned_quantity
+            reason["automatic_record_count"] += 1
+            if (
+                case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
+                and case.responsible_inspector is not None
+            ):
+                responsible_key = _employee_key(case.responsible_inspector)
+                responsible = employees.setdefault(
+                    responsible_key, _employee_row(case.responsible_inspector)
+                )
+                responsible["responsible_return_quantity"] += returned_quantity
+                responsible["automatic_record_count"] += 1
+
+        for attempt in case.period_attempts:
+            attempt_values = _rework_attempt_quality(attempt)
+            _add_quality(automatic_quality, attempt_values)
+            _add_quality(daily[attempt.attempt_date], attempt_values)
+            split_attempt_values = {
+                field: dict(_split_integer_by_order_shares(value, shares))
+                for field, value in attempt_values.items()
+            }
+            for order, _ in shares:
+                order_row = order_rows[order.pk]
+                _add_quality(
+                    order_row,
+                    {
+                        field: allocations.get(order, 0)
+                        for field, allocations in split_attempt_values.items()
+                    },
+                )
+                order_row["automatic_record_count"] += 1
+            for field, value in attempt_values.items():
+                reason[field] += value
+            reason["rework_hours"] += _decimal(
+                getattr(attempt, "work_hours", 0)
+            )
+            reason["automatic_record_count"] += 1
+
+            if attempt.rework_employee is not None:
+                reworker_key = _employee_key(attempt.rework_employee)
+                reworker = employees.setdefault(
+                    reworker_key, _employee_row(attempt.rework_employee)
+                )
+                reworker["handled_returned_quantity"] += int(
+                    attempt.input_quantity or returned_quantity or 0
+                )
+                reworker["reworked_quantity"] += attempt_values[
+                    "reworked_quantity"
+                ]
+                reworker["recovered_quantity"] += attempt_values[
+                    "recovered_quantity"
+                ]
+                reworker["scrap_quantity"] += attempt_values["scrap_quantity"]
+                reworker["rework_hours"] += _decimal(
+                    getattr(attempt, "work_hours", 0)
+                )
+                reworker["automatic_record_count"] += 1
+
+        new_rework_count += (
+            len(case.period_attempts) if case.period_attempts else int(case_in_period)
+        )
+
     manual_counts = Counter(entry.entry_type for entry in manual_entries)
     for entry in manual_entries:
         day = daily[entry.entry_date]
@@ -1113,7 +1342,10 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         "automatic_finance_date": "ProductionRun.settled_at",
         "manual_finance_date": "ManualFinancialEntry.occurred_on",
         "quality_date": "QualityShipment.shipment_date + confirmed QualityShipmentBatch.shipment_date",
-        "rework_date": "ReturnRework.rework_date",
+        "rework_date": (
+            "ReturnRework.rework_date + QualityReworkCase.opened_on + "
+            "QualityReworkAttempt.attempt_date"
+        ),
         "order_link": (
             "已关联生产、品检和出货记录按order_id归集；"
             "未关联历史及手工补录按legacy:规范化订单号单独归集"
@@ -1146,9 +1378,9 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                 + manual_counts[ManualPerformanceEntry.EntryType.QUALITY],
             },
             "rework": {
-                "automatic": len(reworks),
+                "automatic": len(reworks) + new_rework_count,
                 "manual": manual_counts[ManualPerformanceEntry.EntryType.REWORK],
-                "total": len(reworks)
+                "total": len(reworks) + new_rework_count
                 + manual_counts[ManualPerformanceEntry.EntryType.REWORK],
             },
             "finance": {
@@ -1195,7 +1427,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             "manual": quality_source(manual_quality),
             "total": quality_source(combined_quality),
             "shipment_count": len(shipments) + len(weighted_batches),
-            "rework_count": len(reworks),
+            "rework_count": len(reworks) + new_rework_count,
         },
         "daily_trend": daily_payload,
         "operator_performance": operator_payload,

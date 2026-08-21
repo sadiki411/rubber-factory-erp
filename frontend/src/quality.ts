@@ -1,5 +1,5 @@
 import dayjs from 'dayjs'
-import type { QualityOrder } from './types'
+import type { QualityOrder, QualityProcessCard, QualityReworkCase } from './types'
 
 function finiteNonNegative(...values: number[]) {
   return values.every((value) => Number.isFinite(value) && value >= 0)
@@ -44,6 +44,16 @@ export function qualityNumber(value: number | string | null | undefined, digits 
   return Number.isFinite(parsed)
     ? parsed.toLocaleString('zh-CN', { maximumFractionDigits: digits })
     : '-'
+}
+
+export function reworkCaseSourceTitle(item: QualityReworkCase) {
+  const source = item.source
+  if (!source) return item.shipment_batch_id ? `出货批次 #${item.shipment_batch_id}` : '历史来源记录'
+  return `${source.shipment_no} · ${source.order_no || '未关联订单'}${source.item_no ? ` / ${source.item_no}` : ''}`
+}
+
+export function resolvedProcessCardReworkCount(item: QualityProcessCard, linkedCaseCount: number) {
+  return item.rework_count == null ? linkedCaseCount : Number(item.rework_count)
 }
 
 /**

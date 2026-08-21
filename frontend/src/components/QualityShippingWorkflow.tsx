@@ -30,6 +30,7 @@ import {
   formatQualityDate,
   orderUnitWeightG,
   qualityNumber,
+  resolvedProcessCardReworkCount,
 } from '../quality'
 import type {
   QualityEmployee,
@@ -38,6 +39,7 @@ import type {
   QualityShipment,
   QualityShipmentBatch,
   QualityShipmentBatchInput,
+  QualityReworkCase,
   ReturnRework,
 } from '../types'
 import { QualityWeightShipmentDrawer, type QualityWeightShipmentLineSeed } from './QualityWeightShipmentDrawer'
@@ -68,6 +70,7 @@ interface WorkflowProps {
   shipments: QualityShipment[]
   batches?: QualityShipmentBatch[]
   reworks: ReturnRework[]
+  reworkCases?: QualityReworkCase[]
   searchText?: string
   loading?: boolean
   onOpenRework: (rework?: ReturnRework) => void
@@ -171,17 +174,17 @@ function ReworkTimelineDrawer({
   open,
   card,
   reworks,
+  reworkCases,
   shipments,
   onClose,
-  onEdit,
   onAdd,
 }: {
   open: boolean
   card?: WorkflowCard
   reworks: ReturnRework[]
+  reworkCases: QualityReworkCase[]
   shipments: QualityShipment[]
   onClose: () => void
-  onEdit: (rework: ReturnRework) => void
   onAdd: (shipment?: QualityShipment) => void
 }) {
   const rows = useMemo(() => {
@@ -189,15 +192,27 @@ function ReworkTimelineDrawer({
     return reworks.filter((item) => item.shipment?.order_id === card.order.id || item.shipment?.order?.id === card.order.id).sort((a, b) => String(a.rework_date).localeCompare(String(b.rework_date)) || a.id - b.id)
   }, [card, reworks])
   const linkedShipment = shipments.find((item) => item.order_id === card?.order.id || item.order?.id === card?.order.id)
+  const weightedRows = useMemo(() => {
+    if (!card) return []
+    return reworkCases.filter((item) => item.process_card_id != null && String(item.process_card_id) === String(card.processCard?.id)
+      || item.source?.order_ids?.includes(card.order.id))
+  }, [card, reworkCases])
   return (
     <Drawer open={open} onClose={onClose} width={560} title={card ? `${card.cardNo} · 返工时间线` : '返工时间线'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>关闭</Button><Button type="primary" onClick={() => onAdd(linkedShipment)}>登记返工</Button></Space>}>
       {card && <Descriptions column={1} size="small" bordered><Descriptions.Item label="订单 / 产品">{card.order.order_no} · {card.order.product_name || card.order.specification}</Descriptions.Item><Descriptions.Item label="计划数量">{qualityNumber(card.quantity)} 件</Descriptions.Item><Descriptions.Item label="累计返工">{card.reworkCount} 次</Descriptions.Item></Descriptions>}
       <Divider orientation="horizontal">处理记录</Divider>
-      {rows.length ? <Timeline items={rows.map((item, index) => ({
-        color: item.status === 'COMPLETED' ? 'green' : item.status === 'PROCESSING' ? 'blue' : 'orange',
-        label: <span>第{index + 1}次<br />{formatQualityDate(item.rework_date)}</span>,
-        children: <Card size="small" className="quality-rework-timeline-card"><Space wrap><Tag>{item.reason_category_display || item.reason_category}</Tag><Tag color={item.status === 'COMPLETED' ? 'success' : 'warning'}>{item.status_display || item.status}</Tag></Space><div className="quality-rework-timeline-quantities">退回 {qualityNumber(item.returned_quantity)} 件 · 返工 {qualityNumber(item.reworked_quantity)} 件 · 合格 {qualityNumber(item.recovered_quantity)} 件 · 报废 {qualityNumber(item.scrap_quantity)} 件</div><Typography.Paragraph ellipsis={{ rows: 2 }} type="secondary">{item.reason || item.notes || '未填写原因'}</Typography.Paragraph><Button type="link" size="small" onClick={() => onEdit(item)}>编辑本次记录</Button></Card>,
-      }))} /> : <Empty description="暂无返工记录，可从下方登记第1次返工" />}
+      {(rows.length || weightedRows.length) ? <Timeline items={[
+        ...weightedRows.map((item) => ({
+          color: item.status === 'COMPLETED' ? 'green' : item.status === 'SCRAPPED' ? 'red' : 'blue',
+          label: <span>{item.case_no}<br />{formatQualityDate(item.opened_on)}</span>,
+          children: <Card size="small" className="quality-rework-timeline-card"><Space wrap><Tag color="blue">客户整批退货</Tag><Tag>{item.attempt_count || item.attempts?.length || 0}轮返工</Tag></Space><div className="quality-rework-timeline-quantities">{item.source ? `第${item.source.shipment_unit_no}批 · ${qualityNumber(item.source.pieces_per_batch)}件 · ${qualityNumber(item.source.single_batch_net_weight_kg, 3)}kg` : `${qualityNumber(item.affected_quantity)}件`}</div><Typography.Paragraph ellipsis={{ rows: 2 }} type="secondary">{item.reason || item.notes || '未填写原因'}</Typography.Paragraph></Card>,
+        })),
+        ...rows.map((item, index) => ({
+         color: item.status === 'COMPLETED' ? 'green' : item.status === 'PROCESSING' ? 'blue' : 'orange',
+         label: <span>第{index + 1}次<br />{formatQualityDate(item.rework_date)}</span>,
+          children: <Card size="small" className="quality-rework-timeline-card"><Space wrap><Tag>{item.reason_category_display || item.reason_category}</Tag><Tag color={item.status === 'COMPLETED' ? 'success' : 'warning'}>{item.status_display || item.status}</Tag><Tag>历史只读</Tag></Space><div className="quality-rework-timeline-quantities">退回 {qualityNumber(item.returned_quantity)} 件 · 返工 {qualityNumber(item.reworked_quantity)} 件 · 合格 {qualityNumber(item.recovered_quantity)} 件 · 报废 {qualityNumber(item.scrap_quantity)} 件</div><Typography.Paragraph ellipsis={{ rows: 2 }} type="secondary">{item.reason || item.notes || '未填写原因'}</Typography.Paragraph></Card>,
+        })),
+      ]} /> : <Empty description="暂无返工记录，可从下方登记第1次返工" />}
     </Drawer>
   )
 }
@@ -249,7 +264,7 @@ function ProcessCardDrawer({ open, card, orders, onClose, onSave }: { open: bool
   </Drawer>
 }
 
-export function QualityShippingWorkflow({ orders, employees = [], processCards = [], shipments, batches = [], reworks, searchText = '', loading, onOpenRework, onOpenTimeline, onSubmitBatch, onOpenShipment, onSaveProcessCard }: WorkflowProps) {
+export function QualityShippingWorkflow({ orders, employees = [], processCards = [], shipments, batches = [], reworks, reworkCases = [], searchText = '', loading, onOpenRework, onOpenTimeline, onSubmitBatch, onOpenShipment, onSaveProcessCard }: WorkflowProps) {
   const [selectedKeys, setSelectedKeys] = useState<React.Key[]>([])
   const [basketOpen, setBasketOpen] = useState(false)
   const [onlyAlerts, setOnlyAlerts] = useState(false)
@@ -279,18 +294,21 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
           : legacyShippedQuantity
       const remainingQuantity = Math.max(0, quantity - shippedQuantity)
       const dueDate = item.demand_date || item.due_date || null
-      const reworkCount = Number(item.rework_count || 0)
+      const linkedCaseCount = reworkCases.filter((entry) => String(entry.process_card_id || '') === String(item.id) || entry.source?.order_ids?.includes(order.id)).length
+      // Current APIs already include weighted return cases in rework_count.
+      // Only derive a fallback for older responses where the field is absent.
+      const reworkCount = resolvedProcessCardReworkCount(item, linkedCaseCount)
       const due = dueDate ? dayjs(dueDate).startOf('day') : null
       const maxAllowedWeightKg = item.max_allowed_weight_kg == null ? null : Number(item.max_allowed_weight_kg)
       const missingDate = shippedWeightKg > 0 && batches.some((batch) => !batch.shipment_date && (batch.lines || []).some((line) => String(line.process_card_id || line.process_card?.id) === String(item.id)))
-      return { key: String(item.id), cardNo: item.card_no, processCard: item, order, quantity, shippedQuantity, remainingQuantity, unitWeightG, expectedWeightKg: expectedWeightKg(remainingQuantity, unitWeightG), shippedWeightKg, maxAllowedWeightKg, dueDate, reworkCount, missingDate, overdue: Boolean(remainingQuantity && due?.isValid() && due.isBefore(dayjs().startOf('day'))), status: remainingQuantity <= 0 ? 'SHIPPED' : shippedQuantity ? 'PARTIAL' : 'READY' } satisfies WorkflowCard
+      return { key: String(item.id), cardNo: item.card_no, processCard: item, order, quantity, shippedQuantity, remainingQuantity, unitWeightG, expectedWeightKg: expectedWeightKg(remainingQuantity, unitWeightG), shippedWeightKg, maxAllowedWeightKg, dueDate, reworkCount, missingDate, overdue: Boolean(remainingQuantity && due?.isValid() && due.isBefore(dayjs().startOf('day'))), status: remainingQuantity <= 0 ? 'SHIPPED' : reworkCount ? 'REWORK' : shippedQuantity ? 'PARTIAL' : 'READY' } satisfies WorkflowCard
     }).filter(Boolean).filter((item) => (item as WorkflowCard).quantity > 0) as WorkflowCard[]
-  }, [orders, processCards, reworks, shipments, batches, searchText])
+  }, [orders, processCards, reworks, reworkCases, shipments, batches, searchText])
   const visibleCards = useMemo(() => onlyAlerts ? cards.filter((card) => card.overdue || card.missingDate || card.reworkCount > 0) : cards, [cards, onlyAlerts])
   const selectedCards = cards.filter((card) => card.processCard && selectedKeys.includes(card.key))
   const pendingCards = cards.filter((card) => card.remainingQuantity > 0)
   const missingDateCount = cards.filter((card) => card.missingDate).length
-  const pendingReworkCount = reworks.filter((item) => item.status !== 'COMPLETED').length
+  const pendingReworkCount = reworks.filter((item) => item.status !== 'COMPLETED').length + reworkCases.filter((item) => !['COMPLETED', 'SCRAPPED', 'CANCELLED'].includes(item.status)).length
 
   const columns: TableColumnsType<WorkflowCard> = [
     { title: '流程卡', key: 'card', fixed: 'left', width: 190, render: (_, card) => <Space direction="vertical" size={0}><Button type="link" className="table-primary-link" onClick={() => { setTimelineCard(card); onOpenTimeline(card) }}><strong>{card.cardNo}</strong><br /><Typography.Text type="secondary">{card.order.order_no} / {card.order.item_no || '-'}</Typography.Text></Button>{onSaveProcessCard && <Button type="link" size="small" icon={<EditOutlined />} onClick={() => setProcessCardForm(processCards.find((item) => String(item.id) === card.key) || null)}>编辑</Button>}</Space> },
@@ -317,7 +335,7 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
       </Card>
       <BatchShipmentDrawer open={basketOpen} cards={selectedCards} orders={orders} employees={employees} shipments={shipments} batches={batches} onClose={() => setBasketOpen(false)} onSubmit={async (payload) => { await onSubmitBatch(payload); setSelectedKeys([]) }} />
       <ProcessCardDrawer open={processCardForm !== undefined} card={processCardForm || undefined} orders={orders} onClose={() => setProcessCardForm(undefined)} onSave={onSaveProcessCard} />
-      <ReworkTimelineDrawer open={!!timelineCard} card={timelineCard} reworks={reworks} shipments={shipments} onClose={() => setTimelineCard(undefined)} onEdit={onOpenRework} onAdd={() => onOpenRework()} />
+      <ReworkTimelineDrawer open={!!timelineCard} card={timelineCard} reworks={reworks} reworkCases={reworkCases} shipments={shipments} onClose={() => setTimelineCard(undefined)} onAdd={() => onOpenRework()} />
     </div>
   )
 }

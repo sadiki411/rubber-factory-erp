@@ -6,6 +6,9 @@ from django.utils import timezone
 
 from quality.models import (
     QualityEmployee,
+    QualityReturnAllocation,
+    QualityReworkAttempt,
+    QualityReworkCase,
     QualityShipmentBatch,
     QualityShipmentLine,
 )
@@ -259,3 +262,183 @@ class QualitySummaryApiTests(QualityTestMixin, TestCase):
         self.assertEqual(
             primary["shipped_quantity"] + secondary["shipped_quantity"], 121
         )
+
+    def test_summary_and_ledger_include_whole_batch_return_and_every_rework_round(self):
+        today = timezone.localdate()
+        batch = QualityShipmentBatch.objects.create(
+            shipment_no="SHP-SUM-WHOLE-RETURN",
+            shipment_date=today,
+            order=self.order,
+            inspector=self.inspector,
+            single_batch_net_weight_kg=Decimal("0.200"),
+            product_batch_count=3,
+            pieces_per_batch=100,
+            status=QualityShipmentBatch.Status.CONFIRMED,
+            created_by=self.user,
+        )
+        line = QualityShipmentLine.objects.create(
+            batch=batch,
+            order=self.order,
+            net_weight_kg=Decimal("0.600"),
+            piece_quantity=300,
+            unit_weight_g_snapshot=Decimal("2"),
+        )
+        case = QualityReworkCase.objects.create(
+            origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+            shipment_batch=batch,
+            shipment_unit_no=1,
+            opened_on=today,
+            reason_category="APPEARANCE",
+            responsible_inspector=self.inspector,
+            affected_quantity=100,
+            affected_weight_kg=Decimal("0.200"),
+            created_by=self.user,
+        )
+        QualityReturnAllocation.objects.create(
+            case=case,
+            shipment_line=line,
+            piece_quantity=100,
+            net_weight_kg=Decimal("0.200"),
+        )
+        QualityReworkAttempt.objects.create(
+            case=case,
+            attempt_date=today,
+            rework_employee=self.reworker,
+            input_quantity=100,
+            reworked_quantity=100,
+            recovered_quantity=0,
+            scrap_quantity=0,
+            input_weight_kg=Decimal("0.200"),
+            reworked_weight_kg=Decimal("0.200"),
+            status=QualityReworkCase.Status.WAITING_REINSPECTION,
+            created_by=self.user,
+        )
+        QualityReworkAttempt.objects.create(
+            case=case,
+            attempt_date=today,
+            rework_employee=self.reworker,
+            input_quantity=100,
+            reworked_quantity=100,
+            recovered_quantity=90,
+            scrap_quantity=10,
+            input_weight_kg=Decimal("0.200"),
+            reworked_weight_kg=Decimal("0.200"),
+            recovered_weight_kg=Decimal("0.180"),
+            scrap_weight_kg=Decimal("0.020"),
+            status=QualityReworkCase.Status.COMPLETED,
+            created_by=self.user,
+        )
+
+        response = self.client.get(
+            "/api/quality/summary/",
+            {"date_from": today.isoformat(), "date_to": today.isoformat()},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertEqual(payload["totals"]["shipped_quantity"], 300)
+        self.assertEqual(payload["totals"]["returned_quantity"], 100)
+        self.assertEqual(payload["totals"]["reworked_quantity"], 200)
+        self.assertEqual(payload["totals"]["recovered_quantity"], 90)
+        self.assertEqual(payload["totals"]["scrap_quantity"], 10)
+        self.assertEqual(payload["daily_trend"][0]["returned_quantity"], 100)
+        self.assertEqual(payload["daily_trend"][0]["reworked_quantity"], 200)
+
+        order = payload["order_stats"][0]
+        self.assertEqual(order["returned_quantity"], 100)
+        self.assertEqual(order["reworked_quantity"], 200)
+        self.assertEqual(order["rework_count"], 2)
+        employees = {
+            item["employee_no"]: item for item in payload["employee_stats"]
+        }
+        self.assertEqual(
+            employees[self.inspector.employee_no]["responsible_return_quantity"],
+            100,
+        )
+        self.assertEqual(
+            employees[self.reworker.employee_no]["reworked_quantity"], 200
+        )
+
+        ledger = self.client.get(
+            "/api/quality/shipment-ledger/",
+            {"shipment_status": "CONFIRMED", "page_size": 1000},
+        )
+        self.assertEqual(ledger.status_code, 200, ledger.content)
+        rows = ledger.json().get("results", ledger.json())
+        row = next(item for item in rows if item["source_id"] == batch.pk)
+        self.assertEqual(row["returned_quantity"], 100)
+        self.assertEqual(row["rework_count"], 2)
+
+    def test_whole_batch_return_is_split_to_its_allocated_orders_without_double_counting(self):
+        today = timezone.localdate()
+        second_order = type(self.order).objects.create(
+            order_no="ORD-SUM-RETURN-SECOND",
+            product_name=self.order.product_name,
+            specification=self.order.specification,
+            material=self.order.material,
+            order_quantity=100,
+            order_date=today,
+            created_by=self.user,
+        )
+        batch = QualityShipmentBatch.objects.create(
+            shipment_no="SHP-SUM-MULTI-ORDER-RETURN",
+            shipment_date=today,
+            order=self.order,
+            single_batch_net_weight_kg=Decimal("0.200"),
+            product_batch_count=1,
+            pieces_per_batch=100,
+            status=QualityShipmentBatch.Status.CONFIRMED,
+            created_by=self.user,
+        )
+        first_line = QualityShipmentLine.objects.create(
+            batch=batch,
+            order=self.order,
+            net_weight_kg=Decimal("0.080"),
+            piece_quantity=40,
+            unit_weight_g_snapshot=Decimal("2"),
+        )
+        second_line = QualityShipmentLine.objects.create(
+            batch=batch,
+            order=second_order,
+            net_weight_kg=Decimal("0.120"),
+            piece_quantity=60,
+            unit_weight_g_snapshot=Decimal("2"),
+        )
+        case = QualityReworkCase.objects.create(
+            origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+            shipment_batch=batch,
+            shipment_unit_no=1,
+            opened_on=today,
+            affected_quantity=100,
+            affected_weight_kg=Decimal("0.200"),
+            created_by=self.user,
+        )
+        QualityReturnAllocation.objects.create(
+            case=case,
+            shipment_line=first_line,
+            piece_quantity=40,
+            net_weight_kg=Decimal("0.080"),
+        )
+        QualityReturnAllocation.objects.create(
+            case=case,
+            shipment_line=second_line,
+            piece_quantity=60,
+            net_weight_kg=Decimal("0.120"),
+        )
+
+        payload = self.client.get(
+            "/api/quality/summary/",
+            {"date_from": today.isoformat(), "date_to": today.isoformat()},
+        ).json()
+        self.assertEqual(payload["totals"]["returned_quantity"], 100)
+        orders = {row["order_id"]: row for row in payload["order_stats"]}
+        self.assertEqual(orders[self.order.pk]["returned_quantity"], 40)
+        self.assertEqual(orders[second_order.pk]["returned_quantity"], 60)
+
+        QualityReworkCase.objects.filter(pk=case.pk).update(
+            status=QualityReworkCase.Status.CANCELLED
+        )
+        cancelled_payload = self.client.get(
+            "/api/quality/summary/",
+            {"date_from": today.isoformat(), "date_to": today.isoformat()},
+        ).json()
+        self.assertEqual(cancelled_payload["totals"]["returned_quantity"], 0)

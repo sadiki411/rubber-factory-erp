@@ -1135,7 +1135,9 @@ class QualityShipmentLine(TimeStampedModel):
         total = 0
         returns = self.rework_cases.filter(
             origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
-        ).exclude(status=QualityReworkCase.Status.CANCELLED)
+        ).exclude(status=QualityReworkCase.Status.CANCELLED).filter(
+            shipment_allocations__isnull=True
+        )
         unit = self.unit_weight_g_snapshot or (
             self.process_card.unit_weight_g if self.process_card_id else None
         )
@@ -1147,6 +1149,11 @@ class QualityShipmentLine(TimeStampedModel):
                     (Decimal(case.affected_weight_kg) * Decimal("1000") / Decimal(unit))
                     .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
                 )
+        total += self.rework_allocations.filter(
+            case__origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+        ).exclude(case__status=QualityReworkCase.Status.CANCELLED).aggregate(
+            total=Sum("piece_quantity")
+        )["total"] or 0
         return total
 
     @property
@@ -1155,7 +1162,9 @@ class QualityShipmentLine(TimeStampedModel):
         total = Decimal("0")
         returns = self.rework_cases.filter(
             origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
-        ).exclude(status=QualityReworkCase.Status.CANCELLED)
+        ).exclude(status=QualityReworkCase.Status.CANCELLED).filter(
+            shipment_allocations__isnull=True
+        )
         unit = self.unit_weight_g_snapshot or (
             self.process_card.unit_weight_g if self.process_card_id else None
         )
@@ -1164,6 +1173,14 @@ class QualityShipmentLine(TimeStampedModel):
                 total += Decimal(case.affected_weight_kg)
             elif case.affected_quantity is not None and unit:
                 total += Decimal(case.affected_quantity) * Decimal(unit) / Decimal("1000")
+        total += Decimal(
+            self.rework_allocations.filter(
+                case__origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+            ).exclude(case__status=QualityReworkCase.Status.CANCELLED).aggregate(
+                total=Sum("net_weight_kg")
+            )["total"]
+            or 0
+        )
         return total
 
     @property
@@ -1377,6 +1394,17 @@ class QualityReworkCase(TimeStampedModel):
         null=True,
         blank=True,
     )
+    shipment_batch = models.ForeignKey(
+        QualityShipmentBatch,
+        verbose_name="source shipment batch",
+        related_name="rework_cases",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    shipment_unit_no = models.PositiveIntegerField(
+        "physical shipment unit number", null=True, blank=True
+    )
     opened_on = models.DateField(
         "opened date", default=timezone.localdate, db_index=True
     )
@@ -1426,6 +1454,25 @@ class QualityReworkCase(TimeStampedModel):
             models.Index(fields=["status", "opened_on"]),
             models.Index(fields=["origin", "opened_on"]),
         ]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(shipment_unit_no__isnull=True)
+                    | Q(shipment_batch__isnull=False)
+                ),
+                name="quality_rework_unit_requires_batch_ck",
+            ),
+            models.UniqueConstraint(
+                fields=["shipment_batch", "shipment_unit_no"],
+                condition=(
+                    Q(origin="CUSTOMER_RETURN")
+                    & Q(shipment_batch__isnull=False)
+                    & Q(shipment_unit_no__isnull=False)
+                    & ~Q(status="CANCELLED")
+                ),
+                name="quality_active_return_batch_unit_uniq",
+            ),
+        ]
 
     @property
     def attempt_count(self):
@@ -1441,10 +1488,26 @@ class QualityReworkCase(TimeStampedModel):
     def clean(self):
         errors = {}
         self.case_no = str(self.case_no or "").strip().upper()
-        if self.origin == self.Origin.CUSTOMER_RETURN and not self.shipment_line_id:
-            errors["shipment_line"] = "A customer-return case must link to a shipment line."
-        if not self.process_card_id and not self.shipment_line_id:
+        if self.shipment_line_id and not self.shipment_batch_id:
+            self.shipment_batch_id = self.shipment_line.batch_id
+        if self.origin == self.Origin.CUSTOMER_RETURN and not (
+            self.shipment_line_id or self.shipment_batch_id
+        ):
+            errors["shipment_line"] = (
+                "A customer-return case must link to a confirmed shipment."
+            )
+        if not self.process_card_id and not self.shipment_line_id and not self.shipment_batch_id:
             errors["process_card"] = "Link a process card or shipment line."
+        if self.shipment_unit_no is not None and not self.shipment_batch_id:
+            errors["shipment_unit_no"] = "整批序号必须关联原出货批次。"
+        if self.shipment_unit_no is not None and self.shipment_unit_no < 1:
+            errors["shipment_unit_no"] = "整批序号必须大于0。"
+        if (
+            self.shipment_line_id
+            and self.shipment_batch_id
+            and self.shipment_line.batch_id != self.shipment_batch_id
+        ):
+            errors["shipment_line"] = "原出货明细不属于所选出货批次。"
         if self.affected_quantity is not None and self.affected_quantity < 1:
             errors["affected_quantity"] = "Affected quantity must be greater than zero."
         if self.affected_weight_kg is not None and self.affected_weight_kg <= 0:
@@ -1453,7 +1516,11 @@ class QualityReworkCase(TimeStampedModel):
             errors["shipment_line"] = "返工关联的出货明细必须属于所选流程卡。"
         if self.shipment_line_id and not self.process_card_id:
             self.process_card_id = self.shipment_line.process_card_id
-        if self.shipment_line_id and self.origin == self.Origin.CUSTOMER_RETURN:
+        if (
+            self.shipment_line_id
+            and self.origin == self.Origin.CUSTOMER_RETURN
+            and self.shipment_unit_no is None
+        ):
             line = self.shipment_line
             line_unit_weight = line.unit_weight_g_snapshot or (
                 line.process_card.unit_weight_g if line.process_card_id else None
@@ -1510,6 +1577,67 @@ class QualityReworkCase(TimeStampedModel):
 
     def __str__(self):
         return self.case_no
+
+
+class QualityReturnAllocation(TimeStampedModel):
+    """Immutable order/line share of one physical returned shipment unit."""
+
+    case = models.ForeignKey(
+        QualityReworkCase,
+        related_name="shipment_allocations",
+        on_delete=models.PROTECT,
+    )
+    shipment_line = models.ForeignKey(
+        QualityShipmentLine,
+        related_name="rework_allocations",
+        on_delete=models.PROTECT,
+    )
+    piece_quantity = models.PositiveIntegerField()
+    net_weight_kg = models.DecimalField(
+        max_digits=14,
+        decimal_places=3,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+
+    class Meta:
+        ordering = ["case_id", "shipment_line_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["case", "shipment_line"],
+                name="quality_return_case_line_uniq",
+            ),
+            models.CheckConstraint(
+                condition=Q(piece_quantity__gt=0),
+                name="quality_return_allocation_piece_gt_zero",
+            ),
+            models.CheckConstraint(
+                condition=Q(net_weight_kg__gte=0),
+                name="quality_return_allocation_weight_nonnegative",
+            ),
+        ]
+
+    def clean(self):
+        errors = {}
+        if not self.piece_quantity or self.piece_quantity < 1:
+            errors["piece_quantity"] = "退货分配件数必须大于0。"
+        if self.net_weight_kg is None or self.net_weight_kg < 0:
+            errors["net_weight_kg"] = "退货分配净重不能小于0。"
+        if (
+            self.case_id
+            and self.case.shipment_batch_id
+            and self.shipment_line_id
+            and self.shipment_line.batch_id != self.case.shipment_batch_id
+        ):
+            errors["shipment_line"] = "退货分配明细不属于原出货批次。"
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.case.case_no} / line {self.shipment_line_id}"
 
 
 class QualityReworkAttempt(TimeStampedModel):
@@ -1616,15 +1744,42 @@ class QualityReworkAttempt(TimeStampedModel):
             errors["recovered_weight_kg"] = "Recovered plus scrap weight cannot exceed reworked weight."
         if self.case_id:
             case = self.case
-            previous = type(self).objects.filter(case_id=self.case_id)
-            if self.pk:
-                previous = previous.exclude(pk=self.pk)
-            prev_qty = previous.aggregate(total=Sum("input_quantity"))["total"] or 0
-            prev_weight = previous.aggregate(total=Sum("input_weight_kg"))["total"] or Decimal("0")
-            if case.affected_quantity is not None and prev_qty + int(self.input_quantity or 0) > case.affected_quantity:
-                errors["input_quantity"] = "Cumulative attempt input quantity cannot exceed the case affected quantity."
-            if case.affected_weight_kg is not None and Decimal(prev_weight) + Decimal(self.input_weight_kg or 0) > case.affected_weight_kg:
-                errors["input_weight_kg"] = "Cumulative attempt input weight cannot exceed the case affected weight."
+            if (
+                not self.pk
+                and case.status
+                in (
+                    QualityReworkCase.Status.CANCELLED,
+                    QualityReworkCase.Status.SCRAPPED,
+                )
+            ):
+                errors["case"] = "已取消或已报废的返工主案不能新增轮次。"
+            # Each record is a processing round of the same returned goods,
+            # not additive consumption.  A full batch may therefore be put
+            # through R1, R2 and R3 after repeated failed reinspections.
+            if (
+                case.affected_quantity is not None
+                and int(self.input_quantity or 0) > case.affected_quantity
+            ):
+                errors["input_quantity"] = "本轮投入件数不能超过主案退货件数。"
+            if (
+                case.affected_weight_kg is not None
+                and Decimal(self.input_weight_kg or 0) > case.affected_weight_kg
+            ):
+                errors["input_weight_kg"] = "本轮投入重量不能超过主案退货重量。"
+            if (
+                case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
+                and case.shipment_unit_no is not None
+            ):
+                expected_quantity = int(case.affected_quantity or 0)
+                expected_weight = Decimal(case.affected_weight_kg or 0)
+                if int(self.input_quantity or 0) != expected_quantity:
+                    errors["input_quantity"] = "整批退货的本轮投入件数必须等于原整批件数。"
+                if int(self.reworked_quantity or 0) != expected_quantity:
+                    errors["reworked_quantity"] = "整批退货的本轮返工件数必须等于原整批件数。"
+                if Decimal(self.input_weight_kg or 0) != expected_weight:
+                    errors["input_weight_kg"] = "整批退货的本轮投入重量必须等于原整批净重。"
+                if Decimal(self.reworked_weight_kg or 0) != expected_weight:
+                    errors["reworked_weight_kg"] = "整批退货的本轮返工重量必须等于原整批净重。"
         if self.attempt_date and self.attempt_date < timezone.localdate() and not str(self.backfill_reason or "").strip():
             errors["backfill_reason"] = "A reason is required when entering a historical rework attempt."
         if self.rework_employee_id:

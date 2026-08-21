@@ -12,6 +12,9 @@ from production.services import seed_default_stations
 from quality.models import (
     QualityEmployee,
     QualityOrder,
+    QualityReturnAllocation,
+    QualityReworkAttempt,
+    QualityReworkCase,
     QualityShipment,
     QualityShipmentBatch,
     QualityShipmentLine,
@@ -337,6 +340,116 @@ class AnalyticsApiTests(TestCase):
             if item["row_key"] == f"order:{self.order.pk}"
         )
         self.assertEqual(linked["shipped_quantity"], 500)
+
+    def test_dashboard_includes_whole_batch_returns_and_r1_r2_r3(self):
+        day = timezone.localdate()
+        batch = QualityShipmentBatch.objects.create(
+            shipment_no="WEIGHTED-RETURN-ANALYTICS",
+            shipment_date=day,
+            order=self.order,
+            inspector=self.inspector,
+            single_batch_net_weight_kg=Decimal("0.200"),
+            product_batch_count=3,
+            pieces_per_batch=100,
+            status=QualityShipmentBatch.Status.CONFIRMED,
+            created_by=self.user,
+        )
+        line = QualityShipmentLine.objects.create(
+            batch=batch,
+            order=self.order,
+            net_weight_kg=Decimal("0.600"),
+            piece_quantity=300,
+            unit_weight_g_snapshot=Decimal("2"),
+        )
+        case = QualityReworkCase.objects.create(
+            origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+            shipment_batch=batch,
+            shipment_unit_no=1,
+            opened_on=day,
+            reason_category=ReturnRework.ReasonCategory.APPEARANCE,
+            responsible_inspector=self.inspector,
+            affected_quantity=100,
+            affected_weight_kg=Decimal("0.200"),
+            created_by=self.user,
+        )
+        QualityReturnAllocation.objects.create(
+            case=case,
+            shipment_line=line,
+            piece_quantity=100,
+            net_weight_kg=Decimal("0.200"),
+        )
+        for index, recovered in enumerate((0, 0, 90), start=1):
+            QualityReworkAttempt.objects.create(
+                case=case,
+                attempt_date=day,
+                rework_employee=self.reworker,
+                input_quantity=100,
+                reworked_quantity=100,
+                recovered_quantity=recovered,
+                scrap_quantity=10 if index == 3 else 0,
+                input_weight_kg=Decimal("0.200"),
+                reworked_weight_kg=Decimal("0.200"),
+                recovered_weight_kg=(
+                    Decimal("0.180") if index == 3 else Decimal("0")
+                ),
+                scrap_weight_kg=(
+                    Decimal("0.020") if index == 3 else Decimal("0")
+                ),
+                status=(
+                    QualityReworkCase.Status.COMPLETED
+                    if index == 3
+                    else QualityReworkCase.Status.WAITING_REINSPECTION
+                ),
+                created_by=self.user,
+            )
+
+        response = self.client.get(
+            "/api/analytics/dashboard/",
+            {"date_from": day.isoformat(), "date_to": day.isoformat()},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        automatic = payload["quality"]["automatic"]
+        self.assertEqual(automatic["shipped_quantity"], 300)
+        self.assertEqual(automatic["returned_quantity"], 100)
+        self.assertEqual(automatic["reworked_quantity"], 300)
+        self.assertEqual(automatic["recovered_quantity"], 90)
+        self.assertEqual(automatic["scrap_quantity"], 10)
+        self.assertEqual(payload["quality"]["rework_count"], 3)
+        self.assertEqual(payload["sources"]["rework"]["automatic"], 3)
+        self.assertIn(
+            "QualityReworkAttempt.attempt_date",
+            payload["data_basis"]["rework_date"],
+        )
+
+        daily = payload["daily_trend"][0]
+        self.assertEqual(daily["returned_quantity"], 100)
+        self.assertEqual(daily["reworked_quantity"], 300)
+        order = next(
+            row
+            for row in payload["order_performance"]
+            if row["row_key"] == f"order:{self.order.pk}"
+        )
+        self.assertEqual(order["returned_quantity"], 100)
+        self.assertEqual(order["reworked_quantity"], 300)
+        employees = {
+            row["employee_no"]: row
+            for row in payload["quality_employee_performance"]
+        }
+        self.assertEqual(
+            employees[self.inspector.employee_no]["responsible_return_quantity"],
+            100,
+        )
+        self.assertEqual(
+            employees[self.reworker.employee_no]["reworked_quantity"], 300
+        )
+        reason = next(
+            row
+            for row in payload["defect_reason_breakdown"]
+            if row["reason_category"] == ReturnRework.ReasonCategory.APPEARANCE
+        )
+        self.assertEqual(reason["returned_quantity"], 100)
+        self.assertEqual(reason["reworked_quantity"], 300)
 
     def test_multi_inspector_legacy_shipment_is_split_without_double_counting(self):
         day = timezone.localdate()

@@ -8,6 +8,7 @@ import {
   piecesFromWeight,
   processCardQuantityUpperLimit,
   repeatedBatchNetWeightKg,
+  resolvedProcessCardReworkCount,
   reworkQuantitiesValid,
   shipmentPieceQuantity,
   shipmentQuantitiesMatch,
@@ -38,6 +39,11 @@ describe('quality quantity validation', () => {
   it('raises a warning only after three reworks', () => {
     expect(isHighReworkCount(3)).toBe(false)
     expect(isHighReworkCount(4)).toBe(true)
+  })
+
+  it('does not double count return cases already included by the process-card API', () => {
+    expect(resolvedProcessCardReworkCount({ rework_count: 2 } as any, 2)).toBe(2)
+    expect(resolvedProcessCardReworkCount({} as any, 2)).toBe(2)
   })
 
   it('calculates flow-card weight without mixing in material issue weight', () => {

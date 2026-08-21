@@ -963,6 +963,64 @@ export interface QualityShipmentBatchLine {
   notes?: string
 }
 
+export interface QualityReturnableBatchLineSummary {
+  shipment_line_id?: number | string | null
+  process_card_id?: number | string | null
+  order_id?: number | null
+  order_no?: string
+  item_no?: string
+  card_no?: string
+  piece_quantity?: number | null
+  net_weight_kg?: number | string | null
+}
+
+export type QualityEmployeeSummary = Pick<QualityEmployee, 'id' | 'employee_no' | 'name'> & Partial<Pick<QualityEmployee, 'role' | 'is_active' | 'team'>>
+
+/** One confirmed physical weighed-batch group that can be selected for a whole-batch return. */
+export interface QualityReturnableBatch {
+  key: string
+  source_type: 'WEIGHTED'
+  shipment_batch_id: number | string
+  shipment_line_id?: number | string | null
+  shipment_no: string
+  shipment_date?: string | null
+  order_ids?: number[]
+  order_no?: string
+  item_no?: string
+  product_name?: string
+  specification?: string
+  material?: string
+  single_batch_net_weight_kg: number | string
+  pieces_per_batch: number
+  total_batches: number
+  available_batches: number
+  available_batch_numbers: number[]
+  returned_batches: number
+  rework_count: number
+  next_return_no: number
+  inspectors?: QualityEmployeeSummary[]
+  lines?: QualityReturnableBatchLineSummary[]
+}
+
+export interface QualityReworkSource {
+  shipment_batch_id: number | string
+  shipment_line_id?: number | string | null
+  shipment_unit_no: number
+  shipment_no: string
+  shipment_date?: string | null
+  order_ids?: number[]
+  order_no?: string
+  item_no?: string
+  product_name?: string
+  specification?: string
+  material?: string
+  single_batch_net_weight_kg: number | string
+  pieces_per_batch: number
+  total_batches: number
+  inspectors?: QualityEmployeeSummary[]
+  lines?: QualityReturnableBatchLineSummary[]
+}
+
 export type QualityShipmentLedgerSource = 'LEGACY' | 'WEIGHTED'
 export type QualityShipmentLedgerStatus = 'CONFIRMED' | 'DRAFT' | 'VOID'
 
@@ -1006,7 +1064,9 @@ export interface QualityReworkCase {
   case_no: string
   origin: QualityReworkOrigin
   process_card_id?: number | string | null
+  shipment_batch_id?: number | string | null
   shipment_line_id?: number | string | null
+  shipment_unit_no?: number | null
   opened_on: string
   backfill_reason?: string
   responsible_inspector_id?: number | null
@@ -1018,6 +1078,7 @@ export interface QualityReworkCase {
   attempt_count?: number
   notes?: string
   attempts?: QualityReworkAttempt[]
+  source?: QualityReworkSource | null
 }
 
 export interface QualityReworkAttempt {

@@ -27,10 +27,12 @@ from .serializers import (
     ReturnReworkSerializer,
     ProductUnitWeightSerializer, ProcessCardSerializer, QualityShipmentBatchSerializer,
     QualityShipmentLineSerializer, QualityReworkCaseSerializer, QualityReworkAttemptSerializer,
+    QualityReturnableBatchPageSerializer,
 )
 from .services import (
     build_order_allocation_plan,
     delivered_quantities_by_order,
+    returnable_groups_for_batch,
     serialize_order_allocation_plan,
     shipment_line_piece_quantity,
 )
@@ -1163,7 +1165,20 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
 
 class QualityReworkCaseViewSet(WorkflowModelViewSet):
     serializer_class = QualityReworkCaseSerializer
-    queryset = QualityReworkCase.objects.select_related("process_card", "shipment_line", "responsible_inspector", "created_by").prefetch_related("attempts").all()
+    queryset = QualityReworkCase.objects.select_related(
+        "process_card",
+        "shipment_line__batch",
+        "shipment_batch__inspector",
+        "responsible_inspector",
+        "created_by",
+    ).prefetch_related(
+        "attempts",
+        "shipment_allocations__shipment_line__order",
+        "shipment_batch__inspectors",
+        "shipment_batch__lines__order",
+        "shipment_batch__lines__process_card__order",
+        "shipment_batch__rework_cases__attempts",
+    ).all()
 
     def get_queryset(self):
         queryset = self.queryset
@@ -1185,6 +1200,79 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
                 raise DRFValidationError({"status": "无效的返工状态。"})
             queryset = queryset.filter(status=status)
         return queryset
+
+    @extend_schema(responses=QualityReturnableBatchPageSerializer)
+    @action(detail=False, methods=["get"], url_path="returnable-batches")
+    def returnable_batches(self, request):
+        """Search confirmed weighted shipments and expose unreturned units."""
+
+        queryset = QualityShipmentBatch.objects.filter(
+            status=QualityShipmentBatch.Status.CONFIRMED
+        ).select_related("inspector").prefetch_related(
+            "inspectors",
+            "lines__order",
+            "lines__process_card__order",
+            "lines__product_specification",
+            Prefetch(
+                "rework_cases",
+                queryset=QualityReworkCase.objects.filter(
+                    origin=QualityReworkCase.Origin.CUSTOMER_RETURN
+                )
+                .exclude(status=QualityReworkCase.Status.CANCELLED)
+                .prefetch_related("attempts")
+                .order_by("id"),
+                to_attr="active_return_cases",
+            ),
+        )
+        params = request.query_params
+        q = str(params.get("q", "") or "").strip()
+        if q:
+            queryset = queryset.filter(
+                Q(shipment_no__icontains=q)
+                | Q(product_name_snapshot__icontains=q)
+                | Q(specification_snapshot__icontains=q)
+                | Q(material_snapshot__icontains=q)
+                | Q(order__order_no__icontains=q)
+                | Q(order__item_no__icontains=q)
+                | Q(order__product_name__icontains=q)
+                | Q(order__specification__icontains=q)
+                | Q(order__material__icontains=q)
+                | Q(lines__order__order_no__icontains=q)
+                | Q(lines__order__item_no__icontains=q)
+                | Q(lines__order__product_name__icontains=q)
+                | Q(lines__order__specification__icontains=q)
+                | Q(lines__order__material__icontains=q)
+                | Q(lines__process_card__card_no__icontains=q)
+                | Q(lines__process_card__source_order_no__icontains=q)
+                | Q(lines__process_card__product_name_snapshot__icontains=q)
+                | Q(lines__process_card__specification_snapshot__icontains=q)
+                | Q(lines__process_card__material_snapshot__icontains=q)
+            ).distinct()
+        order_id = params.get("order_id")
+        if order_id not in (None, ""):
+            try:
+                order_id = int(order_id)
+            except (TypeError, ValueError) as exc:
+                raise DRFValidationError({"order_id": "订单编号格式无效。"}) from exc
+            queryset = queryset.filter(
+                Q(order_id=order_id)
+                | Q(lines__order_id=order_id)
+                | Q(lines__process_card__order_id=order_id)
+            ).distinct()
+
+        rows = []
+        for batch in queryset.order_by("-shipment_date", "-id"):
+            lines = list(batch.lines.all())
+            rows.extend(
+                returnable_groups_for_batch(
+                    batch,
+                    lines=lines,
+                    cases=getattr(batch, "active_return_cases", None),
+                )
+            )
+        paginator = QualityPagination()
+        page = paginator.paginate_queryset(rows, request, view=self)
+        return paginator.get_paginated_response(page)
 
 
 class QualityReworkAttemptViewSet(WorkflowModelViewSet):
@@ -1306,6 +1394,9 @@ def _weighted_shipment_queryset():
             "lines__process_card__product_specification__mold_model",
             "lines__process_card__order__created_by",
             "lines__process_card__order__product_specification__mold_model",
+            "lines__rework_cases__attempts",
+            "rework_cases__attempts",
+            "rework_cases__shipment_allocations",
         )
     )
 
@@ -1468,6 +1559,37 @@ def _weighted_ledger_row(batch, request, delivery_statuses):
     record = QualityShipmentBatchSerializer(
         batch, context={"request": request}
     ).data
+    rework_cases = {}
+    for line in lines:
+        rework_cases.update(
+            {
+                case.pk: case
+                for case in line.rework_cases.all()
+                if case.status != QualityReworkCase.Status.CANCELLED
+            }
+        )
+    rework_cases.update(
+        {
+            case.pk: case
+            for case in batch.rework_cases.all()
+            if case.status != QualityReworkCase.Status.CANCELLED
+        }
+    )
+    rework_cases = list(rework_cases.values())
+    returned_quantity = sum(
+        _rework_case_returned_quantity(case) for case in rework_cases
+    )
+    rework_count = sum(
+        max(
+            1,
+            sum(
+                1
+                for attempt in case.attempts.all()
+                if attempt.status != QualityReworkCase.Status.CANCELLED
+            ),
+        )
+        for case in rework_cases
+    )
     status_display = {
         QualityShipmentBatch.Status.DRAFT: "草稿",
         QualityShipmentBatch.Status.CONFIRMED: "已确认",
@@ -1489,6 +1611,8 @@ def _weighted_ledger_row(batch, request, delivery_statuses):
             people, many=True, context={"request": request}
         ).data,
         "shipped_quantity": sum(_line_piece_quantity(line) for line in lines),
+        "returned_quantity": returned_quantity,
+        "rework_count": rework_count,
         "net_weight_kg": format(
             sum((Decimal(line.net_weight_kg or 0) for line in lines), Decimal("0")),
             ".3f",
@@ -1841,6 +1965,105 @@ def _empty_quantities():
     }
 
 
+def _rework_case_order(case):
+    """Resolve the order behind either a process-card or direct-order case."""
+
+    line = case.shipment_line
+    if line is not None:
+        if line.order_id:
+            return line.order
+        if line.process_card_id:
+            return line.process_card.order
+    if case.process_card_id:
+        return case.process_card.order
+    if getattr(case, "shipment_batch_id", None) and case.shipment_batch.order_id:
+        return case.shipment_batch.order
+    return None
+
+
+def _rework_case_order_shares(case):
+    """Return the physical batch's immutable piece shares by order."""
+
+    shares = {}
+    allocation_manager = getattr(case, "shipment_allocations", None)
+    allocations = list(allocation_manager.all()) if allocation_manager else []
+    for allocation in allocations:
+        line = allocation.shipment_line
+        order = line.order or (
+            line.process_card.order if line.process_card_id else None
+        )
+        if order is None:
+            continue
+        current = shares.setdefault(order.pk, [order, 0])
+        current[1] += int(allocation.piece_quantity or 0)
+    if shares:
+        return [(order, quantity) for order, quantity in shares.values()]
+    order = _rework_case_order(case)
+    return [(order, _rework_case_returned_quantity(case))] if order else []
+
+
+def _split_integer_by_order_shares(value, shares):
+    """Split an integer exactly, using largest remainders and stable order ids."""
+
+    value = max(0, int(value or 0))
+    positive = [(order, max(0, int(weight or 0))) for order, weight in shares]
+    total_weight = sum(weight for _, weight in positive)
+    if not positive or total_weight <= 0:
+        return []
+    rows = []
+    allocated = 0
+    for order, weight in positive:
+        numerator = value * weight
+        base, remainder = divmod(numerator, total_weight)
+        rows.append([order, base, remainder])
+        allocated += base
+    for row in sorted(rows, key=lambda item: (-item[2], item[0].pk))[
+        : value - allocated
+    ]:
+        row[1] += 1
+    return [(order, amount) for order, amount, _ in rows]
+
+
+def _rework_case_returned_quantity(case):
+    """Return a stable piece count for one customer-return case.
+
+    Current whole-batch entries persist ``affected_quantity``.  The weight
+    fallback keeps pre-existing weighted cases visible in summaries without
+    changing their immutable source rows.
+    """
+
+    if case.origin != QualityReworkCase.Origin.CUSTOMER_RETURN:
+        return 0
+    if case.affected_quantity is not None:
+        return max(0, int(case.affected_quantity))
+    if case.affected_weight_kg is None or case.shipment_line is None:
+        return 0
+    line = case.shipment_line
+    unit_weight = line.unit_weight_g_snapshot or (
+        line.process_card.unit_weight_g if line.process_card_id else None
+    )
+    if not unit_weight:
+        return 0
+    return max(
+        0,
+        int(
+            (
+                Decimal(case.affected_weight_kg)
+                * Decimal("1000")
+                / Decimal(unit_weight)
+            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        ),
+    )
+
+
+def _rework_attempt_quantities(attempt):
+    return {
+        "reworked_quantity": int(attempt.reworked_quantity or 0),
+        "recovered_quantity": int(attempt.recovered_quantity or 0),
+        "scrap_quantity": int(attempt.scrap_quantity or 0),
+    }
+
+
 class QualitySummaryView(APIView):
     @extend_schema(
         responses=dict,
@@ -1872,8 +2095,44 @@ class QualitySummaryView(APIView):
                 ),
             )
         )
-        reworks = ReturnRework.objects.filter(
+        legacy_reworks = ReturnRework.objects.filter(
             rework_date__gte=date_from, rework_date__lte=date_to
+        )
+        rework_cases = list(
+            QualityReworkCase.objects.exclude(
+                status=QualityReworkCase.Status.CANCELLED
+            )
+            .filter(
+                Q(opened_on__gte=date_from, opened_on__lte=date_to)
+                | Q(
+                    attempts__attempt_date__gte=date_from,
+                    attempts__attempt_date__lte=date_to,
+                )
+            )
+            .select_related(
+                "responsible_inspector",
+                "process_card__order",
+                "shipment_batch__order",
+                "shipment_line__order",
+                "shipment_line__process_card__order",
+            )
+            .prefetch_related(
+                Prefetch(
+                    "attempts",
+                    queryset=QualityReworkAttempt.objects.exclude(
+                        status=QualityReworkCase.Status.CANCELLED
+                    )
+                    .filter(
+                        attempt_date__gte=date_from,
+                        attempt_date__lte=date_to,
+                    )
+                    .select_related("rework_employee"),
+                    to_attr="period_attempts",
+                ),
+                "shipment_allocations__shipment_line__order",
+                "shipment_allocations__shipment_line__process_card__order",
+            )
+            .distinct()
         )
 
         def weighted_line_quantity(line, batch):
@@ -1928,7 +2187,7 @@ class QualitySummaryView(APIView):
             shipped_quantity=Sum("shipped_quantity"),
             shipment_count=Count("id"),
         )
-        rework_totals = reworks.aggregate(
+        rework_totals = legacy_reworks.aggregate(
             returned_quantity=Sum("returned_quantity"),
             reworked_quantity=Sum("reworked_quantity"),
             recovered_quantity=Sum("recovered_quantity"),
@@ -1952,9 +2211,19 @@ class QualitySummaryView(APIView):
             "scrap_quantity",
         ):
             totals[key] = _integer(rework_totals[key])
+        for case in rework_cases:
+            if date_from <= case.opened_on <= date_to:
+                totals["returned_quantity"] += _rework_case_returned_quantity(case)
+            for attempt in case.period_attempts:
+                for key, value in _rework_attempt_quantities(attempt).items():
+                    totals[key] += value
         order_ids = set(shipments.values_list("order_id", flat=True)) | set(
-            reworks.values_list("shipment__order_id", flat=True)
+            legacy_reworks.values_list("shipment__order_id", flat=True)
         )
+        for case in rework_cases:
+            order_ids.update(
+                order.pk for order, _ in _rework_case_order_shares(case)
+            )
         for _, _, order_quantities, _ in weighted_rows:
             order_ids.update(order_quantities)
         totals.update(
@@ -2003,7 +2272,7 @@ class QualitySummaryView(APIView):
             row = daily[batch.shipment_date]
             row["shipped_quantity"] += batch_quantity
             row["shipment_count"] += 1
-        for item in reworks.values("rework_date").annotate(
+        for item in legacy_reworks.values("rework_date").annotate(
             returned_quantity=Sum("returned_quantity"),
             reworked_quantity=Sum("reworked_quantity"),
             recovered_quantity=Sum("recovered_quantity"),
@@ -2017,6 +2286,15 @@ class QualitySummaryView(APIView):
                 "scrap_quantity",
             ):
                 row[key] = _integer(item[key])
+        for case in rework_cases:
+            if date_from <= case.opened_on <= date_to:
+                daily[case.opened_on]["returned_quantity"] += (
+                    _rework_case_returned_quantity(case)
+                )
+            for attempt in case.period_attempts:
+                row = daily[attempt.attempt_date]
+                for key, value in _rework_attempt_quantities(attempt).items():
+                    row[key] += value
 
         order_quantities = {}
         for item in shipments.values("order_id").annotate(
@@ -2048,7 +2326,7 @@ class QualitySummaryView(APIView):
                 )
                 row["shipped_quantity"] += quantity
                 row["shipment_count"] += 1
-        for item in reworks.values("shipment__order_id").annotate(
+        for item in legacy_reworks.values("shipment__order_id").annotate(
             returned_quantity=Sum("returned_quantity"),
             reworked_quantity=Sum("reworked_quantity"),
             recovered_quantity=Sum("recovered_quantity"),
@@ -2068,6 +2346,43 @@ class QualitySummaryView(APIView):
                 "rework_count",
             ):
                 row[key] = _integer(item[key])
+        for case in rework_cases:
+            shares = _rework_case_order_shares(case)
+            if not shares:
+                continue
+            case_in_period = date_from <= case.opened_on <= date_to
+            values = {
+                "returned_quantity": (
+                    _rework_case_returned_quantity(case) if case_in_period else 0
+                ),
+                "reworked_quantity": 0,
+                "recovered_quantity": 0,
+                "scrap_quantity": 0,
+            }
+            for attempt in case.period_attempts:
+                for key, value in _rework_attempt_quantities(attempt).items():
+                    values[key] += value
+            # A newly opened case is one pending rework record until its first
+            # R1 attempt exists.  Thereafter R1/R2/R3 are counted individually.
+            rework_count = (
+                len(case.period_attempts) if case.period_attempts else int(case_in_period)
+            )
+            split_values = {
+                field: dict(_split_integer_by_order_shares(value, shares))
+                for field, value in values.items()
+            }
+            for order, _ in shares:
+                row = order_quantities.setdefault(
+                    order.pk,
+                    {
+                        **_empty_quantities(),
+                        "shipment_count": 0,
+                        "rework_count": 0,
+                    },
+                )
+                for field in values:
+                    row[field] += split_values[field].get(order, 0)
+                row["rework_count"] += rework_count
 
         orders = {
             item.pk: item
@@ -2151,7 +2466,7 @@ class QualitySummaryView(APIView):
                 employee_inspection_dates.setdefault(person.pk, set()).add(
                     batch.shipment_date
                 )
-        for item in reworks.values("responsible_inspector_id").annotate(
+        for item in legacy_reworks.values("responsible_inspector_id").annotate(
             responsible_return_quantity=Sum("returned_quantity")
         ):
             row = employee_quantities.setdefault(
@@ -2172,7 +2487,7 @@ class QualitySummaryView(APIView):
             row["responsible_return_quantity"] = _integer(
                 item["responsible_return_quantity"]
             )
-        for item in reworks.values("rework_employee_id").annotate(
+        for item in legacy_reworks.values("rework_employee_id").annotate(
             reworked_quantity=Sum("reworked_quantity"),
             recovered_quantity=Sum("recovered_quantity"),
             scrap_quantity=Sum("scrap_quantity"),
@@ -2194,6 +2509,51 @@ class QualitySummaryView(APIView):
             )
             for key in ("reworked_quantity", "recovered_quantity", "scrap_quantity"):
                 row[key] = _integer(item[key])
+        for case in rework_cases:
+            case_in_period = date_from <= case.opened_on <= date_to
+            if (
+                case_in_period
+                and case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
+                and case.responsible_inspector_id
+            ):
+                row = employee_quantities.setdefault(
+                    case.responsible_inspector_id,
+                    {
+                        "inspection_quantity": 0,
+                        "qualified_quantity": 0,
+                        "defective_quantity": 0,
+                        "shipped_quantity": 0,
+                        "inspection_days": 0,
+                        "shipment_count": 0,
+                        "responsible_return_quantity": 0,
+                        "reworked_quantity": 0,
+                        "recovered_quantity": 0,
+                        "scrap_quantity": 0,
+                    },
+                )
+                row["responsible_return_quantity"] += (
+                    _rework_case_returned_quantity(case)
+                )
+            for attempt in case.period_attempts:
+                if not attempt.rework_employee_id:
+                    continue
+                row = employee_quantities.setdefault(
+                    attempt.rework_employee_id,
+                    {
+                        "inspection_quantity": 0,
+                        "qualified_quantity": 0,
+                        "defective_quantity": 0,
+                        "shipped_quantity": 0,
+                        "inspection_days": 0,
+                        "shipment_count": 0,
+                        "responsible_return_quantity": 0,
+                        "reworked_quantity": 0,
+                        "recovered_quantity": 0,
+                        "scrap_quantity": 0,
+                    },
+                )
+                for key, value in _rework_attempt_quantities(attempt).items():
+                    row[key] += value
 
         employees = {
             item.pk: item

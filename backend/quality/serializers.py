@@ -14,6 +14,7 @@ from .models import (
     ProductUnitWeight, ProcessCard, QualityShipmentBatch, QualityShipmentLine,
     QualityReworkCase, QualityReworkAttempt,
 )
+from .services import create_whole_batch_return_case, serialize_rework_source
 
 
 def _validation_details(exc):
@@ -1145,29 +1146,144 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
                 line["net_weight_kg"] = total
 
 
+class QualityReturnableBatchLineSummarySerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    shipment_line_id = serializers.IntegerField()
+    order_id = serializers.IntegerField(allow_null=True)
+    order_no = serializers.CharField(allow_blank=True)
+    item_no = serializers.CharField(allow_blank=True)
+    process_card_id = serializers.IntegerField(allow_null=True)
+    process_card_no = serializers.CharField(allow_blank=True)
+    card_no = serializers.CharField(allow_blank=True)
+    piece_quantity = serializers.IntegerField()
+    net_weight_kg = serializers.DecimalField(max_digits=14, decimal_places=3)
+
+
+class QualityReturnableInspectorSummarySerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    employee_no = serializers.CharField()
+    name = serializers.CharField()
+
+
+class QualityReturnableBatchCandidateSerializer(serializers.Serializer):
+    key = serializers.CharField()
+    source_type = serializers.CharField()
+    shipment_batch_id = serializers.IntegerField()
+    shipment_line_id = serializers.IntegerField(allow_null=True)
+    shipment_no = serializers.CharField()
+    shipment_date = serializers.DateField(allow_null=True)
+    order_ids = serializers.ListField(child=serializers.IntegerField())
+    order_no = serializers.CharField(allow_blank=True)
+    order_nos = serializers.ListField(child=serializers.CharField())
+    item_no = serializers.CharField(allow_blank=True)
+    item_nos = serializers.ListField(child=serializers.CharField())
+    product_name = serializers.CharField(allow_blank=True)
+    product_names = serializers.ListField(child=serializers.CharField())
+    specification = serializers.CharField(allow_blank=True)
+    specifications = serializers.ListField(child=serializers.CharField())
+    material = serializers.CharField(allow_blank=True)
+    materials = serializers.ListField(child=serializers.CharField())
+    single_batch_net_weight_kg = serializers.DecimalField(
+        max_digits=14, decimal_places=3
+    )
+    pieces_per_batch = serializers.IntegerField()
+    total_batches = serializers.IntegerField()
+    available_batches = serializers.IntegerField()
+    available_batch_numbers = serializers.ListField(child=serializers.IntegerField())
+    returned_batches = serializers.IntegerField()
+    returned_batch_numbers = serializers.ListField(child=serializers.IntegerField())
+    rework_count = serializers.IntegerField()
+    next_return_no = serializers.IntegerField()
+    inspectors = QualityReturnableInspectorSummarySerializer(many=True)
+    lines = QualityReturnableBatchLineSummarySerializer(many=True)
+
+
+class QualityReturnableBatchPageSerializer(serializers.Serializer):
+    count = serializers.IntegerField()
+    next = serializers.URLField(allow_null=True)
+    previous = serializers.URLField(allow_null=True)
+    results = QualityReturnableBatchCandidateSerializer(many=True)
+
+
 class QualityReworkCaseSerializer(ValidatedModelSerializer):
     process_card_id = serializers.PrimaryKeyRelatedField(source="process_card", queryset=ProcessCard.objects.all(), required=False, allow_null=True)
     shipment_line_id = serializers.PrimaryKeyRelatedField(source="shipment_line", queryset=QualityShipmentLine.objects.all(), required=False, allow_null=True)
+    shipment_batch_id = serializers.PrimaryKeyRelatedField(source="shipment_batch", queryset=QualityShipmentBatch.objects.all(), required=False, allow_null=True)
+    shipment_unit_no = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     responsible_inspector_id = serializers.PrimaryKeyRelatedField(source="responsible_inspector", queryset=QualityEmployee.objects.filter(is_active=True, role__in=[QualityEmployee.Role.INSPECTOR, QualityEmployee.Role.BOTH]), required=False, allow_null=True)
     attempt_count = serializers.IntegerField(read_only=True)
     attempts = serializers.SerializerMethodField()
+    source = serializers.SerializerMethodField()
     class Meta:
         model = QualityReworkCase
-        fields = ["id", "case_no", "origin", "process_card_id", "shipment_line_id", "opened_on", "backfill_reason", "reason_category", "reason", "responsible_inspector_id", "affected_quantity", "affected_weight_kg", "status", "closed_on", "notes", "attempt_count", "attempts", "created_by", "created_at", "updated_at"]
-        read_only_fields = ["case_no", "attempt_count", "attempts", "created_by", "created_at", "updated_at"]
+        fields = ["id", "case_no", "origin", "process_card_id", "shipment_line_id", "shipment_batch_id", "shipment_unit_no", "source", "opened_on", "backfill_reason", "reason_category", "reason", "responsible_inspector_id", "affected_quantity", "affected_weight_kg", "status", "closed_on", "notes", "attempt_count", "attempts", "created_by", "created_at", "updated_at"]
+        read_only_fields = ["case_no", "source", "attempt_count", "attempts", "created_by", "created_at", "updated_at"]
+        # The conditional database uniqueness rule applies only to new
+        # whole-batch customer returns.  DRF's generated validator incorrectly
+        # makes both nullable fields mandatory for internal/historical cases
+        # and raises KeyError on status-only PATCH requests, so creation-time
+        # locking plus model validation enforce it instead.
+        validators = []
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
         process_card = attrs.get("process_card", getattr(self.instance, "process_card", None))
         shipment_line = attrs.get("shipment_line", getattr(self.instance, "shipment_line", None))
+        shipment_batch = attrs.get("shipment_batch", getattr(self.instance, "shipment_batch", None))
+        shipment_unit_no = attrs.get("shipment_unit_no", getattr(self.instance, "shipment_unit_no", None))
+        origin = attrs.get("origin", getattr(self.instance, "origin", QualityReworkCase.Origin.INTERNAL))
+        immutable = ("origin", "process_card", "shipment_line", "shipment_batch", "shipment_unit_no", "affected_quantity", "affected_weight_kg")
+        whole_batch_return = bool(
+            self.instance is not None
+            and self.instance.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
+            and self.instance.shipment_unit_no is not None
+        )
+        if whole_batch_return:
+            # Reject every supplied source fact, even when its value equals the
+            # current value.  This makes the update contract unambiguous and
+            # prevents clients from treating immutable audit fields as edits.
+            changed = [field for field in immutable if field in attrs]
+            if changed:
+                raise serializers.ValidationError(
+                    {
+                        field: "整批退货创建后不能修改来源、批号、件数或重量。"
+                        for field in changed
+                    }
+                )
         if process_card is not None and shipment_line is not None and process_card.pk != shipment_line.process_card_id:
             raise serializers.ValidationError({"shipment_line": "返工关联的出货明细必须属于所选流程卡。"})
-        if self.instance is not None and self.instance.attempts.exists():
-            immutable = ("origin", "process_card", "shipment_line", "affected_quantity", "affected_weight_kg")
+        if shipment_line is not None and shipment_batch is not None and shipment_line.batch_id != shipment_batch.pk:
+            raise serializers.ValidationError({"shipment_line_id": "原出货明细不属于所选出货批次。"})
+        if shipment_batch is not None and origin != QualityReworkCase.Origin.CUSTOMER_RETURN:
+            raise serializers.ValidationError({"origin": "原出货批次仅适用于客户退货返工。"})
+        if self.instance is None and shipment_batch is not None and shipment_unit_no is None:
+            raise serializers.ValidationError({"shipment_unit_no": "请选择要退回的整批序号。"})
+        if self.instance is None and shipment_unit_no is not None and shipment_batch is None:
+            raise serializers.ValidationError({"shipment_batch_id": "请选择原出货记录。"})
+        if self.instance is None and shipment_batch is not None and attrs.get("status") == QualityReworkCase.Status.CANCELLED:
+            raise serializers.ValidationError({"status": "不能直接创建已取消的退货主案。"})
+        if self.instance is not None and not whole_batch_return and self.instance.attempts.exists():
             changed = [field for field in immutable if field in attrs and attrs[field] != getattr(self.instance, field)]
             if changed:
-                raise serializers.ValidationError({field: "已有返工轮次，不能修改该历史数量或关联。" for field in changed})
+                raise serializers.ValidationError(
+                    {field: "已有返工轮次，不能修改该历史数量或关联。" for field in changed}
+                )
         return attrs
+
+    def create(self, validated_data):
+        if (
+            validated_data.get("origin") == QualityReworkCase.Origin.CUSTOMER_RETURN
+            and validated_data.get("shipment_batch") is not None
+            and validated_data.get("shipment_unit_no") is not None
+        ):
+            try:
+                return create_whole_batch_return_case(validated_data)
+            except ValueError as exc:
+                raise serializers.ValidationError({"detail": str(exc)}) from exc
+        return super().create(validated_data)
+
+    def get_source(self, obj) -> dict | None:
+        return serialize_rework_source(obj)
 
     def get_attempts(self, obj) -> list[dict[str, Any]]:
         return [
@@ -1205,7 +1321,48 @@ class QualityReworkAttemptSerializer(ValidatedModelSerializer):
         attrs = super().validate(attrs)
         if self.instance is not None and "case" in attrs and attrs["case"].pk != self.instance.case_id:
             raise serializers.ValidationError({"case_id": "返工轮次的主案关联创建后不能更换。"})
+        case = attrs.get("case") or (
+            self.instance.case if self.instance is not None else None
+        )
+        if (
+            self.instance is not None
+            and case is not None
+            and case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
+            and case.shipment_unit_no is not None
+        ):
+            expected_quantity = int(case.affected_quantity or 0)
+            expected_weight = Decimal(case.affected_weight_kg or 0)
+            errors = {}
+            for field_name in ("input_quantity", "reworked_quantity"):
+                if (
+                    field_name in attrs
+                    and int(attrs[field_name] or 0) != expected_quantity
+                ):
+                    errors[field_name] = "整批退货的每轮投入和返工件数必须等于原整批件数。"
+            for field_name in ("input_weight_kg", "reworked_weight_kg"):
+                if (
+                    field_name in attrs
+                    and Decimal(attrs[field_name] or 0) != expected_weight
+                ):
+                    errors[field_name] = "整批退货的每轮投入和返工重量必须等于原整批净重。"
+            if errors:
+                raise serializers.ValidationError(errors)
         return attrs
+
+    @staticmethod
+    def _freeze_whole_batch_inputs(case, validated_data):
+        if (
+            case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
+            and case.shipment_unit_no is not None
+        ):
+            validated_data["input_quantity"] = int(case.affected_quantity or 0)
+            validated_data["reworked_quantity"] = int(case.affected_quantity or 0)
+            validated_data["input_weight_kg"] = Decimal(
+                case.affected_weight_kg or 0
+            )
+            validated_data["reworked_weight_kg"] = Decimal(
+                case.affected_weight_kg or 0
+            )
 
     def create(self, validated_data):
         case = validated_data.get("case")
@@ -1213,7 +1370,17 @@ class QualityReworkAttemptSerializer(ValidatedModelSerializer):
             return super().create(validated_data)
         with transaction.atomic():
             locked_case = QualityReworkCase.objects.select_for_update().get(pk=case.pk)
+            if locked_case.status in (
+                QualityReworkCase.Status.CANCELLED,
+                QualityReworkCase.Status.SCRAPPED,
+            ):
+                raise serializers.ValidationError(
+                    {"case_id": "已取消或已报废的返工主案不能新增轮次。"}
+                )
             validated_data["case"] = locked_case
+            # Each R1/R2/R3 round processes the same physical batch.  Freeze
+            # these four source facts even when clients omit them.
+            self._freeze_whole_batch_inputs(locked_case, validated_data)
             return super().create(validated_data)
 
     def update(self, instance, validated_data):
@@ -1221,6 +1388,7 @@ class QualityReworkAttemptSerializer(ValidatedModelSerializer):
             locked_instance = QualityReworkAttempt.objects.select_for_update().select_related("case").get(pk=instance.pk)
             locked_case = QualityReworkCase.objects.select_for_update().get(pk=locked_instance.case_id)
             validated_data["case"] = locked_case
+            self._freeze_whole_batch_inputs(locked_case, validated_data)
             return super().update(locked_instance, validated_data)
 
     def get_attempt_label(self, obj) -> str | None:

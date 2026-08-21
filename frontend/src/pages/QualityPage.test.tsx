@@ -1,6 +1,6 @@
 import { App } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -53,9 +53,13 @@ vi.mock('../components/QualityWorkflowManagement', () => ({
   ShipmentBatchReviewDrawer: ({ open, item }: any) => open ? <div>批次详情 {item?.shipment_no}</div> : null,
 }))
 vi.mock('../components/QualityFormDrawers', () => ({
-  QualityShipmentDrawer: () => null,
-  QualityReworkDrawer: () => null,
+  QualityShipmentDrawer: ({ open, onSaved, onClose }: any) => open ? <div role="dialog" aria-label="补录原出货"><button onClick={async () => { await onSaved?.({ status: 'DRAFT' }); onClose() }}>模拟保存草稿</button><button onClick={async () => { await onSaved?.({ status: 'CONFIRMED' }); onClose() }}>模拟确认出货</button></div> : null,
   QualityEmployeeDrawer: () => null,
+}))
+vi.mock('../components/QualityReturnReworkDrawer', () => ({
+  QualityReturnReworkDrawer: ({ open, onBackfillShipment }: any) => open ? <div role="dialog" aria-label="整批退货抽屉"><span>整批退货候选</span><button onClick={onBackfillShipment}>补录原出货</button></div> : null,
+  QualityReturnReworkAttemptDrawer: () => null,
+  QualityReworkCaseDetailDrawer: () => null,
 }))
 
 const weightedBatch = {
@@ -139,5 +143,38 @@ describe('QualityPage unified shipment ledger', () => {
       expect(apiMocks.listShipmentLedger).toHaveBeenLastCalledWith(expect.objectContaining({ shipment_status: 'DRAFT' }))
       expect(apiMocks.listShipmentBatches).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'DRAFT' }))
     })
+  })
+
+  it('reopens return selection only after the backfilled shipment is confirmed, not when saved as a draft', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<MemoryRouter><QueryClientProvider client={client}><App><QualityPage /></App></QueryClientProvider></MemoryRouter>)
+    await screen.findByText('品检出货与退货返工')
+
+    fireEvent.click(screen.getByRole('button', { name: /登记整批退货返工/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '补录原出货' }))
+    fireEvent.click(await screen.findByRole('button', { name: '模拟保存草稿' }))
+    expect(await screen.findByText(/原出货目前仍是草稿/)).toBeInTheDocument()
+    expect(screen.queryByText('整批退货候选')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /登记整批退货返工/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '补录原出货' }))
+    fireEvent.click(await screen.findByRole('button', { name: '模拟确认出货' }))
+    expect(await screen.findByText('整批退货候选')).toBeInTheDocument()
+  }, 30_000)
+
+  it('filters return cases by source shipment, order, specification and material', async () => {
+    apiMocks.listReworkCases.mockResolvedValue([
+      { id: 1, case_no: 'R1', origin: 'CUSTOMER_RETURN', opened_on: '2026-08-21', status: 'OPEN', reason_category: 'OTHER', source: { shipment_no: 'QS-NBR', order_no: 'XB-NBR', item_no: '11', product_name: '油封圈', specification: 'Φ32×18', material: 'NBR-T3', shipment_unit_no: 1, total_batches: 2, pieces_per_batch: 100, single_batch_net_weight_kg: '1.000' } },
+      { id: 2, case_no: 'R2', origin: 'CUSTOMER_RETURN', opened_on: '2026-08-21', status: 'OPEN', reason_category: 'OTHER', source: { shipment_no: 'QS-EPDM', order_no: 'XB-EPDM', item_no: '12', product_name: '垫片', specification: '20×30', material: 'EPDM', shipment_unit_no: 1, total_batches: 2, pieces_per_batch: 100, single_batch_net_weight_kg: '1.000' } },
+    ])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<MemoryRouter><QueryClientProvider client={client}><App><QualityPage /></App></QueryClientProvider></MemoryRouter>)
+    await userEvent.setup().click(await screen.findByRole('tab', { name: '退货返工' }))
+    expect(await screen.findByText('QS-NBR · XB-NBR / 11')).toBeInTheDocument()
+    expect(screen.getByText('QS-EPDM · XB-EPDM / 12')).toBeInTheDocument()
+
+    await userEvent.setup().type(screen.getByPlaceholderText('搜索出货单、订单、产品、规格、材质或品检员'), 'NBR-T3')
+    await waitFor(() => expect(screen.queryByText('QS-EPDM · XB-EPDM / 12')).not.toBeInTheDocument())
+    expect(screen.getByText('QS-NBR · XB-NBR / 11')).toBeInTheDocument()
   })
 })

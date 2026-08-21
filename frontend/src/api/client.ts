@@ -33,6 +33,7 @@ import type {
   QualityShipmentAllocationPreview,
   QualityReworkCase,
   QualityReworkAttempt,
+  QualityReturnableBatch,
   QualityShipment,
   QualityShipmentLedgerRow,
   QualityShipmentCandidate,
@@ -463,6 +464,7 @@ export interface QualityListFilters {
   role?: string
   active?: boolean
   order?: number
+  order_id?: number
   shipment?: number
   inspector?: number
   employee?: number
@@ -579,6 +581,8 @@ export const qualityWorkflowApi = {
     return qualityWorkflowApi.confirmShipmentBatch(draft.id)
   },
   listReworkCases: (filters: QualityListFilters = {}) => apiFetch<ApiList<QualityReworkCase> | QualityReworkCase[]>(`/api/quality/rework-cases/${queryString(filters)}`),
+  listReturnableBatches: (filters: Pick<QualityListFilters, 'q' | 'order_id' | 'page' | 'page_size'> = {}) =>
+    apiFetch<ApiList<QualityReturnableBatch> | QualityReturnableBatch[]>(`/api/quality/rework-cases/returnable-batches/${queryString(filters)}`),
   createReworkCase: (body: Record<string, unknown>) => apiFetch<QualityReworkCase>('/api/quality/rework-cases/', { method: 'POST', body: JSON.stringify(body) }),
   updateReworkCase: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityReworkCase>(`/api/quality/rework-cases/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
   listReworkAttempts: (filters: QualityListFilters = {}) => apiFetch<ApiList<QualityReworkAttempt> | QualityReworkAttempt[]>(`/api/quality/rework-attempts/${queryString(filters)}`),
