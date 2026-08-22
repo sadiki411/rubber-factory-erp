@@ -1,5 +1,6 @@
 import { App } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import dayjs from 'dayjs'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { QualityEmployee, QualityReturnableBatch, QualityReworkCase } from '../types'
 import {
@@ -81,6 +82,7 @@ describe('QualityReturnReworkDrawer', () => {
   })
 
   it('selects one physical batch and submits only the immutable source plus return metadata', async () => {
+    const today = dayjs().format('YYYY-MM-DD')
     const onSaved = vi.fn().mockResolvedValue(undefined)
     renderWithQuery(<QualityReturnReworkDrawer open onClose={vi.fn()} onSaved={onSaved} onBackfillShipment={vi.fn()} />)
 
@@ -103,7 +105,7 @@ describe('QualityReturnReworkDrawer', () => {
       origin: 'CUSTOMER_RETURN',
       shipment_batch_id: 501,
       shipment_unit_no: 3,
-      opened_on: '2026-08-21',
+      opened_on: today,
       reason_category: 'STICKING',
       reason: '粘皮',
     }))
@@ -167,6 +169,7 @@ describe('QualityReturnReworkAttemptDrawer', () => {
   }
 
   it('records R3 without asking for recovered or scrap quantities', async () => {
+    const today = dayjs().format('YYYY-MM-DD')
     const onSaved = vi.fn().mockResolvedValue(undefined)
     renderWithQuery(<QualityReturnReworkAttemptDrawer open item={item} employees={[employee]} onClose={vi.fn()} onSaved={onSaved} />)
 
@@ -178,7 +181,7 @@ describe('QualityReturnReworkAttemptDrawer', () => {
     await waitFor(() => expect(apiMocks.createReworkAttempt).toHaveBeenCalledTimes(1))
     expect(apiMocks.createReworkAttempt).toHaveBeenCalledWith(expect.objectContaining({
       case_id: 9,
-      attempt_date: '2026-08-21',
+      attempt_date: today,
       status: 'PROCESSING',
     }))
     const body = apiMocks.createReworkAttempt.mock.calls[0][0]
