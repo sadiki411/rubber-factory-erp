@@ -10,7 +10,7 @@ import {
   ToolOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
-import { Alert, App, Button, Card, Col, DatePicker, Empty, Input, Progress, Row, Select, Skeleton, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
+import { Alert, App, Button, Card, Col, DatePicker, Empty, Grid, Input, Progress, Row, Select, Skeleton, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -29,6 +29,7 @@ import {
   QualityReturnReworkDrawer,
   QualityReworkCaseDetailDrawer,
 } from '../components/QualityReturnReworkDrawer'
+import { QualityReworkCaseMobileList } from '../components/QualityReworkCaseMobileList'
 import { formatQualityDate, isHighReworkCount, qualityNumber, reworkCaseSourceTitle } from '../quality'
 import type {
   QualityDailyTrend,
@@ -60,6 +61,7 @@ const REWORK_STATUS_META: Record<ReturnReworkStatus, { text: string; color: stri
 
 const REASON_META: Record<string, string> = {
   APPEARANCE: '外观',
+  STICKING: '粘皮',
   DIMENSION: '尺寸',
   MATERIAL: '材质',
   MIXED: '混料 / 混装',
@@ -120,6 +122,8 @@ type OrderRow = { order: QualityOrder; stats?: QualityOrderStatistics }
 
 export function QualityPage() {
   const navigate = useNavigate()
+  const screens = Grid.useBreakpoint()
+  const mobile = screens.md === false
   const queryClient = useQueryClient()
   const { message } = App.useApp()
   const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs().startOf('month'), dayjs().endOf('month')])
@@ -325,7 +329,7 @@ export function QualityPage() {
   ]
 
   const reworkCaseColumns: TableColumnsType<QualityReworkCase> = [
-    { title: '返工主案', dataIndex: 'case_no', fixed: 'left', width: 150, render: (value, row) => <span><Button type="link" className="table-primary-link" onClick={() => setReturnReworkDetail(row)}><strong>{value}</strong></Button><br /><Typography.Text type="secondary">{formatQualityDate(row.opened_on)}</Typography.Text></span> },
+    { title: '退货返工记录', dataIndex: 'case_no', fixed: 'left', width: 150, render: (value, row) => <span><Button type="link" className="table-primary-link" onClick={() => setReturnReworkDetail(row)}><strong>{value}</strong></Button><br /><Typography.Text type="secondary">{formatQualityDate(row.opened_on)}</Typography.Text></span> },
     { title: '原出货 / 订单', key: 'source', width: 230, render: (_, row) => <span><strong>{reworkCaseSourceTitle(row)}</strong><br /><Typography.Text type="secondary">{row.source ? `物理批号 ${row.source.shipment_unit_no} · 本组共${row.source.total_batches}批` : '历史来源摘要不完整'}</Typography.Text></span> },
     { title: '产品 / 规格 / 材质', key: 'product', width: 245, render: (_, row) => <span><strong>{row.source?.product_name || '-'}</strong><br /><Typography.Text type="secondary">{[row.source?.specification, row.source?.material].filter(Boolean).join(' · ') || '-'}</Typography.Text></span> },
     { title: '退回整批', key: 'wholeBatch', width: 150, render: (_, row) => row.source ? <span>{qualityNumber(row.source.pieces_per_batch)} 件<br /><Typography.Text type="secondary">{qualityNumber(row.source.single_batch_net_weight_kg, 3)} kg</Typography.Text></span> : `${qualityNumber(row.affected_quantity)} 件` },
@@ -388,8 +392,10 @@ export function QualityPage() {
       label: '退货返工',
       children: <div className="quality-tab-content">
         <Alert className="quality-responsibility-alert" type="info" showIcon title="绩效口径分开统计" description="责任品检员记录退货责任；返工处理人记录实际返工工作量，两项不会混为同一指标。" />
-        <div className="section-heading"><div><Typography.Title level={3}>整批退货返工主案</Typography.Title><Typography.Text type="secondary">从已确认出货中选择一整批，系统自动带入件数、重量、订单和品检员；后续按 R1、R2、R3 追加返工轮次。</Typography.Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => setReturnReworkOpen(true)}>登记整批退货返工</Button></div>
-        {tableCard(filteredReworkCases, reworkCaseColumns, reworkCasesQuery.isLoading, 'id', 1230, keyword ? '没有符合当前搜索条件的退货返工主案' : '暂无整批退货返工主案')}
+        <div className="section-heading"><div><Typography.Title level={3}>整批退货返工记录</Typography.Title><Typography.Text type="secondary">从已确认出货中选择一整批，系统自动带入件数、重量、订单和品检员；后续按 R1、R2、R3 追加返工轮次。</Typography.Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => setReturnReworkOpen(true)}>登记整批退货返工</Button></div>
+        {mobile
+          ? <QualityReworkCaseMobileList items={filteredReworkCases} loading={reworkCasesQuery.isLoading} emptyText={keyword ? '没有符合当前搜索条件的退货返工记录' : '暂无整批退货返工记录'} onOpen={setReturnReworkDetail} onAddAttempt={setReturnReworkAttempt} />
+          : tableCard(filteredReworkCases, reworkCaseColumns, reworkCasesQuery.isLoading, 'id', 1230, keyword ? '没有符合当前搜索条件的退货返工记录' : '暂无整批退货返工记录')}
         {!!reworks.length && <div className="quality-legacy-reworks"><div className="section-heading"><div><Typography.Title level={4}>历史旧版退货返工</Typography.Title><Typography.Text type="secondary">旧数据保留用于追溯，只读展示，不再从这里新增或修改。</Typography.Text></div><Tag>只读</Tag></div>{tableCard(reworks, reworkColumns, reworksQuery.isLoading, 'id', 1350, '暂无历史旧版记录')}</div>}
       </div>,
     },

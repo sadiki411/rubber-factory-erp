@@ -1214,9 +1214,12 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
     attempt_count = serializers.IntegerField(read_only=True)
     attempts = serializers.SerializerMethodField()
     source = serializers.SerializerMethodField()
+    reason_category_display = serializers.CharField(
+        source="get_reason_category_display", read_only=True
+    )
     class Meta:
         model = QualityReworkCase
-        fields = ["id", "case_no", "origin", "process_card_id", "shipment_line_id", "shipment_batch_id", "shipment_unit_no", "source", "opened_on", "backfill_reason", "reason_category", "reason", "responsible_inspector_id", "affected_quantity", "affected_weight_kg", "status", "closed_on", "notes", "attempt_count", "attempts", "created_by", "created_at", "updated_at"]
+        fields = ["id", "case_no", "origin", "process_card_id", "shipment_line_id", "shipment_batch_id", "shipment_unit_no", "source", "opened_on", "backfill_reason", "reason_category", "reason_category_display", "reason", "responsible_inspector_id", "affected_quantity", "affected_weight_kg", "status", "closed_on", "notes", "attempt_count", "attempts", "created_by", "created_at", "updated_at"]
         read_only_fields = ["case_no", "source", "attempt_count", "attempts", "created_by", "created_at", "updated_at"]
         # The conditional database uniqueness rule applies only to new
         # whole-batch customer returns.  DRF's generated validator incorrectly
@@ -1227,21 +1230,30 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        if (
+            self.instance is not None
+            and self.instance.status == QualityReworkCase.Status.CANCELLED
+            and attrs
+        ):
+            raise serializers.ValidationError(
+                {"detail": "已取消的退货登记是审计记录，不能再修改。"}
+            )
         process_card = attrs.get("process_card", getattr(self.instance, "process_card", None))
         shipment_line = attrs.get("shipment_line", getattr(self.instance, "shipment_line", None))
         shipment_batch = attrs.get("shipment_batch", getattr(self.instance, "shipment_batch", None))
         shipment_unit_no = attrs.get("shipment_unit_no", getattr(self.instance, "shipment_unit_no", None))
         origin = attrs.get("origin", getattr(self.instance, "origin", QualityReworkCase.Origin.INTERNAL))
         immutable = ("origin", "process_card", "shipment_line", "shipment_batch", "shipment_unit_no", "affected_quantity", "affected_weight_kg")
-        whole_batch_return = bool(
+        customer_return = bool(
             self.instance is not None
             and self.instance.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
-            and self.instance.shipment_unit_no is not None
         )
-        if whole_batch_return:
+        if customer_return:
             # Reject every supplied source fact, even when its value equals the
             # current value.  This makes the update contract unambiguous and
             # prevents clients from treating immutable audit fields as edits.
+            # The same protection applies to historical customer-return rows
+            # that predate explicit physical unit numbers.
             changed = [field for field in immutable if field in attrs]
             if changed:
                 raise serializers.ValidationError(
@@ -1261,8 +1273,8 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
         if self.instance is None and shipment_unit_no is not None and shipment_batch is None:
             raise serializers.ValidationError({"shipment_batch_id": "请选择原出货记录。"})
         if self.instance is None and shipment_batch is not None and attrs.get("status") == QualityReworkCase.Status.CANCELLED:
-            raise serializers.ValidationError({"status": "不能直接创建已取消的退货主案。"})
-        if self.instance is not None and not whole_batch_return and self.instance.attempts.exists():
+            raise serializers.ValidationError({"status": "不能直接创建已取消的退货返工记录。"})
+        if self.instance is not None and not customer_return and self.instance.attempts.exists():
             changed = [field for field in immutable if field in attrs and attrs[field] != getattr(self.instance, field)]
             if changed:
                 raise serializers.ValidationError(
@@ -1281,6 +1293,13 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
             except ValueError as exc:
                 raise serializers.ValidationError({"detail": str(exc)}) from exc
         return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        # Serialize corrections to the same registered return while the
+        # immutable shipment/batch/quantity facts remain protected above.
+        with transaction.atomic():
+            locked = QualityReworkCase.objects.select_for_update().get(pk=instance.pk)
+            return super().update(locked, validated_data)
 
     def get_source(self, obj) -> dict | None:
         return serialize_rework_source(obj)
@@ -1320,7 +1339,7 @@ class QualityReworkAttemptSerializer(ValidatedModelSerializer):
     def validate(self, attrs):
         attrs = super().validate(attrs)
         if self.instance is not None and "case" in attrs and attrs["case"].pk != self.instance.case_id:
-            raise serializers.ValidationError({"case_id": "返工轮次的主案关联创建后不能更换。"})
+            raise serializers.ValidationError({"case_id": "返工轮次关联的退货返工记录创建后不能更换。"})
         case = attrs.get("case") or (
             self.instance.case if self.instance is not None else None
         )
@@ -1375,7 +1394,7 @@ class QualityReworkAttemptSerializer(ValidatedModelSerializer):
                 QualityReworkCase.Status.SCRAPPED,
             ):
                 raise serializers.ValidationError(
-                    {"case_id": "已取消或已报废的返工主案不能新增轮次。"}
+                    {"case_id": "已取消或已报废的退货返工记录不能新增轮次。"}
                 )
             validated_data["case"] = locked_case
             # Each R1/R2/R3 round processes the same physical batch.  Freeze

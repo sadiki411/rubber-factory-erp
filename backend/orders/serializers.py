@@ -22,7 +22,7 @@ ZERO = Decimal("0")
 
 
 def _latest_product_unit_weight(instance):
-    """Return the newest active finished-piece weight for a specification."""
+    """Return the last active finished-piece weight saved in ERP."""
     # Import lazily: quality models already point at orders.ProductSpecification
     # and importing them at module load would create an app-import cycle.
     from quality.models import ProductUnitWeight
@@ -33,7 +33,10 @@ def _latest_product_unit_weight(instance):
             is_active=True,
             unit_weight_g__gt=0,
         )
-        .order_by("-measured_on", "-id")
+        # ``measured_on`` may intentionally be a historical shipment date.
+        # The last value saved/confirmed is nevertheless the value operators
+        # expect to see pre-filled on the next shipment.
+        .order_by("-created_at", "-id")
         .first()
     )
 

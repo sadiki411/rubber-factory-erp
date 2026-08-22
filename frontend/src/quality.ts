@@ -57,12 +57,14 @@ export function resolvedProcessCardReworkCount(item: QualityProcessCard, linkedC
 }
 
 /**
- * Return the product unit weight in grams when it is explicitly present in
- * the product specification payload.  The flow card's material/胶料重量 is
- * deliberately not used here: it is a material issue quantity, not a
- * finished-piece weight.
+ * Return the product unit weight in grams when it is explicitly present in a
+ * shipment candidate or its product specification.  The flow card's
+ * material/胶料重量 is deliberately not used here: it is a material issue
+ * quantity, not a finished-piece weight.
  */
-export function orderUnitWeightG(order: Pick<QualityOrder, 'product_specification'>): number | null {
+export function orderUnitWeightG(order: Pick<QualityOrder, 'product_specification' | 'unit_weight_g'>): number | null {
+  const candidateValue = Number(order.unit_weight_g)
+  if (Number.isFinite(candidateValue) && candidateValue > 0) return candidateValue
   const latest = Number(order.product_specification?.latest_unit_weight_g)
   if (Number.isFinite(latest) && latest > 0) return latest
   const raw = order.product_specification?.raw_data

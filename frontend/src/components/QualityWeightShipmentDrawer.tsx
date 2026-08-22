@@ -727,11 +727,30 @@ export function QualityWeightShipmentDrawer({
   const chooseOrder = (value?: number | string) => {
     setCandidateQuery('')
     if (value == null) {
+      form.setFieldsValue({
+        order_id: undefined,
+        product_name: '',
+        specification: '',
+        specification_snapshot: '',
+        material: '',
+        material_snapshot: '',
+        product_specification_id: null,
+        unit_weight_g: null,
+      })
       void loadCandidates('', { specification: '', material: '' })
       return
     }
     if (value === MANUAL_ORDER) {
-      form.setFieldsValue({ order_id: undefined, product_name: '', product_specification_id: null })
+      form.setFieldsValue({
+        order_id: undefined,
+        product_name: '',
+        specification: '',
+        specification_snapshot: '',
+        material: '',
+        material_snapshot: '',
+        product_specification_id: null,
+        unit_weight_g: null,
+      })
       void loadCandidates('', { specification: '', material: '' })
       return
     }
@@ -745,7 +764,10 @@ export function QualityWeightShipmentDrawer({
       material: order.material,
       material_snapshot: order.material,
       product_specification_id: order.product_specification_id ?? null,
-      unit_weight_g: form.getFieldValue('unit_weight_g') || orderUnitWeightG(order) || undefined,
+      // Selecting another product is an explicit context switch: use that
+      // product's remembered value (or clear the field) rather than carrying
+      // over a manually typed weight from the previous product.
+      unit_weight_g: orderUnitWeightG(order),
     })
     void loadCandidates('', { specification: order.specification, material: order.material })
   }
@@ -1123,8 +1145,7 @@ export function QualityWeightShipmentDrawer({
               optionFilterProp="label"
               placeholder="选择候选订单（可选）"
               options={orderOptions}
-              onSelect={chooseOrder}
-              onClear={() => chooseOrder(undefined)}
+              onChange={chooseOrder}
               searchValue={candidateQuery}
               onSearch={setCandidateQuery}
               onOpenChange={(visible) => {

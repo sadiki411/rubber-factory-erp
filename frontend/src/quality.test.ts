@@ -84,6 +84,7 @@ describe('quality quantity validation', () => {
   })
 
   it('reads only explicit unit-weight fields from product specifications', () => {
+    expect(orderUnitWeightG({ unit_weight_g: '0.21', product_specification: { latest_unit_weight_g: '0.18' } } as any)).toBe(0.21)
     expect(orderUnitWeightG({ product_specification: { raw_data: { unit_weight_g: '0.18' } } } as any)).toBe(0.18)
     expect(orderUnitWeightG({ product_specification: { raw_data: { 胶料重量: 16.9 } } } as any)).toBe(null)
   })

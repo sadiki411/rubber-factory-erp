@@ -5,6 +5,7 @@ from django.db.models import Sum
 from django.test import TestCase
 from django.utils import timezone
 
+from orders.models import ProductSpecification
 from quality.models import (
     ProcessCard,
     ProductUnitWeight,
@@ -109,6 +110,74 @@ class ShippingEnhancementApiTests(QualityTestMixin, TestCase):
         self.assertIsNone(line.process_card_id)
         self.assertEqual(line.order_id, self.order.pk)
         self.assertEqual(line.piece_quantity, 500)
+
+    def test_confirmed_override_becomes_next_candidate_default_even_when_reusing_old_value(self):
+        product = ProductSpecification.objects.create(
+            product_name=self.order.product_name,
+            specification=self.order.specification,
+            material=self.order.material,
+        )
+        self.order.product_specification = product
+        self.order.save(update_fields=["product_specification", "updated_at"])
+        ProductUnitWeight.objects.create(
+            product_specification=product,
+            unit_weight_g="8",
+            measured_on=timezone.localdate(),
+            created_by=self.user,
+        )
+        ProductUnitWeight.objects.create(
+            product_specification=product,
+            unit_weight_g="9",
+            measured_on=timezone.localdate(),
+            created_by=self.user,
+        )
+        # A flow-card snapshot is a fallback only and must not override the
+        # last value deliberately confirmed in shipment entry.
+        self.card(number="PC-OLD-WEIGHT", quantity=1000, unit="9")
+
+        before = response_results(self.client.get(
+            "/api/quality/shipping-candidates/",
+            {"order_no": self.order.order_no},
+        ))
+        self.assertEqual(Decimal(before[0]["unit_weight_g"]), Decimal("9"))
+
+        draft = self.client.post(
+            "/api/quality/shipment-batches/",
+            {
+                "shipment_no": "WEIGHT-OVERRIDE-8",
+                "shipment_date": timezone.localdate().isoformat(),
+                "order_id": self.order.pk,
+                "specification_snapshot": self.order.specification,
+                "material_snapshot": self.order.material,
+                "unit_weight_g": "8",
+                "single_batch_net_weight_kg": "0.800",
+                "process_card_shipment_quantity": 100,
+                "product_batch_count": 1,
+                "lines": [{"order_id": self.order.pk}],
+            },
+            format="json",
+        )
+        self.assertEqual(draft.status_code, 201, draft.content)
+        confirmed = self.client.post(
+            f"/api/quality/shipment-batches/{draft.json()['id']}/confirm/",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+
+        history = ProductUnitWeight.objects.filter(
+            product_specification=product,
+            is_active=True,
+        ).order_by("created_at", "id")
+        self.assertEqual(
+            list(history.values_list("unit_weight_g", flat=True)),
+            [Decimal("8.00000"), Decimal("9.00000"), Decimal("8.00000")],
+        )
+        after = response_results(self.client.get(
+            "/api/quality/shipping-candidates/",
+            {"order_no": self.order.order_no},
+        ))
+        self.assertEqual(Decimal(after[0]["unit_weight_g"]), Decimal("8"))
 
     def test_batch_total_weight_is_copied_to_line_and_server_derives_quantity(self):
         response = self.client.post(

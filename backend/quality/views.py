@@ -36,6 +36,10 @@ from .services import (
     serialize_order_allocation_plan,
     shipment_line_piece_quantity,
 )
+from .unit_weights import (
+    latest_saved_product_unit_weight,
+    remember_confirmed_product_unit_weight,
+)
 
 
 class QualityPagination(PageNumberPagination):
@@ -248,19 +252,24 @@ class QualityShippingCandidatesView(APIView):
             remaining = max(0, int(order.order_quantity or 0) - shipped)
             if remaining <= 0:
                 continue
-            card = (
-                ProcessCard.objects.filter(order_id=order.pk)
-                .exclude(status=ProcessCard.Status.CANCELLED)
-                .exclude(unit_weight_g__isnull=True)
-                .order_by("-received_on", "-id")
-                .first()
+            # A manually corrected value from the last confirmed shipment is
+            # the authoritative default.  Only fall back to an older process
+            # card snapshot when ERP has never saved a product unit weight.
+            unit_record = latest_saved_product_unit_weight(
+                product_specification_id=order.product_specification_id,
+                specification=order.specification,
+                material=order.material,
             )
-            unit = card.unit_weight_g if card else None
-            if unit is None and order.product_specification_id:
-                unit = ProductUnitWeight.objects.filter(
-                    product_specification_id=order.product_specification_id,
-                    is_active=True,
-                ).order_by("-measured_on", "-id").values_list("unit_weight_g", flat=True).first()
+            unit = unit_record.unit_weight_g if unit_record else None
+            if unit is None:
+                card = (
+                    ProcessCard.objects.filter(order_id=order.pk)
+                    .exclude(status=ProcessCard.Status.CANCELLED)
+                    .exclude(unit_weight_g__isnull=True)
+                    .order_by("-received_on", "-id")
+                    .first()
+                )
+                unit = card.unit_weight_g if card else None
             rows.append(
                 {
                     "id": order.pk,
@@ -894,16 +903,12 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 or source_line.product_specification_id
             )
             if product_specification_id:
-                ProductUnitWeight.objects.get_or_create(
+                remember_confirmed_product_unit_weight(
                     product_specification_id=product_specification_id,
                     unit_weight_g=unit,
-                    is_active=True,
-                    defaults={
-                        "measured_on": batch.shipment_date,
-                        "backfill_reason": "出货自动分配保存历史单重",
-                        "created_by": created_by,
-                        "notes": "由出货自动分配保存的单重历史",
-                    },
+                    measured_on=batch.shipment_date,
+                    created_by=created_by,
+                    note="由出货自动分配保存的单重历史",
                 )
         if split_rows:
             # All values above were derived from a previously validated source
@@ -1057,19 +1062,14 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 )
                 line.product_specification = product
         if line.product_specification_id and line.unit_weight_g_snapshot and created_by:
-            # Keep the manually confirmed unit weight available to subsequent
-            # candidate forms.  Existing identical active standards are reused
-            # so repeated confirmation retries remain idempotent.
-            ProductUnitWeight.objects.get_or_create(
+            # Keep the last confirmed value available to the next shipment.
+            # The helper deliberately creates a new row when an operator
+            # changes 9 g back to a historically-used 8 g value.
+            remember_confirmed_product_unit_weight(
                 product_specification_id=line.product_specification_id,
                 unit_weight_g=line.unit_weight_g_snapshot,
-                is_active=True,
-                defaults={
-                    "measured_on": measured_on or timezone.localdate(),
-                    "backfill_reason": "出货确认自动保存历史单重",
-                    "created_by": created_by,
-                    "notes": "由出货确认自动保存的单重历史",
-                },
+                measured_on=measured_on,
+                created_by=created_by,
             )
         allocated_piece_quantity = (
             int(line.piece_quantity)

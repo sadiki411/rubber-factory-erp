@@ -20,7 +20,7 @@ import {
   Timeline,
   Typography,
 } from 'antd'
-import { ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { EditOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
@@ -43,15 +43,40 @@ function sourceInspectors(source?: { inspectors?: QualityEmployeeSummary[] } | n
   return (source?.inspectors || []).map((item) => item.name).filter(Boolean).join('、') || '待补录'
 }
 
+const RETURN_REASON_CATEGORY_OPTIONS = [
+  { value: 'APPEARANCE', label: '外观' },
+  { value: 'STICKING', label: '粘皮' },
+  { value: 'DIMENSION', label: '尺寸' },
+  { value: 'MATERIAL', label: '材质' },
+  { value: 'MIXED', label: '混料/混装' },
+  { value: 'PACKAGING', label: '包装' },
+  { value: 'OTHER', label: '其他' },
+]
+
+const RETURN_REASON_CATEGORY_LABELS = Object.fromEntries(
+  RETURN_REASON_CATEGORY_OPTIONS.map((item) => [item.value, item.label]),
+) as Record<string, string>
+
+function reworkStatusText(status?: string) {
+  return ({
+    OPEN: '待返工',
+    PROCESSING: '返工中',
+    WAITING_REINSPECTION: '待复检',
+    COMPLETED: '已完成',
+    SCRAPPED: '已报废',
+    CANCELLED: '已取消',
+  } as Record<string, string>)[status || ''] || status || '-'
+}
+
 function returnableBatchTitle(item: QualityReturnableBatch) {
-  return `${item.shipment_no} · ${item.order_no || '未关联订单'}${item.item_no ? ` / ${item.item_no}` : ''}`
+  return `${item.order_no || '未关联订单'}${item.item_no ? ` / ${item.item_no}` : ''}`
 }
 
 function WholeBatchSummary({ item }: { item: QualityReturnableBatch }) {
   const available = item.available_batch_numbers || []
   return <div className="quality-return-source-summary">
     <div className="quality-return-source-heading">
-      <div><strong>{returnableBatchTitle(item)}</strong><br /><Typography.Text type="secondary">{formatQualityDate(item.shipment_date)}</Typography.Text></div>
+      <div><strong>{returnableBatchTitle(item)}</strong><br /><Typography.Text type="secondary">出货 {item.shipment_no} · {formatQualityDate(item.shipment_date)}</Typography.Text></div>
       <Space wrap size={[4, 4]}>
         <Tag color="blue">可退 {item.available_batches} / {item.total_batches} 批</Tag>
         {item.rework_count > 0 && <Tag color="orange">已有 {item.rework_count} 次返工</Tag>}
@@ -192,8 +217,9 @@ export function QualityReturnReworkDrawer({ open, onClose, onSaved, onBackfillSh
           <Col xs={12}><Form.Item label="整批净重"><Input value={`${qualityNumber(activeSelected.single_batch_net_weight_kg, 3)} kg`} disabled /></Form.Item></Col>
         </Row>
         {historical && <Form.Item name="backfill_reason" label="补录原因" rules={[{ required: true, whitespace: true, message: '补录历史日期时请填写原因' }]}><Input placeholder="例如：当天漏记，现按退货单补录" /></Form.Item>}
-        <Form.Item name="reason_category" label="原因分类" rules={[{ required: true }]}><Select options={[{ value: 'APPEARANCE', label: '外观' }, { value: 'DIMENSION', label: '尺寸' }, { value: 'MATERIAL', label: '材质' }, { value: 'MIXED', label: '混料/混装' }, { value: 'PACKAGING', label: '包装' }, { value: 'OTHER', label: '其他' }]} /></Form.Item>
-        <Form.Item name="reason" label="问题描述（选填）"><Input.TextArea rows={2} maxLength={500} showCount /></Form.Item>
+        <Form.Item name="reason_category" label="原因分类" rules={[{ required: true }]}><Select options={RETURN_REASON_CATEGORY_OPTIONS} /></Form.Item>
+        <Form.Item label="常用退货原因" extra="点击可直接带入，仍可在下方修改。"><Button htmlType="button" onClick={() => form.setFieldsValue({ reason_category: 'STICKING', reason: '粘皮' })}>粘皮</Button></Form.Item>
+        <Form.Item name="reason" label="问题描述（选填）"><Input.TextArea rows={2} maxLength={500} showCount placeholder="例如：粘皮" /></Form.Item>
         <Form.Item name="notes" label="备注（选填）"><Input.TextArea rows={2} maxLength={500} showCount /></Form.Item>
       </Form>
     </Card>}
@@ -265,15 +291,65 @@ export function QualityReturnReworkAttemptDrawer({ open, item, employees, onClos
 }
 
 export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttempt, onSaved }: { open: boolean; item?: QualityReworkCase; onClose: () => void; onAddAttempt: (item: QualityReworkCase) => void; onSaved: () => Promise<void> }) {
-  const source = item?.source
-  const attempts = item?.attempts || []
+  const [form] = Form.useForm<Record<string, unknown>>()
+  const [localItem, setLocalItem] = useState<QualityReworkCase>()
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const { message } = App.useApp()
+  const currentItem = localItem?.id === item?.id ? localItem : item
+  const source = currentItem?.source
+  const attempts = currentItem?.attempts || []
+  const openedOn = Form.useWatch('opened_on', form) as Dayjs | undefined
+  const historical = Boolean(openedOn?.isValid() && openedOn.startOf('day').isBefore(dayjs().startOf('day')))
+  const active = Boolean(currentItem && !['CANCELLED', 'SCRAPPED'].includes(currentItem.status))
+  const editable = Boolean(currentItem && currentItem.status !== 'CANCELLED')
+
+  const fillEditForm = (record?: QualityReworkCase) => {
+    form.resetFields()
+    form.setFieldsValue({
+      opened_on: record?.opened_on ? dayjs(record.opened_on) : dayjs(),
+      backfill_reason: record?.backfill_reason || '',
+      reason_category: record?.reason_category || 'OTHER',
+      reason: record?.reason || '',
+      notes: record?.notes || '',
+    })
+  }
+
+  const startEditing = () => {
+    fillEditForm(currentItem)
+    setEditing(true)
+  }
+
+  const saveEdits = async () => {
+    if (!currentItem) return
+    const values = await form.validateFields()
+    const opened = values.opened_on as Dayjs
+    setSaving(true)
+    try {
+      const updated = await qualityWorkflowApi.updateReworkCase(currentItem.id, {
+        opened_on: opened.format('YYYY-MM-DD'),
+        backfill_reason: values.backfill_reason || '',
+        reason_category: values.reason_category,
+        reason: values.reason || '',
+        notes: values.notes || '',
+      })
+      setLocalItem({ ...currentItem, ...updated })
+      await onSaved()
+      message.success('退货日期、原因和备注已更新')
+      setEditing(false)
+    } catch (error) {
+      message.error((error as Error).message || '修改退货信息失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const cancelCase = async () => {
-    if (!item) return
+    if (!currentItem) return
     setCancelling(true)
     try {
-      await qualityWorkflowApi.updateReworkCase(item.id, { status: 'CANCELLED' })
+      await qualityWorkflowApi.updateReworkCase(currentItem.id, { status: 'CANCELLED' })
       await onSaved()
       message.success('误登记已取消，原物理批号已释放，可重新选择。')
       onClose()
@@ -283,28 +359,67 @@ export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttemp
       setCancelling(false)
     }
   }
-  return <Drawer open={open} onClose={onClose} width={620} className="quality-return-rework-drawer" title={item ? `退货返工详情 · ${item.case_no}` : '退货返工详情'} footer={<Space className="drawer-footer-actions">{item?.origin === 'CUSTOMER_RETURN' && !['CANCELLED', 'SCRAPPED'].includes(item.status) && <Popconfirm title="确认取消这条误登记吗？" description="记录会保留审计历史，但原物理批号将释放并可重新登记。" okText="确认取消" cancelText="返回" onConfirm={() => void cancelCase()}><Button danger loading={cancelling}>取消误登记</Button></Popconfirm>}<Button onClick={onClose}>关闭</Button>{item?.origin === 'CUSTOMER_RETURN' && !['CANCELLED', 'SCRAPPED'].includes(item.status) && <Button type="primary" onClick={() => { onClose(); onAddAttempt(item) }}>登记下一轮返工</Button>}</Space>}>
-    {item && <>
-      <Descriptions column={1} size="small" bordered>
-        <Descriptions.Item label="来源">{item.origin === 'CUSTOMER_RETURN' ? '客户整批退货' : '内部返工'}</Descriptions.Item>
-        <Descriptions.Item label="原出货">{reworkCaseSourceTitle(item)}</Descriptions.Item>
-        {source && <>
-          <Descriptions.Item label="出货日期">{formatQualityDate(source.shipment_date)}</Descriptions.Item>
-          <Descriptions.Item label="产品">{source.product_name || '-'}</Descriptions.Item>
-          <Descriptions.Item label="规格 / 材质">{source.specification || '-'} · {source.material || '-'}</Descriptions.Item>
-          <Descriptions.Item label="退回整批">物理批号 {source.shipment_unit_no || item.shipment_unit_no || '-'} · 本组共{source.total_batches || '-'}批 · {qualityNumber(source.pieces_per_batch)}件 · {qualityNumber(source.single_batch_net_weight_kg, 3)}kg</Descriptions.Item>
+
+  const closeDrawer = () => {
+    setEditing(false)
+    setLocalItem(undefined)
+    form.resetFields()
+    onClose()
+  }
+
+  const footer = editing
+    ? <Space className="drawer-footer-actions"><Button onClick={() => setEditing(false)}>取消修改</Button><Button type="primary" loading={saving} onClick={() => void saveEdits()}>保存修改</Button></Space>
+    : <Space className="drawer-footer-actions quality-return-detail-actions">
+      {currentItem?.origin === 'CUSTOMER_RETURN' && active && <Popconfirm title="确认取消这条误登记吗？" description="记录会保留审计历史，但原物理批号将释放并可重新登记。" okText="确认取消" cancelText="返回" onConfirm={() => void cancelCase()}><Button danger loading={cancelling}>取消误登记</Button></Popconfirm>}
+      <Button onClick={closeDrawer}>关闭</Button>
+      {currentItem && editable && <Button icon={<EditOutlined />} onClick={startEditing}>修改退货信息</Button>}
+      {currentItem?.origin === 'CUSTOMER_RETURN' && active && <Button type="primary" onClick={() => { closeDrawer(); onAddAttempt(currentItem) }}>登记下一轮返工</Button>}
+    </Space>
+
+  return <Drawer open={open} onClose={closeDrawer} width={620} className="quality-return-rework-drawer" afterOpenChange={(visible) => { if (visible) { setLocalItem(undefined); setEditing(false) } }} title={currentItem ? `退货返工记录 · ${currentItem.case_no}` : '退货返工记录'} footer={footer}>
+    {currentItem && <>
+      <Card className="quality-return-detail-summary" size="small">
+        <div className="quality-return-detail-heading"><div><Typography.Text type="secondary">订单 / 项次</Typography.Text><strong>{source ? `${source.order_no || '未关联订单'}${source.item_no ? ` / ${source.item_no}` : ''}` : `内部返工 · 流程卡 #${currentItem.process_card_id || '-'}`}</strong></div><Tag color={currentItem.status === 'COMPLETED' ? 'success' : currentItem.status === 'CANCELLED' || currentItem.status === 'SCRAPPED' ? 'default' : 'warning'}>{reworkStatusText(currentItem.status)}</Tag></div>
+        <div className="quality-return-detail-product"><Typography.Text type="secondary">产品</Typography.Text><strong>{source?.product_name || '未填写产品'}</strong></div>
+        <div className="quality-return-detail-grid">
+          <span><small>规格</small><b>{source?.specification || '-'}</b></span>
+          <span><small>材质</small><b>{source?.material || '-'}</b></span>
+          <span><small>原出货单</small><b>{source?.shipment_no || '-'}</b></span>
+          <span><small>退回物理批号</small><b>{source ? `第 ${source.shipment_unit_no || currentItem.shipment_unit_no || '-'} / ${source.total_batches || '-'} 批` : '-'}</b></span>
+          <span><small>整批数量</small><b>{source ? `${qualityNumber(source.pieces_per_batch)} 件` : `${qualityNumber(currentItem.affected_quantity)} 件`}</b></span>
+          <span><small>整批净重</small><b>{source ? `${qualityNumber(source.single_batch_net_weight_kg, 3)} kg` : `${qualityNumber(currentItem.affected_weight_kg, 3)} kg`}</b></span>
+        </div>
+      </Card>
+
+      {editing ? <>
+        <Alert className="quality-return-edit-alert" type="info" showIcon message="只修改退货登记信息" description="原出货、订单、物理批号、整批件数和重量已锁定，不会被修改。" />
+        <Form form={form} layout="vertical" requiredMark="optional">
+          <Row gutter={12}>
+            <Col xs={24} sm={12}><Form.Item name="opened_on" label="退货日期" rules={[{ required: true, message: '请选择退货日期' }]}><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
+            <Col xs={24} sm={12}><Form.Item name="reason_category" label="原因分类" rules={[{ required: true, message: '请选择原因分类' }]}><Select options={RETURN_REASON_CATEGORY_OPTIONS} /></Form.Item></Col>
+          </Row>
+          {historical && <Form.Item name="backfill_reason" label="历史日期说明" rules={[{ required: true, whitespace: true, message: '修改历史日期记录时请填写说明' }]}><Input placeholder="例如：当天漏记，现根据退货单更正" /></Form.Item>}
+          <Form.Item label="常用退货原因" extra="点击可直接带入，仍可在下方修改。"><Button htmlType="button" onClick={() => form.setFieldsValue({ reason_category: 'STICKING', reason: '粘皮' })}>粘皮</Button></Form.Item>
+          <Form.Item name="reason" label="问题描述（选填）"><Input.TextArea rows={3} maxLength={500} showCount placeholder="例如：粘皮" /></Form.Item>
+          <Form.Item name="notes" label="备注（选填）"><Input.TextArea rows={2} maxLength={500} showCount /></Form.Item>
+        </Form>
+      </> : <>
+        <Descriptions className="quality-return-detail-info" column={1} size="small" bordered>
+          <Descriptions.Item label="来源">{currentItem.origin === 'CUSTOMER_RETURN' ? '客户整批退货' : '内部返工'}</Descriptions.Item>
+          <Descriptions.Item label="出货日期">{formatQualityDate(source?.shipment_date)}</Descriptions.Item>
           <Descriptions.Item label="原责任品检员">{sourceInspectors(source)}</Descriptions.Item>
-        </>}
-        <Descriptions.Item label="登记日期">{formatQualityDate(item.opened_on)}</Descriptions.Item>
-        <Descriptions.Item label="原因">{item.reason || '未填写'}</Descriptions.Item>
-        <Descriptions.Item label="备注">{item.notes || '-'}</Descriptions.Item>
-      </Descriptions>
-      <Typography.Title level={5} style={{ marginTop: 20 }}>返工轮次</Typography.Title>
-      {attempts.length ? <Timeline items={attempts.map((attempt, index) => ({
-        color: attempt.status === 'COMPLETED' ? 'green' : attempt.status === 'SCRAPPED' ? 'red' : 'blue',
-        label: `R${attempt.attempt_no || index + 1}`,
-        children: <Card size="small"><Space wrap><strong>{formatQualityDate(attempt.attempt_date)}</strong><Tag>{attempt.status}</Tag></Space><div>整批投入：{qualityNumber(attempt.input_quantity)}件 / {qualityNumber(attempt.input_weight_kg, 3)}kg</div><Typography.Text type="secondary">{attempt.notes || '未填写说明'}</Typography.Text></Card>,
-      }))} /> : <Empty description="尚未登记返工轮次，可直接登记 R1" />}
+          <Descriptions.Item label="退货登记日期">{formatQualityDate(currentItem.opened_on)}</Descriptions.Item>
+          <Descriptions.Item label="原因分类"><Tag>{currentItem.reason_category_display || RETURN_REASON_CATEGORY_LABELS[currentItem.reason_category] || currentItem.reason_category || '其他'}</Tag></Descriptions.Item>
+          <Descriptions.Item label="退货原因">{currentItem.reason || '未填写'}</Descriptions.Item>
+          <Descriptions.Item label="备注">{currentItem.notes || '-'}</Descriptions.Item>
+        </Descriptions>
+        <Typography.Title level={5} style={{ marginTop: 20 }}>返工轮次</Typography.Title>
+        {attempts.length ? <Timeline items={attempts.map((attempt, index) => ({
+          color: attempt.status === 'COMPLETED' ? 'green' : attempt.status === 'SCRAPPED' ? 'red' : 'blue',
+          label: `R${attempt.attempt_no || index + 1}`,
+          children: <Card size="small"><Space wrap><strong>{formatQualityDate(attempt.attempt_date)}</strong><Tag>{reworkStatusText(attempt.status)}</Tag></Space><div>整批投入：{qualityNumber(attempt.input_quantity)}件 / {qualityNumber(attempt.input_weight_kg, 3)}kg</div><Typography.Text type="secondary">{attempt.notes || '未填写说明'}</Typography.Text></Card>,
+        }))} /> : <Empty description="尚未登记返工轮次，可直接登记 R1" />}
+      </>}
     </>}
   </Drawer>
 }

@@ -11,6 +11,7 @@ from quality.models import (
     QualityReturnAllocation,
     QualityShipmentBatch,
     QualityShipmentLine,
+    ReturnRework,
 )
 from quality.services import delivered_quantities_by_order
 from quality.serializers import QualityReworkCaseSerializer
@@ -255,6 +256,94 @@ class WholeBatchCustomerReturnTests(QualityTestMixin, TestCase):
             format="json",
         )
         self.assertEqual(notes.status_code, 200, notes.content)
+
+    def test_registered_return_reason_can_be_corrected_without_changing_source_facts(self):
+        batch = self.create_confirmed_repeat(count=2)
+        created = self.create_return(batch, 2)
+        self.assertEqual(created.status_code, 201, created.content)
+        original = QualityReworkCase.objects.get(pk=created.json()["id"])
+        original_facts = (
+            original.origin,
+            original.process_card_id,
+            original.shipment_line_id,
+            original.shipment_batch_id,
+            original.shipment_unit_no,
+            original.affected_quantity,
+            original.affected_weight_kg,
+        )
+
+        response = self.client.patch(
+            f"/api/quality/rework-cases/{original.pk}/",
+            {
+                "reason_category": ReturnRework.ReasonCategory.STICKING,
+                "reason": " 模具粘皮，客户整批退回 ",
+                "notes": " 手机端补充说明 ",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["reason_category"], "STICKING")
+        self.assertEqual(response.json()["reason_category_display"], "粘皮")
+        self.assertEqual(response.json()["reason"], "模具粘皮，客户整批退回")
+        self.assertEqual(response.json()["notes"], "手机端补充说明")
+        original.refresh_from_db()
+        self.assertEqual(
+            (
+                original.origin,
+                original.process_card_id,
+                original.shipment_line_id,
+                original.shipment_batch_id,
+                original.shipment_unit_no,
+                original.affected_quantity,
+                original.affected_weight_kg,
+            ),
+            original_facts,
+        )
+
+    def test_historical_customer_return_source_facts_are_immutable_but_reason_is_editable(self):
+        batch = self.create_confirmed_repeat(count=1)
+        line = QualityShipmentLine.objects.get(batch=batch)
+        historical = QualityReworkCase.objects.create(
+            origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+            shipment_line=line,
+            affected_quantity=line.pieces_per_batch,
+            affected_weight_kg=line.single_batch_net_weight_kg,
+            reason_category=ReturnRework.ReasonCategory.OTHER,
+            created_by=self.user,
+        )
+
+        reason = self.client.patch(
+            f"/api/quality/rework-cases/{historical.pk}/",
+            {"reason_category": "STICKING", "reason": "历史退货原因补录"},
+            format="json",
+        )
+        self.assertEqual(reason.status_code, 200, reason.content)
+        blocked = self.client.patch(
+            f"/api/quality/rework-cases/{historical.pk}/",
+            {"shipment_line_id": None},
+            format="json",
+        )
+        self.assertEqual(blocked.status_code, 400, blocked.content)
+        self.assertIn("不能修改", str(blocked.json()))
+
+    def test_cancelled_return_is_retained_as_an_immutable_audit_record(self):
+        batch = self.create_confirmed_repeat(count=1)
+        created = self.create_return(batch, 1)
+        cancelled = self.client.patch(
+            f"/api/quality/rework-cases/{created.json()['id']}/",
+            {"status": "CANCELLED"},
+            format="json",
+        )
+        self.assertEqual(cancelled.status_code, 200, cancelled.content)
+
+        response = self.client.patch(
+            f"/api/quality/rework-cases/{created.json()['id']}/",
+            {"reason": "取消后又修改原因"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("已取消", str(response.json()))
 
     def test_whole_batch_attempt_patch_cannot_change_physical_inputs(self):
         batch = self.create_confirmed_repeat(count=1)

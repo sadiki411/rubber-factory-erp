@@ -366,7 +366,7 @@ class AnalyticsApiTests(TestCase):
             shipment_batch=batch,
             shipment_unit_no=1,
             opened_on=day,
-            reason_category=ReturnRework.ReasonCategory.APPEARANCE,
+            reason_category=ReturnRework.ReasonCategory.STICKING,
             responsible_inspector=self.inspector,
             affected_quantity=100,
             affected_weight_kg=Decimal("0.200"),
@@ -446,8 +446,9 @@ class AnalyticsApiTests(TestCase):
         reason = next(
             row
             for row in payload["defect_reason_breakdown"]
-            if row["reason_category"] == ReturnRework.ReasonCategory.APPEARANCE
+            if row["reason_category"] == ReturnRework.ReasonCategory.STICKING
         )
+        self.assertEqual(reason["reason_category_display"], "粘皮")
         self.assertEqual(reason["returned_quantity"], 100)
         self.assertEqual(reason["reworked_quantity"], 300)
 

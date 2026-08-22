@@ -81,6 +81,44 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(screen.getByText('批数快捷计算：')).toBeInTheDocument()
   })
 
+  it('prefills the saved candidate unit weight and does not carry it to another product', async () => {
+    const user = userEvent.setup()
+    const first = { ...order, remaining_quantity: 240, unit_weight_g: '9.00000' }
+    const second: QualityOrder = {
+      ...order,
+      id: 8,
+      order_no: 'TEST-ORDER-002',
+      item_no: '20',
+      product_name: '测试产品B',
+      specification: 'TEST-SPEC-B',
+      material: 'SYN-RUBBER-B',
+      remaining_quantity: 300,
+      unit_weight_g: '4.50000',
+    }
+    apiMocks.listShipmentCandidates.mockResolvedValue([first, second])
+    renderDrawer(undefined, { orders: [first, second] })
+
+    await waitFor(() => expect(apiMocks.listShipmentCandidates).toHaveBeenCalled())
+    const orderSelector = screen.getByRole('combobox', { name: /候选订单/ })
+    await user.click(orderSelector)
+    await user.click(await screen.findByText((_, element) => Boolean(
+      element?.classList.contains('ant-select-item-option-content')
+      && element.textContent?.includes('TEST-ORDER-001'),
+    )))
+    await waitFor(() => expect(Number((screen.getByLabelText('成品单重(g/件)') as HTMLInputElement).value)).toBe(9))
+
+    // The field remains editable for a corrected shipment measurement.
+    fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '8' } })
+    expect(Number((screen.getByLabelText('成品单重(g/件)') as HTMLInputElement).value)).toBe(8)
+
+    await user.click(orderSelector)
+    await user.click(await screen.findByText((_, element) => Boolean(
+      element?.classList.contains('ant-select-item-option-content')
+      && element.textContent?.includes('TEST-ORDER-002'),
+    )))
+    await waitFor(() => expect(Number((screen.getByLabelText('成品单重(g/件)') as HTMLInputElement).value)).toBe(4.5))
+  }, 20_000)
+
   it('calculates pieces from one weighed batch and submits snapshots plus inspector ids', async () => {
     const user = userEvent.setup()
     const { onSubmit } = renderDrawer()

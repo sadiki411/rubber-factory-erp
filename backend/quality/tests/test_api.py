@@ -18,6 +18,22 @@ from .helpers import QualityTestMixin, response_results
 
 
 class QualityCrudApiTests(QualityTestMixin, TestCase):
+    def test_legacy_return_rework_accepts_sticking_reason_category(self):
+        shipment = self.create_shipment()
+        response = self.client.post(
+            "/api/quality/reworks/",
+            self.rework_payload(
+                shipment,
+                reason_category=ReturnRework.ReasonCategory.STICKING,
+                reason="产品粘皮",
+            ),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["reason_category"], "STICKING")
+        self.assertEqual(response.json()["reason_category_display"], "粘皮")
+
     def test_resources_support_create_retrieve_and_patch(self):
         employee = self.client.post(
             "/api/quality/employees/",

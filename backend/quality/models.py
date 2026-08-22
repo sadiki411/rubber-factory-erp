@@ -346,6 +346,7 @@ class QualityShipment(TimeStampedModel):
 class ReturnRework(TimeStampedModel):
     class ReasonCategory(models.TextChoices):
         APPEARANCE = "APPEARANCE", "外观"
+        STICKING = "STICKING", "粘皮"
         DIMENSION = "DIMENSION", "尺寸"
         MATERIAL = "MATERIAL", "材质"
         MIXED = "MIXED", "混料/混装"
@@ -1752,7 +1753,7 @@ class QualityReworkAttempt(TimeStampedModel):
                     QualityReworkCase.Status.SCRAPPED,
                 )
             ):
-                errors["case"] = "已取消或已报废的返工主案不能新增轮次。"
+                errors["case"] = "已取消或已报废的退货返工记录不能新增轮次。"
             # Each record is a processing round of the same returned goods,
             # not additive consumption.  A full batch may therefore be put
             # through R1, R2 and R3 after repeated failed reinspections.
@@ -1760,12 +1761,12 @@ class QualityReworkAttempt(TimeStampedModel):
                 case.affected_quantity is not None
                 and int(self.input_quantity or 0) > case.affected_quantity
             ):
-                errors["input_quantity"] = "本轮投入件数不能超过主案退货件数。"
+                errors["input_quantity"] = "本轮投入件数不能超过退货返工记录的退货件数。"
             if (
                 case.affected_weight_kg is not None
                 and Decimal(self.input_weight_kg or 0) > case.affected_weight_kg
             ):
-                errors["input_weight_kg"] = "本轮投入重量不能超过主案退货重量。"
+                errors["input_weight_kg"] = "本轮投入重量不能超过退货返工记录的退货重量。"
             if (
                 case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
                 and case.shipment_unit_no is not None

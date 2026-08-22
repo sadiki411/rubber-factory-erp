@@ -95,6 +95,7 @@ describe('QualityReturnReworkDrawer', () => {
     expect(within(drawer).getByDisplayValue('10.2 kg')).toBeDisabled()
     expect(within(drawer).queryByLabelText('流程卡')).not.toBeInTheDocument()
     expect(within(drawer).queryByLabelText(/返工合格/)).not.toBeInTheDocument()
+    fireEvent.click(within(drawer).getByRole('button', { name: /粘\s*皮/ }))
 
     fireEvent.click(within(drawer).getByRole('button', { name: '确认登记整批退货' }))
     await waitFor(() => expect(apiMocks.createReworkCase).toHaveBeenCalledTimes(1))
@@ -103,6 +104,8 @@ describe('QualityReturnReworkDrawer', () => {
       shipment_batch_id: 501,
       shipment_unit_no: 3,
       opened_on: '2026-08-21',
+      reason_category: 'STICKING',
+      reason: '粘皮',
     }))
     const body = apiMocks.createReworkCase.mock.calls[0][0]
     expect(body).not.toHaveProperty('process_card_id')
@@ -202,5 +205,44 @@ describe('QualityReturnReworkAttemptDrawer', () => {
     await waitFor(() => expect(apiMocks.updateReworkCase).toHaveBeenCalledWith(9, { status: 'CANCELLED' }))
     expect(onSaved).toHaveBeenCalled()
     expect(onClose).toHaveBeenCalled()
+  })
+
+  it('shows key source facts first and edits only return metadata', async () => {
+    const onSaved = vi.fn().mockResolvedValue(undefined)
+    apiMocks.updateReworkCase.mockResolvedValueOnce({ ...item, reason_category: 'STICKING', reason_category_display: '粘皮', reason: '粘皮', notes: '已核对' })
+    renderWithQuery(<QualityReworkCaseDetailDrawer open item={{ ...item, reason_category_display: '其他', reason: '原因待核对' }} onClose={vi.fn()} onAddAttempt={vi.fn()} onSaved={onSaved} />)
+
+    const drawer = screen.getByRole('dialog')
+    expect(within(drawer).getByText('04-A001-2607040001 / 11')).toBeInTheDocument()
+    expect(within(drawer).getByText('油封圈')).toBeInTheDocument()
+    expect(within(drawer).getByText('Φ32×18')).toBeInTheDocument()
+    expect(within(drawer).getByText('NBR-T3')).toBeInTheDocument()
+    expect(within(drawer).getByText('其他')).toBeInTheDocument()
+
+    fireEvent.click(within(drawer).getByRole('button', { name: /修改退货信息/ }))
+    expect(within(drawer).getByText(/原出货、订单、物理批号、整批件数和重量已锁定/)).toBeInTheDocument()
+    expect(within(drawer).queryByLabelText('订单')).not.toBeInTheDocument()
+    fireEvent.click(within(drawer).getByRole('button', { name: /粘\s*皮/ }))
+    fireEvent.change(within(drawer).getByLabelText(/备注（选填）/), { target: { value: '已核对' } })
+    fireEvent.click(within(drawer).getByRole('button', { name: '保存修改' }))
+
+    await waitFor(() => expect(apiMocks.updateReworkCase).toHaveBeenCalledWith(9, expect.objectContaining({
+      opened_on: '2026-08-21',
+      reason_category: 'STICKING',
+      reason: '粘皮',
+      notes: '已核对',
+    })))
+    const updateBody = apiMocks.updateReworkCase.mock.calls[0][1]
+    expect(updateBody).not.toHaveProperty('shipment_batch_id')
+    expect(updateBody).not.toHaveProperty('shipment_unit_no')
+    expect(updateBody).not.toHaveProperty('affected_quantity')
+    expect(updateBody).not.toHaveProperty('affected_weight_kg')
+    expect(onSaved).toHaveBeenCalled()
+    expect((await within(drawer).findAllByText('粘皮')).length).toBeGreaterThan(0)
+  })
+
+  it('does not offer metadata editing after a return record is cancelled', () => {
+    renderWithQuery(<QualityReworkCaseDetailDrawer open item={{ ...item, status: 'CANCELLED' }} onClose={vi.fn()} onAddAttempt={vi.fn()} onSaved={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: /修改退货信息/ })).not.toBeInTheDocument()
   })
 })

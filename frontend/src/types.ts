@@ -235,6 +235,8 @@ export interface Order {
   status: OrderStatus
   status_display?: string
   product_specification?: ProductSpecification | null
+  /** Latest finished-piece unit weight returned by shipment candidates. */
+  unit_weight_g?: number | string | null
   product_specification_id?: number | null
   forming_hours?: number | string | null
   production_required?: boolean | null
@@ -633,7 +635,7 @@ export interface ProductionImportPreview {
 export type QualityEmployeeRole = 'INSPECTOR' | 'REWORKER' | 'BOTH'
 export type QualityOrderStatus = OrderStatus
 export type ReturnReworkStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED'
-export type ReturnReasonCategory = 'APPEARANCE' | 'DIMENSION' | 'MATERIAL' | 'MIXED' | 'PACKAGING' | 'OTHER'
+export type ReturnReasonCategory = 'APPEARANCE' | 'STICKING' | 'DIMENSION' | 'MATERIAL' | 'MIXED' | 'PACKAGING' | 'OTHER'
 
 export interface QualityEmployee {
   id: number
@@ -1071,6 +1073,7 @@ export interface QualityReworkCase {
   backfill_reason?: string
   responsible_inspector_id?: number | null
   reason_category: ReturnReasonCategory
+  reason_category_display?: string
   reason?: string
   affected_quantity?: number | null
   affected_weight_kg?: number | string | null
