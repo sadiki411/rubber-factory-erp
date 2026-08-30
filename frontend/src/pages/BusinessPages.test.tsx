@@ -38,7 +38,7 @@ describe('business data pages on mobile', () => {
     apiMocks.listOrders.mockResolvedValue([{
       id: 2, order_no: 'TEST-ORDER-001', item_no: '10', batch_no: '', product_code: 'TEST-PRODUCT-001', product_name: '测试产品A', specification: 'TEST-SPEC-A', material: 'SYN-RUBBER-A',
       order_quantity: 240, order_date: '2026-08-16', due_date: '2026-08-30', status: 'OPEN', required_material_kg: '8.75', received_material_kg: '0', material_gap_kg: '8.75', material_status: 'NOT_RECEIVED', process_card_count: 0, process_card_covered_quantity: 0, process_card_status: 'NOT_RECEIVED',
-      process_card_text: '无', production_quantity: '120', shipment_date: '2026-08-31', shipped_quantity: '80', last_data_updated_at: '2026-08-05T10:15:00+08:00',
+      process_card_text: '无', production_quantity: '120', produced_quantity: 120, production_remaining_quantity: 120, production_target_reached: false, shipment_date: '2026-08-31', shipped_quantity: '80', weighted_shipped_quantity: 80, weighted_remaining_quantity: 160, last_data_updated_at: '2026-08-05T10:15:00+08:00',
     }])
     apiMocks.listReceipts.mockResolvedValue([{
       id: 9, order: null, order_id: null, order_no: 'TEST-ORDER-001', item_no: '10', finished_product_name: '测试产品A', specification: 'TEST-SPEC-A', material: 'SYN-RUBBER-A', batch_no: 'TEST-BATCH-09', sheet_size: 'TEST-SHEET-SIZE', weight_kg: '2.500', issued_on: '2026-08-05', manufactured_on: '2026-08-04', source_sheet: '发料明细', source_row: 6, updated_at: '2026-08-06T09:30:00+08:00',
@@ -58,13 +58,13 @@ describe('business data pages on mobile', () => {
   it('renders material and process-card states in order cards and preserves zero', async () => {
     renderPage(<OrdersPage />)
     expect(await screen.findByText('TEST-ORDER-001 / 10')).toBeInTheDocument()
-    expect(apiMocks.listOrders).toHaveBeenCalledWith(expect.objectContaining({ ordering: '-order_date' }))
+    expect(apiMocks.listOrders).toHaveBeenCalledWith(expect.objectContaining({ ordering: 'due_date,process_card_status,order_date', status: 'OPEN' }))
     expect(screen.getAllByText('未收到').length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText('0 kg')).toBeInTheDocument()
     expect(screen.getByText('0 张 / 覆盖 0')).toBeInTheDocument()
     expect(screen.getByText('2026-08-05 10:15')).toBeInTheDocument()
     expect(screen.getByText('2026-08-31')).toBeInTheDocument()
-    expect(screen.getByText('80')).toBeInTheDocument()
+    expect(screen.getByText(/80 \/ 240 · 待出160/)).toBeInTheDocument()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
 
@@ -74,9 +74,9 @@ describe('business data pages on mobile', () => {
 
     await screen.findByText('TEST-ORDER-001 / 10')
     await user.click(screen.getByRole('combobox', { name: '订单排序' }))
-    await user.click(await screen.findByText('交期：近到远'))
+    await user.click(await screen.findByText('流程卡：未齐优先'))
 
-    await waitFor(() => expect(apiMocks.listOrders).toHaveBeenCalledWith(expect.objectContaining({ ordering: 'due_date' })))
+    await waitFor(() => expect(apiMocks.listOrders).toHaveBeenCalledWith(expect.objectContaining({ ordering: 'process_card_status,due_date,order_date' })))
   })
 
   it('shows pending receipt count before opening the mobile receipt tab and renders actionable cards', async () => {

@@ -5,7 +5,7 @@ from uuid import UUID
 from zipfile import BadZipFile
 
 from django.core.files.base import ContentFile
-from django.db.models import F, Q
+from django.db.models import Case, F, IntegerField, Q, Value, When
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -37,6 +37,7 @@ from .serializers import (
     BusinessOrderSerializer,
     BusinessRecordRevisionSerializer,
     MaterialReceiptSerializer,
+    OrderStatusChangeSerializer,
     ProductInspectionCriterionSerializer,
     ProductSpecificationSerializer,
 )
@@ -105,13 +106,98 @@ class ProductSpecificationViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
 
 
 def _business_order_queryset():
-    return with_order_activity(
+    queryset = with_order_activity(
         QualityOrder.objects.select_related(
             "product_specification",
             "product_specification__mold_model",
             "created_by",
+        ).prefetch_related("production_runs__daily_logs")
+    )
+    # Keep the database-side rank aligned with
+    # BusinessOrderSerializer.get_process_card_status.  The annotation makes
+    # process-card status usable as both a filter and one level of a stable
+    # multi-column order without storing a second, drift-prone status field.
+    explicit_card_values = Q(process_card_count__isnull=False) | Q(
+        process_card_covered_quantity__isnull=False
+    )
+    no_explicit_cards = (
+        Q(process_card_count__isnull=True) | Q(process_card_count__lte=0)
+    ) & (
+        Q(process_card_covered_quantity__isnull=True)
+        | Q(process_card_covered_quantity__lte=0)
+    )
+    partial_explicit_cards = Q(
+        process_card_covered_quantity__isnull=False,
+        process_card_covered_quantity__lt=F("order_quantity"),
+    )
+    # Match BusinessOrderSerializer.get_process_card_status: legacy free text
+    # counts as received only when it contains an explicit positive signal.
+    # Unknown text such as "待补" must stay in NOT_RECEIVED instead of being
+    # sorted with confirmed cards.
+    legacy_received = (
+        Q(process_card_text__iexact="有")
+        | Q(process_card_text__iexact="是")
+        | Q(process_card_text__iexact="已收到")
+        | Q(process_card_text__iexact="已提供")
+        | Q(process_card_text__iexact="已发")
+        | Q(process_card_text__iexact="收到")
+        | Q(process_card_text__iexact="yes")
+        | Q(process_card_text__iexact="y")
+        | Q(process_card_text__iexact="true")
+        | Q(process_card_text__istartswith="有流程卡")
+        | Q(process_card_text__istartswith="已收到")
+        | Q(process_card_text__istartswith="已提供")
+        | Q(process_card_text__istartswith="已发")
+        | Q(process_card_text__regex=r"[1-9][0-9]*\s*张")
+    )
+    return queryset.annotate(
+        process_card_status_rank=Case(
+            When(explicit_card_values & no_explicit_cards, then=Value(0)),
+            When(explicit_card_values & partial_explicit_cards, then=Value(1)),
+            When(explicit_card_values, then=Value(2)),
+            When(legacy_received, then=Value(2)),
+            default=Value(0),
+            output_field=IntegerField(),
         )
     )
+
+
+ORDERING_FIELDS = {
+    "order_date": "order_date",
+    "due_date": "due_date",
+    "process_card_status": "process_card_status_rank",
+    "order_no": "order_no",
+}
+DEFAULT_ORDERING = "due_date,process_card_status,order_date"
+
+
+def _order_expressions(raw_ordering):
+    """Build up to three non-conflicting order levels with null dates last."""
+    requested = [
+        value.strip()
+        for value in str(raw_ordering or DEFAULT_ORDERING).split(",")
+        if value.strip()
+    ]
+    expressions = []
+    used_fields = set()
+    for token in requested[:3]:
+        descending = token.startswith("-")
+        public_name = token[1:] if descending else token
+        model_name = ORDERING_FIELDS.get(public_name)
+        if model_name is None or public_name in used_fields:
+            continue
+        used_fields.add(public_name)
+        field = F(model_name)
+        if public_name in {"order_date", "due_date"}:
+            expressions.append(
+                field.desc(nulls_last=True) if descending else field.asc(nulls_last=True)
+            )
+        else:
+            expressions.append(field.desc() if descending else field.asc())
+    if not expressions:
+        return _order_expressions(DEFAULT_ORDERING)
+    expressions.append(F("id").desc())
+    return expressions
 
 
 class BusinessOrderViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
@@ -170,6 +256,22 @@ class BusinessOrderViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
                 )
             else:
                 raise DRFValidationError({"material_status": "无效的胶料状态。"})
+        process_card_status = str(
+            params.get("process_card_status", "") or ""
+        ).strip().upper()
+        process_card_ranks = {
+            "NOT_RECEIVED": 0,
+            "PARTIAL": 1,
+            "RECEIVED": 2,
+        }
+        if process_card_status:
+            if process_card_status not in process_card_ranks:
+                raise DRFValidationError(
+                    {"process_card_status": "无效的流程卡状态。"}
+                )
+            queryset = queryset.filter(
+                process_card_status_rank=process_card_ranks[process_card_status]
+            )
         date_from = str(params.get("date_from", "") or "").strip()
         date_to = str(params.get("date_to", "") or "").strip()
         if date_from:
@@ -177,23 +279,16 @@ class BusinessOrderViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
         if date_to:
             queryset = queryset.filter(order_date__lte=date_to)
         ordering = str(params.get("ordering", "") or "").strip()
-        date_ordering = {
-            "order_date": F("order_date").asc(nulls_last=True),
-            "-order_date": F("order_date").desc(nulls_last=True),
-            "due_date": F("due_date").asc(nulls_last=True),
-            "-due_date": F("due_date").desc(nulls_last=True),
-        }
-        plain_ordering = {"order_no", "-order_no", "created_at", "-created_at"}
-        if ordering in date_ordering:
-            primary_ordering = date_ordering[ordering]
-        elif ordering in plain_ordering:
-            primary_ordering = ordering
-        else:
-            primary_ordering = date_ordering["-order_date"]
-        return queryset.order_by(primary_ordering, "-id")
+        return queryset.order_by(*_order_expressions(ordering))
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    @action(detail=True, methods=["get"], url_path="status-history")
+    def status_history(self, request, pk=None):
+        order = self.get_object()
+        changes = order.status_changes.select_related("operator").all()
+        return Response(OrderStatusChangeSerializer(changes, many=True).data)
 
 
 class MaterialReceiptViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):

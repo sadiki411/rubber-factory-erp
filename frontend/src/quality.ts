@@ -57,6 +57,35 @@ export function resolvedProcessCardReworkCount(item: QualityProcessCard, linkedC
 }
 
 /**
+ * Normalize the text carried by a customer's process-card QR code.
+ *
+ * Their current cards encode the card number directly (for example
+ * `04-M003-2608210028`).  Keeping this helper deliberately small also makes
+ * scans pasted from a clipboard or a scanner gun behave exactly like camera
+ * scans.  A surrounding URL is accepted as a safety net for future card
+ * formats, but no customer ERP connection is required.
+ */
+export function normalizeProcessCardQrText(rawValue: string | null | undefined) {
+  const raw = String(rawValue || '').trim()
+  if (!raw) return ''
+  try {
+    const url = new URL(raw)
+    const queryValue = url.searchParams.get('card_no') || url.searchParams.get('code')
+    if (queryValue?.trim()) return queryValue.trim().toUpperCase()
+    const lastSegment = decodeURIComponent(url.pathname.split('/').filter(Boolean).at(-1) || '')
+    if (lastSegment) return lastSegment.trim().toUpperCase()
+  } catch {
+    // Plain process-card numbers are the expected and most common format.
+  }
+  return raw.toUpperCase()
+}
+
+export function isLikelyProcessCardNo(value: string | null | undefined) {
+  const normalized = normalizeProcessCardQrText(value)
+  return /^[A-Z0-9]+(?:-[A-Z0-9]+){2,}$/.test(normalized) && normalized.length >= 12
+}
+
+/**
  * Return the product unit weight in grams when it is explicitly present in a
  * shipment candidate or its product specification.  The flow card's
  * material/胶料重量 is deliberately not used here: it is a material issue

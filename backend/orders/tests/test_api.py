@@ -8,8 +8,13 @@ from django.utils.dateparse import parse_datetime
 from rest_framework.test import APITestCase
 
 from molds.models import MoldModel
-from orders.models import BusinessRecordRevision, MaterialReceipt, ProductSpecification
-from production.models import ProductionRun, ProductionStation
+from orders.models import (
+    BusinessRecordRevision,
+    MaterialReceipt,
+    OrderStatusChange,
+    ProductSpecification,
+)
+from production.models import ProductionDailyLog, ProductionRun, ProductionStation
 from quality.models import QualityEmployee, QualityOrder, QualityShipment
 
 
@@ -167,6 +172,44 @@ class BusinessApiTests(APITestCase):
             self.assertEqual(response.status_code, 200, response.content)
             self.assertEqual(response.json()["process_card_status"], expected)
 
+    def test_manual_order_status_change_requires_reason_and_keeps_history(self):
+        order = QualityOrder.objects.create(
+            order_no="STATUS-REASON-001",
+            specification="TEST-STATUS-SPEC",
+            order_quantity=100,
+            created_by=self.user,
+        )
+        rejected = self.client.patch(
+            f"/api/orders/orders/{order.pk}/",
+            {"status": QualityOrder.Status.COMPLETED},
+            format="json",
+        )
+        self.assertEqual(rejected.status_code, 400, rejected.content)
+        self.assertIn("status_change_reason", rejected.json())
+        order.refresh_from_db()
+        self.assertEqual(order.status, QualityOrder.Status.OPEN)
+
+        accepted = self.client.patch(
+            f"/api/orders/orders/{order.pk}/",
+            {
+                "status": QualityOrder.Status.COMPLETED,
+                "status_change_reason": "历史订单已人工核对完成",
+            },
+            format="json",
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.content)
+        change = OrderStatusChange.objects.get(order=order)
+        self.assertEqual(change.from_status, QualityOrder.Status.OPEN)
+        self.assertEqual(change.to_status, QualityOrder.Status.COMPLETED)
+        self.assertEqual(change.reason, "历史订单已人工核对完成")
+        self.assertEqual(change.operator, self.user)
+
+        history = self.client.get(
+            f"/api/orders/orders/{order.pk}/status-history/"
+        )
+        self.assertEqual(history.status_code, 200, history.content)
+        self.assertEqual(history.json()[0]["reason"], "历史订单已人工核对完成")
+
     def test_order_last_data_updated_at_includes_receipt_production_and_shipment(self):
         order = QualityOrder.objects.create(
             order_no="ACTIVITY-100",
@@ -214,6 +257,61 @@ class BusinessApiTests(APITestCase):
         response = self.client.get(f"/api/orders/orders/{order.pk}/")
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(parse_datetime(response.json()["last_data_updated_at"]), newest)
+
+    def test_order_production_progress_sums_multiple_valid_tasks_and_cavity_snapshots(self):
+        order = QualityOrder.objects.create(
+            order_no="PROGRESS-MULTI-001",
+            item_no="10",
+            specification="TEST-PROGRESS-SPEC",
+            material="TEST-PROGRESS-MATERIAL",
+            order_quantity=120,
+            created_by=self.user,
+        )
+        first = ProductionRun.objects.create(
+            order=order,
+            order_no=order.order_no,
+            specification=order.specification,
+            material=order.material,
+            order_quantity=order.order_quantity,
+            cavities=6,
+            planned_mold_count=20,
+            is_ledger_only=True,
+            created_by=self.user,
+        )
+        second = ProductionRun.objects.create(
+            order=order,
+            order_no=order.order_no,
+            specification=order.specification,
+            material=order.material,
+            order_quantity=order.order_quantity,
+            cavities=8,
+            planned_mold_count=10,
+            is_ledger_only=True,
+            created_by=self.user,
+        )
+        ProductionDailyLog.objects.create(
+            run=first,
+            operator="甲",
+            sequence_no=1,
+            cumulative_mold_count=10,
+            produced_mold_count=10,
+            cavities_snapshot=6,
+        )
+        ProductionDailyLog.objects.create(
+            run=second,
+            operator="乙",
+            sequence_no=1,
+            cumulative_mold_count=5,
+            produced_mold_count=5,
+            cavities_snapshot=8,
+        )
+
+        response = self.client.get(f"/api/orders/orders/{order.pk}/")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["produced_quantity"], 100)
+        self.assertEqual(response.json()["production_remaining_quantity"], 20)
+        self.assertFalse(response.json()["production_target_reached"])
+        self.assertEqual(response.json()["production_run_count"], 2)
 
     def test_order_number_and_item_must_be_unique_and_delete_is_disabled(self):
         payload = {

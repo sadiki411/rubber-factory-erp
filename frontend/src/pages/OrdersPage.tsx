@@ -13,7 +13,25 @@ import { OrderFormDrawer } from '../components/OrderFormDrawer'
 import { PageTitle } from '../components/PageTitle'
 import type { MaterialReceipt, Order, OrderMaterialStatus, OrderProcessCardStatus, OrderStatus } from '../types'
 
-type OrderOrdering = 'order_date' | '-order_date' | 'due_date' | '-due_date'
+type OrderTab = 'orders-open' | 'orders-completed' | 'orders-cancelled' | 'receipts'
+
+const DEFAULT_ORDERING = 'due_date,process_card_status,order_date'
+const SORT_PRESETS = [
+  { value: DEFAULT_ORDERING, label: '交期：近到远' },
+  { value: 'process_card_status,due_date,order_date', label: '流程卡：未齐优先' },
+  { value: 'order_date,due_date,process_card_status', label: '下单日期：旧到新' },
+  { value: '-order_date,due_date,process_card_status', label: '下单日期：新到旧' },
+]
+const SORT_LEVEL_OPTIONS = [
+  { value: 'due_date', label: '交期：近到远' },
+  { value: '-due_date', label: '交期：远到近' },
+  { value: 'process_card_status', label: '流程卡：未收到优先' },
+  { value: '-process_card_status', label: '流程卡：已收齐优先' },
+  { value: 'order_date', label: '下单日期：旧到新' },
+  { value: '-order_date', label: '下单日期：新到旧' },
+  { value: 'order_no', label: '订单号：升序' },
+  { value: '-order_no', label: '订单号：降序' },
+]
 
 dayjs.extend(utc)
 
@@ -66,11 +84,11 @@ export function OrdersPage() {
   const screens = Grid.useBreakpoint()
   const mobile = screens.md === false
   const [query, setQuery] = useState('')
-  const [activeTab, setActiveTab] = useState<'orders' | 'receipts'>('orders')
-  const [status, setStatus] = useState<OrderStatus | ''>('OPEN')
+  const [activeTab, setActiveTab] = useState<OrderTab>('orders-open')
   const [productionRequired, setProductionRequired] = useState<'' | 'yes' | 'no'>('')
   const [materialStatus, setMaterialStatus] = useState<OrderMaterialStatus | ''>('')
-  const [ordering, setOrdering] = useState<OrderOrdering>('-order_date')
+  const [processCardStatus, setProcessCardStatus] = useState<OrderProcessCardStatus | ''>('')
+  const [ordering, setOrdering] = useState(DEFAULT_ORDERING)
   const [receiptQuery, setReceiptQuery] = useState('')
   const [receiptLink, setReceiptLink] = useState<'' | 'linked' | 'unlinked'>('')
   const [editing, setEditing] = useState<Order>()
@@ -80,16 +98,20 @@ export function OrdersPage() {
   const [importOpen, setImportOpen] = useState(false)
   const [importHistoryOpen, setImportHistoryOpen] = useState(false)
 
+  const orderStatus: OrderStatus = activeTab === 'orders-completed' ? 'COMPLETED' : activeTab === 'orders-cancelled' ? 'CANCELLED' : 'OPEN'
+  const showingOrders = activeTab !== 'receipts'
   const ordersQuery = useQuery({
-    queryKey: ['orders', { query, status, productionRequired, materialStatus, ordering }],
+    queryKey: ['orders', { query, orderStatus, productionRequired, materialStatus, processCardStatus, ordering }],
     queryFn: async () => toList(await orderApi.list({
       q: query || undefined,
-      status: status || undefined,
+      status: orderStatus,
       production_required: productionRequired === '' ? undefined : productionRequired === 'yes',
       material_status: materialStatus || undefined,
+      process_card_status: processCardStatus || undefined,
       ordering,
       page_size: 1000,
     })),
+    enabled: showingOrders,
   })
   const orderOptionsQuery = useQuery({
     queryKey: ['orders', 'receipt-options'],
@@ -123,6 +145,18 @@ export function OrdersPage() {
   }
   const receipts = receiptsQuery.data || []
   const unlinkedReceiptCount = unlinkedReceiptsQuery.data || 0
+  const orderingLevels = ordering.split(',').filter(Boolean).slice(0, 3)
+
+  const updateOrderingLevel = (index: number, value?: string) => {
+    const next = [...orderingLevels]
+    if (!value) next.splice(index, 1)
+    else next[index] = value
+    const deduplicated = next.filter((token, tokenIndex, values) => {
+      const field = token.replace(/^-/, '')
+      return values.findIndex((candidate) => candidate.replace(/^-/, '') === field) === tokenIndex
+    })
+    setOrdering(deduplicated.join(',') || DEFAULT_ORDERING)
+  }
 
   const columns: TableColumnsType<Order> = [
     { title: '订单号 / 项次', key: 'order', fixed: 'left', width: 205, render: (_, row) => <Button type="link" className="table-primary-link" onClick={() => openForm(row)}>{row.order_no}{row.item_no ? ` / ${row.item_no}` : ''}</Button> },
@@ -135,8 +169,8 @@ export function OrdersPage() {
       width: 110,
       sorter: true,
       sortDirections: ['ascend', 'descend', 'ascend'],
-      sortOrder: ordering === 'due_date' ? 'ascend' : ordering === '-due_date' ? 'descend' : null,
-      render: (value) => value || '未登记',
+      sortOrder: orderingLevels[0] === 'due_date' ? 'ascend' : orderingLevels[0] === '-due_date' ? 'descend' : null,
+      render: (value) => value || <Tag color="warning">无交期</Tag>,
     },
     { title: '订单量', dataIndex: 'order_quantity', width: 95, render: (value) => exactOrderValue(value) },
     { title: '胶料用量', dataIndex: 'required_material_kg', width: 115, render: (value) => exactOrderValue(value, ' kg') },
@@ -148,14 +182,14 @@ export function OrdersPage() {
       width: 110,
       sorter: true,
       sortDirections: ['ascend', 'descend', 'ascend'],
-      sortOrder: ordering === 'order_date' ? 'ascend' : ordering === '-order_date' ? 'descend' : null,
+      sortOrder: orderingLevels[0] === 'order_date' ? 'ascend' : orderingLevels[0] === '-order_date' ? 'descend' : null,
       render: (value) => value || '未登记',
     },
     { title: '模具型号 / 尺寸', key: 'mold', width: 165, render: (_, row) => <span>{row.product_specification?.mold_model?.code || row.product_specification?.mold_no || '-'}<br /><Typography.Text type="secondary">{row.mold_size || row.product_specification?.mold_size || '-'}</Typography.Text></span> },
     { title: '是否生产', dataIndex: 'production_required', width: 105, render: (value) => <Tag color={value === true ? 'processing' : 'default'}>{productionRequiredText(value)}</Tag> },
-    { title: '生产数量', dataIndex: 'production_quantity', width: 110, render: (value) => exactOrderValue(value) },
+    { title: '生产进度', key: 'production_progress', width: 155, render: (_, row) => <span>{exactOrderValue(row.produced_quantity)} / {exactOrderValue(row.order_quantity)}<br />{row.production_target_reached ? <Tag color="success">生产已达标</Tag> : <Typography.Text type="secondary">欠 {exactOrderValue(row.production_remaining_quantity)} 件</Typography.Text>}</span> },
     { title: '出货日期', dataIndex: 'shipment_date', width: 120, render: (value) => exactOrderValue(value) },
-    { title: '出货数量', dataIndex: 'shipped_quantity', width: 110, render: (value) => exactOrderValue(value) },
+    { title: '净有效出货', key: 'weighted_shipped_quantity', width: 135, render: (_, row) => <span>{exactOrderValue(row.weighted_shipped_quantity)} / {exactOrderValue(row.order_quantity)}<br /><Typography.Text type="secondary">待出 {exactOrderValue(row.weighted_remaining_quantity)}</Typography.Text></span> },
     { title: '最后更新', key: 'last_updated', width: 155, render: (_, row) => formattedTimestamp(row.last_data_updated_at || row.updated_at) },
     { title: '胶料状态', dataIndex: 'material_status', width: 100, render: (value) => <MaterialStatusTag status={value} /> },
     { title: '订单状态', dataIndex: 'status', width: 100, render: (value: OrderStatus, row) => <Tag color={ORDER_STATUS_META[value]?.color}>{row.status_display || ORDER_STATUS_META[value]?.text || value}</Tag> },
@@ -180,38 +214,55 @@ export function OrdersPage() {
       <PageTitle
         title="订单管理"
         description="统一管理订单、胶料到料和流程卡状态；空值表示尚未登记，实际为零时会明确显示 0。"
-        extra={<Space wrap><Button icon={<HistoryOutlined />} onClick={() => setImportHistoryOpen(true)}>导入记录</Button><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入订单 / 发料单</Button>{activeTab === 'orders' ? <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增订单</Button> : <Button type="primary" icon={<PlusOutlined />} onClick={() => openReceiptForm()}>新增发料记录</Button>}</Space>}
+        extra={<Space wrap><Button icon={<HistoryOutlined />} onClick={() => setImportHistoryOpen(true)}>导入记录</Button><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入订单 / 发料单</Button>{showingOrders ? <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增订单</Button> : <Button type="primary" icon={<PlusOutlined />} onClick={() => openReceiptForm()}>新增发料记录</Button>}</Space>}
       />
       <Tabs
         className="business-page-tabs"
         activeKey={activeTab}
-        onChange={(key) => setActiveTab(key as 'orders' | 'receipts')}
+        onChange={(key) => setActiveTab(key as OrderTab)}
         items={[
-          { key: 'orders', label: '订单台账' },
+          { key: 'orders-open', label: '进行中订单' },
+          { key: 'orders-completed', label: '已完成订单' },
+          { key: 'orders-cancelled', label: '已取消订单' },
           { key: 'receipts', label: <span>发料记录 {unlinkedReceiptCount > 0 && <Tag color="error">{unlinkedReceiptCount} 条待关联</Tag>}</span> },
         ]}
       />
 
-      {activeTab === 'orders' ? (
+      {showingOrders ? (
         <>
           <Card className="filter-card">
             <div className="business-filter-row order-filter-row">
               <Input allowClear prefix={<SearchOutlined />} placeholder="搜索订单号、项次、产品、规格、材质或批次" value={query} onChange={(event) => setQuery(event.target.value)} />
-              <Select value={status} onChange={setStatus} options={[{ value: '', label: '全部订单状态' }, { value: 'OPEN', label: '进行中' }, { value: 'COMPLETED', label: '已完成' }, { value: 'CANCELLED', label: '已取消' }]} />
               <Select value={productionRequired} onChange={setProductionRequired} options={[{ value: '', label: '全部生产安排' }, { value: 'yes', label: '需要生产' }, { value: 'no', label: '无需生产' }]} />
               <Select value={materialStatus} onChange={setMaterialStatus} options={[{ value: '', label: '全部胶料状态' }, ...Object.entries(MATERIAL_META).map(([value, meta]) => ({ value, label: meta.text }))]} />
-              <Select<OrderOrdering>
+              <Select value={processCardStatus} onChange={setProcessCardStatus} options={[{ value: '', label: '全部流程卡状态' }, ...Object.entries(PROCESS_CARD_META).map(([value, meta]) => ({ value, label: meta.text }))]} />
+              <Select<string>
                 aria-label="订单排序"
-                value={ordering}
+                value={SORT_PRESETS.some((item) => item.value === ordering) ? ordering : undefined}
+                placeholder="自定义排序"
                 onChange={setOrdering}
-                options={[
-                  { value: '-order_date', label: '下单日期：新到旧' },
-                  { value: 'order_date', label: '下单日期：旧到新' },
-                  { value: 'due_date', label: '交期：近到远' },
-                  { value: '-due_date', label: '交期：远到近' },
-                ]}
+                options={SORT_PRESETS}
               />
             </div>
+            <details className="order-sort-details">
+              <summary>自定义三级排序（后面的条件只在前面相同时生效）</summary>
+              <div className="order-sort-levels">
+                {[0, 1, 2].map((index) => (
+                  <Select<string>
+                    key={index}
+                    allowClear={index > 0}
+                    aria-label={`第${index + 1}级排序`}
+                    placeholder={`第${index + 1}级排序`}
+                    value={orderingLevels[index]}
+                    onChange={(value) => updateOrderingLevel(index, value)}
+                    options={SORT_LEVEL_OPTIONS.map((option) => ({
+                      ...option,
+                      disabled: orderingLevels.some((token, otherIndex) => otherIndex !== index && token.replace(/^-/, '') === option.value.replace(/^-/, '')),
+                    }))}
+                  />
+                ))}
+              </div>
+            </details>
           </Card>
           {ordersQuery.isError && <Alert className="business-page-alert" type="error" showIcon title="订单读取失败" description={(ordersQuery.error as Error).message} />}
           {mobile ? (
@@ -241,9 +292,9 @@ export function OrdersPage() {
                       <span><small>模具型号</small><b>{record.product_specification?.mold_model?.code || record.product_specification?.mold_no || '-'}</b></span>
                       <span><small>模具尺寸</small><b>{record.mold_size || record.product_specification?.mold_size || '-'}</b></span>
                       <span><small>是否生产</small><b>{productionRequiredText(record.production_required)}</b></span>
-                      <span><small>生产数量</small><b>{exactOrderValue(record.production_quantity)}</b></span>
+                      <span><small>生产进度</small><b>{exactOrderValue(record.produced_quantity)} / {exactOrderValue(record.order_quantity)}{record.production_target_reached ? ' · 已达标' : ` · 欠${exactOrderValue(record.production_remaining_quantity)}`}</b></span>
                       <span><small>出货日期</small><b>{exactOrderValue(record.shipment_date)}</b></span>
-                      <span><small>出货数量</small><b>{exactOrderValue(record.shipped_quantity)}</b></span>
+                      <span><small>净有效出货</small><b>{exactOrderValue(record.weighted_shipped_quantity)} / {exactOrderValue(record.order_quantity)} · 待出{exactOrderValue(record.weighted_remaining_quantity)}</b></span>
                       <span><small>最后更新</small><b>{formattedTimestamp(record.last_data_updated_at || record.updated_at)}</b></span>
                       {((record.process_card_count !== null && record.process_card_count !== undefined) || (record.process_card_covered_quantity !== null && record.process_card_covered_quantity !== undefined)) && <span><small>流程卡明细</small><b>{exactOrderValue(record.process_card_count, ' 张')} / 覆盖 {exactOrderValue(record.process_card_covered_quantity)}</b></span>}
                     </div>
@@ -263,8 +314,8 @@ export function OrdersPage() {
                 pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
                 onChange={(_, __, sorter) => {
                   if (Array.isArray(sorter) || !sorter.field || !sorter.order) return
-                  if (sorter.field === 'order_date') setOrdering(sorter.order === 'ascend' ? 'order_date' : '-order_date')
-                  if (sorter.field === 'due_date') setOrdering(sorter.order === 'ascend' ? 'due_date' : '-due_date')
+                  if (sorter.field === 'order_date') setOrdering(`${sorter.order === 'ascend' ? 'order_date' : '-order_date'},due_date,process_card_status`)
+                  if (sorter.field === 'due_date') setOrdering(`${sorter.order === 'ascend' ? 'due_date' : '-due_date'},process_card_status,order_date`)
                 }}
               />
             </Card>

@@ -2,11 +2,12 @@ import json
 from decimal import Decimal
 
 from django.core.serializers.json import DjangoJSONEncoder
+from django.db import transaction
 from django.db.models import DateTimeField, DecimalField, F, Max, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce, Greatest
 from django.forms.models import model_to_dict
 
-from .models import BusinessRecordRevision, MaterialReceipt
+from .models import BusinessRecordRevision, MaterialReceipt, OrderStatusChange
 
 
 MODEL_RECORD_TYPES = {
@@ -74,6 +75,59 @@ def record_revision(
         source_batch=source_batch,
         operator=operator,
     )
+
+
+def record_order_status_change(
+    order,
+    *,
+    from_status,
+    source=OrderStatusChange.Source.MANUAL,
+    reason,
+    operator=None,
+):
+    """Persist an immutable, user-readable reason after a status update."""
+    return OrderStatusChange.objects.create(
+        order=order,
+        from_status=from_status,
+        to_status=order.status,
+        source=source,
+        reason=reason,
+        operator=operator,
+    )
+
+
+def transition_order_status(
+    order,
+    to_status,
+    *,
+    source=OrderStatusChange.Source.SYSTEM,
+    reason,
+    operator=None,
+):
+    """Atomically move an order and retain why an automatic/manual link did it."""
+    from quality.models import QualityOrder
+
+    target = str(to_status or "").strip().upper()
+    if target not in QualityOrder.Status.values:
+        raise ValueError("无效的订单状态。")
+    explanation = str(reason or "").strip()
+    if not explanation:
+        raise ValueError("订单状态变更必须说明原因。")
+    with transaction.atomic():
+        current = QualityOrder.objects.select_for_update().get(pk=order.pk)
+        if current.status == target:
+            return current
+        previous = current.status
+        current.status = target
+        current.save(update_fields=["status", "updated_at"])
+        record_order_status_change(
+            current,
+            from_status=previous,
+            source=source,
+            reason=explanation,
+            operator=operator,
+        )
+        return current
 
 
 def with_order_activity(queryset):

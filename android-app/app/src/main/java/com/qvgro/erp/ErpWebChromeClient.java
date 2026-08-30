@@ -11,6 +11,10 @@ public final class ErpWebChromeClient extends WebChromeClient {
         void onProgressChanged(int progress);
 
         boolean openFileChooser(ValueCallback<android.net.Uri[]> callback, FileChooserParams params);
+
+        void onWebPermissionRequest(PermissionRequest request);
+
+        void onWebPermissionRequestCanceled(PermissionRequest request);
     }
 
     private final Listener listener;
@@ -35,8 +39,12 @@ public final class ErpWebChromeClient extends WebChromeClient {
 
     @Override
     public void onPermissionRequest(PermissionRequest request) {
-        // The ERP does not need camera, microphone, location or protected-media access in WebView.
-        request.deny();
+        listener.onWebPermissionRequest(request);
+    }
+
+    @Override
+    public void onPermissionRequestCanceled(PermissionRequest request) {
+        listener.onWebPermissionRequestCanceled(request);
     }
 
     @Override

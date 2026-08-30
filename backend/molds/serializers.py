@@ -176,6 +176,7 @@ class MoldAssetSerializer(serializers.ModelSerializer):
             "processor",
             "location_text",
             "can_stack",
+            "default_cavities",
             "note",
             "confirm_warnings",
             "is_active",

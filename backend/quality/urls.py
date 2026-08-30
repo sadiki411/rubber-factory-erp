@@ -2,6 +2,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    DefectReasonViewSet,
     QualityEmployeeViewSet,
     QualityOrderViewSet,
     QualityShipmentViewSet,
@@ -14,6 +15,7 @@ from .views import (
 
 
 router = DefaultRouter()
+router.register("defect-reasons", DefectReasonViewSet, basename="quality-defect-reason")
 router.register("employees", QualityEmployeeViewSet, basename="quality-employee")
 router.register("orders", QualityOrderViewSet, basename="quality-order")
 router.register("shipments", QualityShipmentViewSet, basename="quality-shipment")

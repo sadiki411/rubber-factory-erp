@@ -82,9 +82,9 @@ export function CompleteAndPutawayDrawer({ open, run, onClose, onSuccess }: Prop
     }
   }
 
-  const stationLabel = run
+  const stationLabel = run?.station
     ? `${productionStationGroupLabel(run.station.group)}-${productionStationNumber(run.station)}号机台`
-    : '生产订单'
+    : '未指定机台的生产订单'
   return (
     <Drawer
       open={open}

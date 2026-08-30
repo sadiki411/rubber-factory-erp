@@ -4,6 +4,8 @@ import { formatQualityDate, qualityNumber } from '../quality'
 import type { QualityReworkCase } from '../types'
 
 const STATUS_META: Record<string, { label: string; color: string }> = {
+  WAITING_REWORK: { label: '待返工', color: 'warning' },
+  RESHIPPED: { label: '已重新出货', color: 'success' },
   OPEN: { label: '待返工', color: 'warning' },
   PROCESSING: { label: '返工中', color: 'processing' },
   WAITING_REINSPECTION: { label: '待复检', color: 'blue' },
@@ -48,14 +50,16 @@ export function QualityReworkCaseMobileList({ items, loading, emptyText = '暂�
     locale={{ emptyText: <Empty description={emptyText} /> }}
     renderItem={(item) => {
       const source = item.source
-      const canAddAttempt = item.origin === 'CUSTOMER_RETURN' && !['CANCELLED', 'SCRAPPED'].includes(item.status)
+      const canAddAttempt = item.return_round == null && item.origin === 'CUSTOMER_RETURN' && !['CANCELLED', 'SCRAPPED'].includes(item.status)
+      const returnRound = item.return_round || item.attempt_count || item.attempts?.length || 1
+      const cardNo = item.active_process_card_no || item.process_card_no || item.process_card?.card_no || source?.lines?.find((line) => line.card_no)?.card_no
       return <List.Item>
         <Card
           className="mobile-record-card quality-rework-mobile-card"
         >
           <div className="record-card-heading quality-rework-mobile-heading">
             <div>
-              <Typography.Text type="secondary">退货返工记录</Typography.Text>
+              <Tag color="orange">{item.return_label || `第 ${returnRound} 次退货返工`}</Tag>
               <Typography.Title level={4}>{item.case_no}</Typography.Title>
               <Typography.Text type="secondary">{formatQualityDate(item.opened_on)}</Typography.Text>
             </div>
@@ -65,6 +69,7 @@ export function QualityReworkCaseMobileList({ items, loading, emptyText = '暂�
           <div className="quality-rework-mobile-identity">
             <span><small>订单 / 项次</small><strong>{source ? `${source.order_no || '未关联订单'}${source.item_no ? ` / ${source.item_no}` : ''}` : `内部返工 · 流程卡 #${item.process_card_id || '-'}`}</strong></span>
             <span><small>产品</small><strong>{source?.product_name || '未填写产品'}</strong></span>
+            <span><small>流程卡</small><strong>{cardNo || '待绑定流程卡'}</strong></span>
           </div>
 
           <div className="quality-rework-mobile-grid">
@@ -77,9 +82,11 @@ export function QualityReworkCaseMobileList({ items, loading, emptyText = '暂�
           </div>
 
           <div className="quality-rework-mobile-reason">
-            <Tag>{item.reason_category_display || REASON_META[item.reason_category] || item.reason_category || '其他'}</Tag>
+            <Tag>{item.primary_reason_detail?.name || item.primary_reason?.name || item.reason_category_display || REASON_META[item.reason_category] || item.reason_category || '其他'}</Tag>
             <Typography.Text>{item.reason || '未填写具体退货原因'}</Typography.Text>
           </div>
+
+          {!!(item.secondary_reason_details || item.secondary_reasons)?.length && <Space wrap size={[4, 4]}><Typography.Text type="secondary">次要问题：</Typography.Text>{(item.secondary_reason_details || item.secondary_reasons || []).map((reason) => <Tag key={String(reason.id)}>{reason.name}</Tag>)}</Space>}
 
           <Space className="quality-rework-mobile-actions">
             <Button block icon={<EditOutlined />} onClick={(event) => { event.stopPropagation(); onOpen(item) }}>查看 / 修改</Button>

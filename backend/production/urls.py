@@ -7,8 +7,14 @@ from .views import (
     ProductionImportErrorReportView,
     ProductionImportPreviewView,
     ProductionImportTemplateView,
+    ProductionLedgerImportCommitView,
+    ProductionLedgerImportPreviewView,
+    ProductionLedgerImportTemplateView,
+    ProductionPhotoOcrPreviewView,
     ProductionMonthlyPerformanceView,
+    ProductionOrderProgressView,
     ProductionRunViewSet,
+    ProductionEmployeeViewSet,
     ProductionStationViewSet,
     ProductionSummaryView,
 )
@@ -17,10 +23,16 @@ from .views import (
 router = DefaultRouter()
 router.register("stations", ProductionStationViewSet, basename="production-station")
 router.register("runs", ProductionRunViewSet, basename="production-run")
+router.register("employees", ProductionEmployeeViewSet, basename="production-employee")
 
 
 urlpatterns = [
     path("board/", ProductionBoardView.as_view(), name="production-board"),
+    path(
+        "order-progress/",
+        ProductionOrderProgressView.as_view(),
+        name="production-order-progress",
+    ),
     path("summary/", ProductionSummaryView.as_view(), name="production-summary"),
     path(
         "performance/monthly/",
@@ -46,6 +58,26 @@ urlpatterns = [
         "imports/<uuid:token>/errors/",
         ProductionImportErrorReportView.as_view(),
         name="production-import-error-report",
+    ),
+    path(
+        "ledger-imports/template/",
+        ProductionLedgerImportTemplateView.as_view(),
+        name="production-ledger-import-template",
+    ),
+    path(
+        "ledger-imports/preview/",
+        ProductionLedgerImportPreviewView.as_view(),
+        name="production-ledger-import-preview",
+    ),
+    path(
+        "ledger-imports/commit/",
+        ProductionLedgerImportCommitView.as_view(),
+        name="production-ledger-import-commit",
+    ),
+    path(
+        "ocr/preview/",
+        ProductionPhotoOcrPreviewView.as_view(),
+        name="production-photo-ocr-preview",
     ),
     path("", include(router.urls)),
 ]

@@ -15,6 +15,8 @@ from quality.models import QualityOrder
 
 from .models import (
     ProductionDailyLog,
+    ProductionEmployee,
+    ProductionRecordAudit,
     ProductionRun,
     ProductionSettlementRevision,
     ProductionStation,
@@ -46,11 +48,28 @@ class ProductionMoldSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = MoldAsset
-        fields = ["id", "asset_code", "model_code", "product_name", "status"]
+        fields = [
+            "id",
+            "asset_code",
+            "model_code",
+            "product_name",
+            "status",
+            "default_cavities",
+        ]
+
+
+class ProductionEmployeeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductionEmployee
+        fields = ["id", "name", "is_active", "notes", "created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at"]
 
 
 class ProductionDailyLogSerializer(serializers.ModelSerializer):
-    date = serializers.DateField(source="production_date")
+    date = serializers.DateField(source="production_date", allow_null=True, required=False)
+    theoretical_quantity = serializers.IntegerField(read_only=True)
+    qualified_quantity = serializers.IntegerField(read_only=True)
+    assistant_operators = ProductionEmployeeSerializer(many=True, read_only=True)
 
     class Meta:
         model = ProductionDailyLog
@@ -58,12 +77,33 @@ class ProductionDailyLogSerializer(serializers.ModelSerializer):
             "id",
             "date",
             "operator",
+            "operator_employee",
+            "assistant_operators",
+            "shift",
+            "sequence_no",
+            "counter_segment",
+            "cumulative_mold_count",
             "produced_mold_count",
+            "cavities_snapshot",
+            "defective_quantity",
+            "theoretical_quantity",
+            "qualified_quantity",
+            "is_cancelled",
             "notes",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["created_at", "updated_at"]
+        read_only_fields = [
+            "operator_employee",
+            "sequence_no",
+            "counter_segment",
+            "cumulative_mold_count",
+            "cavities_snapshot",
+            "defective_quantity",
+            "is_cancelled",
+            "created_at",
+            "updated_at",
+        ]
 
     def validate(self, attrs):
         run = self.context.get("run") or getattr(self.instance, "run", None)
@@ -143,7 +183,10 @@ class ProductionDailyLogSerializer(serializers.ModelSerializer):
 class ProductionRunSerializer(serializers.ModelSerializer):
     station = ProductionStationSerializer(read_only=True)
     station_id = serializers.PrimaryKeyRelatedField(
-        source="station", queryset=ProductionStation.objects.filter(is_active=True)
+        source="station",
+        queryset=ProductionStation.objects.filter(is_active=True),
+        allow_null=True,
+        required=False,
     )
     mold = ProductionMoldSerializer(read_only=True)
     mold_id = serializers.PrimaryKeyRelatedField(
@@ -187,9 +230,24 @@ class ProductionRunSerializer(serializers.ModelSerializer):
     )
     created_by_name = serializers.SerializerMethodField()
     settled_by_name = serializers.SerializerMethodField()
+    target_reached = serializers.BooleanField(read_only=True)
+    theoretical_quantity = serializers.IntegerField(read_only=True)
+    recorded_defective_quantity = serializers.IntegerField(read_only=True)
+    qualified_production_quantity = serializers.IntegerField(read_only=True)
+    overproduction_quantity = serializers.IntegerField(read_only=True)
+    order_item_no = serializers.CharField(source="order.item_no", read_only=True)
+    order_product_name = serializers.CharField(source="order.product_name", read_only=True)
+    order_production_quantity = serializers.SerializerMethodField()
+    order_remaining_quantity = serializers.SerializerMethodField()
+    order_overproduction_quantity = serializers.SerializerMethodField()
+    order_production_completed = serializers.SerializerMethodField()
+    save_cavities_as_mold_default = serializers.BooleanField(
+        write_only=True, required=False, default=False
+    )
 
     class Meta:
         model = ProductionRun
+        validators = []
         fields = [
             "id",
             "station",
@@ -204,6 +262,8 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "order_quantity",
             "cavities",
             "estimated_defect_rate",
+            "estimated_defect_mode",
+            "estimated_defect_quantity",
             "planned_mold_count",
             "compound_size",
             "strip_weight_kg",
@@ -229,6 +289,12 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "settled_at",
             "settled_by_name",
             "notes",
+            "continuation_of",
+            "segment_no",
+            "counter_segment",
+            "paused_at",
+            "pause_note",
+            "is_ledger_only",
             "daily_logs",
             "produced_mold_count",
             "good_quantity",
@@ -237,6 +303,18 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "actual_hours",
             "progress_percent",
             "remaining_mold_count",
+            "target_reached",
+            "theoretical_quantity",
+            "recorded_defective_quantity",
+            "qualified_production_quantity",
+            "overproduction_quantity",
+            "order_item_no",
+            "order_product_name",
+            "order_production_quantity",
+            "order_remaining_quantity",
+            "order_overproduction_quantity",
+            "order_production_completed",
+            "save_cavities_as_mold_default",
             "revenue",
             "total_cost",
             "profit",
@@ -261,6 +339,10 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         extra_kwargs = {
+            "order_no": {"required": False},
+            "specification": {"required": False},
+            "material": {"required": False, "allow_blank": True},
+            "order_quantity": {"required": False},
             "planned_mold_count": {"required": False},
             "estimated_hours": {"required": False},
             "expected_change_at": {"required": False, "allow_null": True},
@@ -274,6 +356,31 @@ class ProductionRunSerializer(serializers.ModelSerializer):
         if not obj.settled_by:
             return None
         return obj.settled_by.get_full_name() or obj.settled_by.get_username()
+
+    def _order_production_total(self, obj):
+        cache_name = "_serialized_order_production_total"
+        if hasattr(obj, cache_name):
+            return getattr(obj, cache_name)
+        siblings = (
+            ProductionRun.objects.filter(order_id=obj.order_id)
+            if obj.order_id
+            else ProductionRun.objects.filter(order_no=obj.order_no)
+        ).exclude(status=ProductionRun.Status.CANCELLED).prefetch_related("daily_logs")
+        value = sum(item.qualified_production_quantity for item in siblings)
+        setattr(obj, cache_name, value)
+        return value
+
+    def get_order_production_quantity(self, obj) -> int:
+        return self._order_production_total(obj)
+
+    def get_order_remaining_quantity(self, obj) -> int:
+        return max(obj.order_quantity - self._order_production_total(obj), 0)
+
+    def get_order_overproduction_quantity(self, obj) -> int:
+        return max(self._order_production_total(obj) - obj.order_quantity, 0)
+
+    def get_order_production_completed(self, obj) -> bool:
+        return self._order_production_total(obj) >= obj.order_quantity
 
     def validate_estimated_defect_rate(self, value):
         if value < 0 or value > 100:
@@ -312,16 +419,25 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                     }
                 )
             if instance.status != ProductionRun.Status.PLANNED:
+                requested_station = attrs.get("station", instance.station)
+                requested_station_id = (
+                    requested_station.pk if requested_station else None
+                )
                 if (
                     "station" in attrs
-                    and attrs["station"].pk != instance.station_id
+                    and requested_station_id != instance.station_id
+                    and not instance.is_ledger_only
                 ):
                     raise serializers.ValidationError(
                         {"station_id": "订单开始生产后不能更换机台。"}
                     )
                 requested_mold = attrs.get("mold", instance.mold)
                 requested_mold_id = requested_mold.pk if requested_mold else None
-                if "mold" in attrs and requested_mold_id != instance.mold_id:
+                if (
+                    "mold" in attrs
+                    and requested_mold_id != instance.mold_id
+                    and not instance.is_ledger_only
+                ):
                     raise serializers.ValidationError(
                         {"mold_id": "订单开始生产后不能更换模具。"}
                     )
@@ -362,9 +478,37 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                 return attrs[name]
             return getattr(instance, name, default) if instance else default
 
+        if not instance and "is_ledger_only" not in attrs and current("station") is None:
+            attrs["is_ledger_only"] = True
+
+        selected_order = current("order")
+        if not instance and selected_order is not None:
+            attrs.setdefault("order_no", selected_order.order_no)
+            attrs.setdefault("specification", selected_order.specification)
+            attrs.setdefault("material", selected_order.material)
+            attrs.setdefault("order_quantity", selected_order.order_quantity)
+            attrs.setdefault(
+                "product_specification", selected_order.product_specification
+            )
+        if current("is_ledger_only", False) and selected_order is None:
+            raise serializers.ValidationError(
+                {"order_id": "手工账生产任务必须关联订单号＋项次确定的唯一订单。"}
+            )
+
+        selected_mold = current("mold")
+        if (
+            "cavities" not in attrs
+            and selected_mold is not None
+            and selected_mold.default_cavities
+        ):
+            attrs["cavities"] = selected_mold.default_cavities
         order_quantity = current("order_quantity", 0) or 0
         cavities = current("cavities", 0) or 0
         defect_rate = current("estimated_defect_rate", Decimal("0")) or Decimal("0")
+        defect_mode = current(
+            "estimated_defect_mode", ProductionRun.DefectEstimateMode.RATE
+        )
+        defect_quantity = current("estimated_defect_quantity", 0) or 0
         if order_quantity < 1:
             raise serializers.ValidationError(
                 {"order_quantity": "订单数量必须大于0。"}
@@ -374,12 +518,21 @@ class ProductionRunSerializer(serializers.ModelSerializer):
 
         plan_drivers_changed = any(
             field in attrs
-            for field in ("order_quantity", "cavities", "estimated_defect_rate")
+            for field in (
+                "order_quantity",
+                "cavities",
+                "estimated_defect_rate",
+                "estimated_defect_mode",
+                "estimated_defect_quantity",
+            )
         )
         if "planned_mold_count" not in attrs and (not instance or plan_drivers_changed):
-            target_quantity = Decimal(order_quantity) * (
-                Decimal("1") + Decimal(defect_rate) / Decimal("100")
-            )
+            if defect_mode == ProductionRun.DefectEstimateMode.QUANTITY:
+                target_quantity = Decimal(order_quantity + defect_quantity)
+            else:
+                target_quantity = Decimal(order_quantity) * (
+                    Decimal("1") + Decimal(defect_rate) / Decimal("100")
+                )
             attrs["planned_mold_count"] = max(
                 math.ceil(target_quantity / Decimal(cavities)), 1
             )
@@ -499,6 +652,8 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "order_quantity",
             "cavities",
             "estimated_defect_rate",
+            "estimated_defect_mode",
+            "estimated_defect_quantity",
             "planned_mold_count",
             "compound_size",
             "strip_weight_kg",
@@ -514,6 +669,12 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "unit_price",
             "material_unit_price",
             "notes",
+            "continuation_of",
+            "segment_no",
+            "counter_segment",
+            "paused_at",
+            "pause_note",
+            "is_ledger_only",
         ]:
             if field_name in attrs:
                 setattr(candidate, field_name, attrs[field_name])
@@ -534,7 +695,8 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                 details["mold_id"] = details.pop("mold")
             raise serializers.ValidationError(details) from exc
 
-        if status_value in ProductionRun.ACTIVE_STATUSES:
+        ledger_only = current("is_ledger_only", False)
+        if status_value in ProductionRun.ACTIVE_STATUSES and not ledger_only:
             station = current("station")
             mold = current("mold")
             active = ProductionRun.objects.filter(status__in=ProductionRun.ACTIVE_STATUSES)
@@ -550,12 +712,10 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                 )
         station = current("station")
         order_no = current("order_no", "")
-        duplicate_order = ProductionRun.objects.filter(
-            station=station, order_no=order_no
-        )
+        duplicate_order = ProductionRun.objects.filter(station=station, order_no=order_no)
         if instance:
             duplicate_order = duplicate_order.exclude(pk=instance.pk)
-        if station and order_no and duplicate_order.exists():
+        if station and order_no and duplicate_order.exists() and not ledger_only:
             raise serializers.ValidationError(
                 {"order_no": "该机台已存在相同订单号的生产记录。"}
             )
@@ -566,13 +726,15 @@ class ProductionRunSerializer(serializers.ModelSerializer):
         return raw not in (None, "")
 
     def create(self, validated_data):
+        save_mold_default = validated_data.pop("save_cavities_as_mold_default", False)
         instance = ProductionRun(**validated_data)
         instance._preserve_expected_change = self._has_explicit_expected_override()
         try:
             with transaction.atomic():
-                instance.station = ProductionStation.objects.select_for_update().get(
-                    pk=instance.station_id
-                )
+                if instance.station_id:
+                    instance.station = ProductionStation.objects.select_for_update().get(
+                        pk=instance.station_id
+                    )
                 if instance.mold_id:
                     locked_mold = (
                         MoldAsset.objects.select_for_update()
@@ -584,6 +746,9 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                             {"mold_id": "所选模具已删除，请刷新后重新选择。"}
                         )
                     instance.mold = locked_mold
+                    if save_mold_default:
+                        locked_mold.default_cavities = instance.cavities
+                        locked_mold.save(update_fields=["default_cavities", "updated_at"])
                 instance.full_clean()
                 instance.save()
         except DjangoValidationError as exc:
@@ -595,6 +760,7 @@ class ProductionRunSerializer(serializers.ModelSerializer):
         return instance
 
     def update(self, instance, validated_data):
+        save_mold_default = validated_data.pop("save_cavities_as_mold_default", False)
         try:
             with transaction.atomic():
                 instance = ProductionRun.objects.select_for_update().get(pk=instance.pk)
@@ -620,9 +786,10 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                 instance._preserve_expected_change = (
                     self._has_explicit_expected_override()
                 )
-                instance.station = ProductionStation.objects.select_for_update().get(
-                    pk=instance.station_id
-                )
+                if instance.station_id:
+                    instance.station = ProductionStation.objects.select_for_update().get(
+                        pk=instance.station_id
+                    )
                 mold_ids = {
                     mold_id
                     for mold_id in [original_mold_id, instance.mold_id]
@@ -650,6 +817,11 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                         raise serializers.ValidationError(
                             {"mold_id": "所选模具已删除，请刷新后重新选择。"}
                         )
+                    if save_mold_default:
+                        instance.mold.default_cavities = instance.cavities
+                        instance.mold.save(
+                            update_fields=["default_cavities", "updated_at"]
+                        )
                 instance.full_clean()
                 instance.save()
         except DjangoValidationError as exc:
@@ -665,6 +837,212 @@ class StartProductionRunSerializer(serializers.Serializer):
     loaded_at = serializers.DateTimeField(required=False, allow_null=True)
     note = serializers.CharField(required=False, allow_blank=True, max_length=1000)
     confirm_warnings = serializers.BooleanField(required=False, default=False)
+
+
+class ProductionCounterLogSerializer(serializers.ModelSerializer):
+    """Cumulative counter hand-off entry used by the mobile production ledger."""
+
+    date = serializers.DateField(
+        source="production_date", required=False, allow_null=True
+    )
+    operator_employee_id = serializers.PrimaryKeyRelatedField(
+        source="operator_employee",
+        queryset=ProductionEmployee.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+    )
+    assistant_operator_ids = serializers.PrimaryKeyRelatedField(
+        source="assistant_operators",
+        queryset=ProductionEmployee.objects.filter(is_active=True),
+        many=True,
+        required=False,
+    )
+    operator = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    shift = serializers.ChoiceField(
+        choices=ProductionDailyLog.Shift.choices, required=False, allow_blank=True
+    )
+    cumulative_mold_count = serializers.IntegerField(min_value=1)
+    cavities_snapshot = serializers.IntegerField(min_value=1, required=False)
+    defective_quantity = serializers.IntegerField(min_value=0, required=False, default=0)
+    confirm_warnings = serializers.BooleanField(write_only=True, required=False, default=False)
+    theoretical_quantity = serializers.IntegerField(read_only=True)
+    qualified_quantity = serializers.IntegerField(read_only=True)
+    operator_pending = serializers.BooleanField(read_only=True)
+    assistant_operators = ProductionEmployeeSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = ProductionDailyLog
+        fields = [
+            "id",
+            "date",
+            "operator",
+            "operator_employee_id",
+            "assistant_operator_ids",
+            "assistant_operators",
+            "shift",
+            "sequence_no",
+            "counter_segment",
+            "cumulative_mold_count",
+            "produced_mold_count",
+            "cavities_snapshot",
+            "defective_quantity",
+            "theoretical_quantity",
+            "qualified_quantity",
+            "operator_pending",
+            "notes",
+            "is_cancelled",
+            "confirm_warnings",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "sequence_no",
+            "counter_segment",
+            "produced_mold_count",
+            "is_cancelled",
+            "created_at",
+            "updated_at",
+        ]
+
+    @staticmethod
+    def suggested_shift():
+        hour = timezone.localtime().hour
+        return (
+            ProductionDailyLog.Shift.DAY
+            if 8 <= hour < 20
+            else ProductionDailyLog.Shift.NIGHT
+        )
+
+    def validate(self, attrs):
+        run = self.context["run"]
+        if (
+            self.instance is None
+            and "production_date" not in attrs
+            and "date" not in self.initial_data
+        ):
+            attrs["production_date"] = timezone.localdate()
+        if self.instance is None and "shift" not in attrs:
+            attrs["shift"] = self.suggested_shift()
+        employee = attrs.get(
+            "operator_employee",
+            getattr(self.instance, "operator_employee", None),
+        )
+        operator = normalize_operator(
+            attrs.get("operator", getattr(self.instance, "operator", ""))
+        )
+        if employee:
+            operator = employee.name
+        attrs["operator"] = operator
+        if "cavities_snapshot" not in attrs:
+            if self.instance is None:
+                attrs["cavities_snapshot"] = run.cavities
+        cumulative = attrs.get(
+            "cumulative_mold_count",
+            getattr(self.instance, "cumulative_mold_count", 0),
+        )
+        cavities = attrs.get(
+            "cavities_snapshot",
+            getattr(self.instance, "cavities_snapshot", run.cavities),
+        )
+        defective = attrs.get(
+            "defective_quantity",
+            getattr(self.instance, "defective_quantity", 0),
+        )
+        if defective > cumulative * cavities:
+            raise serializers.ValidationError(
+                {"defective_quantity": "不良数量不能超过当前累计读数对应的理论数量。"}
+            )
+        confirm = attrs.pop("confirm_warnings", False)
+        duplicate = ProductionDailyLog.objects.filter(
+            run=run,
+            is_cancelled=False,
+            production_date=attrs.get("production_date"),
+            shift=attrs.get("shift", getattr(self.instance, "shift", "")),
+            operator=operator,
+            cumulative_mold_count=cumulative,
+        )
+        if self.instance:
+            duplicate = duplicate.exclude(pk=self.instance.pk)
+        if duplicate.exists() and not confirm:
+            raise serializers.ValidationError(
+                {
+                    "warnings": [
+                        "发现同订单、日期、班次、人员和累计模数的相似记录；"
+                        "确认不是重复后请提交 confirm_warnings=true。"
+                    ]
+                }
+            )
+        attrs["_confirmed_duplicate"] = bool(confirm and duplicate.exists())
+        return attrs
+
+
+class PauseProductionRunSerializer(serializers.Serializer):
+    mode = serializers.ChoiceField(
+        choices=[("ON_MACHINE", "暂时停机、不下模"), ("UNLOADED", "暂停并下机")]
+    )
+    slot_id = serializers.PrimaryKeyRelatedField(
+        source="slot",
+        queryset=RackSlot.objects.select_related("zone__level__rack"),
+        required=False,
+        allow_null=True,
+    )
+    paused_at = serializers.DateTimeField(required=False)
+    note = serializers.CharField(required=False, allow_blank=True)
+    confirm_warnings = serializers.BooleanField(required=False, default=False)
+
+
+class ResumeProductionRunSerializer(serializers.Serializer):
+    station_id = serializers.PrimaryKeyRelatedField(
+        source="station",
+        queryset=ProductionStation.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+    )
+    mold_id = serializers.PrimaryKeyRelatedField(
+        source="mold",
+        queryset=MoldAsset.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+    )
+    cavities = serializers.IntegerField(min_value=1, required=False)
+    planned_mold_count = serializers.IntegerField(min_value=1, required=False)
+    save_cavities_as_mold_default = serializers.BooleanField(required=False, default=False)
+    loaded_at = serializers.DateTimeField(required=False)
+    note = serializers.CharField(required=False, allow_blank=True)
+    confirm_warnings = serializers.BooleanField(required=False, default=False)
+
+
+class ResetProductionCounterSerializer(serializers.Serializer):
+    note = serializers.CharField(required=False, allow_blank=True)
+
+
+class CancelProductionLogSerializer(serializers.Serializer):
+    reason = serializers.CharField()
+
+
+class CompleteLedgerTaskSerializer(serializers.Serializer):
+    note = serializers.CharField(required=False, allow_blank=True)
+    confirm_below_target = serializers.BooleanField(required=False, default=False)
+
+
+class ProductionRecordAuditSerializer(serializers.ModelSerializer):
+    changed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductionRecordAudit
+        fields = [
+            "id",
+            "daily_log",
+            "action",
+            "before",
+            "after",
+            "reason",
+            "changed_by_name",
+            "changed_at",
+        ]
+
+    def get_changed_by_name(self, obj) -> str:
+        return obj.changed_by.get_full_name() or obj.changed_by.get_username()
 
 
 class CompleteProductionRunSerializer(serializers.Serializer):

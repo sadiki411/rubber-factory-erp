@@ -12,10 +12,16 @@ from quality.models import QualityOrder
 from .models import (
     BusinessRecordRevision,
     MaterialReceipt,
+    OrderStatusChange,
     ProductInspectionCriterion,
     ProductSpecification,
 )
-from .services import model_snapshot, order_identity_exists, record_revision
+from .services import (
+    model_snapshot,
+    order_identity_exists,
+    record_order_status_change,
+    record_revision,
+)
 
 
 ZERO = Decimal("0")
@@ -232,6 +238,13 @@ class BusinessOrderSerializer(AuditedModelSerializer):
     weighted_shipped_quantity = serializers.SerializerMethodField()
     weighted_remaining_quantity = serializers.SerializerMethodField()
     shipment_status = serializers.SerializerMethodField()
+    produced_quantity = serializers.SerializerMethodField()
+    production_remaining_quantity = serializers.SerializerMethodField()
+    production_target_reached = serializers.SerializerMethodField()
+    production_run_count = serializers.SerializerMethodField()
+    status_change_reason = serializers.CharField(
+        write_only=True, required=False, allow_blank=True, max_length=1000
+    )
 
     class Meta:
         model = QualityOrder
@@ -264,10 +277,15 @@ class BusinessOrderSerializer(AuditedModelSerializer):
             "process_card_text",
             "process_card_status",
             "production_quantity",
+            "produced_quantity",
+            "production_remaining_quantity",
+            "production_target_reached",
+            "production_run_count",
             "shipment_date",
             "shipped_quantity",
             "status",
             "status_display",
+            "status_change_reason",
             "notes",
             "source_batch_id",
             "last_source_batch_id",
@@ -314,7 +332,33 @@ class BusinessOrderSerializer(AuditedModelSerializer):
             raise serializers.ValidationError(
                 {"item_no": "订单号和项次已存在；同一订单号可使用不同项次。"}
             )
+        if self.instance is not None:
+            next_status = attrs.get("status", self.instance.status)
+            reason = str(attrs.get("status_change_reason", "") or "").strip()
+            if next_status != self.instance.status and not reason:
+                raise serializers.ValidationError(
+                    {"status_change_reason": "修改订单状态时必须填写原因。"}
+                )
         return attrs
+
+    def create(self, validated_data):
+        validated_data.pop("status_change_reason", None)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        reason = str(validated_data.pop("status_change_reason", "") or "").strip()
+        previous_status = instance.status
+        with transaction.atomic():
+            updated = super().update(instance, validated_data)
+            if updated.status != previous_status:
+                record_order_status_change(
+                    updated,
+                    from_status=previous_status,
+                    source=OrderStatusChange.Source.MANUAL,
+                    reason=reason,
+                    operator=_request_user(self),
+                )
+        return updated
 
     def get_created_by_name(self, obj) -> str:
         return obj.created_by.get_full_name() or obj.created_by.get_username()
@@ -415,6 +459,31 @@ class BusinessOrderSerializer(AuditedModelSerializer):
         if shipped >= int(obj.order_quantity or 0):
             return "SHIPPED"
         return "PARTIAL"
+
+    def _production_totals(self, obj):
+        cache = self.context.setdefault("_order_production_totals", {})
+        if obj.pk in cache:
+            return cache[obj.pk]
+        runs = [
+            run
+            for run in obj.production_runs.all()
+            if run.status != run.Status.CANCELLED
+        ]
+        quantity = sum(int(run.qualified_production_quantity or 0) for run in runs)
+        cache[obj.pk] = (quantity, len(runs))
+        return cache[obj.pk]
+
+    def get_produced_quantity(self, obj) -> int:
+        return self._production_totals(obj)[0]
+
+    def get_production_remaining_quantity(self, obj) -> int:
+        return max(int(obj.order_quantity or 0) - self.get_produced_quantity(obj), 0)
+
+    def get_production_target_reached(self, obj) -> bool:
+        return self.get_produced_quantity(obj) >= int(obj.order_quantity or 0)
+
+    def get_production_run_count(self, obj) -> int:
+        return self._production_totals(obj)[1]
 
 
 class OrderSummarySerializer(serializers.ModelSerializer):
@@ -560,4 +629,27 @@ class BusinessRecordRevisionSerializer(serializers.ModelSerializer):
         ]
 
     def get_operator_name(self, obj):
+        return obj.operator.get_full_name() or obj.operator.get_username()
+
+
+class OrderStatusChangeSerializer(serializers.ModelSerializer):
+    source_display = serializers.CharField(source="get_source_display", read_only=True)
+    operator_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OrderStatusChange
+        fields = [
+            "id",
+            "from_status",
+            "to_status",
+            "source",
+            "source_display",
+            "reason",
+            "operator_name",
+            "created_at",
+        ]
+
+    def get_operator_name(self, obj):
+        if obj.operator_id is None:
+            return "系统"
         return obj.operator.get_full_name() or obj.operator.get_username()

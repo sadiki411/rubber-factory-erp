@@ -375,3 +375,60 @@ class BusinessRecordRevision(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("业务数据审计记录不可删除。")
+
+
+class OrderStatusChange(models.Model):
+    """Immutable explanation for every deliberate order-status transition."""
+
+    class Source(models.TextChoices):
+        MANUAL = "MANUAL", "人工调整"
+        SHIPMENT = "SHIPMENT", "出货联动"
+        CUSTOMER_RETURN = "CUSTOMER_RETURN", "退货联动"
+        IMPORT = "IMPORT", "导入"
+        SYSTEM = "SYSTEM", "系统联动"
+
+    order = models.ForeignKey(
+        "quality.QualityOrder",
+        related_name="status_changes",
+        on_delete=models.PROTECT,
+    )
+    from_status = models.CharField(max_length=20, blank=True, default="")
+    to_status = models.CharField(max_length=20)
+    source = models.CharField(
+        max_length=30, choices=Source.choices, default=Source.MANUAL, db_index=True
+    )
+    reason = models.TextField()
+    operator = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="order_status_changes",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(
+                fields=["order", "created_at"], name="order_status_change_idx"
+            )
+        ]
+
+    def clean(self):
+        self.from_status = str(self.from_status or "").strip().upper()
+        self.to_status = str(self.to_status or "").strip().upper()
+        self.reason = str(self.reason or "").strip()
+        if not self.to_status:
+            raise ValidationError({"to_status": "新状态不能为空。"})
+        if not self.reason:
+            raise ValidationError({"reason": "状态变更原因不能为空。"})
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError("订单状态变更记录不可修改。")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("订单状态变更记录不可删除。")

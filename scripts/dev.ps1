@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $python = 'D:\develop\venvs\erp\Scripts\python.exe'
 $nodeDir = 'D:\develop\node22'
+$tesseractDir = 'D:\develop\tesseract'
 $npm = Join-Path $nodeDir 'npm.cmd'
 
 if (-not (Test-Path -LiteralPath $python)) {
@@ -12,7 +13,11 @@ if (-not (Test-Path -LiteralPath $npm)) {
     throw 'Node.js is missing. Run scripts\setup-dev.ps1 first.'
 }
 
-$env:PATH = "$nodeDir;$env:PATH"
+$runtimePaths = @($nodeDir)
+if (Test-Path -LiteralPath (Join-Path $tesseractDir 'tesseract.exe')) {
+    $runtimePaths += $tesseractDir
+}
+$env:PATH = "$(($runtimePaths -join ';'));$env:PATH"
 $env:PIP_CACHE_DIR = 'D:\develop\cache\pip'
 $env:npm_config_cache = 'D:\develop\cache\npm'
 

@@ -17,10 +17,15 @@ from rest_framework.views import APIView
 from orders.services import with_order_activity
 from orders.models import ProductSpecification
 
-from .models import (QualityEmployee, QualityOrder, QualityShipment, ReturnRework,
-                     ProductUnitWeight, ProcessCard, QualityShipmentBatch,
+from .models import (DefectReason, QualityEmployee, QualityOrder, QualityShipment, ReturnRework,
+                     ProductUnitWeight, ProcessCard, ProcessCardUnitBinding, QualityShipmentBatch,
                      QualityShipmentLine, QualityReworkCase, QualityReworkAttempt)
 from .serializers import (
+    BindExistingReturnRequestSerializer,
+    BulkScannedReturnRequestSerializer,
+    DefectReasonSerializer,
+    ProcessCardBindingRequestSerializer,
+    ProcessCardReplaceRequestSerializer,
     QualityEmployeeSerializer,
     QualityOrderSerializer,
     QualityShipmentSerializer,
@@ -28,13 +33,22 @@ from .serializers import (
     ProductUnitWeightSerializer, ProcessCardSerializer, QualityShipmentBatchSerializer,
     QualityShipmentLineSerializer, QualityReworkCaseSerializer, QualityReworkAttemptSerializer,
     QualityReturnableBatchPageSerializer,
+    ReturnReshipRequestSerializer,
+    ScannedReturnRequestSerializer,
 )
 from .services import (
+    bind_existing_return_to_card,
+    bind_process_cards_to_batch,
     build_order_allocation_plan,
+    create_scanned_return,
     delivered_quantities_by_order,
+    find_process_card,
+    replace_process_card,
+    reship_return_case,
     returnable_groups_for_batch,
     serialize_order_allocation_plan,
     shipment_line_piece_quantity,
+    sync_order_status_from_delivery,
 )
 from .unit_weights import (
     latest_saved_product_unit_weight,
@@ -136,11 +150,32 @@ class ProductUnitWeightViewSet(WorkflowModelViewSet):
         return queryset
 
 
+class DefectReasonViewSet(NoDeleteModelViewSet):
+    """Maintainable primary/secondary return reason dictionary."""
+
+    serializer_class = DefectReasonSerializer
+
+    def get_queryset(self):
+        queryset = DefectReason.objects.all()
+        q = str(self.request.query_params.get("q", "") or "").strip()
+        if q:
+            queryset = queryset.filter(Q(code__icontains=q) | Q(name__icontains=q))
+        active = str(self.request.query_params.get("active", "") or "").lower()
+        if active in {"1", "true", "yes"}:
+            queryset = queryset.filter(is_active=True)
+        elif active in {"0", "false", "no"}:
+            queryset = queryset.filter(is_active=False)
+        return queryset.order_by("sort_order", "id")
+
+
 class ProcessCardViewSet(WorkflowModelViewSet):
     serializer_class = ProcessCardSerializer
 
     def get_queryset(self):
-        queryset = ProcessCard.objects.select_related("order", "product_specification", "unit_weight_config", "created_by").all()
+        queryset = ProcessCard.objects.select_related(
+            "order", "product_specification", "unit_weight_config", "created_by",
+            "replaces", "unit_binding__shipment_batch", "unit_binding__process_card__order",
+        ).all()
         q = str(self.request.query_params.get("q", "")).strip()
         if q:
             queryset = queryset.filter(
@@ -164,11 +199,72 @@ class ProcessCardViewSet(WorkflowModelViewSet):
             queryset = queryset.filter(demand_date__lte=date_to)
         return queryset
 
+    @extend_schema(
+        parameters=[OpenApiParameter("code", str, required=True)],
+        responses=ProcessCardSerializer,
+    )
+    @action(detail=False, methods=["get"], url_path="scan")
+    def scan(self, request):
+        code = request.query_params.get("code") or request.query_params.get("card_no")
+        try:
+            scanned, active = find_process_card(code)
+        except ValueError as exc:
+            message = str(exc)
+            if message == "该流程卡尚未登记。":
+                return Response(
+                    {
+                        "found": False,
+                        "card_no": str(code or "").strip().upper(),
+                        "binding_required": True,
+                    }
+                )
+            raise DRFValidationError({"code": message}) from exc
+        return Response(
+            {
+                "found": True,
+                "scanned_card": self.get_serializer(scanned).data,
+                "active_card": self.get_serializer(active).data,
+                "was_replaced": scanned.pk != active.pk,
+                "replacement_notice": (
+                    f"旧卡已作废，请使用补卡 {active.card_no}。"
+                    if scanned.pk != active.pk
+                    else ""
+                ),
+                "binding_required": not hasattr(active, "unit_binding"),
+            }
+        )
+
+    @extend_schema(
+        request=ProcessCardReplaceRequestSerializer,
+        responses=ProcessCardSerializer,
+    )
+    @action(detail=True, methods=["post"], url_path="replace")
+    def replace(self, request, pk=None):
+        card = self.get_object()
+        payload = ProcessCardReplaceRequestSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        try:
+            replacement = replace_process_card(
+                card,
+                payload.validated_data["new_card_no"],
+                notes=payload.validated_data.get("notes", ""),
+                created_by=request.user,
+            )
+        except ValueError as exc:
+            raise DRFValidationError({"detail": str(exc)}) from exc
+        return Response(self.get_serializer(replacement).data, status=201)
+
     @action(detail=True, methods=["get"])
     def timeline(self, request, pk=None):
         card = self.get_object()
-        batches = QualityShipmentBatch.objects.filter(lines__process_card=card).distinct().order_by("shipment_date", "id")
-        cases = QualityReworkCase.objects.filter(process_card=card).order_by("opened_on", "id")
+        batches = QualityShipmentBatch.objects.filter(
+            Q(lines__process_card__tracking_id=card.tracking_id)
+            | Q(process_card_bindings__process_card__tracking_id=card.tracking_id)
+            | Q(rework_cases__process_card__tracking_id=card.tracking_id)
+        ).distinct().order_by("shipment_date", "id")
+        cases = QualityReworkCase.objects.filter(
+            process_card__tracking_id=card.tracking_id
+        ).order_by("opened_on", "id")
         return Response({"card_id": card.pk, "events": [
             *({"type": "shipment", "id": b.pk, "shipment_no": b.shipment_no, "date": b.shipment_date, "status": b.status, "net_weight_kg": str(b.net_weight_kg)} for b in batches),
             *({"type": "rework", "id": c.pk, "case_no": c.case_no, "date": c.opened_on, "status": c.status, "origin": c.origin} for c in cases),
@@ -177,7 +273,11 @@ class ProcessCardViewSet(WorkflowModelViewSet):
     @action(detail=True, methods=["get"], url_path="rework-timeline")
     def rework_timeline(self, request, pk=None):
         card = self.get_object()
-        cases = QualityReworkCase.objects.filter(process_card=card).prefetch_related("attempts").order_by("opened_on", "id")
+        cases = QualityReworkCase.objects.filter(
+            process_card__tracking_id=card.tracking_id
+        ).prefetch_related(
+            "attempts", "inspectors", "secondary_reasons"
+        ).select_related("primary_reason").order_by("opened_on", "id")
         return Response(QualityReworkCaseSerializer(cases, many=True, context={"request": request}).data)
 
 
@@ -337,6 +437,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             "product_specification__mold_model",
         ).prefetch_related(
             "inspectors",
+            "process_card_bindings__process_card__order",
             "lines__process_card__product_specification__mold_model",
             "lines__process_card__order__product_specification__mold_model",
             "lines__order__product_specification__mold_model",
@@ -533,6 +634,26 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
         )
         return queryset.order_by(primary_ordering, "-id")
 
+    @extend_schema(
+        request=ProcessCardBindingRequestSerializer,
+        responses=QualityShipmentBatchSerializer,
+    )
+    @action(detail=True, methods=["post"], url_path="bind-process-cards")
+    def bind_process_cards(self, request, pk=None):
+        payload = ProcessCardBindingRequestSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        batch = self.get_object()
+        try:
+            bind_process_cards_to_batch(
+                batch,
+                payload.validated_data["cards"],
+                created_by=request.user,
+            )
+        except ValueError as exc:
+            raise DRFValidationError({"detail": str(exc)}) from exc
+        batch = self.get_queryset().get(pk=batch.pk)
+        return Response(self.get_serializer(batch).data)
+
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
         with transaction.atomic():
@@ -540,6 +661,24 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             if batch.status == QualityShipmentBatch.Status.VOID:
                 raise DRFValidationError({"status": "A void shipment batch cannot be confirmed."})
             if batch.status == QualityShipmentBatch.Status.CONFIRMED:
+                raw_bindings = request.data.get("process_card_bindings")
+                if raw_bindings is None:
+                    raw_bindings = request.data.get("cards")
+                if raw_bindings:
+                    binding_payload = ProcessCardBindingRequestSerializer(
+                        data={"cards": raw_bindings}
+                    )
+                    binding_payload.is_valid(raise_exception=True)
+                    try:
+                        bind_process_cards_to_batch(
+                            batch,
+                            binding_payload.validated_data["cards"],
+                            created_by=request.user,
+                        )
+                    except ValueError as exc:
+                        raise DRFValidationError(
+                            {"process_card_bindings": str(exc)}
+                        ) from exc
                 return Response(self.get_serializer(batch).data)
             # Confirmation is idempotent.  Mobile clients may retry after a
             # network timeout; a previously confirmed batch must not be
@@ -743,6 +882,35 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 batch.inspectors.add(batch.inspector_id)
             for card_id in by_card:
                 ProcessCard.objects.get(pk=card_id).refresh_shipping_status()
+            # Optional QR scans can be sent with the confirmation request.
+            # Omitted physical units intentionally remain unbound.
+            raw_bindings = request.data.get("process_card_bindings")
+            if raw_bindings is None:
+                raw_bindings = request.data.get("cards")
+            if raw_bindings:
+                binding_payload = ProcessCardBindingRequestSerializer(
+                    data={"cards": raw_bindings}
+                )
+                binding_payload.is_valid(raise_exception=True)
+                try:
+                    bind_process_cards_to_batch(
+                        batch,
+                        binding_payload.validated_data["cards"],
+                        created_by=request.user,
+                    )
+                except ValueError as exc:
+                    raise DRFValidationError({"process_card_bindings": str(exc)}) from exc
+            affected_order_ids = {
+                line.order_id
+                or (line.process_card.order_id if line.process_card_id else None)
+                for line in batch.lines.select_related("process_card").all()
+            }
+            sync_order_status_from_delivery(
+                affected_order_ids,
+                source="SHIPMENT",
+                operator=request.user,
+                reason_prefix=f"确认出货 {batch.shipment_no}。",
+            )
         return Response(self.get_serializer(batch).data)
 
     @staticmethod
@@ -1170,9 +1338,12 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
         "shipment_line__batch",
         "shipment_batch__inspector",
         "responsible_inspector",
+        "primary_reason",
         "created_by",
     ).prefetch_related(
         "attempts",
+        "inspectors",
+        "secondary_reasons",
         "shipment_allocations__shipment_line__order",
         "shipment_batch__inspectors",
         "shipment_batch__lines__order",
@@ -1188,6 +1359,58 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
                 Q(case_no__icontains=q)
                 | Q(reason__icontains=q)
                 | Q(process_card__card_no__icontains=q)
+                | Q(process_card__order__order_no__icontains=q)
+                | Q(process_card__order__item_no__icontains=q)
+                | Q(process_card__product_name_snapshot__icontains=q)
+                | Q(process_card__specification_snapshot__icontains=q)
+                | Q(process_card__material_snapshot__icontains=q)
+                | Q(shipment_line__order__order_no__icontains=q)
+                | Q(shipment_line__order__item_no__icontains=q)
+                | Q(shipment_line__specification_snapshot__icontains=q)
+                | Q(shipment_line__material_snapshot__icontains=q)
+                | Q(shipment_batch__order__order_no__icontains=q)
+                | Q(shipment_batch__order__item_no__icontains=q)
+            )
+        params = self.request.query_params
+        card_no = str(params.get("card_no", "") or "").strip()
+        if card_no:
+            tracking_ids = ProcessCard.objects.filter(
+                card_no__iexact=card_no
+            ).values_list("tracking_id", flat=True)
+            queryset = queryset.filter(process_card__tracking_id__in=tracking_ids)
+        card_suffix = str(params.get("card_suffix", "") or "").strip()
+        if card_suffix:
+            tracking_ids = ProcessCard.objects.filter(
+                card_no__iendswith=card_suffix
+            ).values_list("tracking_id", flat=True)
+            queryset = queryset.filter(process_card__tracking_id__in=tracking_ids)
+        order_no = str(params.get("order_no", "") or "").strip()
+        if order_no:
+            queryset = queryset.filter(
+                Q(process_card__order__order_no__icontains=order_no)
+                | Q(shipment_line__order__order_no__icontains=order_no)
+                | Q(shipment_batch__order__order_no__icontains=order_no)
+            )
+        item_no = str(params.get("item_no", "") or "").strip()
+        if item_no:
+            queryset = queryset.filter(
+                Q(process_card__order__item_no__icontains=item_no)
+                | Q(shipment_line__order__item_no__icontains=item_no)
+                | Q(shipment_batch__order__item_no__icontains=item_no)
+            )
+        specification = str(params.get("specification", "") or "").strip()
+        if specification:
+            queryset = queryset.filter(
+                Q(process_card__specification_snapshot__icontains=specification)
+                | Q(shipment_line__specification_snapshot__icontains=specification)
+                | Q(shipment_batch__specification_snapshot__icontains=specification)
+            )
+        material = str(params.get("material", "") or "").strip()
+        if material:
+            queryset = queryset.filter(
+                Q(process_card__material_snapshot__icontains=material)
+                | Q(shipment_line__material_snapshot__icontains=material)
+                | Q(shipment_batch__material_snapshot__icontains=material)
             )
         origin = str(self.request.query_params.get("origin", "")).strip().upper()
         if origin:
@@ -1199,7 +1422,126 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
             if status not in QualityReworkCase.Status.values:
                 raise DRFValidationError({"status": "无效的返工状态。"})
             queryset = queryset.filter(status=status)
-        return queryset
+        return_round = params.get("return_round")
+        if return_round not in (None, ""):
+            try:
+                return_round = int(return_round)
+            except (TypeError, ValueError) as exc:
+                raise DRFValidationError({"return_round": "退货次数格式无效。"}) from exc
+            if return_round < 1:
+                raise DRFValidationError({"return_round": "退货次数必须大于0。"})
+            queryset = queryset.filter(return_round=return_round)
+        current = str(params.get("current", "") or "").strip().lower()
+        if current in {"1", "true", "yes"}:
+            queryset = queryset.filter(is_current_return=True)
+        elif current in {"0", "false", "no"}:
+            queryset = queryset.filter(is_current_return=False)
+        reason_value = str(params.get("reason", params.get("reason_id", "")) or "").strip()
+        if reason_value:
+            reason_filter = Q(primary_reason__code__iexact=reason_value) | Q(
+                secondary_reasons__code__iexact=reason_value
+            )
+            if reason_value.isdigit():
+                reason_filter |= Q(primary_reason_id=int(reason_value)) | Q(
+                    secondary_reasons__id=int(reason_value)
+                )
+            queryset = queryset.filter(reason_filter)
+        date_from, date_to = _date_range(params)
+        if date_from:
+            queryset = queryset.filter(opened_on__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(opened_on__lte=date_to)
+        return queryset.distinct().order_by(F("opened_on").desc(nulls_last=True), "-id")
+
+    @extend_schema(request=ScannedReturnRequestSerializer, responses=QualityReworkCaseSerializer)
+    @action(detail=False, methods=["post"], url_path="scan-return")
+    def scan_return(self, request):
+        payload = ScannedReturnRequestSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        values = dict(payload.validated_data)
+        card_no = values.pop("card_no")
+        shipment_batch_id = values.pop("shipment_batch_id", None)
+        shipment_unit_no = values.pop("shipment_unit_no", None)
+        order_id = values.pop("order_id", None)
+        try:
+            case = create_scanned_return(
+                card_no=card_no,
+                shipment_batch_id=shipment_batch_id,
+                shipment_unit_no=shipment_unit_no,
+                order_id=order_id,
+                created_by=request.user,
+                **values,
+            )
+        except (ValueError, QualityShipmentBatch.DoesNotExist) as exc:
+            raise DRFValidationError({"detail": str(exc)}) from exc
+        case = self.get_queryset().get(pk=case.pk)
+        return Response(self.get_serializer(case).data, status=201)
+
+    @extend_schema(request=BulkScannedReturnRequestSerializer, responses=QualityReworkCaseSerializer(many=True))
+    @action(detail=False, methods=["post"], url_path="bulk-scan-return")
+    def bulk_scan_return(self, request):
+        payload = BulkScannedReturnRequestSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        common = dict(payload.validated_data)
+        cards = common.pop("cards")
+        created_ids = []
+        try:
+            with transaction.atomic():
+                for card_values in cards:
+                    merged = {**card_values, **common}
+                    code = merged.pop("card_no")
+                    case = create_scanned_return(
+                        card_no=code,
+                        shipment_batch_id=merged.pop("shipment_batch_id", None),
+                        shipment_unit_no=merged.pop("shipment_unit_no", None),
+                        order_id=merged.pop("order_id", None),
+                        created_by=request.user,
+                        **merged,
+                    )
+                    created_ids.append(case.pk)
+        except (ValueError, QualityShipmentBatch.DoesNotExist) as exc:
+            raise DRFValidationError({"detail": str(exc)}) from exc
+        cases = list(self.get_queryset().filter(pk__in=created_ids))
+        cases.sort(key=lambda value: created_ids.index(value.pk))
+        return Response(self.get_serializer(cases, many=True).data, status=201)
+
+    @extend_schema(request=BindExistingReturnRequestSerializer, responses=QualityReworkCaseSerializer)
+    @action(detail=True, methods=["post"], url_path="bind-card")
+    def bind_card(self, request, pk=None):
+        payload = BindExistingReturnRequestSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        try:
+            case = bind_existing_return_to_card(
+                self.get_object(),
+                payload.validated_data["card_no"],
+                order_id=payload.validated_data.get("order_id"),
+                created_by=request.user,
+            )
+        except ValueError as exc:
+            raise DRFValidationError({"detail": str(exc)}) from exc
+        case = self.get_queryset().get(pk=case.pk)
+        return Response(self.get_serializer(case).data)
+
+    @extend_schema(request=ReturnReshipRequestSerializer, responses=QualityShipmentBatchSerializer)
+    @action(detail=True, methods=["post"], url_path="reship")
+    def reship(self, request, pk=None):
+        payload = ReturnReshipRequestSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        try:
+            batch = reship_return_case(
+                self.get_object(),
+                created_by=request.user,
+                **payload.validated_data,
+            )
+        except ValueError as exc:
+            raise DRFValidationError({"detail": str(exc)}) from exc
+        batch = QualityShipmentBatch.objects.select_related(
+            "order", "product_specification", "inspector", "created_by"
+        ).prefetch_related("inspectors", "lines", "process_card_bindings").get(pk=batch.pk)
+        return Response(
+            QualityShipmentBatchSerializer(batch, context={"request": request}).data,
+            status=201,
+        )
 
     @extend_schema(responses=QualityReturnableBatchPageSerializer)
     @action(detail=False, methods=["get"], url_path="returnable-batches")

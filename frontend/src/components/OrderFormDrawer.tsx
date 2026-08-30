@@ -1,4 +1,4 @@
-import { Alert, App, Button, Col, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Row, Select, Space, Tag } from 'antd'
+import { Alert, App, Button, Col, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Row, Select, Space, Tag, Timeline, Typography } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import utc from 'dayjs/plugin/utc'
@@ -28,6 +28,12 @@ const PROCESS_CARD_META: Record<OrderProcessCardStatus, { text: string; color: s
   RECEIVED: { text: '已收到', color: 'success' },
 }
 
+const ORDER_STATUS_LABEL: Record<string, string> = {
+  OPEN: '进行中',
+  COMPLETED: '已完成',
+  CANCELLED: '已取消',
+}
+
 function exactValue(value: unknown, suffix = '') {
   return value === null || value === undefined || value === '' ? '未登记' : `${String(value)}${suffix}`
 }
@@ -41,10 +47,16 @@ export function OrderFormDrawer({ open, order, onClose }: Props) {
   const queryClient = useQueryClient()
   const { message } = App.useApp()
   const selectedSpecificationId = Form.useWatch<number>('product_specification_id', form)
+  const selectedStatus = Form.useWatch<string>('status', form)
   const specificationsQuery = useQuery({
     queryKey: ['product-specifications', 'order-options'],
     queryFn: async () => toList(await productSpecificationApi.list({ page_size: 1000 })),
     enabled: open,
+  })
+  const statusHistoryQuery = useQuery({
+    queryKey: ['orders', order?.id, 'status-history'],
+    queryFn: () => orderApi.statusHistory(order!.id),
+    enabled: open && Boolean(order?.id),
   })
 
   useEffect(() => {
@@ -68,6 +80,9 @@ export function OrderFormDrawer({ open, order, onClose }: Props) {
       const productionChoice = values.production_required_choice
       const editableValues = { ...values }
       delete editableValues.production_required_choice
+      delete editableValues.standard_card_quantity
+      delete editableValues.standard_card_count
+      delete editableValues.tail_card_quantity
       const body = {
         ...editableValues,
         order_date: values.order_date ? (values.order_date as Dayjs).format('YYYY-MM-DD') : null,
@@ -105,6 +120,25 @@ export function OrderFormDrawer({ open, order, onClose }: Props) {
     || (order && order.product_specification?.id === selectedSpecificationId ? order.product_specification : undefined)
 
   const submit = async () => mutation.mutate(await form.validateFields())
+
+  const applyProcessCardComposition = () => {
+    const standardQuantity = Number(form.getFieldValue('standard_card_quantity') || 0)
+    const standardCount = Number(form.getFieldValue('standard_card_count') || 0)
+    const tailQuantity = Number(form.getFieldValue('tail_card_quantity') || 0)
+    if (standardQuantity <= 0 || standardCount <= 0) {
+      message.warning('请先填写标准卡每张数量和张数')
+      return
+    }
+    const totalCount = standardCount + (tailQuantity > 0 ? 1 : 0)
+    const coveredQuantity = standardQuantity * standardCount + tailQuantity
+    const formula = `${standardQuantity}×${standardCount}张${tailQuantity > 0 ? `＋${tailQuantity}×1张` : ''}＝${coveredQuantity}件`
+    form.setFieldsValue({
+      process_card_count: totalCount,
+      process_card_covered_quantity: coveredQuantity,
+      process_card_text: formula,
+    })
+    message.success(`已计算：${totalCount}张，覆盖${coveredQuantity}件`)
+  }
 
   return (
     <Drawer
@@ -147,6 +181,7 @@ export function OrderFormDrawer({ open, order, onClose }: Props) {
           <Col xs={24} sm={12}><Form.Item name="due_date" label="交付日期"><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="status" label="订单状态" rules={[{ required: true }]}><Select options={[{ value: 'OPEN', label: '进行中' }, { value: 'COMPLETED', label: '已完成' }, { value: 'CANCELLED', label: '已取消' }]} /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="production_required_choice" label="是否需要生产"><Select options={[{ value: 'UNKNOWN', label: '未登记' }, { value: 'YES', label: '需要生产' }, { value: 'NO', label: '无需生产' }]} /></Form.Item></Col>
+          {order && selectedStatus && selectedStatus !== order.status && <Col xs={24}><Form.Item name="status_change_reason" label="状态变更原因" rules={[{ required: true, whitespace: true, message: '请填写完成、重新打开或取消的原因' }]}><Input.TextArea rows={2} placeholder="例如：历史订单已核对完成；客户退货后重新打开；客户取消订单" /></Form.Item></Col>}
         </Row>
 
         <div className="business-form-section">胶料与流程卡</div>
@@ -158,6 +193,16 @@ export function OrderFormDrawer({ open, order, onClose }: Props) {
           <Col xs={12}><Form.Item name="process_card_count" label="流程卡张数"><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
           <Col xs={12}><Form.Item name="process_card_covered_quantity" label="流程卡覆盖订单数量"><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
         </Row>
+        <div className="order-process-card-calculator">
+          <Typography.Text strong>流程卡快捷登记</Typography.Text>
+          <Typography.Text type="secondary">填写“每张数量×张数”和尾数卡，系统同时计算收到张数与覆盖数量；卡号在实际出货扫码时再绑定。</Typography.Text>
+          <Row gutter={10}>
+            <Col xs={12} sm={8}><Form.Item name="standard_card_quantity" label="标准卡每张数量"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
+            <Col xs={12} sm={8}><Form.Item name="standard_card_count" label="标准卡张数"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
+            <Col xs={24} sm={8}><Form.Item name="tail_card_quantity" label="尾数卡数量（没有可留空）"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
+          </Row>
+          <Button block onClick={applyProcessCardComposition}>计算并写入流程卡登记</Button>
+        </div>
 
         <div className="business-form-section">生产与出货</div>
         <Row gutter={14}>
@@ -167,6 +212,12 @@ export function OrderFormDrawer({ open, order, onClose }: Props) {
         </Row>
         <Form.Item name="legacy_shipment_text" label="历史出货 / 流程卡说明（保留）"><Input.TextArea rows={2} maxLength={1000} showCount /></Form.Item>
         <Form.Item name="notes" label="备注"><Input.TextArea rows={4} maxLength={2000} showCount /></Form.Item>
+        {order && (statusHistoryQuery.data?.length || 0) > 0 && <>
+          <div className="business-form-section">订单状态变更记录</div>
+          <Timeline items={(statusHistoryQuery.data || []).map((item) => ({
+            children: <span><b>{ORDER_STATUS_LABEL[item.from_status] || item.from_status || '新建'} → {ORDER_STATUS_LABEL[item.to_status] || item.to_status}</b><br />{item.reason}<br /><Typography.Text type="secondary">{item.source_display || item.source} · {item.operator_name || '系统'} · {formattedTimestamp(item.created_at)}</Typography.Text></span>,
+          }))} />
+        </>}
       </Form>
     </Drawer>
   )

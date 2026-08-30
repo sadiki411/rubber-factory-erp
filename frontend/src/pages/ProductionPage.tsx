@@ -10,7 +10,8 @@ import { MountedMoldActionsDrawer } from '../components/MountedMoldActionsDrawer
 import { OperationDrawer, type MoldAction } from '../components/OperationDrawer'
 import { PageTitle } from '../components/PageTitle'
 import { ProductionBoard } from '../components/ProductionBoard'
-import { ProductionImportDrawer } from '../components/ProductionImportDrawer'
+import { ProductionLedgerImportDrawer } from '../components/ProductionLedgerImportDrawer'
+import { ProductionLedgerBoard } from '../components/ProductionLedgerBoard'
 import { ProductionLogDrawer } from '../components/ProductionLogDrawer'
 import { ProductionPlanBoard } from '../components/ProductionPlanBoard'
 import { ProductionRunDrawer } from '../components/ProductionRunDrawer'
@@ -23,6 +24,8 @@ import { moldModelOf } from '../types'
 const STATUS_META: Record<ProductionRunStatus, { text: string; color: string }> = {
   PLANNED: { text: '待上机', color: 'blue' },
   RUNNING: { text: '生产中', color: 'processing' },
+  PAUSED_ON_MACHINE: { text: '暂停·模具在机', color: 'warning' },
+  PAUSED_UNLOADED: { text: '暂停·已下机', color: 'warning' },
   COMPLETED: { text: '已完成', color: 'success' },
   CANCELLED: { text: '已取消', color: 'default' },
 }
@@ -144,7 +147,7 @@ export function ProductionPage() {
   }
 
   const columns: TableColumnsType<ProductionRun> = [
-    { title: '机台', key: 'station', fixed: 'left', width: 105, render: (_, record) => <strong>{productionStationGroupLabel(record.station.group)}-{productionStationNumber(record.station)}号</strong> },
+    { title: '机台', key: 'station', fixed: 'left', width: 105, render: (_, record) => <strong>{record.station ? `${productionStationGroupLabel(record.station.group)}-${productionStationNumber(record.station)}号` : '待补录'}</strong> },
     { title: '订单编号', dataIndex: 'order_no', fixed: 'left', width: 185, render: (value, record) => <Button type="link" className="table-primary-link" onClick={() => void showRun(record)}>{value}</Button> },
     { title: '规格 / 材质', key: 'product', width: 210, render: (_, record) => <span>{record.specification}<br /><Typography.Text type="secondary">{record.material}</Typography.Text>{record.mold && <><br /><Typography.Text type="secondary">模具 {record.mold.model_code} · {record.mold.asset_code}</Typography.Text></>}</span> },
     { title: '状态', dataIndex: 'status', width: 95, render: statusTag },
@@ -174,7 +177,7 @@ export function ProductionPage() {
       <PageTitle
         title="前端生产管理"
         description="按当前启用机台展示实时生产、换模提醒和待上机计划；可跳过订单直接试模，也可原子完成生产并下机归位。"
-        extra={<Space wrap><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入统计表</Button><Button icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'PLANNED' })}>新增待上机计划</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'RUNNING' })}>登记已上机生产</Button></Space>}
+        extra={<Space wrap><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>补录 / 导入手工账</Button><Button icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'PLANNED' })}>新增待上机计划</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'RUNNING' })}>登记已上机生产</Button></Space>}
       />
 
       {boardQuery.isError && <Alert type="error" showIcon title="实时机台看板读取失败" description={(boardQuery.error as Error).message} />}
@@ -198,6 +201,7 @@ export function ProductionPage() {
 
       <ProductionBoard board={boardQuery.data} loading={boardQuery.isLoading} onStationClick={openStation} />
       <ProductionPlanBoard board={boardQuery.data} loading={boardQuery.isLoading} onPlanClick={(station) => station.run && void showRun(station.run)} />
+      <ProductionLedgerBoard />
 
       <section className="production-record-section">
         <div className="section-heading">
@@ -212,6 +216,8 @@ export function ProductionPage() {
               { value: '', label: '全部状态' },
               { value: 'PLANNED', label: '待上机' },
               { value: 'RUNNING', label: '生产中' },
+              { value: 'PAUSED_ON_MACHINE', label: '暂停（模具在机）' },
+              { value: 'PAUSED_UNLOADED', label: '暂停（已下机）' },
               { value: 'COMPLETED', label: '已完成' },
               { value: 'CANCELLED', label: '已取消' },
             ]} />
@@ -235,7 +241,7 @@ export function ProductionPage() {
                 }}
               >
                 <div className="record-card-heading"><Typography.Title level={4}>{record.order_no}</Typography.Title>{statusTag(record.status)}</div>
-                <Typography.Text>{productionStationGroupLabel(record.station.group)}-{productionStationNumber(record.station)}号机台 · {record.specification} · {record.material}</Typography.Text>
+                <Typography.Text>{record.station ? `${productionStationGroupLabel(record.station.group)}-${productionStationNumber(record.station)}号机台` : '机台待补录'} · {record.specification} · {record.material}</Typography.Text>
                 {record.mold && <Typography.Text type="secondary">模具 {record.mold.model_code} · {record.mold.asset_code}</Typography.Text>}
                 <div className="mobile-production-times"><span>上模 {formatProductionDate(record.loaded_at, 'MM-DD HH:mm')}</span><span>换模 {formatProductionDate(record.expected_change_at, 'MM-DD HH:mm')}</span></div>
                 <Progress percent={Math.round(Number(record.progress_percent || 0))} size="small" />
@@ -326,7 +332,7 @@ export function ProductionPage() {
         onClose={() => setCompletePutawayRun(undefined)}
       />
       <OperationDrawer open={!!moldOperation} mold={moldOperation?.mold} action={moldOperation?.action} onClose={() => setMoldOperation(undefined)} />
-      <ProductionImportDrawer open={importOpen} onClose={() => setImportOpen(false)} />
+      <ProductionLedgerImportDrawer open={importOpen} onClose={() => setImportOpen(false)} />
     </div>
   )
 }

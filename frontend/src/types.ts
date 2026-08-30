@@ -126,6 +126,7 @@ export interface MoldAsset {
   notes?: string
   can_stack?: boolean
   allows_stacking?: boolean
+  default_cavities?: number | null
   created_at?: string
   updated_at?: string
 }
@@ -234,6 +235,7 @@ export interface Order {
   mold_size?: string
   status: OrderStatus
   status_display?: string
+  status_change_reason?: string
   product_specification?: ProductSpecification | null
   /** Latest finished-piece unit weight returned by shipment candidates. */
   unit_weight_g?: number | string | null
@@ -252,6 +254,10 @@ export interface Order {
   process_card_status?: OrderProcessCardStatus
   process_card_text?: string
   production_quantity?: string
+  produced_quantity?: number
+  production_remaining_quantity?: number
+  production_target_reached?: boolean
+  production_run_count?: number
   shipment_date?: string
   shipped_quantity?: string
   weighted_shipped_quantity?: number
@@ -267,6 +273,17 @@ export interface Order {
   created_by_name?: string
   created_at?: string
   updated_at?: string
+}
+
+export interface OrderStatusChange {
+  id: number
+  from_status: OrderStatus | ''
+  to_status: OrderStatus
+  source: 'MANUAL' | 'SHIPMENT' | 'CUSTOMER_RETURN' | 'IMPORT' | 'SYSTEM' | string
+  source_display?: string
+  reason: string
+  operator_name?: string
+  created_at: string
 }
 
 export type QualityOrder = Order
@@ -388,7 +405,7 @@ export interface RackConfigInput {
   default_stacking_enabled: boolean
 }
 
-export type ProductionRunStatus = 'PLANNED' | 'RUNNING' | 'COMPLETED' | 'CANCELLED'
+export type ProductionRunStatus = 'PLANNED' | 'RUNNING' | 'PAUSED_ON_MACHINE' | 'PAUSED_UNLOADED' | 'COMPLETED' | 'CANCELLED'
 export type ProductionReminderStatus = 'IDLE' | 'MOUNTED' | 'PLANNED' | 'NORMAL' | 'DUE_SOON' | 'OVERDUE'
 export type ProductionStationGroup = string
 export type ProductionStationPosition = number
@@ -404,12 +421,46 @@ export interface ProductionStation {
 
 export interface ProductionDailyLog {
   id: number
-  date: string
+  date: string | null
   operator: string
+  operator_employee?: ProductionEmployee | null
+  operator_employee_id?: number | null
+  operator_pending?: boolean
+  assistant_operators?: ProductionEmployee[]
+  assistant_operator_ids?: number[]
+  shift?: 'DAY' | 'NIGHT' | ''
+  sequence_no?: number
+  counter_segment?: number
+  cumulative_mold_count?: number | null
   produced_mold_count: number
+  cavities_snapshot?: number
+  defective_quantity?: number
+  theoretical_quantity?: number
+  qualified_quantity?: number
+  is_cancelled?: boolean
   notes?: string
   created_at?: string
   updated_at?: string
+}
+
+export interface ProductionEmployee {
+  id: number
+  name: string
+  is_active: boolean
+  notes?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface ProductionRecordAudit {
+  id: number
+  daily_log?: number | null
+  action: string
+  before?: Record<string, unknown>
+  after?: Record<string, unknown>
+  reason?: string
+  changed_by_name?: string
+  changed_at?: string
 }
 
 export interface ProductionMold {
@@ -418,6 +469,7 @@ export interface ProductionMold {
   model_code: string
   product_name: string
   status: MoldStatus
+  default_cavities?: number | null
 }
 
 export interface ProductionSettlementInput {
@@ -432,8 +484,8 @@ export interface ProductionSettlementInput {
 
 export interface ProductionRun {
   id: number
-  station: ProductionStation
-  station_id?: number
+  station?: ProductionStation | null
+  station_id?: number | null
   order?: Order | null
   order_id?: number | null
   product_specification?: ProductSpecification | null
@@ -446,6 +498,8 @@ export interface ProductionRun {
   order_quantity: number
   cavities: number
   estimated_defect_rate: number | string
+  estimated_defect_mode?: 'RATE' | 'QUANTITY'
+  estimated_defect_quantity?: number
   planned_mold_count: number
   compound_size?: string
   strip_weight_kg?: number | string | null
@@ -480,6 +534,23 @@ export interface ProductionRun {
   actual_hours?: number | string | null
   progress_percent?: number | string
   remaining_mold_count?: number
+  target_reached?: boolean
+  theoretical_quantity?: number
+  recorded_defective_quantity?: number
+  qualified_production_quantity?: number
+  overproduction_quantity?: number
+  order_production_quantity?: number
+  order_remaining_quantity?: number
+  order_overproduction_quantity?: number
+  order_production_completed?: boolean
+  is_ledger_only?: boolean
+  segment_no?: number
+  counter_segment?: number
+  paused_at?: string | null
+  pause_note?: string
+  continuation_of?: number | null
+  order_item_no?: string
+  order_product_name?: string
   revenue?: number | string
   total_cost?: number | string
   profit?: number | string
@@ -718,7 +789,25 @@ export interface ReturnRework {
  * the quality page falls back to the existing order/shipment endpoints until
  * the backend migration is installed.
  */
-export type QualityProcessCardStatus = 'OPEN' | 'PARTIAL_SHIPPED' | 'SHIPPED' | 'CANCELLED' | 'READY' | 'PARTIAL' | 'REWORK'
+export type QualityProcessCardStatus = 'OPEN' | 'PARTIAL_SHIPPED' | 'SHIPPED' | 'CANCELLED' | 'READY' | 'PARTIAL' | 'REWORK' | 'REPLACED'
+
+export interface QualityProcessCardBinding {
+  id?: number | string
+  process_card_id?: number | string
+  shipment_batch_id: number | string
+  shipment_line_id?: number | string | null
+  shipment_unit_no: number
+  order_id?: number | null
+  shipment_no?: string
+  shipment_date?: string | null
+  order_no?: string
+  item_no?: string
+  product_name?: string
+  specification?: string
+  material?: string
+  piece_quantity?: number | null
+  net_weight_kg?: number | string | null
+}
 
 export interface QualityUnitWeight {
   id: number | string
@@ -770,6 +859,19 @@ export interface QualityProcessCard {
   original_image?: string | null
   backfill_reason?: string
   reprint_count?: number
+  replaced_by_id?: number | string | null
+  replaced_by?: QualityProcessCard | null
+  replaces_id?: number | string | null
+  replaces?: QualityProcessCard | null
+  is_active_card?: boolean
+  binding?: QualityProcessCardBinding | null
+  unit_binding?: QualityProcessCardBinding | null
+  current_return?: QualityReworkCase | null
+  tracking_id?: string
+  replaces_card_no?: string | null
+  replaced_by_card_no?: string | null
+  active_card_id?: number | string | null
+  active_card_no?: string | null
   unit_weight_config_id?: string | number | null
   sample_count_snapshot?: number | null
   sample_total_weight_g_snapshot?: number | string | null
@@ -839,6 +941,12 @@ export interface QualityShipmentBatchInput {
   client_key?: string
   notes?: string
   confirm_warnings?: boolean
+  /** Optional card-to-physical-batch links; unscanned repeated batches remain valid. */
+  process_card_bindings?: Array<{
+    card_no: string
+    shipment_unit_no: number
+    order_id?: number | null
+  }>
   lines: QualityShipmentBatchLineInput[]
 }
 
@@ -1014,6 +1122,7 @@ export interface QualityReworkSource {
   order_no?: string
   item_no?: string
   product_name?: string
+  customer?: string
   specification?: string
   material?: string
   single_batch_net_weight_kg: number | string
@@ -1059,7 +1168,15 @@ export interface QualityShipmentLedgerRow {
 }
 
 export type QualityReworkOrigin = 'INTERNAL' | 'CUSTOMER_RETURN'
-export type QualityReworkCaseStatus = 'OPEN' | 'PROCESSING' | 'WAITING_REINSPECTION' | 'COMPLETED' | 'SCRAPPED' | 'CANCELLED'
+export type QualityReworkCaseStatus = 'OPEN' | 'PROCESSING' | 'WAITING_REINSPECTION' | 'COMPLETED' | 'WAITING_REWORK' | 'RESHIPPED' | 'SCRAPPED' | 'CANCELLED'
+
+export interface QualityReturnReason {
+  id: number | string
+  code?: string
+  name: string
+  label?: string
+  is_active?: boolean
+}
 
 export interface QualityReworkCase {
   id: number | string
@@ -1069,19 +1186,55 @@ export interface QualityReworkCase {
   shipment_batch_id?: number | string | null
   shipment_line_id?: number | string | null
   shipment_unit_no?: number | null
-  opened_on: string
+  opened_on: string | null
   backfill_reason?: string
   responsible_inspector_id?: number | null
+  inspector_ids?: number[]
+  inspectors?: QualityEmployeeSummary[]
   reason_category: ReturnReasonCategory
   reason_category_display?: string
   reason?: string
   affected_quantity?: number | null
   affected_weight_kg?: number | string | null
   status: QualityReworkCaseStatus
+  return_round?: number | null
+  return_label?: string
+  current?: boolean
+  is_current_return?: boolean
+  date_is_approximate?: boolean
+  primary_reason_id?: number | string | null
+  primary_reason?: QualityReturnReason | null
+  primary_reason_detail?: QualityReturnReason | null
+  secondary_reason_ids?: Array<number | string>
+  secondary_reasons?: QualityReturnReason[]
+  secondary_reason_details?: QualityReturnReason[]
+  responsible_inspectors?: QualityEmployeeSummary[]
+  process_card_no?: string | null
+  active_process_card_no?: string | null
+  binding_pending?: boolean
+  process_card?: QualityProcessCard | null
+  binding?: QualityProcessCardBinding | null
+  reshipment?: QualityShipmentBatch | null
   attempt_count?: number
   notes?: string
   attempts?: QualityReworkAttempt[]
   source?: QualityReworkSource | null
+}
+
+export interface QualityProcessCardScanResult {
+  code?: string
+  card_no?: string
+  found?: boolean
+  binding_required?: boolean
+  was_replaced?: boolean
+  replacement_notice?: string
+  active_card?: QualityProcessCard | null
+  scanned_card?: QualityProcessCard | null
+  replacements?: QualityProcessCard[]
+  replacement_chain?: QualityProcessCard[]
+  binding?: QualityProcessCardBinding | null
+  current_return?: QualityReworkCase | null
+  timeline?: QualityReworkCase[]
 }
 
 export interface QualityReworkAttempt {

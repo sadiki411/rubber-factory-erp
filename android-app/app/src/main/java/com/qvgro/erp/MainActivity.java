@@ -6,6 +6,7 @@ import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ResolveInfo;
+import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -18,6 +19,7 @@ import android.provider.MediaStore;
 import android.view.View;
 import android.webkit.CookieManager;
 import android.webkit.MimeTypeMap;
+import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
@@ -32,6 +34,7 @@ import androidx.activity.result.ActivityResult;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.content.FileProvider;
+import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
@@ -67,6 +70,12 @@ public final class MainActivity extends ComponentActivity {
             }
         );
 
+    private final ActivityResultLauncher<String> cameraPermissionLauncher =
+        registerForActivityResult(
+            new ActivityResultContracts.RequestPermission(),
+            this::handleCameraPermissionResult
+        );
+
     private View root;
     private WebView webView;
     private ProgressBar progressBar;
@@ -75,6 +84,7 @@ public final class MainActivity extends ComponentActivity {
     private ValueCallback<Uri[]> pendingFileCallback;
     private Uri capturedImageUri;
     private File capturedImageFile;
+    private PermissionRequest pendingCameraPermissionRequest;
     private boolean rendererGone;
     private long lastBackPressedAt;
 
@@ -207,7 +217,60 @@ public final class MainActivity extends ComponentActivity {
             ) {
                 return launchFileChooser(callback, params);
             }
+
+            @Override
+            public void onWebPermissionRequest(PermissionRequest request) {
+                handleWebPermissionRequest(request);
+            }
+
+            @Override
+            public void onWebPermissionRequestCanceled(PermissionRequest request) {
+                if (pendingCameraPermissionRequest == request) {
+                    pendingCameraPermissionRequest = null;
+                }
+            }
         }));
+    }
+
+    private void handleWebPermissionRequest(PermissionRequest request) {
+        if (request == null
+            || !WebPermissionPolicy.canGrantCamera(
+                request.getOrigin() == null ? null : request.getOrigin().toString(),
+                request.getResources()
+            )) {
+            if (request != null) {
+                request.deny();
+            }
+            return;
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED) {
+            request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+            return;
+        }
+        if (pendingCameraPermissionRequest != null && pendingCameraPermissionRequest != request) {
+            pendingCameraPermissionRequest.deny();
+        }
+        pendingCameraPermissionRequest = request;
+        cameraPermissionLauncher.launch(Manifest.permission.CAMERA);
+    }
+
+    private void handleCameraPermissionResult(Boolean granted) {
+        PermissionRequest request = pendingCameraPermissionRequest;
+        pendingCameraPermissionRequest = null;
+        if (request == null) {
+            return;
+        }
+        if (Boolean.TRUE.equals(granted)) {
+            request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+        } else {
+            request.deny();
+            Toast.makeText(
+                this,
+                "未授予相机权限，仍可在扫码页手动输入流程卡单号。",
+                Toast.LENGTH_LONG
+            ).show();
+        }
     }
 
     private void loadStartPage() {
@@ -517,6 +580,10 @@ public final class MainActivity extends ComponentActivity {
 
     @Override
     protected void onDestroy() {
+        if (pendingCameraPermissionRequest != null) {
+            pendingCameraPermissionRequest.deny();
+            pendingCameraPermissionRequest = null;
+        }
         if (pendingFileCallback != null) {
             pendingFileCallback.onReceiveValue(null);
             pendingFileCallback = null;

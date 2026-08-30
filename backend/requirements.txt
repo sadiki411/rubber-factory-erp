@@ -11,6 +11,7 @@ jsonschema-specifications==2025.9.1
 openpyxl==3.1.5
 packaging==26.2
 Pillow==11.3.0
+pytesseract==0.3.13
 PyYAML==6.0.3
 referencing==0.37.0
 rpds-py==2026.6.3

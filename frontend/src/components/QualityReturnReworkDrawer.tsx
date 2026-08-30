@@ -59,6 +59,8 @@ const RETURN_REASON_CATEGORY_LABELS = Object.fromEntries(
 
 function reworkStatusText(status?: string) {
   return ({
+    WAITING_REWORK: '待返工',
+    RESHIPPED: '已重新出货',
     OPEN: '待返工',
     PROCESSING: '返工中',
     WAITING_REINSPECTION: '待复检',
@@ -300,6 +302,14 @@ export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttemp
   const currentItem = localItem?.id === item?.id ? localItem : item
   const source = currentItem?.source
   const attempts = currentItem?.attempts || []
+  const processCardId = currentItem?.process_card?.id || currentItem?.process_card_id
+  const cardTimelineQuery = useQuery({
+    queryKey: ['quality', 'process-card-timeline', processCardId],
+    queryFn: () => qualityWorkflowApi.listReworkTimeline(processCardId as string | number),
+    enabled: open && processCardId != null,
+    retry: false,
+  })
+  const cardTimeline = cardTimelineQuery.data || []
   const openedOn = Form.useWatch('opened_on', form) as Dayjs | undefined
   const historical = Boolean(openedOn?.isValid() && openedOn.startOf('day').isBefore(dayjs().startOf('day')))
   const active = Boolean(currentItem && !['CANCELLED', 'SCRAPPED'].includes(currentItem.status))
@@ -373,18 +383,19 @@ export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttemp
       {currentItem?.origin === 'CUSTOMER_RETURN' && active && <Popconfirm title="确认取消这条误登记吗？" description="记录会保留审计历史，但原物理批号将释放并可重新登记。" okText="确认取消" cancelText="返回" onConfirm={() => void cancelCase()}><Button danger loading={cancelling}>取消误登记</Button></Popconfirm>}
       <Button onClick={closeDrawer}>关闭</Button>
       {currentItem && editable && <Button icon={<EditOutlined />} onClick={startEditing}>修改退货信息</Button>}
-      {currentItem?.origin === 'CUSTOMER_RETURN' && active && <Button type="primary" onClick={() => { closeDrawer(); onAddAttempt(currentItem) }}>登记下一轮返工</Button>}
+      {currentItem?.return_round == null && currentItem?.origin === 'CUSTOMER_RETURN' && active && <Button type="primary" onClick={() => { closeDrawer(); onAddAttempt(currentItem) }}>登记下一轮返工</Button>}
     </Space>
 
   return <Drawer open={open} onClose={closeDrawer} width={620} className="quality-return-rework-drawer" afterOpenChange={(visible) => { if (visible) { setLocalItem(undefined); setEditing(false) } }} title={currentItem ? `退货返工记录 · ${currentItem.case_no}` : '退货返工记录'} footer={footer}>
     {currentItem && <>
       <Card className="quality-return-detail-summary" size="small">
-        <div className="quality-return-detail-heading"><div><Typography.Text type="secondary">订单 / 项次</Typography.Text><strong>{source ? `${source.order_no || '未关联订单'}${source.item_no ? ` / ${source.item_no}` : ''}` : `内部返工 · 流程卡 #${currentItem.process_card_id || '-'}`}</strong></div><Tag color={currentItem.status === 'COMPLETED' ? 'success' : currentItem.status === 'CANCELLED' || currentItem.status === 'SCRAPPED' ? 'default' : 'warning'}>{reworkStatusText(currentItem.status)}</Tag></div>
+        <div className="quality-return-detail-heading"><div><Tag color="orange">{currentItem.return_label || (currentItem.return_round ? `第 ${currentItem.return_round} 次退货返工` : '退货返工记录')}</Tag><Typography.Text type="secondary">订单 / 项次</Typography.Text><strong>{source ? `${source.order_no || '未关联订单'}${source.item_no ? ` / ${source.item_no}` : ''}` : `内部返工 · 流程卡 #${currentItem.process_card_id || '-'}`}</strong></div><Tag color={currentItem.status === 'RESHIPPED' || currentItem.status === 'COMPLETED' ? 'success' : currentItem.status === 'CANCELLED' || currentItem.status === 'SCRAPPED' ? 'default' : 'warning'}>{reworkStatusText(currentItem.status)}</Tag></div>
         <div className="quality-return-detail-product"><Typography.Text type="secondary">产品</Typography.Text><strong>{source?.product_name || '未填写产品'}</strong></div>
         <div className="quality-return-detail-grid">
           <span><small>规格</small><b>{source?.specification || '-'}</b></span>
           <span><small>材质</small><b>{source?.material || '-'}</b></span>
           <span><small>原出货单</small><b>{source?.shipment_no || '-'}</b></span>
+          <span><small>流程卡</small><b>{currentItem.active_process_card_no || currentItem.process_card_no || currentItem.process_card?.card_no || source?.lines?.find((line) => line.card_no)?.card_no || '待绑定'}</b></span>
           <span><small>退回物理批号</small><b>{source ? `第 ${source.shipment_unit_no || currentItem.shipment_unit_no || '-'} / ${source.total_batches || '-'} 批` : '-'}</b></span>
           <span><small>整批数量</small><b>{source ? `${qualityNumber(source.pieces_per_batch)} 件` : `${qualityNumber(currentItem.affected_quantity)} 件`}</b></span>
           <span><small>整批净重</small><b>{source ? `${qualityNumber(source.single_batch_net_weight_kg, 3)} kg` : `${qualityNumber(currentItem.affected_weight_kg, 3)} kg`}</b></span>
@@ -409,16 +420,24 @@ export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttemp
           <Descriptions.Item label="出货日期">{formatQualityDate(source?.shipment_date)}</Descriptions.Item>
           <Descriptions.Item label="原责任品检员">{sourceInspectors(source)}</Descriptions.Item>
           <Descriptions.Item label="退货登记日期">{formatQualityDate(currentItem.opened_on)}</Descriptions.Item>
-          <Descriptions.Item label="原因分类"><Tag>{currentItem.reason_category_display || RETURN_REASON_CATEGORY_LABELS[currentItem.reason_category] || currentItem.reason_category || '其他'}</Tag></Descriptions.Item>
+          <Descriptions.Item label="主要原因"><Tag>{currentItem.primary_reason_detail?.name || currentItem.primary_reason?.name || currentItem.reason_category_display || RETURN_REASON_CATEGORY_LABELS[currentItem.reason_category] || currentItem.reason_category || '其他'}</Tag></Descriptions.Item>
+          <Descriptions.Item label="次要问题">{(currentItem.secondary_reason_details || currentItem.secondary_reasons)?.length ? (currentItem.secondary_reason_details || currentItem.secondary_reasons || []).map((reason) => <Tag key={String(reason.id)}>{reason.name}</Tag>) : '-'}</Descriptions.Item>
           <Descriptions.Item label="退货原因">{currentItem.reason || '未填写'}</Descriptions.Item>
           <Descriptions.Item label="备注">{currentItem.notes || '-'}</Descriptions.Item>
         </Descriptions>
-        <Typography.Title level={5} style={{ marginTop: 20 }}>返工轮次</Typography.Title>
+        {processCardId != null && <><Typography.Title level={5} style={{ marginTop: 20 }}>同一流程卡完整退货时间线</Typography.Title>
+          {cardTimelineQuery.isLoading ? <Typography.Text type="secondary">正在读取第1次至当前的全部记录…</Typography.Text> : cardTimeline.length ? <Timeline items={cardTimeline.map((record, index) => ({
+            color: record.status === 'RESHIPPED' || record.status === 'COMPLETED' ? 'green' : record.status === 'SCRAPPED' ? 'red' : 'orange',
+            label: record.return_label || `第 ${record.return_round || index + 1} 次`,
+            children: <Card size="small"><Space wrap><strong>{formatQualityDate(record.opened_on)}</strong><Tag>{reworkStatusText(record.status)}</Tag></Space><div>{record.reason || record.primary_reason_detail?.name || record.primary_reason?.name || '未填写退货原因'}</div>{record.status === 'RESHIPPED' && <Typography.Text type="secondary">返工完成并已重新出货</Typography.Text>}</Card>,
+          }))} /> : <Empty description="暂未读取到流程卡历史" />}
+        </>}
+        {processCardId == null && <><Typography.Title level={5} style={{ marginTop: 20 }}>旧版返工轮次</Typography.Title>
         {attempts.length ? <Timeline items={attempts.map((attempt, index) => ({
           color: attempt.status === 'COMPLETED' ? 'green' : attempt.status === 'SCRAPPED' ? 'red' : 'blue',
           label: `R${attempt.attempt_no || index + 1}`,
           children: <Card size="small"><Space wrap><strong>{formatQualityDate(attempt.attempt_date)}</strong><Tag>{reworkStatusText(attempt.status)}</Tag></Space><div>整批投入：{qualityNumber(attempt.input_quantity)}件 / {qualityNumber(attempt.input_weight_kg, 3)}kg</div><Typography.Text type="secondary">{attempt.notes || '未填写说明'}</Typography.Text></Card>,
-        }))} /> : <Empty description="尚未登记返工轮次，可直接登记 R1" />}
+        }))} /> : <Empty description="尚未登记返工轮次，可直接登记 R1" />}</>}
       </>}
     </>}
   </Drawer>

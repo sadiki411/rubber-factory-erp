@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TZ=Asia/Shanghai
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gosu tzdata \
+    && apt-get install -y --no-install-recommends gosu tzdata tesseract-ocr tesseract-ocr-chi-sim \
     && groupadd --gid 10001 erp \
     && useradd --uid 10001 --gid erp --create-home --shell /usr/sbin/nologin erp \
     && rm -rf /var/lib/apt/lists/*

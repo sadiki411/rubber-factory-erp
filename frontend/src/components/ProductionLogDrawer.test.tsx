@@ -156,7 +156,7 @@ describe('ProductionLogDrawer planned start', () => {
 
   it('does not offer an executable start action until the plan has a mold', () => {
     renderDrawer({ ...plannedRun, mold: null })
-    expect(screen.getByText('请先编辑资料并关联模具')).toBeInTheDocument()
+    expect(screen.getByText('正式上机前请补全机台和具体模具')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /确认上机/ })).toBeDisabled()
   })
 

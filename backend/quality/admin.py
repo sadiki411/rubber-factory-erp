@@ -3,8 +3,8 @@ from django.contrib import admin
 from orders.models import BusinessRecordRevision
 from orders.services import model_snapshot, record_revision
 
-from .models import (QualityEmployee, QualityOrder, QualityShipment, ReturnRework,
-                     ProductUnitWeight, ProcessCard, QualityShipmentBatch,
+from .models import (DefectReason, QualityEmployee, QualityOrder, QualityShipment, ReturnRework,
+                     ProductUnitWeight, ProcessCard, ProcessCardUnitBinding, QualityShipmentBatch,
                      QualityShipmentLine, QualityReworkCase, QualityReworkAttempt)
 
 
@@ -150,6 +150,24 @@ class ProcessCardAdmin(AuditAdmin):
         if obj and obj.shipment_lines.exists():
             return tuple(field.name for field in self.model._meta.fields)
         return super().get_readonly_fields(request, obj)
+
+
+@admin.register(ProcessCardUnitBinding)
+class ProcessCardUnitBindingAdmin(AuditAdmin):
+    list_display = (
+        "process_card", "shipment_batch", "shipment_unit_no",
+        "piece_quantity", "net_weight_kg", "updated_at",
+    )
+    search_fields = ("process_card__card_no", "shipment_batch__shipment_no")
+    list_filter = ("shipment_batch__shipment_date",)
+
+
+@admin.register(DefectReason)
+class DefectReasonAdmin(NoDeleteAdmin):
+    list_display = ("code", "name", "is_active", "is_system", "sort_order")
+    list_filter = ("is_active", "is_system")
+    search_fields = ("code", "name")
+    readonly_fields = ("created_at", "updated_at")
 
 
 class QualityShipmentLineInline(admin.TabularInline):

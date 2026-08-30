@@ -2,6 +2,7 @@ import uuid
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import Q
 from django.db.models.functions import Lower
@@ -193,6 +194,13 @@ class MoldAsset(TimeStampedModel):
         blank=True,
     )
     allows_stacking = models.BooleanField("允许在其上叠放", default=False)
+    default_cavities = models.PositiveSmallIntegerField(
+        "默认模具孔数",
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1)],
+        help_text="该字段属于每副实物模具；生产补录选择本模具时自动带出。",
+    )
     notes = models.TextField("备注", blank=True)
     is_active = models.BooleanField("启用", default=True)
     status_changed_at = models.DateTimeField("状态更新时间", default=timezone.now)

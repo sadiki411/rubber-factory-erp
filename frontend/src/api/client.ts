@@ -14,11 +14,14 @@ import type {
   MoldModel,
   MoldMovement,
   Order,
+  OrderStatusChange,
   Processor,
   ProductionBoard,
   ProductionDailyLog,
+  ProductionEmployee,
   ProductionImportPreview,
   ProductionMonthlyPerformance,
+  ProductionRecordAudit,
   ProductionRun,
   ProductionSettlementInput,
   ProductionStation,
@@ -26,6 +29,7 @@ import type {
   ProductSpecification,
   QualityEmployee,
   QualityProcessCard,
+  QualityProcessCardScanResult,
   QualityUnitWeight,
   QualityShipmentBatch,
   QualityShipmentBatchInput,
@@ -37,6 +41,7 @@ import type {
   QualityShipment,
   QualityShipmentLedgerRow,
   QualityShipmentCandidate,
+  QualityReturnReason,
   QualitySummary,
   RackConfigInput,
   RackLayout,
@@ -326,7 +331,9 @@ export interface OrderFilters {
   status?: string
   production_required?: boolean
   material_status?: string
-  ordering?: 'order_date' | '-order_date' | 'due_date' | '-due_date'
+  process_card_status?: string
+  /** Comma-separated, stable ordering levels (maximum three). */
+  ordering?: string
   page?: number
   page_size?: number
 }
@@ -340,6 +347,7 @@ export const orderApi = {
   update: (id: number, body: Partial<Order>) => apiFetch<Order>(`/api/orders/orders/${id}/`, {
     method: 'PATCH', body: JSON.stringify(body),
   }),
+  statusHistory: (id: number | string) => apiFetch<OrderStatusChange[]>(`/api/orders/orders/${id}/status-history/`),
 }
 
 export interface MaterialReceiptFilters {
@@ -426,6 +434,28 @@ export const productionApi = {
     method: 'PATCH',
     body: JSON.stringify(body),
   }),
+  listEmployees: (filters: { q?: string; active?: boolean } = {}) =>
+    apiFetch<ProductionEmployee[]>(`/api/production/employees/${queryString(filters)}`),
+  createEmployee: (body: Pick<ProductionEmployee, 'name'> & Partial<ProductionEmployee>) =>
+    apiFetch<ProductionEmployee>('/api/production/employees/', { method: 'POST', body: JSON.stringify(body) }),
+  updateEmployee: (id: number, body: Partial<ProductionEmployee>) =>
+    apiFetch<ProductionEmployee>(`/api/production/employees/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
+  addCounterLog: (runId: number, body: Record<string, unknown>) =>
+    apiFetch<ProductionDailyLog>(`/api/production/runs/${runId}/counter-logs/`, { method: 'POST', body: JSON.stringify(body) }),
+  updateCounterLog: (runId: number, logId: number, body: Record<string, unknown>) =>
+    apiFetch<ProductionDailyLog>(`/api/production/runs/${runId}/counter-logs/${logId}/`, { method: 'PATCH', body: JSON.stringify(body) }),
+  cancelCounterLog: (runId: number, logId: number, reason: string) =>
+    apiFetch<ProductionDailyLog>(`/api/production/runs/${runId}/counter-logs/${logId}/cancel/`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  resetCounter: (runId: number, note = '') =>
+    apiFetch<ProductionRun>(`/api/production/runs/${runId}/reset-counter/`, { method: 'POST', body: JSON.stringify({ note }) }),
+  completeLedger: (runId: number, body: { note?: string; confirm_below_target?: boolean } = {}) =>
+    apiFetch<ProductionRun>(`/api/production/runs/${runId}/complete-ledger/`, { method: 'POST', body: JSON.stringify(body) }),
+  pauseRun: (runId: number, body: Record<string, unknown>) =>
+    apiFetch<ProductionRun>(`/api/production/runs/${runId}/pause/`, { method: 'POST', body: JSON.stringify(body) }),
+  resumeRun: (runId: number, body: Record<string, unknown> = {}) =>
+    apiFetch<ProductionRun>(`/api/production/runs/${runId}/resume/`, { method: 'POST', body: JSON.stringify(body) }),
+  recordAudits: (runId: number) =>
+    apiFetch<ProductionRecordAudit[]>(`/api/production/runs/${runId}/record-audits/`),
   completeRun: (id: number, body: Record<string, unknown> = {}) => apiFetch<ProductionRun>(`/api/production/runs/${id}/complete/`, {
     method: 'POST',
     body: JSON.stringify(body),
@@ -453,6 +483,21 @@ export const productionImportApi = {
   }),
   templateUrl: '/api/production/imports/template/',
   errorReportUrl: (token: string) => `/api/production/imports/${token}/errors/`,
+  ledgerPreview: (file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return apiFetch<Record<string, any>>('/api/production/ledger-imports/preview/', { method: 'POST', body })
+  },
+  ledgerCommit: (token: string, confirmWarnings = false) => apiFetch<Record<string, any>>('/api/production/ledger-imports/commit/', {
+    method: 'POST',
+    body: JSON.stringify({ token, confirm_warnings: confirmWarnings }),
+  }),
+  ledgerTemplateUrl: '/api/production/ledger-imports/template/',
+  ocrPreview: (files: File[]) => {
+    const body = new FormData()
+    files.forEach((file) => body.append('files', file))
+    return apiFetch<Record<string, any>>('/api/production/ocr/preview/', { method: 'POST', body })
+  },
 }
 
 export interface QualityListFilters {
@@ -483,6 +528,12 @@ export interface QualityListFilters {
   specification?: string
   material?: string
   candidate?: boolean
+  card_no?: string
+  card_suffix?: string
+  item_no?: string
+  return_round?: number | string
+  current?: boolean
+  reason?: string
 }
 
 export const qualityApi = {
@@ -547,6 +598,10 @@ export const qualityWorkflowApi = {
     apiFetch<ApiList<QualityProcessCard> | QualityProcessCard[]>(`/api/quality/process-cards/${queryString(filters)}`),
   createProcessCard: (body: Record<string, unknown>) => apiFetch<QualityProcessCard>('/api/quality/process-cards/', { method: 'POST', body: JSON.stringify(body) }),
   updateProcessCard: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityProcessCard>(`/api/quality/process-cards/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
+  scanProcessCard: (code: string) =>
+    apiFetch<QualityProcessCardScanResult>(`/api/quality/process-cards/scan/${queryString({ code })}`),
+  replaceProcessCard: (id: number | string, body: { new_card_no: string; notes?: string }) =>
+    apiFetch<QualityProcessCard>(`/api/quality/process-cards/${id}/replace/`, { method: 'POST', body: JSON.stringify(body) }),
   listShipmentBatches: (filters: QualityListFilters = {}) => apiFetch<ApiList<QualityShipmentBatch> | QualityShipmentBatch[]>(`/api/quality/shipment-batches/${queryString(filters)}`),
   listShipmentCandidates: (filters: QualityListFilters = {}) =>
     apiFetch<ApiList<QualityShipmentCandidate> | QualityShipmentCandidate[]>(`/api/quality/shipment-batches/candidates/${queryString(filters)}`),
@@ -568,28 +623,42 @@ export const qualityWorkflowApi = {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),
-  confirmShipmentBatch: (id: number | string) => apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/confirm/`, { method: 'POST', body: JSON.stringify({}) }),
+  confirmShipmentBatch: (id: number | string, processCardBindings: NonNullable<QualityShipmentBatchInput['process_card_bindings']> = []) => apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/confirm/`, {
+    method: 'POST',
+    body: JSON.stringify(processCardBindings.length ? { process_card_bindings: processCardBindings } : {}),
+  }),
   assignShipmentBatchInspectors: (id: number | string, inspectorIds: number[]) =>
     apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/assign-inspectors/`, {
       method: 'POST',
       body: JSON.stringify({ inspector_ids: inspectorIds }),
     }),
+  bindShipmentProcessCards: (id: number | string, cards: Array<{ shipment_unit_no: number; card_no: string; order_id?: number | null }>) =>
+    apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/bind-process-cards/`, {
+      method: 'POST',
+      body: JSON.stringify({ cards }),
+    }),
   voidShipmentBatch: (id: number | string) => apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/void/`, { method: 'POST', body: JSON.stringify({}) }),
   createAndConfirmShipmentBatch: async (body: QualityShipmentBatchInput) => {
-    const draft = await qualityWorkflowApi.createShipmentBatch(body)
+    const { process_card_bindings: processCardBindings = [], ...createBody } = body
+    const draft = await qualityWorkflowApi.createShipmentBatch(createBody as QualityShipmentBatchInput)
     if (!draft.id) throw new Error('出货批次创建成功但未返回批次 ID，无法确认')
-    return qualityWorkflowApi.confirmShipmentBatch(draft.id)
+    return qualityWorkflowApi.confirmShipmentBatch(draft.id, processCardBindings)
   },
   listReworkCases: (filters: QualityListFilters = {}) => apiFetch<ApiList<QualityReworkCase> | QualityReworkCase[]>(`/api/quality/rework-cases/${queryString(filters)}`),
   listReturnableBatches: (filters: Pick<QualityListFilters, 'q' | 'order_id' | 'page' | 'page_size'> = {}) =>
     apiFetch<ApiList<QualityReturnableBatch> | QualityReturnableBatch[]>(`/api/quality/rework-cases/returnable-batches/${queryString(filters)}`),
   createReworkCase: (body: Record<string, unknown>) => apiFetch<QualityReworkCase>('/api/quality/rework-cases/', { method: 'POST', body: JSON.stringify(body) }),
+  scanReturn: (body: Record<string, unknown>) => apiFetch<QualityReworkCase>('/api/quality/rework-cases/scan-return/', { method: 'POST', body: JSON.stringify(body) }),
+  bulkScanReturn: (body: Record<string, unknown>) => apiFetch<QualityReworkCase[] | { results?: QualityReworkCase[]; cases?: QualityReworkCase[] }>('/api/quality/rework-cases/bulk-scan-return/', { method: 'POST', body: JSON.stringify(body) }),
   updateReworkCase: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityReworkCase>(`/api/quality/rework-cases/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
+  reshipReworkCase: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityShipmentBatch>(`/api/quality/rework-cases/${id}/reship/`, { method: 'POST', body: JSON.stringify(body) }),
   listReworkAttempts: (filters: QualityListFilters = {}) => apiFetch<ApiList<QualityReworkAttempt> | QualityReworkAttempt[]>(`/api/quality/rework-attempts/${queryString(filters)}`),
   createReworkAttempt: (body: Record<string, unknown>) => apiFetch<QualityReworkAttempt>('/api/quality/rework-attempts/', { method: 'POST', body: JSON.stringify(body) }),
   updateReworkAttempt: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityReworkAttempt>(`/api/quality/rework-attempts/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
   listReworkTimeline: (processCardId: string | number) =>
-    apiFetch<QualityReworkCase[]>(`/api/quality/process-cards/${processCardId}/timeline/`),
+    apiFetch<QualityReworkCase[]>(`/api/quality/process-cards/${processCardId}/rework-timeline/`),
+  listReturnReasons: (filters: QualityListFilters = {}) =>
+    apiFetch<ApiList<QualityReturnReason> | QualityReturnReason[]>(`/api/quality/defect-reasons/${queryString(filters)}`),
 }
 
 export interface AnalyticsFilters {

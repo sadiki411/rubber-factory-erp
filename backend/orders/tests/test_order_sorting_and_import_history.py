@@ -105,6 +105,197 @@ class OrderSortingApiTests(APITestCase):
                 numbers.index(first.order_no),
             )
 
+    def test_orders_support_three_level_sort_and_process_card_filter(self):
+        common = {
+            "specification": "MULTI-SPEC",
+            "order_quantity": 1000,
+            "due_date": date(2026, 9, 1),
+            "created_by": self.user,
+        }
+        QualityOrder.objects.create(
+            order_no="MULTI-RECEIVED",
+            order_date=date(2026, 7, 1),
+            process_card_count=1,
+            process_card_covered_quantity=1000,
+            **common,
+        )
+        QualityOrder.objects.create(
+            order_no="MULTI-NOT-RECEIVED",
+            order_date=date(2026, 7, 2),
+            process_card_count=0,
+            process_card_covered_quantity=0,
+            **common,
+        )
+        QualityOrder.objects.create(
+            order_no="MULTI-PARTIAL",
+            order_date=date(2026, 7, 3),
+            process_card_count=1,
+            process_card_covered_quantity=500,
+            **common,
+        )
+
+        response = self.client.get(
+            "/api/orders/orders/",
+            {
+                "q": "MULTI-",
+                "ordering": "due_date,process_card_status,order_date",
+                "page_size": 100,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            [row["order_no"] for row in response.json()["results"]],
+            ["MULTI-NOT-RECEIVED", "MULTI-PARTIAL", "MULTI-RECEIVED"],
+        )
+
+        filtered = self.client.get(
+            "/api/orders/orders/",
+            {
+                "q": "MULTI-",
+                "process_card_status": "PARTIAL",
+                "page_size": 100,
+            },
+        )
+        self.assertEqual(filtered.status_code, 200, filtered.content)
+        self.assertEqual(
+            [row["order_no"] for row in filtered.json()["results"]],
+            ["MULTI-PARTIAL"],
+        )
+
+    def test_legacy_unknown_card_text_is_not_received_in_payload_sort_and_filter(self):
+        common = {
+            "specification": "LEGACY-CARD-SPEC",
+            "order_quantity": 1000,
+            "due_date": date(2026, 9, 10),
+            "created_by": self.user,
+        }
+        unknown_values = {
+            "LEGACY-CARD-PENDING": "待补",
+            "LEGACY-CARD-UNKNOWN": "未知",
+            "LEGACY-CARD-CONFIRM": "待确认",
+        }
+        for index, (order_no, text) in enumerate(unknown_values.items(), start=1):
+            QualityOrder.objects.create(
+                order_no=order_no,
+                order_date=date(2026, 7, index),
+                process_card_text=text,
+                **common,
+            )
+        QualityOrder.objects.create(
+            order_no="LEGACY-CARD-RECEIVED",
+            order_date=date(2026, 7, 4),
+            process_card_text="已收到",
+            **common,
+        )
+
+        response = self.client.get(
+            "/api/orders/orders/",
+            {
+                "q": "LEGACY-CARD-",
+                "ordering": "process_card_status,order_date,due_date",
+                "page_size": 100,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        rows = response.json()["results"]
+        self.assertEqual(
+            {row["order_no"]: row["process_card_status"] for row in rows},
+            {
+                **{order_no: "NOT_RECEIVED" for order_no in unknown_values},
+                "LEGACY-CARD-RECEIVED": "RECEIVED",
+            },
+        )
+        self.assertEqual(
+            [row["order_no"] for row in rows],
+            [*unknown_values, "LEGACY-CARD-RECEIVED"],
+        )
+
+        not_received = self.client.get(
+            "/api/orders/orders/",
+            {
+                "q": "LEGACY-CARD-",
+                "process_card_status": "NOT_RECEIVED",
+                "page_size": 100,
+            },
+        )
+        self.assertEqual(not_received.status_code, 200, not_received.content)
+        self.assertEqual(
+            {row["order_no"] for row in not_received.json()["results"]},
+            set(unknown_values),
+        )
+
+    def test_date_and_card_multilevel_sort_preserves_each_declared_priority(self):
+        common = {
+            "specification": "PRIORITY-SPEC",
+            "order_quantity": 1000,
+            "created_by": self.user,
+        }
+        cases = (
+            # Same due date and card state: descending order date is tertiary.
+            ("PRIORITY-EARLY-NO-NEW", date(2026, 7, 3), date(2026, 9, 1), 0),
+            ("PRIORITY-EARLY-NO-OLD", date(2026, 7, 1), date(2026, 9, 1), 0),
+            # Same due date but received: card state remains the secondary key.
+            ("PRIORITY-EARLY-YES", date(2026, 7, 4), date(2026, 9, 1), 1),
+            # Later due date must stay last even though its card state sorts first.
+            ("PRIORITY-LATE-NO", date(2026, 7, 5), date(2026, 9, 2), 0),
+        )
+        for order_no, order_date, due_date, card_count in cases:
+            QualityOrder.objects.create(
+                order_no=order_no,
+                order_date=order_date,
+                due_date=due_date,
+                process_card_count=card_count,
+                process_card_covered_quantity=1000 if card_count else 0,
+                **common,
+            )
+
+        response = self.client.get(
+            "/api/orders/orders/",
+            {
+                "q": "PRIORITY-",
+                "ordering": "due_date,process_card_status,-order_date",
+                "page_size": 100,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            [row["order_no"] for row in response.json()["results"]],
+            [
+                "PRIORITY-EARLY-NO-NEW",
+                "PRIORITY-EARLY-NO-OLD",
+                "PRIORITY-EARLY-YES",
+                "PRIORITY-LATE-NO",
+            ],
+        )
+
+    def test_positive_card_count_with_zero_coverage_is_partial_consistently(self):
+        order = QualityOrder.objects.create(
+            order_no="CARD-ZERO-COVERAGE",
+            specification="CARD-ZERO-COVERAGE-SPEC",
+            order_quantity=1000,
+            process_card_count=1,
+            process_card_covered_quantity=0,
+            created_by=self.user,
+        )
+
+        detail = self.client.get(f"/api/orders/orders/{order.pk}/")
+        self.assertEqual(detail.status_code, 200, detail.content)
+        self.assertEqual(detail.json()["process_card_status"], "PARTIAL")
+
+        filtered = self.client.get(
+            "/api/orders/orders/",
+            {
+                "q": order.order_no,
+                "process_card_status": "PARTIAL",
+                "page_size": 100,
+            },
+        )
+        self.assertEqual(filtered.status_code, 200, filtered.content)
+        self.assertEqual(
+            [row["order_no"] for row in filtered.json()["results"]],
+            [order.order_no],
+        )
+
 
 class MaterialReceiptDateApiTests(APITestCase):
     def setUp(self):

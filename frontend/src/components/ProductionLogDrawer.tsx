@@ -1,4 +1,4 @@
-import { CheckCircleOutlined, EditOutlined, FieldTimeOutlined, HomeOutlined, PlusOutlined, ToolOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, EditOutlined, FieldTimeOutlined, HomeOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, ToolOutlined } from '@ant-design/icons'
 import { Alert, App, Button, Col, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Popconfirm, Progress, Row, Space, Table, Tag, Tooltip, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -7,11 +7,14 @@ import { useEffect, useState } from 'react'
 import { ApiError, productionApi } from '../api/client'
 import { canCreateProductionDailyLog, canSettleProductionRun, defaultProductionLogDate, formatProductionDate, isProductionLogDateAllowed, productionStationGroupLabel, productionStationNumber } from '../production'
 import type { ProductionDailyLog, ProductionRun } from '../types'
+import { ProductionPauseResumeDrawer } from './ProductionPauseResumeDrawer'
 import { ProductionSettlement } from './ProductionSettlement'
 
 const STATUS_META = {
   PLANNED: { text: '待上机', color: 'blue' },
   RUNNING: { text: '生产中', color: 'processing' },
+  PAUSED_ON_MACHINE: { text: '暂停·模具在机', color: 'warning' },
+  PAUSED_UNLOADED: { text: '暂停·已下机', color: 'warning' },
   COMPLETED: { text: '已完成', color: 'success' },
   CANCELLED: { text: '已取消', color: 'default' },
 } as const
@@ -35,6 +38,7 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
   const { message, modal } = App.useApp()
   const queryClient = useQueryClient()
   const [editingLog, setEditingLog] = useState<ProductionDailyLog>()
+  const [pauseResumeOpen, setPauseResumeOpen] = useState(false)
   const enteredMoldCount = Form.useWatch('produced_mold_count', form)
 
   useEffect(() => {
@@ -162,19 +166,20 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
   const canSettle = !!run && canSettleProductionRun(run.status, !!run.loaded_at)
   const willInvalidateSettlement = !!run?.is_settled && (!editingLog || Number(enteredMoldCount) !== Number(editingLog.produced_mold_count))
   return (
+    <>
     <Drawer
       open={open}
       onClose={closeDrawer}
       size={760}
-      title={run ? `${productionStationGroupLabel(run.station.group)}-${productionStationNumber(run.station)}号机台 · ${run.order_no}` : '生产记录'}
+      title={run ? `${run.station ? `${productionStationGroupLabel(run.station.group)}-${productionStationNumber(run.station)}号机台` : '机台待补录'} · ${run.order_no}` : '生产记录'}
       extra={run && <Button icon={<EditOutlined />} onClick={() => onEdit(run)}>编辑资料</Button>}
       footer={run && (
         <Space className="drawer-footer-actions">
           <Button onClick={closeDrawer}>关闭</Button>
-          {run.status === 'PLANNED' && (run.mold ? (
+          {run.status === 'PLANNED' && (run.mold && run.station ? (
             <Popconfirm
               title="确认该模具上机并开始生产？"
-              description={`模具 ${run.mold.model_code} 将上到 ${productionStationNumber(run.station)}号机台，并以当前时间记录上机时间。`}
+              description={`模具 ${run.mold.model_code} 将上到 ${run.station ? `${productionStationNumber(run.station)}号机台` : '待补录机台'}，并以当前时间记录上机时间。`}
               okText="确认上机"
               cancelText="取消"
               onConfirm={() => startProduction()}
@@ -183,8 +188,8 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
             </Popconfirm>
           ) : (
             <>
-              <Typography.Text type="danger">请先编辑资料并关联模具</Typography.Text>
-              <Tooltip title="待上机计划必须关联具体模具">
+              <Typography.Text type="danger">正式上机前请补全机台和具体模具</Typography.Text>
+              <Tooltip title="正式上机必须关联机台和具体模具；生产手工账可直接用交接录入">
                 <span><Button type="primary" icon={<ToolOutlined />} disabled>确认上机</Button></span>
               </Tooltip>
             </>
@@ -192,6 +197,7 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
           {run.status === 'RUNNING' && (
             <>
               <Button icon={<FieldTimeOutlined />} loading={materialChangeMutation.isPending} onClick={() => materialChangeMutation.mutate()}>记录当前换料时间</Button>
+              <Button icon={<PauseCircleOutlined />} onClick={() => setPauseResumeOpen(true)}>暂停 / 换急单</Button>
               <Popconfirm title="确认停机并结束本次生产？" description="系统只结束本次生产并记录停机时间，模具仍保持上机状态；释放机台还需另行执行“下机并归位”。" okText="确认停机" cancelText="取消" onConfirm={() => completeMutation.mutate()}>
                 <Button type="primary" icon={<CheckCircleOutlined />} loading={completeMutation.isPending}>停机 / 结束生产</Button>
               </Popconfirm>
@@ -199,6 +205,11 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
                 <Button icon={<HomeOutlined />} onClick={() => onRequestCompleteAndPutaway(run)}>结束生产并下机归位</Button>
               )}
             </>
+          )}
+          {(run.status === 'PAUSED_ON_MACHINE' || run.status === 'PAUSED_UNLOADED') && (
+            <Button type="primary" icon={<PlayCircleOutlined />} onClick={() => setPauseResumeOpen(true)}>
+              {run.status === 'PAUSED_ON_MACHINE' ? '恢复继续生产' : '安排接续生产'}
+            </Button>
           )}
         </Space>
       )}
@@ -273,5 +284,12 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
         </>
       )}
     </Drawer>
+    <ProductionPauseResumeDrawer
+      open={pauseResumeOpen}
+      run={run}
+      onClose={() => setPauseResumeOpen(false)}
+      onSuccess={onRunChange}
+    />
+    </>
   )
 }

@@ -18,6 +18,7 @@ import {
   Tag,
   Typography,
 } from 'antd'
+import { QrcodeOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { qualityApi, qualityWorkflowApi, toList } from '../api/client'
@@ -43,7 +44,10 @@ import type {
   QualityShipmentBatch,
   QualityShipmentBatchLine,
   QualityShipmentBatchInput,
+  QualityProcessCardScanResult,
+  QualityReworkCase,
 } from '../types'
+import { QualityQrScanner } from './QualityQrScanner'
 
 const DRAFT_KEY = 'erp-quality-weight-shipment-drafts-v2'
 const TOLERANCE_PERCENT = 10
@@ -370,6 +374,9 @@ export function QualityWeightShipmentDrawer({
   const [allocationPreviewError, setAllocationPreviewError] = useState('')
   const allocationRequestRef = useRef(0)
   const [lines, setLines] = useState<EditableLine[]>([])
+  const [scannerOpen, setScannerOpen] = useState(false)
+  const [scannedCards, setScannedCards] = useState<Array<{ cardNo: string; lookup: QualityProcessCardScanResult }>>([])
+  const [reshipCase, setReshipCase] = useState<QualityReworkCase>()
 
   const stableLineSeeds = lineSeeds || EMPTY_LINE_SEEDS
   const lineSeedKey = useMemo(() => (lineSeeds || processCards).map((item) => {
@@ -473,6 +480,7 @@ export function QualityWeightShipmentDrawer({
   const underLimit = isLineMode
     ? lineMetrics.under
     : Boolean(singleBatchPieces && numeric(processCardShipmentQuantity) && singleBatchPieces < Number(processCardShipmentQuantity))
+  const unscannedBatchCount = Math.max(0, effectiveBatchCount - scannedCards.length)
 
   useEffect(() => {
     if (!open) return
@@ -528,6 +536,9 @@ export function QualityWeightShipmentDrawer({
     // Keep this state reset tied to the drawer opening/line selection only.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLines(seedLines(draftLines, processCards))
+    setScannedCards([])
+    setReshipCase(undefined)
+    setScannerOpen(false)
     setDuplicate(false)
     setDraftMatch(undefined)
     draftMatchRef.current = undefined
@@ -818,6 +829,51 @@ export function QualityWeightShipmentDrawer({
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
   }
 
+  const handleShipmentCardScan = async (cardNo: string) => {
+    let lookup: QualityProcessCardScanResult
+    try {
+      lookup = await qualityWorkflowApi.scanProcessCard(cardNo)
+    } catch (error) {
+      if (/404|未找到|不存在/.test((error as Error).message || '')) lookup = { code: cardNo }
+      else throw error
+    }
+    const scanned = lookup.scanned_card
+    const activeCard = lookup.active_card || scanned
+    if (scanned?.replaced_by_id || (scanned && activeCard && String(scanned.id) !== String(activeCard.id))) {
+      throw new Error(`旧流程卡 ${cardNo} 已作废，请扫描替代卡 ${activeCard?.card_no || '（见补卡记录）'}。`)
+    }
+    const lookupReturn = activeCard?.current_return || lookup.current_return
+    const waitingReturn = lookupReturn && !['RESHIPPED', 'SCRAPPED', 'CANCELLED'].includes(lookupReturn.status)
+      ? lookupReturn
+      : undefined
+    if (waitingReturn) {
+      if (scannedCards.length) throw new Error('已扫描普通出货流程卡，请完成或清空后再处理返工重新出货。')
+      const binding = activeCard?.unit_binding || activeCard?.binding || lookup.binding || waitingReturn.binding
+      const source = waitingReturn.source
+      const linkedOrder = allKnownOrders.find((order) => order.id === (binding?.order_id || activeCard?.order_id))
+      setReshipCase(waitingReturn)
+      form.setFieldsValue({
+        order_id: linkedOrder?.id || binding?.order_id || activeCard?.order_id,
+        product_name: binding?.product_name || source?.product_name || activeCard?.product_name_snapshot || '',
+        specification: binding?.specification || source?.specification || activeCard?.specification_snapshot || '',
+        specification_snapshot: binding?.specification || source?.specification || activeCard?.specification_snapshot || '',
+        material: binding?.material || source?.material || activeCard?.material_snapshot || '',
+        material_snapshot: binding?.material || source?.material || activeCard?.material_snapshot || '',
+        unit_weight_g: numeric(activeCard?.unit_weight_g),
+        single_batch_net_weight_kg: numeric(binding?.net_weight_kg ?? source?.single_batch_net_weight_kg),
+        product_batch_count: 1,
+        batch_count: 1,
+        process_card_shipment_quantity: numeric(binding?.piece_quantity ?? source?.pieces_per_batch),
+      })
+      setScannerOpen(false)
+      message.warning(`${activeCard?.card_no || cardNo} 是${waitingReturn.return_label || `第${waitingReturn.return_round || 1}次退货返工`}产品，已带出上次数量和重量；核对或修改后确认重新出货。`)
+      return true
+    }
+    if (reshipCase) throw new Error('当前正在处理返工品重新出货，请先完成或关闭后再扫描普通出货。')
+    setScannedCards((items) => [...items, { cardNo: activeCard?.card_no || cardNo, lookup }])
+    return true
+  }
+
   const submit = async () => {
     const values = await form.validateFields()
     const shipmentNo = text(values.shipment_no)
@@ -848,6 +904,10 @@ export function QualityWeightShipmentDrawer({
       unitWeightG: topUnit,
       batchCount: topBatchCount,
     }) ?? numeric(values.piece_quantity)
+    if (!isLineMode && scannedCards.length > topBatchCount) {
+      message.error(`已扫描 ${scannedCards.length} 张流程卡，但相同称重批数只有 ${topBatchCount} 批。请增加批数或移除多余卡号。`)
+      return
+    }
     if (!isLineMode && (!topUnit || !topSingleBatchWeight || !topPieces || !topProcessCardQuantity)) {
       message.warning('请填写成品单重、单批实称净重和流程卡出货数量，系统才能计算本次总出货数。')
       return
@@ -888,6 +948,10 @@ export function QualityWeightShipmentDrawer({
       client_key: activeBatch?.client_key || `quality-weight-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       notes: text(values.notes),
       confirm_warnings: false,
+      process_card_bindings: isLineMode ? undefined : scannedCards.map((item, index) => ({
+        card_no: item.cardNo,
+        shipment_unit_no: index + 1,
+      })),
       lines: isLineMode
         ? lines.map((line) => {
           const metrics = editableLineMetrics(line)
@@ -932,12 +996,22 @@ export function QualityWeightShipmentDrawer({
     setSaving(true)
     try {
       let result: unknown
-      if (editingDraft && activeBatch?.id) {
+      if (reshipCase) {
+        result = await qualityWorkflowApi.reshipReworkCase(reshipCase.id, {
+          shipment_date: values.shipment_date?.format('YYYY-MM-DD') || null,
+          net_weight_kg: topTotal,
+          piece_quantity: topPieces,
+          inspector_ids: inspectorSelection,
+          notes: text(values.notes),
+        })
+      } else if (editingDraft && activeBatch?.id) {
         // A duplicate number points at an unfinished server-side draft.  Edit
         // that row in place and confirm it; creating a second row would leave
         // a unique-number conflict and could double count on retry.
-        await qualityWorkflowApi.updateShipmentBatch(activeBatch.id, payload as unknown as Record<string, unknown>)
-        result = await qualityWorkflowApi.confirmShipmentBatch(activeBatch.id)
+        const draftPayload = { ...payload }
+        delete draftPayload.process_card_bindings
+        await qualityWorkflowApi.updateShipmentBatch(activeBatch.id, draftPayload as unknown as Record<string, unknown>)
+        result = await qualityWorkflowApi.confirmShipmentBatch(activeBatch.id, payload.process_card_bindings || [])
       } else if (onSubmit) {
         result = await onSubmit(payload)
       } else if (shipment) {
@@ -957,7 +1031,9 @@ export function QualityWeightShipmentDrawer({
       }
       await onSaved?.(result)
       const orderCount = allocatedOrderCount(result)
-      message.success(shipment || batch
+      message.success(reshipCase
+        ? `${reshipCase.return_label || '返工产品'}已重新出货，退货状态和订单有效出货数量已同步更新`
+        : shipment || batch
         ? '出货记录已更新'
         : orderCount > 1
           ? `重量出货已保存，系统已自动分配到 ${orderCount} 个订单`
@@ -1116,6 +1192,19 @@ export function QualityWeightShipmentDrawer({
         message="新出货统一按成品重量登记"
         description="单批只称重一次，再填写相同称重的出货批数；系统会立即计算最终总件数和累计总净重。单批换算件数超过流程卡标准数量 10% 会阻止提交。"
       />
+      {!isLineMode && <Card size="small" className="quality-weight-scan-card" title="流程卡扫码（选填）" extra={<Button type="primary" icon={<QrcodeOutlined />} onClick={() => setScannerOpen(true)}>连续扫码</Button>}>
+        {reshipCase ? <Alert
+          type="warning"
+          showIcon
+          message={`${reshipCase.return_label || `第 ${reshipCase.return_round || 1} 次退货返工`}产品重新出货`}
+          description={`流程卡 ${reshipCase.active_process_card_no || reshipCase.process_card_no || reshipCase.process_card?.card_no || '已识别'}；已带出上一次的数量和重量，现场有变化可以直接修改。确认后自动变为“已重新出货”。`}
+          action={<Button size="small" onClick={() => setReshipCase(undefined)}>取消返工出货</Button>}
+        /> : scannedCards.length ? <>
+          <div className="quality-weight-scanned-cards">{scannedCards.map((item, index) => <Tag key={item.cardNo} closable onClose={() => setScannedCards((values) => values.filter((value) => value.cardNo !== item.cardNo))}>{index + 1}. {item.cardNo}</Tag>)}</div>
+          <Typography.Text type="secondary">已绑定 {scannedCards.length} 批；当前称重批数为 {effectiveBatchCount} 批，剩余 {unscannedBatchCount} 批未录卡号也可正常出货。</Typography.Text>
+          {scannedCards.length > effectiveBatchCount && <Alert type="error" showIcon message="扫码张数超过相同称重批数" description="请增加批数或移除多余流程卡后再确认。" />}
+        </> : <Typography.Text type="secondary">正常出货不强制逐张扫码；愿意扫码时可连续扫任意部分，其余批次仍按“卡号未录入”正常出货。退货时再扫码即可首次绑定。</Typography.Text>}
+      </Card>}
       {duplicate && <Alert type="error" showIcon message="出货单号重复" description="请更换出货单号；系统不会覆盖已有出货记录。" className="quality-weight-duplicate-alert" />}
       {draftMatch && !activeBatch && <Alert
         type="warning"
@@ -1271,6 +1360,14 @@ export function QualityWeightShipmentDrawer({
         <Statistic title="理论重量" value={isLineMode ? lineMetrics.expected : totalExpected} precision={3} suffix="kg" />
         <Statistic title="实称净重" value={isLineMode ? lineMetrics.actual : totalActual} precision={3} suffix="kg" />
       </div>
+      <QualityQrScanner
+        open={open && scannerOpen}
+        title="扫描出货流程卡（选填）"
+        description="可连续扫描本次出货中的部分或全部流程卡；未扫描的批次仍允许出货。扫到待返工卡时会自动切换为返工重新出货。"
+        initialValues={scannedCards.map((item) => item.cardNo)}
+        onClose={() => setScannerOpen(false)}
+        onScan={handleShipmentCardScan}
+      />
     </Drawer>
   )
 }

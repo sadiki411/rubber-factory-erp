@@ -30,9 +30,17 @@ from .imports import (
     create_production_error_report,
     preview_production_workbook,
 )
+from .ledger_imports import (
+    commit_ledger_batch,
+    create_ledger_template,
+    preview_ledger_workbook,
+)
+from .ocr import preview_production_photos
 from .models import (
     ProductionDailyLog,
+    ProductionEmployee,
     ProductionImportBatch,
+    ProductionRecordAudit,
     ProductionRun,
     ProductionSettlementRevision,
     ProductionStation,
@@ -40,21 +48,36 @@ from .models import (
 )
 from .serializers import (
     CompleteAndPutawayProductionRunSerializer,
+    CancelProductionLogSerializer,
+    CompleteLedgerTaskSerializer,
     CompleteProductionRunSerializer,
+    PauseProductionRunSerializer,
+    ProductionCounterLogSerializer,
     ProductionDailyLogSerializer,
+    ProductionEmployeeSerializer,
     ProductionMoldSerializer,
     ProductionRunSerializer,
+    ProductionRecordAuditSerializer,
     ProductionSettlementDetailSerializer,
     ProductionSettlementRevisionSerializer,
     ProductionSettlementSerializer,
     ProductionStationSerializer,
     StartProductionRunSerializer,
+    ResetProductionCounterSerializer,
+    ResumeProductionRunSerializer,
 )
 from .services import (
     complete_and_putaway_production_run,
+    complete_ledger_task,
+    cancel_counter_log,
+    create_counter_log,
     invalidate_settlement,
     record_settlement_revision,
+    pause_production_run,
+    reset_production_counter,
+    resume_production_run,
     start_production_run,
+    update_counter_log,
 )
 
 
@@ -72,7 +95,10 @@ def _run_queryset():
         "product_specification",
         "created_by",
         "settled_by",
-    ).prefetch_related("daily_logs")
+    ).prefetch_related(
+        "daily_logs__operator_employee",
+        "daily_logs__assistant_operators",
+    )
 
 
 class ProductionStationViewSet(viewsets.ReadOnlyModelViewSet):
@@ -88,6 +114,22 @@ class ProductionStationViewSet(viewsets.ReadOnlyModelViewSet):
         if group:
             queryset = queryset.filter(group=group)
         return queryset.order_by("group", "position_no")
+
+
+class ProductionEmployeeViewSet(viewsets.ModelViewSet):
+    serializer_class = ProductionEmployeeSerializer
+    pagination_class = None
+    http_method_names = ["get", "post", "patch", "head", "options"]
+
+    def get_queryset(self):
+        queryset = ProductionEmployee.objects.all()
+        active = str(self.request.query_params.get("active", "true")).lower()
+        if active in {"1", "true", "yes"}:
+            queryset = queryset.filter(is_active=True)
+        keyword = str(self.request.query_params.get("q", "")).strip()
+        if keyword:
+            queryset = queryset.filter(name__icontains=keyword)
+        return queryset
 
 
 class ProductionRunViewSet(viewsets.ModelViewSet):
@@ -203,13 +245,19 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
                 loaded_at__isnull=True,
             )
             if parsed_from:
-                log_filter &= Q(daily_logs__production_date__gte=parsed_from)
+                log_filter &= Q(
+                    daily_logs__production_date__gte=parsed_from,
+                    daily_logs__is_cancelled=False,
+                )
                 overlap_filter &= Q(unloaded_at__gt=period_start) | Q(
                     unloaded_at__isnull=True
                 )
                 planned_created_filter &= Q(created_at__gte=period_start)
             if parsed_to:
-                log_filter &= Q(daily_logs__production_date__lte=parsed_to)
+                log_filter &= Q(
+                    daily_logs__production_date__lte=parsed_to,
+                    daily_logs__is_cancelled=False,
+                )
                 overlap_filter &= Q(loaded_at__lt=period_end)
                 planned_created_filter &= Q(created_at__lt=period_end)
             queryset = queryset.filter(
@@ -269,6 +317,187 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
             ProductionRunSerializer(refreshed, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
+
+    @extend_schema(
+        request=ProductionCounterLogSerializer,
+        responses={201: ProductionCounterLogSerializer},
+    )
+    @action(detail=True, methods=["post"], url_path="counter-logs")
+    def counter_logs(self, request, pk=None):
+        run = self.get_object()
+        serializer = ProductionCounterLogSerializer(
+            data=request.data,
+            context={"run": run, "request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        try:
+            log = create_counter_log(run, request.user, serializer.validated_data)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(
+                exc.message_dict if hasattr(exc, "message_dict") else exc.messages
+            ) from exc
+        return Response(
+            ProductionCounterLogSerializer(log).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(
+        request=ProductionCounterLogSerializer,
+        responses=ProductionCounterLogSerializer,
+        parameters=[
+            OpenApiParameter(
+                name="log_id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.PATH,
+            )
+        ],
+    )
+    @action(
+        detail=True,
+        methods=["patch"],
+        url_path=r"counter-logs/(?P<log_id>[^/.]+)",
+    )
+    def update_counter_log_entry(self, request, pk=None, log_id=None):
+        run = self.get_object()
+        log = get_object_or_404(ProductionDailyLog, run=run, pk=log_id)
+        serializer = ProductionCounterLogSerializer(
+            log,
+            data=request.data,
+            partial=True,
+            context={"run": run, "request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        try:
+            log = update_counter_log(log, request.user, serializer.validated_data)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(
+                exc.message_dict if hasattr(exc, "message_dict") else exc.messages
+            ) from exc
+        return Response(ProductionCounterLogSerializer(log).data)
+
+    @extend_schema(
+        request=CancelProductionLogSerializer,
+        responses=ProductionCounterLogSerializer,
+        parameters=[
+            OpenApiParameter(
+                name="log_id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.PATH,
+            )
+        ],
+    )
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"counter-logs/(?P<log_id>[^/.]+)/cancel",
+    )
+    def cancel_counter_log_entry(self, request, pk=None, log_id=None):
+        run = self.get_object()
+        log = get_object_or_404(ProductionDailyLog, run=run, pk=log_id)
+        serializer = CancelProductionLogSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            log = cancel_counter_log(
+                log, request.user, serializer.validated_data["reason"]
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(
+                exc.message_dict if hasattr(exc, "message_dict") else exc.messages
+            ) from exc
+        return Response(ProductionCounterLogSerializer(log).data)
+
+    @extend_schema(
+        request=ResetProductionCounterSerializer,
+        responses=ProductionRunSerializer,
+    )
+    @action(detail=True, methods=["post"], url_path="reset-counter")
+    def reset_counter(self, request, pk=None):
+        serializer = ResetProductionCounterSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        try:
+            run = reset_production_counter(
+                self.get_object(),
+                request.user,
+                serializer.validated_data.get("note", ""),
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(
+                exc.message_dict if hasattr(exc, "message_dict") else exc.messages
+            ) from exc
+        return Response(
+            ProductionRunSerializer(
+                _run_queryset().get(pk=run.pk), context={"request": request}
+            ).data
+        )
+
+    @extend_schema(request=PauseProductionRunSerializer, responses=ProductionRunSerializer)
+    @action(detail=True, methods=["post"])
+    def pause(self, request, pk=None):
+        serializer = PauseProductionRunSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            run = pause_production_run(
+                self.get_object(), request.user, **serializer.validated_data
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(
+                exc.message_dict if hasattr(exc, "message_dict") else exc.messages
+            ) from exc
+        return Response(
+            ProductionRunSerializer(
+                _run_queryset().get(pk=run.pk), context={"request": request}
+            ).data
+        )
+
+    @extend_schema(request=ResumeProductionRunSerializer, responses=ProductionRunSerializer)
+    @action(detail=True, methods=["post"])
+    def resume(self, request, pk=None):
+        serializer = ResumeProductionRunSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        try:
+            run = resume_production_run(
+                self.get_object(), request.user, **serializer.validated_data
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(
+                exc.message_dict if hasattr(exc, "message_dict") else exc.messages
+            ) from exc
+        return Response(
+            ProductionRunSerializer(
+                _run_queryset().get(pk=run.pk), context={"request": request}
+            ).data
+        )
+
+    @extend_schema(responses=ProductionRecordAuditSerializer(many=True))
+    @action(detail=True, methods=["get"], url_path="record-audits")
+    def record_audits(self, request, pk=None):
+        audits = ProductionRecordAudit.objects.filter(run=self.get_object()).select_related(
+            "changed_by"
+        )
+        return Response(ProductionRecordAuditSerializer(audits, many=True).data)
+
+    @extend_schema(
+        request=CompleteLedgerTaskSerializer,
+        responses=ProductionRunSerializer,
+    )
+    @action(detail=True, methods=["post"], url_path="complete-ledger")
+    def complete_ledger(self, request, pk=None):
+        serializer = CompleteLedgerTaskSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        try:
+            run = complete_ledger_task(
+                self.get_object(), request.user, **serializer.validated_data
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(
+                exc.message_dict if hasattr(exc, "message_dict") else exc.messages
+            ) from exc
+        return Response(
+            ProductionRunSerializer(
+                _run_queryset().get(pk=run.pk), context={"request": request}
+            ).data
+        )
+
 
     @extend_schema(
         request=ProductionDailyLogSerializer,
@@ -504,6 +733,48 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
         )
 
 
+class ProductionOrderProgressView(APIView):
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="order_id",
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY,
+                required=True,
+            )
+        ],
+        responses=dict,
+    )
+    def get(self, request):
+        raw_order_id = str(request.query_params.get("order_id", "")).strip()
+        if not raw_order_id.isdigit():
+            raise DRFValidationError({"order_id": "订单ID必须是整数。"})
+        from quality.models import QualityOrder
+
+        order = get_object_or_404(QualityOrder, pk=int(raw_order_id))
+        runs = list(_run_queryset().filter(order=order).order_by("segment_no", "id"))
+        runs = [run for run in runs if run.status != ProductionRun.Status.CANCELLED]
+        production_quantity = sum(run.qualified_production_quantity for run in runs)
+        theoretical_quantity = sum(run.theoretical_quantity for run in runs)
+        defective_quantity = sum(run.recorded_defective_quantity for run in runs)
+        return Response(
+            {
+                "order_id": order.pk,
+                "order_no": order.order_no,
+                "item_no": order.item_no,
+                "order_quantity": order.order_quantity,
+                "theoretical_quantity": theoretical_quantity,
+                "recorded_defective_quantity": defective_quantity,
+                "production_quantity": production_quantity,
+                "remaining_quantity": max(order.order_quantity - production_quantity, 0),
+                "overproduction_quantity": max(production_quantity - order.order_quantity, 0),
+                "production_completed": production_quantity >= order.order_quantity,
+                "run_count": len(runs),
+                "runs": ProductionRunSerializer(runs, many=True, context={"request": request}).data,
+            }
+        )
+
+
 class BoardRunSerializer(serializers.ModelSerializer):
     order_no = serializers.CharField()
     order_id = serializers.IntegerField(allow_null=True)
@@ -565,7 +836,10 @@ class ProductionBoardView(APIView):
                 {"reminder_minutes": "提醒分钟数必须在1至1440之间。"}
             )
 
-        active_runs = _run_queryset().filter(status__in=ProductionRun.ACTIVE_STATUSES)
+        active_runs = _run_queryset().filter(
+            status__in=ProductionRun.ACTIVE_STATUSES,
+            is_ledger_only=False,
+        )
         mounted_molds = MoldAsset.objects.filter(
             is_active=True,
             status=MoldAsset.Status.ON_MACHINE,
@@ -704,7 +978,7 @@ class ProductionSummaryView(APIView):
             else None
         )
 
-        log_queryset = ProductionDailyLog.objects.all()
+        log_queryset = ProductionDailyLog.objects.filter(is_cancelled=False)
         if parsed_from:
             log_queryset = log_queryset.filter(production_date__gte=parsed_from)
         if parsed_to:
@@ -729,13 +1003,19 @@ class ProductionSummaryView(APIView):
                 loaded_at__isnull=True,
             )
             if parsed_from:
-                log_filter &= Q(daily_logs__production_date__gte=parsed_from)
+                log_filter &= Q(
+                    daily_logs__production_date__gte=parsed_from,
+                    daily_logs__is_cancelled=False,
+                )
                 overlap_filter &= Q(unloaded_at__gt=period_start) | Q(
                     unloaded_at__isnull=True
                 )
                 created_filter &= Q(created_at__gte=period_start)
             if parsed_to:
-                log_filter &= Q(daily_logs__production_date__lte=parsed_to)
+                log_filter &= Q(
+                    daily_logs__production_date__lte=parsed_to,
+                    daily_logs__is_cancelled=False,
+                )
                 overlap_filter &= Q(loaded_at__lt=period_end)
                 created_filter &= Q(created_at__lt=period_end)
             queryset = queryset.filter(
@@ -894,6 +1174,7 @@ class ProductionMonthlyPerformanceView(APIView):
         logs = ProductionDailyLog.objects.filter(
             production_date__gte=month_start,
             production_date__lt=next_month,
+            is_cancelled=False,
         )
         if group:
             logs = logs.filter(run__station__group=group)
@@ -1025,3 +1306,76 @@ class ProductionImportErrorReportView(APIView):
             f"attachment; filename=production-import-errors-{batch.pk}.xlsx"
         )
         return response
+
+
+class ProductionLedgerImportTemplateView(APIView):
+    @extend_schema(responses={(200, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"): OpenApiTypes.BINARY})
+    def get(self, request):
+        response = HttpResponse(
+            create_ledger_template(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = (
+            "attachment; filename*=UTF-8''production-ledger-simple-template.xlsx"
+        )
+        return response
+
+
+class ProductionLedgerImportPreviewView(APIView):
+    @extend_schema(request={"multipart/form-data": {"type": "object"}}, responses=dict)
+    def post(self, request):
+        uploaded = request.FILES.get("file")
+        if uploaded is None:
+            raise DRFValidationError({"file": "请选择要预检的Excel文件。"})
+        try:
+            return Response(preview_ledger_workbook(uploaded, request.user))
+        except ValueError as exc:
+            raise DRFValidationError({"file": str(exc)}) from exc
+
+
+class ProductionLedgerImportCommitView(APIView):
+    @extend_schema(request=dict, responses=dict)
+    def post(self, request):
+        raw_token = request.data.get("token")
+        try:
+            token = UUID(str(raw_token))
+        except (TypeError, ValueError) as exc:
+            raise DRFValidationError({"token": "预检批次编号无效。"}) from exc
+        batch = get_object_or_404(ProductionImportBatch, pk=token, created_by=request.user)
+        try:
+            result = commit_ledger_batch(
+                batch,
+                request.user,
+                confirm_warnings=bool(request.data.get("confirm_warnings", False)),
+            )
+        except ValueError as exc:
+            raise DRFValidationError({"detail": str(exc)}) from exc
+        except DjangoValidationError as exc:
+            raise DRFValidationError(
+                exc.message_dict if hasattr(exc, "message_dict") else exc.messages
+            ) from exc
+        return Response(result)
+
+
+class ProductionPhotoOcrPreviewView(APIView):
+    @extend_schema(request={"multipart/form-data": {"type": "object"}}, responses=dict)
+    def post(self, request):
+        files = request.FILES.getlist("files") or request.FILES.getlist("file")
+        if not files:
+            raise DRFValidationError({"files": "请至少上传一张纸质生产表照片。"})
+        if len(files) > 20:
+            raise DRFValidationError({"files": "每次最多预检20张照片。"})
+        try:
+            return Response(preview_production_photos(files))
+        except ValueError as exc:
+            raise DRFValidationError({"files": str(exc)}) from exc
+        except RuntimeError as exc:
+            return Response(
+                {
+                    "available": False,
+                    "can_commit": False,
+                    "requires_human_confirmation": True,
+                    "detail": str(exc),
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )

@@ -606,9 +606,22 @@ class ProcessCard(TimeStampedModel):
         OPEN = "OPEN", "Open"
         PARTIAL_SHIPPED = "PARTIAL_SHIPPED", "Partially shipped"
         SHIPPED = "SHIPPED", "Shipped"
+        REPLACED = "REPLACED", "已补卡替换"
         CANCELLED = "CANCELLED", "Cancelled"
 
     card_no = models.CharField("process card number", max_length=150, unique=True)
+    # A replacement card keeps the same tracking id.  Return rounds are
+    # counted against this stable physical-batch identity instead of a
+    # particular printed card number.
+    tracking_id = models.UUIDField(default=uuid.uuid4, db_index=True, editable=False)
+    replaces = models.OneToOneField(
+        "self",
+        verbose_name="replaces process card",
+        related_name="replaced_by",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
     order = models.ForeignKey(
         QualityOrder,
         verbose_name="order",
@@ -719,6 +732,11 @@ class ProcessCard(TimeStampedModel):
         self.card_no = str(self.card_no or "").strip().upper()
         if not self.card_no:
             errors["card_no"] = "Process card number is required."
+        if self.replaces_id:
+            if self.pk and self.replaces_id == self.pk:
+                errors["replaces"] = "流程卡不能替换自身。"
+            if self.replaces.tracking_id != self.tracking_id:
+                errors["tracking_id"] = "补卡必须继承原流程卡追踪编号。"
         if not self.quantity or self.quantity < 1:
             errors["quantity"] = "Card quantity must be greater than zero."
         if self.unit_weight_g is not None and self.unit_weight_g <= 0:
@@ -770,15 +788,12 @@ class ProcessCard(TimeStampedModel):
 
     @property
     def shipped_net_weight_kg(self):
-        total = self.shipment_lines.filter(
-            batch__status=QualityShipmentBatch.Status.CONFIRMED
-        ).aggregate(total=Sum("net_weight_kg"))["total"]
-        return total or Decimal("0")
+        return self._tracking_outbound_totals()["weight"]
 
     @property
     def returned_net_weight_kg(self):
         cases = QualityReworkCase.objects.filter(
-            process_card_id=self.pk,
+            process_card__tracking_id=self.tracking_id,
             origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
         ).exclude(status=QualityReworkCase.Status.CANCELLED)
         total = Decimal("0")
@@ -792,7 +807,7 @@ class ProcessCard(TimeStampedModel):
     @property
     def returned_piece_quantity(self):
         total = QualityReworkCase.objects.filter(
-            process_card_id=self.pk,
+            process_card__tracking_id=self.tracking_id,
             origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
         ).exclude(status=QualityReworkCase.Status.CANCELLED).aggregate(
             total=Sum("affected_quantity")
@@ -802,10 +817,63 @@ class ProcessCard(TimeStampedModel):
     @property
     def shipped_piece_quantity(self):
         """Confirmed piece count when operators entered piece quantities."""
-        total = self.shipment_lines.filter(
-            batch__status=QualityShipmentBatch.Status.CONFIRMED
-        ).aggregate(total=Sum("piece_quantity"))["total"]
-        return total or 0
+        return self._tracking_outbound_totals()["pieces"]
+
+    def _tracking_outbound_totals(self):
+        """Gross shipments for a card chain, including aggregate-line bindings.
+
+        Quick-entry shipments intentionally leave the aggregate line unbound;
+        the per-unit binding (or a later return source) contributes that one
+        physical unit without pretending every repeat used the same card.
+        """
+
+        lines = QualityShipmentLine.objects.filter(
+            process_card__tracking_id=self.tracking_id,
+            batch__status=QualityShipmentBatch.Status.CONFIRMED,
+        )
+        line_totals = lines.aggregate(
+            pieces=Sum("piece_quantity"), weight=Sum("net_weight_kg")
+        )
+        pieces = int(line_totals["pieces"] or 0)
+        weight = Decimal(line_totals["weight"] or 0)
+        linked_batches = set(lines.values_list("batch_id", flat=True))
+        occurrences = {}
+        for binding in ProcessCardUnitBinding.objects.filter(
+            process_card__tracking_id=self.tracking_id,
+            shipment_batch__status=QualityShipmentBatch.Status.CONFIRMED,
+        ).only(
+            "shipment_batch_id", "shipment_unit_no", "piece_quantity", "net_weight_kg"
+        ):
+            if binding.shipment_batch_id not in linked_batches:
+                occurrences[(binding.shipment_batch_id, binding.shipment_unit_no)] = (
+                    int(binding.piece_quantity), Decimal(binding.net_weight_kg)
+                )
+        cases = QualityReworkCase.objects.filter(
+            process_card__tracking_id=self.tracking_id,
+            origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+        ).exclude(status=QualityReworkCase.Status.CANCELLED).only(
+            "id", "shipment_batch_id", "shipment_unit_no",
+            "affected_quantity", "affected_weight_kg",
+        )
+        for case in cases:
+            if case.shipment_batch_id in linked_batches:
+                continue
+            key = (
+                case.shipment_batch_id,
+                case.shipment_unit_no
+                if case.shipment_unit_no is not None
+                else f"legacy-{case.pk}",
+            )
+            occurrences.setdefault(
+                key,
+                (
+                    int(case.affected_quantity or 0),
+                    Decimal(case.affected_weight_kg or 0),
+                ),
+            )
+        pieces += sum(value[0] for value in occurrences.values())
+        weight += sum((value[1] for value in occurrences.values()), Decimal("0"))
+        return {"pieces": pieces, "weight": weight}
 
     @property
     def delivered_piece_quantity(self):
@@ -839,7 +907,7 @@ class ProcessCard(TimeStampedModel):
             next_status = self.Status.SHIPPED
         else:
             next_status = self.Status.PARTIAL_SHIPPED
-        if self.status != self.Status.CANCELLED and self.status != next_status:
+        if self.status not in (self.Status.CANCELLED, self.Status.REPLACED) and self.status != next_status:
             type(self).objects.filter(pk=self.pk).update(status=next_status)
             self.status = next_status
 
@@ -849,6 +917,24 @@ class ProcessCard(TimeStampedModel):
 
     def __str__(self):
         return f"{self.card_no} - {self.order.order_no}"
+
+    @property
+    def is_replaced(self):
+        return self.status == self.Status.REPLACED or hasattr(self, "replaced_by")
+
+    @property
+    def active_replacement(self):
+        """Return the newest printable card in this replacement chain."""
+
+        card = self
+        seen = set()
+        while card.pk not in seen:
+            seen.add(card.pk)
+            try:
+                card = card.replaced_by
+            except ProcessCard.DoesNotExist:
+                break
+        return card
 
 
 class QualityShipmentBatch(TimeStampedModel):
@@ -1358,6 +1444,119 @@ class QualityShipmentLine(TimeStampedModel):
         return f"{self.batch.shipment_no} - {card_label}"
 
 
+class ProcessCardUnitBinding(TimeStampedModel):
+    """Current outbound occurrence of one physical process-card batch.
+
+    Equal-weight quick entry stores many physical batches in one shipment
+    line.  This additive table lets zero, some, or all of those physical units
+    be bound to individual cards without rewriting the historical weight row.
+    On re-shipment the same binding moves to the new confirmed shipment while
+    the return cases retain every earlier source.
+    """
+
+    process_card = models.OneToOneField(
+        ProcessCard,
+        related_name="unit_binding",
+        on_delete=models.PROTECT,
+    )
+    shipment_batch = models.ForeignKey(
+        QualityShipmentBatch,
+        related_name="process_card_bindings",
+        on_delete=models.PROTECT,
+    )
+    shipment_unit_no = models.PositiveIntegerField()
+    piece_quantity = models.PositiveIntegerField()
+    net_weight_kg = models.DecimalField(
+        max_digits=14,
+        decimal_places=3,
+        validators=[MinValueValidator(Decimal("0.001"))],
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="quality_process_card_unit_bindings",
+        on_delete=models.PROTECT,
+    )
+
+    class Meta:
+        ordering = ["shipment_batch_id", "shipment_unit_no"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["shipment_batch", "shipment_unit_no"],
+                name="quality_card_binding_batch_unit_uniq",
+            ),
+            models.CheckConstraint(
+                condition=Q(shipment_unit_no__gt=0),
+                name="quality_card_binding_unit_gt_zero",
+            ),
+            models.CheckConstraint(
+                condition=Q(piece_quantity__gt=0),
+                name="quality_card_binding_piece_gt_zero",
+            ),
+            models.CheckConstraint(
+                condition=Q(net_weight_kg__gt=0),
+                name="quality_card_binding_weight_gt_zero",
+            ),
+        ]
+
+    def clean(self):
+        errors = {}
+        if self.shipment_batch_id and self.shipment_batch.status != QualityShipmentBatch.Status.CONFIRMED:
+            errors["shipment_batch"] = "流程卡只能绑定已确认的出货记录。"
+        if self.process_card_id and self.process_card.status in (
+            ProcessCard.Status.CANCELLED,
+            ProcessCard.Status.REPLACED,
+        ):
+            errors["process_card"] = "已取消或已替换的流程卡不能绑定出货批次。"
+        if not self.shipment_unit_no or self.shipment_unit_no < 1:
+            errors["shipment_unit_no"] = "物理批号必须大于0。"
+        if not self.piece_quantity or self.piece_quantity < 1:
+            errors["piece_quantity"] = "物理批件数必须大于0。"
+        if self.net_weight_kg is None or self.net_weight_kg <= 0:
+            errors["net_weight_kg"] = "物理批净重必须大于0。"
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.process_card.card_no} / {self.shipment_batch.shipment_no} #{self.shipment_unit_no}"
+
+
+class DefectReason(TimeStampedModel):
+    """Maintainable reason/tag dictionary used by customer returns."""
+
+    code = models.CharField(max_length=50, unique=True)
+    name = models.CharField(max_length=100)
+    is_active = models.BooleanField(default=True, db_index=True)
+    is_system = models.BooleanField(default=False)
+    sort_order = models.PositiveIntegerField(default=0)
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["sort_order", "id"]
+
+    def clean(self):
+        self.code = str(self.code or "").strip().upper()
+        self.name = str(self.name or "").strip()
+        self.notes = str(self.notes or "").strip()
+        errors = {}
+        if not self.code:
+            errors["code"] = "原因代码不能为空。"
+        if not self.name:
+            errors["name"] = "原因名称不能为空。"
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
+
+
 class QualityReworkCase(TimeStampedModel):
     """A quality issue that can contain any number of rework attempts."""
 
@@ -1370,6 +1569,8 @@ class QualityReworkCase(TimeStampedModel):
         PROCESSING = "PROCESSING", "Processing"
         WAITING_REINSPECTION = "WAITING_REINSPECTION", "Waiting for reinspection"
         COMPLETED = "COMPLETED", "Completed"
+        WAITING_REWORK = "WAITING_REWORK", "待返工"
+        RESHIPPED = "RESHIPPED", "已重新出货"
         SCRAPPED = "SCRAPPED", "Scrapped"
         CANCELLED = "CANCELLED", "Cancelled"
 
@@ -1406,9 +1607,14 @@ class QualityReworkCase(TimeStampedModel):
     shipment_unit_no = models.PositiveIntegerField(
         "physical shipment unit number", null=True, blank=True
     )
-    opened_on = models.DateField(
-        "opened date", default=timezone.localdate, db_index=True
+    return_round = models.PositiveIntegerField(
+        "customer return round", null=True, blank=True, db_index=True
     )
+    is_current_return = models.BooleanField(default=False, db_index=True)
+    opened_on = models.DateField(
+        "opened date", default=timezone.localdate, null=True, blank=True, db_index=True
+    )
+    date_is_approximate = models.BooleanField(default=False)
     backfill_reason = models.TextField("historical-entry reason", blank=True, default="")
     reason_category = models.CharField(
         "reason category",
@@ -1424,6 +1630,23 @@ class QualityReworkCase(TimeStampedModel):
         related_name="weighted_rework_cases",
         on_delete=models.PROTECT,
         null=True,
+        blank=True,
+    )
+    inspectors = models.ManyToManyField(
+        QualityEmployee,
+        related_name="weighted_rework_cases_many",
+        blank=True,
+    )
+    primary_reason = models.ForeignKey(
+        DefectReason,
+        related_name="primary_rework_cases",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    secondary_reasons = models.ManyToManyField(
+        DefectReason,
+        related_name="secondary_rework_cases",
         blank=True,
     )
     affected_quantity = models.PositiveIntegerField(
@@ -1469,9 +1692,13 @@ class QualityReworkCase(TimeStampedModel):
                     Q(origin="CUSTOMER_RETURN")
                     & Q(shipment_batch__isnull=False)
                     & Q(shipment_unit_no__isnull=False)
-                    & ~Q(status="CANCELLED")
+                    & Q(status__in=["OPEN", "PROCESSING", "WAITING_REINSPECTION", "WAITING_REWORK"])
                 ),
                 name="quality_active_return_batch_unit_uniq",
+            ),
+            models.CheckConstraint(
+                condition=Q(return_round__isnull=True) | Q(return_round__gt=0),
+                name="quality_rework_return_round_gt_zero",
             ),
         ]
 
@@ -1503,6 +1730,8 @@ class QualityReworkCase(TimeStampedModel):
             errors["shipment_unit_no"] = "整批序号必须关联原出货批次。"
         if self.shipment_unit_no is not None and self.shipment_unit_no < 1:
             errors["shipment_unit_no"] = "整批序号必须大于0。"
+        if self.return_round is not None and self.return_round < 1:
+            errors["return_round"] = "退货返工次数必须大于0。"
         if (
             self.shipment_line_id
             and self.shipment_batch_id
@@ -1513,7 +1742,12 @@ class QualityReworkCase(TimeStampedModel):
             errors["affected_quantity"] = "Affected quantity must be greater than zero."
         if self.affected_weight_kg is not None and self.affected_weight_kg <= 0:
             errors["affected_weight_kg"] = "Affected weight must be greater than zero."
-        if self.shipment_line_id and self.process_card_id and self.shipment_line.process_card_id != self.process_card_id:
+        if (
+            self.shipment_line_id
+            and self.process_card_id
+            and self.shipment_line.process_card_id is not None
+            and self.shipment_line.process_card_id != self.process_card_id
+        ):
             errors["shipment_line"] = "返工关联的出货明细必须属于所选流程卡。"
         if self.shipment_line_id and not self.process_card_id:
             self.process_card_id = self.shipment_line.process_card_id
@@ -1548,7 +1782,10 @@ class QualityReworkCase(TimeStampedModel):
                 errors["affected_weight_kg"] = "累计客户退回重量不能超过该出货行净重。"
             if self.affected_quantity is not None and line.piece_quantity is not None and returned_qty + self.affected_quantity > line.piece_quantity:
                 errors["affected_quantity"] = "累计客户退回件数不能超过该出货行件数。"
-        if self.opened_on and self.opened_on < timezone.localdate() and not str(self.backfill_reason or "").strip():
+        if (
+            (self.opened_on is None or self.date_is_approximate or self.opened_on < timezone.localdate())
+            and not str(self.backfill_reason or "").strip()
+        ):
             errors["backfill_reason"] = "A reason is required when entering a historical rework case."
         if self.responsible_inspector_id:
             role = QualityEmployee.objects.filter(pk=self.responsible_inspector_id).values_list(

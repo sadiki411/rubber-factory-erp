@@ -486,7 +486,7 @@ describe('QualityWeightShipmentDrawer', () => {
       net_weight_kg: 2.5,
       product_batch_count: 1,
     })
-    expect(apiMocks.confirmShipmentBatch).toHaveBeenCalledWith(88)
+    expect(apiMocks.confirmShipmentBatch).toHaveBeenCalledWith(88, [])
     expect(onSaved).toHaveBeenCalledTimes(1)
   }, 40_000)
 })

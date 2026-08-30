@@ -10,11 +10,18 @@ from molds.models import MoldModel
 from orders.services import model_snapshot, order_identity_exists, record_revision
 
 from .models import (
+    DefectReason,
     QualityEmployee, QualityOrder, QualityShipment, ReturnRework,
-    ProductUnitWeight, ProcessCard, QualityShipmentBatch, QualityShipmentLine,
+    ProductUnitWeight, ProcessCard, ProcessCardUnitBinding,
+    QualityShipmentBatch, QualityShipmentLine,
     QualityReworkCase, QualityReworkAttempt,
 )
-from .services import create_whole_batch_return_case, serialize_rework_source
+from .services import (
+    create_whole_batch_return_case,
+    legacy_reason_category,
+    serialize_rework_source,
+    sync_order_status_from_delivery,
+)
 
 
 def _validation_details(exc):
@@ -336,9 +343,16 @@ class QualityShipmentSerializer(ValidatedModelSerializer):
                 )
         else:
             instance.inspectors.set([instance.inspector])
+        sync_order_status_from_delivery(
+            [instance.order_id],
+            source="SHIPMENT",
+            operator=instance.created_by,
+            reason_prefix=f"登记出货 {instance.shipment_no}。",
+        )
         return instance
 
     def update(self, instance, validated_data):
+        previous_order_id = instance.order_id
         inspectors = validated_data.pop("inspectors", serializers.empty)
         instance = super().update(instance, validated_data)
         if inspectors is not serializers.empty:
@@ -351,6 +365,12 @@ class QualityShipmentSerializer(ValidatedModelSerializer):
                 )
         elif "inspector" in validated_data and instance.inspector_id:
             instance.inspectors.set([instance.inspector])
+        sync_order_status_from_delivery(
+            [previous_order_id, instance.order_id],
+            source="SHIPMENT",
+            operator=instance.created_by,
+            reason_prefix=f"更新出货 {instance.shipment_no}。",
+        )
         return instance
 
 
@@ -428,12 +448,20 @@ class ReturnReworkSerializer(ValidatedModelSerializer):
                 validated_data["shipment"] = QualityShipment.objects.select_for_update().get(
                     pk=shipment.pk
                 )
-                return super().create(validated_data)
+                instance = super().create(validated_data)
+                sync_order_status_from_delivery(
+                    [instance.shipment.order_id],
+                    source="CUSTOMER_RETURN",
+                    operator=instance.created_by,
+                    reason_prefix=f"登记客户退货 {instance.pk}。",
+                )
+                return instance
         except IntegrityError as exc:
             raise serializers.ValidationError({"detail": self.conflict_message}) from exc
 
     def update(self, instance, validated_data):
         target_shipment = validated_data.get("shipment", instance.shipment)
+        previous_order_id = instance.shipment.order_id
         try:
             with transaction.atomic():
                 shipment_ids = sorted({instance.shipment_id, target_shipment.pk})
@@ -445,7 +473,14 @@ class ReturnReworkSerializer(ValidatedModelSerializer):
                 }
                 validated_data["shipment"] = locked[target_shipment.pk]
                 locked_instance = ReturnRework.objects.select_for_update().get(pk=instance.pk)
-                return super().update(locked_instance, validated_data)
+                updated = super().update(locked_instance, validated_data)
+                sync_order_status_from_delivery(
+                    [previous_order_id, updated.shipment.order_id],
+                    source="CUSTOMER_RETURN",
+                    operator=updated.created_by,
+                    reason_prefix=f"更新客户退货 {updated.pk}。",
+                )
+                return updated
         except IntegrityError as exc:
             raise serializers.ValidationError({"detail": self.conflict_message}) from exc
 
@@ -459,6 +494,54 @@ class ProductUnitWeightSerializer(ValidatedModelSerializer):
         model = ProductUnitWeight
         fields = ["id", "product_specification", "product_specification_id", "mold_model", "mold_model_id", "sample_count", "sample_total_weight_g", "unit_weight_g", "measured_on", "backfill_reason", "is_active", "notes", "created_by", "created_at", "updated_at"]
         read_only_fields = ["created_by", "created_at", "updated_at"]
+
+
+class DefectReasonSerializer(ValidatedModelSerializer):
+    class Meta:
+        model = DefectReason
+        fields = [
+            "id", "code", "name", "is_active", "is_system", "sort_order",
+            "notes", "created_at", "updated_at",
+        ]
+        read_only_fields = ["is_system", "created_at", "updated_at"]
+
+
+class ProcessCardUnitBindingSerializer(serializers.ModelSerializer):
+    card_no = serializers.CharField(source="process_card.card_no", read_only=True)
+    shipment_no = serializers.CharField(source="shipment_batch.shipment_no", read_only=True)
+    shipment_date = serializers.DateField(
+        source="shipment_batch.shipment_date", read_only=True
+    )
+    order_id = serializers.IntegerField(source="process_card.order_id", read_only=True)
+    order_no = serializers.CharField(
+        source="process_card.order.order_no", read_only=True
+    )
+    item_no = serializers.CharField(
+        source="process_card.order.item_no", read_only=True
+    )
+    product_name = serializers.SerializerMethodField()
+    specification = serializers.SerializerMethodField()
+    material = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProcessCardUnitBinding
+        fields = [
+            "id", "process_card_id", "card_no", "shipment_batch_id",
+            "shipment_no", "shipment_date", "shipment_unit_no", "order_id",
+            "order_no", "item_no", "product_name", "specification",
+            "material", "piece_quantity", "net_weight_kg", "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_product_name(self, obj) -> str:
+        return obj.process_card.product_name_snapshot or obj.process_card.order.product_name
+
+    def get_specification(self, obj) -> str:
+        return obj.process_card.specification_snapshot or obj.process_card.order.specification
+
+    def get_material(self, obj) -> str:
+        return obj.process_card.material_snapshot or obj.process_card.order.material
 
 
 class ProcessCardSerializer(ValidatedModelSerializer):
@@ -479,18 +562,44 @@ class ProcessCardSerializer(ValidatedModelSerializer):
     rework_count = serializers.SerializerMethodField()
     due_date = serializers.DateField(source="order.due_date", read_only=True)
     material_weight_g = serializers.SerializerMethodField()
+    replaces_card_no = serializers.CharField(source="replaces.card_no", read_only=True)
+    replaced_by_card_no = serializers.SerializerMethodField()
+    active_card_id = serializers.SerializerMethodField()
+    active_card_no = serializers.SerializerMethodField()
+    unit_binding = ProcessCardUnitBindingSerializer(read_only=True)
+    current_return = serializers.SerializerMethodField()
     class Meta:
         model = ProcessCard
-        fields = ["id", "card_no", "order_id", "source_order_no", "source_item_no", "product_specification_id", "product_name_snapshot", "product_code_snapshot", "formula_code_snapshot", "specification_snapshot", "material_snapshot", "customer_snapshot", "department_snapshot", "special_requirements", "qr_text", "original_image", "material_issue_weight_kg", "material_weight_g", "demand_date", "due_date", "quantity", "unit_weight_config_id", "unit_weight_g", "sample_count_snapshot", "sample_total_weight_g_snapshot", "measured_on_snapshot", "mold_model_code_snapshot", "status", "status_display", "received_on", "backfill_reason", "reprint_count", "notes", "raw_data", "theoretical_weight_kg", "expected_weight_kg", "max_allowed_weight_kg", "remaining_weight_kg", "shipped_net_weight_kg", "shipped_weight_kg", "shipped_quantity", "returned_piece_quantity", "delivered_piece_quantity", "delivered_net_weight_kg", "rework_count", "created_by", "created_at", "updated_at"]
-        read_only_fields = ["status_display", "theoretical_weight_kg", "max_allowed_weight_kg", "remaining_weight_kg", "shipped_net_weight_kg", "shipped_quantity", "returned_piece_quantity", "delivered_piece_quantity", "delivered_net_weight_kg", "rework_count", "created_by", "created_at", "updated_at"]
+        fields = ["id", "card_no", "tracking_id", "replaces_card_no", "replaced_by_card_no", "active_card_id", "active_card_no", "unit_binding", "current_return", "order_id", "source_order_no", "source_item_no", "product_specification_id", "product_name_snapshot", "product_code_snapshot", "formula_code_snapshot", "specification_snapshot", "material_snapshot", "customer_snapshot", "department_snapshot", "special_requirements", "qr_text", "original_image", "material_issue_weight_kg", "material_weight_g", "demand_date", "due_date", "quantity", "unit_weight_config_id", "unit_weight_g", "sample_count_snapshot", "sample_total_weight_g_snapshot", "measured_on_snapshot", "mold_model_code_snapshot", "status", "status_display", "received_on", "backfill_reason", "reprint_count", "notes", "raw_data", "theoretical_weight_kg", "expected_weight_kg", "max_allowed_weight_kg", "remaining_weight_kg", "shipped_net_weight_kg", "shipped_weight_kg", "shipped_quantity", "returned_piece_quantity", "delivered_piece_quantity", "delivered_net_weight_kg", "rework_count", "created_by", "created_at", "updated_at"]
+        read_only_fields = ["tracking_id", "status_display", "theoretical_weight_kg", "max_allowed_weight_kg", "remaining_weight_kg", "shipped_net_weight_kg", "shipped_quantity", "returned_piece_quantity", "delivered_piece_quantity", "delivered_net_weight_kg", "rework_count", "created_by", "created_at", "updated_at"]
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
-        if self.instance is not None and self.instance.shipment_lines.exists():
+        card_no = str(attrs.get("card_no", getattr(self.instance, "card_no", "")) or "").strip().upper()
+        qr_text = str(attrs.get("qr_text", getattr(self.instance, "qr_text", "")) or "").strip().upper()
+        if qr_text and qr_text != card_no:
+            raise serializers.ValidationError(
+                {"qr_text": "标准二维码内容必须与流程卡单号完全一致。"}
+            )
+        if self.instance is None and card_no and not qr_text:
+            attrs["qr_text"] = card_no
+        has_tracking_history = bool(
+            self.instance is not None
+            and (
+                self.instance.shipment_lines.exists()
+                or ProcessCardUnitBinding.objects.filter(
+                    process_card=self.instance
+                ).exists()
+                or self.instance.rework_cases.exists()
+                or self.instance.replaces_id is not None
+                or ProcessCard.objects.filter(replaces_id=self.instance.pk).exists()
+            )
+        )
+        if has_tracking_history:
             # Once a card has any shipment line, its identity, quantity and
-            # weight snapshot are historical facts.  Notes and operational
-            # metadata may still be corrected, but changing these fields
-            # would make old shipment calculations impossible to reproduce.
+            # physical-unit binding, return, or replacement, its identity and
+            # measurement snapshot are historical facts. Notes and other
+            # operational metadata may still be corrected.
             immutable = (
                 "card_no", "order", "quantity", "unit_weight_g",
                 "unit_weight_config", "product_specification", "source_item_no",
@@ -516,10 +625,44 @@ class ProcessCardSerializer(ValidatedModelSerializer):
         return obj.delivered_piece_quantity
 
     def get_rework_count(self, obj) -> int:
-        return obj.rework_cases.exclude(status=QualityReworkCase.Status.CANCELLED).count()
+        return QualityReworkCase.objects.filter(
+            process_card__tracking_id=obj.tracking_id,
+        ).exclude(status=QualityReworkCase.Status.CANCELLED).count()
 
     def get_material_weight_g(self, obj) -> Decimal | None:
         return (obj.material_issue_weight_kg * Decimal("1000")) if obj.material_issue_weight_kg is not None else None
+
+    def get_replaced_by_card_no(self, obj) -> str | None:
+        replacement = ProcessCard.objects.filter(replaces_id=obj.pk).only("card_no").first()
+        return replacement.card_no if replacement else None
+
+    def get_active_card_id(self, obj) -> int:
+        return obj.active_replacement.pk
+
+    def get_active_card_no(self, obj) -> str:
+        return obj.active_replacement.card_no
+
+    def get_current_return(self, obj) -> dict | None:
+        case = (
+            QualityReworkCase.objects.filter(
+                process_card__tracking_id=obj.tracking_id,
+                origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+                is_current_return=True,
+            )
+            .exclude(status=QualityReworkCase.Status.CANCELLED)
+            .order_by("-return_round", "-id")
+            .first()
+        )
+        if case is None:
+            return None
+        return {
+            "id": case.pk,
+            "case_no": case.case_no,
+            "return_round": case.return_round,
+            "return_label": f"第{case.return_round}次退货返工" if case.return_round else "退货返工记录",
+            "status": case.status,
+            "opened_on": case.opened_on,
+        }
 
 
 class QualityShipmentLineSerializer(ValidatedModelSerializer):
@@ -726,6 +869,7 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
     line_count = serializers.IntegerField(read_only=True)
     date_pending = serializers.BooleanField(read_only=True)
     warnings = serializers.SerializerMethodField()
+    process_card_bindings = ProcessCardUnitBindingSerializer(many=True, read_only=True)
     class Meta:
         model = QualityShipmentBatch
         fields = [
@@ -736,7 +880,7 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
             "inspector", "inspector_id", "inspectors", "inspector_ids", "status", "customer",
             "delivery_info", "backfill_reason", "notes", "lines", "net_weight_kg",
             "total_net_weight_kg", "actual_weight_kg", "shipped_quantity", "piece_quantity",
-            "line_count", "date_pending", "warnings", "created_by", "created_at", "updated_at",
+            "line_count", "date_pending", "warnings", "process_card_bindings", "created_by", "created_at", "updated_at",
         ]
         read_only_fields = [
             "created_by", "created_at", "updated_at", "net_weight_kg", "actual_weight_kg",
@@ -1205,6 +1349,123 @@ class QualityReturnableBatchPageSerializer(serializers.Serializer):
     results = QualityReturnableBatchCandidateSerializer(many=True)
 
 
+class ProcessCardBindingInputSerializer(serializers.Serializer):
+    shipment_unit_no = serializers.IntegerField(min_value=1)
+    card_no = serializers.CharField(max_length=150)
+    order_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+
+
+class ProcessCardBindingRequestSerializer(serializers.Serializer):
+    cards = ProcessCardBindingInputSerializer(many=True, allow_empty=False)
+
+
+class ProcessCardReplaceRequestSerializer(serializers.Serializer):
+    new_card_no = serializers.CharField(max_length=150)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class ScannedReturnRequestSerializer(serializers.Serializer):
+    card_no = serializers.CharField(max_length=150)
+    shipment_batch_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    shipment_unit_no = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    order_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    opened_on = serializers.DateField(required=False, allow_null=True)
+    date_is_approximate = serializers.BooleanField(required=False, default=False)
+    backfill_reason = serializers.CharField(required=False, allow_blank=True)
+    reason_category = serializers.ChoiceField(
+        choices=ReturnRework.ReasonCategory.choices,
+        required=False,
+    )
+    primary_reason_id = serializers.PrimaryKeyRelatedField(
+        source="primary_reason",
+        queryset=DefectReason.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+    )
+    secondary_reason_ids = serializers.PrimaryKeyRelatedField(
+        source="secondary_reasons",
+        queryset=DefectReason.objects.filter(is_active=True),
+        many=True,
+        required=False,
+    )
+    reason = serializers.CharField(required=False, allow_blank=True)
+    inspector_ids = serializers.PrimaryKeyRelatedField(
+        source="inspectors",
+        queryset=QualityEmployee.objects.filter(
+            is_active=True,
+            role__in=[QualityEmployee.Role.INSPECTOR, QualityEmployee.Role.BOTH],
+        ),
+        many=True,
+        required=False,
+    )
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class BulkScannedReturnRequestSerializer(serializers.Serializer):
+    cards = serializers.ListField(
+        child=serializers.DictField(), allow_empty=False
+    )
+    opened_on = serializers.DateField(required=False, allow_null=True)
+    date_is_approximate = serializers.BooleanField(required=False, default=False)
+    backfill_reason = serializers.CharField(required=False, allow_blank=True)
+    reason_category = serializers.ChoiceField(
+        choices=ReturnRework.ReasonCategory.choices,
+        required=False,
+    )
+    primary_reason_id = serializers.PrimaryKeyRelatedField(
+        source="primary_reason",
+        queryset=DefectReason.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+    )
+    secondary_reason_ids = serializers.PrimaryKeyRelatedField(
+        source="secondary_reasons",
+        queryset=DefectReason.objects.filter(is_active=True),
+        many=True,
+        required=False,
+    )
+    reason = serializers.CharField(required=False, allow_blank=True)
+    inspector_ids = serializers.PrimaryKeyRelatedField(
+        source="inspectors",
+        queryset=QualityEmployee.objects.filter(
+            is_active=True,
+            role__in=[QualityEmployee.Role.INSPECTOR, QualityEmployee.Role.BOTH],
+        ),
+        many=True,
+        required=False,
+    )
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_cards(self, values):
+        serializer = ScannedReturnRequestSerializer(data=values, many=True)
+        serializer.is_valid(raise_exception=True)
+        return serializer.validated_data
+
+
+class ReturnReshipRequestSerializer(serializers.Serializer):
+    shipment_date = serializers.DateField(required=False, allow_null=True)
+    net_weight_kg = serializers.DecimalField(
+        max_digits=14, decimal_places=3, min_value=Decimal("0.001"),
+        required=False,
+    )
+    piece_quantity = serializers.IntegerField(min_value=1, required=False)
+    inspector_ids = serializers.PrimaryKeyRelatedField(
+        source="inspectors",
+        queryset=QualityEmployee.objects.filter(
+            is_active=True,
+            role__in=[QualityEmployee.Role.INSPECTOR, QualityEmployee.Role.BOTH],
+        ),
+        many=True,
+        required=False,
+    )
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class BindExistingReturnRequestSerializer(serializers.Serializer):
+    card_no = serializers.CharField(max_length=150)
+    order_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+
+
 class QualityReworkCaseSerializer(ValidatedModelSerializer):
     process_card_id = serializers.PrimaryKeyRelatedField(source="process_card", queryset=ProcessCard.objects.all(), required=False, allow_null=True)
     shipment_line_id = serializers.PrimaryKeyRelatedField(source="shipment_line", queryset=QualityShipmentLine.objects.all(), required=False, allow_null=True)
@@ -1217,10 +1478,42 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
     reason_category_display = serializers.CharField(
         source="get_reason_category_display", read_only=True
     )
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    return_label = serializers.SerializerMethodField()
+    process_card_no = serializers.CharField(source="process_card.card_no", read_only=True)
+    active_process_card_no = serializers.SerializerMethodField()
+    binding_pending = serializers.SerializerMethodField()
+    responsible_inspectors = serializers.SerializerMethodField()
+    inspector_ids = serializers.PrimaryKeyRelatedField(
+        source="inspectors",
+        queryset=QualityEmployee.objects.filter(
+            is_active=True,
+            role__in=[QualityEmployee.Role.INSPECTOR, QualityEmployee.Role.BOTH],
+        ),
+        many=True,
+        required=False,
+        write_only=True,
+    )
+    primary_reason_detail = DefectReasonSerializer(source="primary_reason", read_only=True)
+    primary_reason_id = serializers.PrimaryKeyRelatedField(
+        source="primary_reason",
+        queryset=DefectReason.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+        write_only=True,
+    )
+    secondary_reason_details = serializers.SerializerMethodField()
+    secondary_reason_ids = serializers.PrimaryKeyRelatedField(
+        source="secondary_reasons",
+        queryset=DefectReason.objects.filter(is_active=True),
+        many=True,
+        required=False,
+        write_only=True,
+    )
     class Meta:
         model = QualityReworkCase
-        fields = ["id", "case_no", "origin", "process_card_id", "shipment_line_id", "shipment_batch_id", "shipment_unit_no", "source", "opened_on", "backfill_reason", "reason_category", "reason_category_display", "reason", "responsible_inspector_id", "affected_quantity", "affected_weight_kg", "status", "closed_on", "notes", "attempt_count", "attempts", "created_by", "created_at", "updated_at"]
-        read_only_fields = ["case_no", "source", "attempt_count", "attempts", "created_by", "created_at", "updated_at"]
+        fields = ["id", "case_no", "origin", "process_card_id", "process_card_no", "active_process_card_no", "binding_pending", "shipment_line_id", "shipment_batch_id", "shipment_unit_no", "source", "return_round", "return_label", "is_current_return", "opened_on", "date_is_approximate", "backfill_reason", "reason_category", "reason_category_display", "primary_reason_id", "primary_reason_detail", "secondary_reason_ids", "secondary_reason_details", "reason", "responsible_inspector_id", "responsible_inspectors", "inspector_ids", "affected_quantity", "affected_weight_kg", "status", "status_display", "closed_on", "notes", "attempt_count", "attempts", "created_by", "created_at", "updated_at"]
+        read_only_fields = ["case_no", "source", "return_round", "is_current_return", "attempt_count", "attempts", "created_by", "created_at", "updated_at"]
         # The conditional database uniqueness rule applies only to new
         # whole-batch customer returns.  DRF's generated validator incorrectly
         # makes both nullable fields mandatory for internal/historical cases
@@ -1230,6 +1523,20 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        if "primary_reason" in attrs and "reason_category" not in attrs:
+            attrs["reason_category"] = legacy_reason_category(attrs["primary_reason"])
+        primary_reason = attrs.get(
+            "primary_reason", getattr(self.instance, "primary_reason", None)
+        )
+        secondary_reasons = attrs.get("secondary_reasons")
+        if (
+            primary_reason is not None
+            and secondary_reasons is not None
+            and any(value.pk == primary_reason.pk for value in secondary_reasons)
+        ):
+            raise serializers.ValidationError(
+                {"secondary_reason_ids": "主要原因不能同时作为次要问题标签。"}
+            )
         if (
             self.instance is not None
             and self.instance.status == QualityReworkCase.Status.CANCELLED
@@ -1262,7 +1569,12 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
                         for field in changed
                     }
                 )
-        if process_card is not None and shipment_line is not None and process_card.pk != shipment_line.process_card_id:
+        if (
+            process_card is not None
+            and shipment_line is not None
+            and shipment_line.process_card_id is not None
+            and process_card.pk != shipment_line.process_card_id
+        ):
             raise serializers.ValidationError({"shipment_line": "返工关联的出货明细必须属于所选流程卡。"})
         if shipment_line is not None and shipment_batch is not None and shipment_line.batch_id != shipment_batch.pk:
             raise serializers.ValidationError({"shipment_line_id": "原出货明细不属于所选出货批次。"})
@@ -1283,23 +1595,82 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
         return attrs
 
     def create(self, validated_data):
+        inspectors = validated_data.pop("inspectors", [])
+        secondary_reasons = validated_data.pop("secondary_reasons", [])
         if (
             validated_data.get("origin") == QualityReworkCase.Origin.CUSTOMER_RETURN
             and validated_data.get("shipment_batch") is not None
             and validated_data.get("shipment_unit_no") is not None
         ):
             try:
-                return create_whole_batch_return_case(validated_data)
+                case = create_whole_batch_return_case(validated_data)
+                if inspectors:
+                    case.inspectors.set(inspectors)
+                if secondary_reasons:
+                    case.secondary_reasons.set(secondary_reasons)
+                self._sync_case_orders(case, "登记客户退货")
+                return case
             except ValueError as exc:
                 raise serializers.ValidationError({"detail": str(exc)}) from exc
-        return super().create(validated_data)
+        case = super().create(validated_data)
+        if inspectors:
+            case.inspectors.set(inspectors)
+        if secondary_reasons:
+            case.secondary_reasons.set(secondary_reasons)
+        if case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN:
+            self._sync_case_orders(case, "登记客户退货")
+        return case
 
     def update(self, instance, validated_data):
         # Serialize corrections to the same registered return while the
         # immutable shipment/batch/quantity facts remain protected above.
+        inspectors = validated_data.pop("inspectors", None)
+        secondary_reasons = validated_data.pop("secondary_reasons", None)
         with transaction.atomic():
             locked = QualityReworkCase.objects.select_for_update().get(pk=instance.pk)
-            return super().update(locked, validated_data)
+            case = super().update(locked, validated_data)
+            if (
+                case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
+                and case.status == QualityReworkCase.Status.CANCELLED
+                and case.is_current_return
+            ):
+                case.is_current_return = False
+                case.save(update_fields=["is_current_return", "updated_at"])
+            if inspectors is not None:
+                case.inspectors.set(inspectors)
+                if inspectors and case.responsible_inspector_id is None:
+                    case.responsible_inspector = inspectors[0]
+                    case.save(update_fields=["responsible_inspector", "updated_at"])
+            if secondary_reasons is not None:
+                case.secondary_reasons.set(secondary_reasons)
+            if case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN:
+                self._sync_case_orders(case, "更新或取消客户退货")
+            return case
+
+    @staticmethod
+    def _sync_case_orders(case, reason):
+        if case.process_card_id:
+            case.process_card.refresh_shipping_status()
+        order_ids = set(
+            case.shipment_allocations.values_list(
+                "shipment_line__order_id", flat=True
+            )
+        )
+        if case.shipment_line_id:
+            line = case.shipment_line
+            order_ids.add(
+                line.order_id
+                or (line.process_card.order_id if line.process_card_id else None)
+            )
+        if case.process_card_id:
+            order_ids.add(case.process_card.order_id)
+        order_ids.discard(None)
+        sync_order_status_from_delivery(
+            order_ids,
+            source="CUSTOMER_RETURN",
+            operator=case.created_by,
+            reason_prefix=f"{reason} {case.case_no}。",
+        )
 
     def get_source(self, obj) -> dict | None:
         return serialize_rework_source(obj)
@@ -1325,6 +1696,27 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
             }
             for attempt in obj.attempts.all()
         ]
+
+    def get_return_label(self, obj) -> str:
+        return (
+            f"第{obj.return_round}次退货返工"
+            if obj.return_round
+            else "退货返工记录"
+        )
+
+    def get_active_process_card_no(self, obj) -> str | None:
+        return obj.process_card.active_replacement.card_no if obj.process_card_id else None
+
+    def get_binding_pending(self, obj) -> bool:
+        return obj.origin == QualityReworkCase.Origin.CUSTOMER_RETURN and not obj.process_card_id
+
+    def get_responsible_inspectors(self, obj) -> list[dict]:
+        values = getattr(obj, "_prefetched_objects_cache", {}).get("inspectors", [])
+        return QualityEmployeeSerializer(values, many=True, context=self.context).data
+
+    def get_secondary_reason_details(self, obj) -> list[dict]:
+        values = getattr(obj, "_prefetched_objects_cache", {}).get("secondary_reasons", [])
+        return DefectReasonSerializer(values, many=True, context=self.context).data
 
 
 class QualityReworkAttemptSerializer(ValidatedModelSerializer):

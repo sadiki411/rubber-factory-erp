@@ -4,10 +4,10 @@ import {
   EditOutlined,
   EyeOutlined,
   PlusOutlined,
+  QrcodeOutlined,
   ReloadOutlined,
   SearchOutlined,
   SendOutlined,
-  ToolOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
 import { Alert, App, Button, Card, Col, DatePicker, Empty, Grid, Input, Progress, Row, Select, Skeleton, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
@@ -30,6 +30,7 @@ import {
   QualityReworkCaseDetailDrawer,
 } from '../components/QualityReturnReworkDrawer'
 import { QualityReworkCaseMobileList } from '../components/QualityReworkCaseMobileList'
+import { QualityFlowCardReturnDrawer, QualityProcessCardReplacementDrawer } from '../components/QualityFlowCardReturnDrawer'
 import { formatQualityDate, isHighReworkCount, qualityNumber, reworkCaseSourceTitle } from '../quality'
 import type {
   QualityDailyTrend,
@@ -138,10 +139,17 @@ export function QualityPage() {
   const [shipmentForm, setShipmentForm] = useState<{ shipment?: QualityShipment }>()
   const [batchReviewItem, setBatchReviewItem] = useState<QualityShipmentBatch>()
   const [returnReworkOpen, setReturnReworkOpen] = useState(false)
+  const [flowCardReturnOpen, setFlowCardReturnOpen] = useState(false)
+  const [replacementOpen, setReplacementOpen] = useState(false)
   const [returnReworkDetail, setReturnReworkDetail] = useState<QualityReworkCase>()
   const [returnReworkAttempt, setReturnReworkAttempt] = useState<QualityReworkCase>()
   const [resumeReturnAfterShipment, setResumeReturnAfterShipment] = useState(false)
   const [employeeForm, setEmployeeForm] = useState<{ employee?: QualityEmployee }>()
+  const [reworkQuickFilter, setReworkQuickFilter] = useState('ALL')
+  const [reworkMoreOpen, setReworkMoreOpen] = useState(false)
+  const [reworkRange, setReworkRange] = useState<[Dayjs, Dayjs] | null>(null)
+  const [reworkReasonFilter, setReworkReasonFilter] = useState('')
+  const [reworkCustomerFilter, setReworkCustomerFilter] = useState('')
   const dateFrom = range[0].format('YYYY-MM-DD')
   const dateTo = range[1].format('YYYY-MM-DD')
   const dueDateFrom = dueRange?.[0].format('YYYY-MM-DD')
@@ -241,11 +249,25 @@ export function QualityPage() {
   const totals = summary?.totals
   const keyword = query.trim().toLowerCase()
   const filteredReworkCases = useMemo(() => reworkCases.filter((item) => {
-    if (!keyword) return true
     const source = item.source
-    return [item.case_no, item.reason, item.notes, source?.shipment_no, source?.order_no, source?.item_no, source?.product_name, source?.specification, source?.material]
+    const searchMatch = !keyword || [item.case_no, item.active_process_card_no, item.process_card_no, item.process_card?.card_no, item.reason, item.notes, source?.shipment_no, source?.order_no, source?.item_no, source?.product_name, source?.specification, source?.material]
       .some((value) => String(value || '').toLowerCase().includes(keyword))
-  }), [keyword, reworkCases])
+    const round = Number(item.return_round || item.attempt_count || item.attempts?.length || 0)
+    const quickMatch = reworkQuickFilter === 'ALL'
+      || (reworkQuickFilter === 'WAITING_REWORK' && ['WAITING_REWORK', 'OPEN', 'PROCESSING'].includes(item.status))
+      || (reworkQuickFilter === 'RESHIPPED' && ['RESHIPPED', 'COMPLETED'].includes(item.status))
+      || (reworkQuickFilter === 'ROUND_1' && round === 1)
+      || (reworkQuickFilter === 'ROUND_2' && round === 2)
+      || (reworkQuickFilter === 'ROUND_3' && round === 3)
+      || (reworkQuickFilter === 'ROUND_4_PLUS' && round >= 4)
+    const opened = dayjs(item.opened_on)
+    const dateMatch = !reworkRange || (opened.isValid() && !opened.isBefore(reworkRange[0].startOf('day')) && !opened.isAfter(reworkRange[1].endOf('day')))
+    const reasonText = [item.primary_reason_detail?.name, item.primary_reason?.name, ...(item.secondary_reason_details || item.secondary_reasons || []).map((value) => value.name), item.reason_category_display, item.reason].join(' ').toLowerCase()
+    const reasonMatch = !reworkReasonFilter || reasonText.includes(reworkReasonFilter.trim().toLowerCase())
+    const sourceCustomer = String(source?.customer || '').toLowerCase()
+    const customerMatch = !reworkCustomerFilter || sourceCustomer.includes(reworkCustomerFilter.trim().toLowerCase())
+    return searchMatch && quickMatch && dateMatch && reasonMatch && customerMatch
+  }), [keyword, reworkCases, reworkCustomerFilter, reworkQuickFilter, reworkRange, reworkReasonFilter])
 
   const refreshAfterShipment = async () => {
     await Promise.all([
@@ -329,12 +351,13 @@ export function QualityPage() {
   ]
 
   const reworkCaseColumns: TableColumnsType<QualityReworkCase> = [
-    { title: '退货返工记录', dataIndex: 'case_no', fixed: 'left', width: 150, render: (value, row) => <span><Button type="link" className="table-primary-link" onClick={() => setReturnReworkDetail(row)}><strong>{value}</strong></Button><br /><Typography.Text type="secondary">{formatQualityDate(row.opened_on)}</Typography.Text></span> },
+    { title: '退货返工记录', dataIndex: 'case_no', fixed: 'left', width: 180, render: (value, row) => <span><Tag color="orange">{row.return_label || `第 ${row.return_round || row.attempt_count || 1} 次退货返工`}</Tag><br /><Button type="link" className="table-primary-link" onClick={() => setReturnReworkDetail(row)}><strong>{value}</strong></Button><br /><Typography.Text type="secondary">{formatQualityDate(row.opened_on)}</Typography.Text></span> },
+    { title: '流程卡', key: 'processCard', width: 190, render: (_, row) => <strong>{row.active_process_card_no || row.process_card_no || row.process_card?.card_no || row.source?.lines?.find((line) => line.card_no)?.card_no || '待绑定流程卡'}</strong> },
     { title: '原出货 / 订单', key: 'source', width: 230, render: (_, row) => <span><strong>{reworkCaseSourceTitle(row)}</strong><br /><Typography.Text type="secondary">{row.source ? `物理批号 ${row.source.shipment_unit_no} · 本组共${row.source.total_batches}批` : '历史来源摘要不完整'}</Typography.Text></span> },
     { title: '产品 / 规格 / 材质', key: 'product', width: 245, render: (_, row) => <span><strong>{row.source?.product_name || '-'}</strong><br /><Typography.Text type="secondary">{[row.source?.specification, row.source?.material].filter(Boolean).join(' · ') || '-'}</Typography.Text></span> },
     { title: '退回整批', key: 'wholeBatch', width: 150, render: (_, row) => row.source ? <span>{qualityNumber(row.source.pieces_per_batch)} 件<br /><Typography.Text type="secondary">{qualityNumber(row.source.single_batch_net_weight_kg, 3)} kg</Typography.Text></span> : `${qualityNumber(row.affected_quantity)} 件` },
-    { title: '返工轮次', key: 'attempts', width: 115, render: (_, row) => reworkCountTag(row.attempt_count || row.attempts?.length || 0) },
-    { title: '状态', dataIndex: 'status', width: 110, render: (value) => <Tag color={value === 'COMPLETED' ? 'success' : value === 'SCRAPPED' || value === 'CANCELLED' ? 'default' : 'warning'}>{value === 'OPEN' ? '待返工' : value === 'PROCESSING' ? '返工中' : value === 'WAITING_REINSPECTION' ? '待复检' : value === 'COMPLETED' ? '已完成' : value === 'SCRAPPED' ? '已报废' : '已取消'}</Tag> },
+    { title: '当前返工次数', key: 'attempts', width: 125, render: (_, row) => reworkCountTag(row.return_round || row.attempt_count || row.attempts?.length || 0) },
+    { title: '状态', dataIndex: 'status', width: 120, render: (value) => <Tag color={value === 'RESHIPPED' || value === 'COMPLETED' ? 'success' : value === 'SCRAPPED' || value === 'CANCELLED' ? 'default' : 'warning'}>{value === 'WAITING_REWORK' || value === 'OPEN' || value === 'PROCESSING' ? '待返工' : value === 'RESHIPPED' || value === 'COMPLETED' ? '已重新出货' : value === 'WAITING_REINSPECTION' ? '待复检' : value === 'SCRAPPED' ? '已报废' : '已取消'}</Tag> },
     { title: '操作', key: 'action', fixed: 'right', width: 180, render: (_, row) => <Space size={2}><Button type="link" onClick={() => setReturnReworkDetail(row)}>查看</Button>{row.origin === 'CUSTOMER_RETURN' && !['CANCELLED', 'SCRAPPED'].includes(row.status) && <Button type="link" onClick={() => setReturnReworkAttempt(row)}>登记下一轮</Button>}</Space> },
   ]
 
@@ -376,7 +399,7 @@ export function QualityPage() {
       label: '流程卡出货',
       children: <div className="quality-tab-content">
         {(processCardsQuery.error || unitWeightsQuery.error || batchesQuery.error || workflowBatchesQuery.error || shipmentBatchOptionsQuery.error || reworkCasesQuery.error) && <Alert type="warning" showIcon style={{ marginBottom: 16 }} title="流程卡重量出货模块暂不可用" description="当前服务器未返回一期流程卡接口，页面已保留原有件数出货功能；完成后端迁移后刷新即可启用。" />}
-        <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} shipments={shipmentOptions} batches={workflowBatches} reworks={reworks} reworkCases={filteredReworkCases} searchText={query} loading={ordersQuery.isLoading || processCardsQuery.isLoading || workflowBatchesQuery.isLoading} onOpenShipment={() => setShipmentForm({})} onOpenRework={() => setReturnReworkOpen(true)} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); await refreshAfterShipment() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} /><QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions} reworkCases={filteredReworkCases} onOpenReturnRework={() => setReturnReworkOpen(true)} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={async () => { await refreshAfterShipment(); await reworkCasesQuery.refetch() }} /></div>,
+        <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} shipments={shipmentOptions} batches={workflowBatches} reworks={reworks} reworkCases={filteredReworkCases} searchText={query} loading={ordersQuery.isLoading || processCardsQuery.isLoading || workflowBatchesQuery.isLoading} onOpenShipment={() => setShipmentForm({})} onOpenRework={() => setFlowCardReturnOpen(true)} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); await refreshAfterShipment() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} /><QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions} reworkCases={filteredReworkCases} onOpenReturnRework={() => setFlowCardReturnOpen(true)} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={async () => { await refreshAfterShipment(); await reworkCasesQuery.refetch() }} /></div>,
     },
     {
       key: 'daily',
@@ -392,10 +415,31 @@ export function QualityPage() {
       label: '退货返工',
       children: <div className="quality-tab-content">
         <Alert className="quality-responsibility-alert" type="info" showIcon title="绩效口径分开统计" description="责任品检员记录退货责任；返工处理人记录实际返工工作量，两项不会混为同一指标。" />
-        <div className="section-heading"><div><Typography.Title level={3}>整批退货返工记录</Typography.Title><Typography.Text type="secondary">从已确认出货中选择一整批，系统自动带入件数、重量、订单和品检员；后续按 R1、R2、R3 追加返工轮次。</Typography.Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => setReturnReworkOpen(true)}>登记整批退货返工</Button></div>
+        {mobile && <div className="quality-return-scan-toolbar"><Button type="primary" icon={<QrcodeOutlined />} onClick={() => setFlowCardReturnOpen(true)}>扫码登记退货</Button><Button onClick={() => setReplacementOpen(true)}>补卡换号</Button></div>}
+        <div className="section-heading"><div><Typography.Title level={3}>流程卡退货返工追踪</Typography.Title><Typography.Text type="secondary">每批产品按流程卡独立显示“第N次退货返工”；同卡再次退回会自动接续次数，点开可看完整时间线。</Typography.Text></div><Space wrap><Button onClick={() => setReplacementOpen(true)}>补卡换号</Button><Button type="primary" icon={<QrcodeOutlined />} onClick={() => setFlowCardReturnOpen(true)}>扫描登记退货</Button></Space></div>
+        <div className="quality-return-filter-chips" aria-label="退货返工快捷筛选">
+          {[
+            ['ALL', '全部'],
+            ['WAITING_REWORK', '待返工'],
+            ['ROUND_1', '第1次'],
+            ['ROUND_2', '第2次'],
+            ['ROUND_3', '第3次'],
+            ['RESHIPPED', '已重新出货'],
+            ['ROUND_4_PLUS', '第4次+'],
+          ].map(([value, label]) => <Button key={value} type={reworkQuickFilter === value ? 'primary' : 'default'} onClick={() => setReworkQuickFilter(value)}>{label}</Button>)}
+          <Button onClick={() => setReworkMoreOpen((value) => !value)}>{reworkMoreOpen ? '收起筛选' : '更多筛选'}</Button>
+        </div>
+        {reworkMoreOpen && <Card size="small" className="quality-return-more-filters">
+          <Row gutter={[10, 10]}>
+            <Col xs={24} md={8}><RangePicker style={{ width: '100%' }} value={reworkRange} onChange={(value) => setReworkRange(value?.[0] && value?.[1] ? [value[0], value[1]] : null)} placeholder={['退货开始日期', '退货结束日期']} /></Col>
+            <Col xs={24} md={8}><Input allowClear value={reworkReasonFilter} onChange={(event) => setReworkReasonFilter(event.target.value)} placeholder="按主要/次要退货原因" /></Col>
+            <Col xs={24} md={8}><Input allowClear value={reworkCustomerFilter} onChange={(event) => setReworkCustomerFilter(event.target.value)} placeholder="按客户筛选" /></Col>
+          </Row>
+        </Card>}
         {mobile
           ? <QualityReworkCaseMobileList items={filteredReworkCases} loading={reworkCasesQuery.isLoading} emptyText={keyword ? '没有符合当前搜索条件的退货返工记录' : '暂无整批退货返工记录'} onOpen={setReturnReworkDetail} onAddAttempt={setReturnReworkAttempt} />
-          : tableCard(filteredReworkCases, reworkCaseColumns, reworkCasesQuery.isLoading, 'id', 1230, keyword ? '没有符合当前搜索条件的退货返工记录' : '暂无整批退货返工记录')}
+          : tableCard(filteredReworkCases, reworkCaseColumns, reworkCasesQuery.isLoading, 'id', 1420, keyword ? '没有符合当前搜索条件的退货返工记录' : '暂无整批退货返工记录')}
+        <div className="quality-return-manual-fallback"><Typography.Text type="secondary">旧数据没有流程卡或首次扫码无法找到原出货？</Typography.Text><Button type="link" onClick={() => setReturnReworkOpen(true)}>登记整批退货返工（手工选择原出货）</Button></div>
         {!!reworks.length && <div className="quality-legacy-reworks"><div className="section-heading"><div><Typography.Title level={4}>历史旧版退货返工</Typography.Title><Typography.Text type="secondary">旧数据保留用于追溯，只读展示，不再从这里新增或修改。</Typography.Text></div><Tag>只读</Tag></div>{tableCard(reworks, reworkColumns, reworksQuery.isLoading, 'id', 1350, '暂无历史旧版记录')}</div>}
       </div>,
     },
@@ -438,7 +482,7 @@ export function QualityPage() {
       <PageTitle
         title="品检出货与退货返工"
         description="记录每日质检与出货、每次退货返工和订单批次；员工绩效与跨模块趋势统一在“数据分析”查看。"
-        extra={<Space wrap><Button icon={<ToolOutlined />} onClick={() => setReturnReworkOpen(true)}>登记整批退货返工</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => setShipmentForm({})}>新增出货</Button></Space>}
+        extra={<Space wrap><Button icon={<QrcodeOutlined />} onClick={() => setFlowCardReturnOpen(true)}>扫码登记退货</Button><Button onClick={() => setReturnReworkOpen(true)}>登记整批退货返工（无扫码）</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => setShipmentForm({})}>新增出货</Button></Space>}
       />
 
       <Card className="filter-card quality-filter-card">
@@ -518,6 +562,18 @@ export function QualityPage() {
         }}
         onSaved={refreshAfterShipment}
       />
+      <QualityFlowCardReturnDrawer
+        open={flowCardReturnOpen}
+        employees={employees}
+        onClose={() => setFlowCardReturnOpen(false)}
+        onBackfillShipment={() => {
+          setFlowCardReturnOpen(false)
+          setResumeReturnAfterShipment(true)
+          setShipmentForm({})
+        }}
+        onSaved={refreshAfterShipment}
+      />
+      <QualityProcessCardReplacementDrawer open={replacementOpen} onClose={() => setReplacementOpen(false)} onSaved={refreshAfterShipment} />
       <QualityReturnReworkAttemptDrawer open={!!returnReworkAttempt} item={returnReworkAttempt} employees={employees} onClose={() => setReturnReworkAttempt(undefined)} onSaved={refreshAfterShipment} />
       <QualityReworkCaseDetailDrawer open={!!returnReworkDetail} item={returnReworkDetail} onClose={() => setReturnReworkDetail(undefined)} onAddAttempt={setReturnReworkAttempt} onSaved={refreshAfterShipment} />
       <QualityEmployeeDrawer open={!!employeeForm} employee={employeeForm?.employee} onClose={() => setEmployeeForm(undefined)} />

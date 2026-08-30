@@ -14,7 +14,7 @@
 
 - WebView只加载 `https://erp.qvgro.com:443` 的页面和网络资源，禁止HTTP降级、混合内容、SSL错误绕过和第三方Cookie。
 - 登录继续使用网站现有的同域Session Cookie和CSRF保护，没有把账号密码写入APK。
-- 支持Excel/图片文件选择、拍照上传以及带登录Cookie的同域文件下载。
+- 支持Excel/图片文件选择、拍照上传、流程卡二维码实时扫描，以及带登录Cookie的同域文件下载。扫码相机权限只会授予受信任的 `https://erp.qvgro.com` 页面；相机或识别内核不可用时可手动输入流程卡号。
 - 没有JavaScript原生桥，也不会把ERP登录Cookie发送到其他域名。
 - 断网时只允许重试，不提供离线写入，避免产生无法同步的数据。
 

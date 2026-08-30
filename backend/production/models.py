@@ -7,6 +7,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import Q
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 from molds.models import Machine, MoldAsset, TimeStampedModel
@@ -128,20 +129,59 @@ class ProductionStation(TimeStampedModel):
         return self.code
 
 
+class ProductionEmployee(TimeStampedModel):
+    """Small, production-local employee directory used by fast shop-floor entry.
+
+    The historical ledger stored an operator snapshot as text.  Keeping this
+    directory in the production app lets old rows remain readable while new
+    rows can be selected quickly and still preserve the name used at the time.
+    """
+
+    name = models.CharField("姓名", max_length=100)
+    is_active = models.BooleanField("在职/启用", default=True)
+    notes = models.TextField("备注", blank=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+        constraints = [
+            models.UniqueConstraint(Lower("name"), name="uniq_production_employee_name_ci")
+        ]
+
+    def clean(self):
+        self.name = normalize_operator(self.name)
+        if not self.name:
+            raise ValidationError({"name": "员工姓名不能为空。"})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
+
+
 class ProductionRun(TimeStampedModel):
     class Status(models.TextChoices):
         PLANNED = "PLANNED", "待上机"
         RUNNING = "RUNNING", "生产中"
+        PAUSED_ON_MACHINE = "PAUSED_ON_MACHINE", "暂停（模具保留在机台）"
+        PAUSED_UNLOADED = "PAUSED_UNLOADED", "暂停（已下机）"
         COMPLETED = "COMPLETED", "已完成"
         CANCELLED = "CANCELLED", "已取消"
 
-    ACTIVE_STATUSES = (Status.PLANNED, Status.RUNNING)
+    class DefectEstimateMode(models.TextChoices):
+        RATE = "RATE", "按比例"
+        QUANTITY = "QUANTITY", "按件数"
+
+    ACTIVE_STATUSES = (Status.PLANNED, Status.RUNNING, Status.PAUSED_ON_MACHINE)
 
     station = models.ForeignKey(
         ProductionStation,
         verbose_name="生产站位",
         related_name="runs",
         on_delete=models.PROTECT,
+        null=True,
+        blank=True,
     )
     order = models.ForeignKey(
         "quality.QualityOrder",
@@ -182,6 +222,15 @@ class ProductionRun(TimeStampedModel):
         decimal_places=2,
         default=0,
         validators=[MinValueValidator(Decimal("0"))],
+    )
+    estimated_defect_mode = models.CharField(
+        "预估不良方式",
+        max_length=20,
+        choices=DefectEstimateMode.choices,
+        default=DefectEstimateMode.RATE,
+    )
+    estimated_defect_quantity = models.PositiveIntegerField(
+        "预估不良件数", default=0
     )
     planned_mold_count = models.PositiveIntegerField(
         "计划生产模数", validators=[MinValueValidator(1)]
@@ -273,6 +322,24 @@ class ProductionRun(TimeStampedModel):
         blank=True,
     )
     notes = models.TextField("备注", blank=True)
+    continuation_of = models.ForeignKey(
+        "self",
+        verbose_name="接续的上一生产段",
+        related_name="continuations",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    segment_no = models.PositiveIntegerField("生产段序号", default=1)
+    counter_segment = models.PositiveIntegerField("计数器分段", default=1)
+    paused_at = models.DateTimeField("暂停时间", null=True, blank=True)
+    pause_note = models.TextField("暂停/恢复说明", blank=True)
+    is_ledger_only = models.BooleanField(
+        "仅手工账补录",
+        default=False,
+        db_index=True,
+        help_text="不占用实时机台或模具；用于历史纸质账及缺少现场状态的补录。",
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         verbose_name="创建人",
@@ -297,7 +364,22 @@ class ProductionRun(TimeStampedModel):
                         unloaded_at__isnull=True,
                     )
                     | Q(
+                        status="PAUSED_ON_MACHINE",
+                        loaded_at__isnull=False,
+                        unloaded_at__isnull=True,
+                    )
+                    | Q(
+                        status="PAUSED_UNLOADED",
+                        loaded_at__isnull=False,
+                        unloaded_at__isnull=False,
+                    )
+                    | Q(
                         status="COMPLETED",
+                        is_ledger_only=True,
+                    )
+                    | Q(
+                        status="COMPLETED",
+                        is_ledger_only=False,
                         loaded_at__isnull=False,
                         unloaded_at__isnull=False,
                     )
@@ -336,18 +418,24 @@ class ProductionRun(TimeStampedModel):
                 name="prod_run_expected_order_ck",
             ),
             models.UniqueConstraint(
-                fields=["station", "order_no"],
+                fields=["station", "order_no", "segment_no"],
                 name="uniq_run_station_order",
             ),
             models.UniqueConstraint(
                 fields=["station"],
-                condition=Q(status__in=["PLANNED", "RUNNING"]),
+                condition=Q(
+                    status__in=["PLANNED", "RUNNING", "PAUSED_ON_MACHINE"],
+                    station__isnull=False,
+                    is_ledger_only=False,
+                ),
                 name="uniq_active_run_per_station",
             ),
             models.UniqueConstraint(
                 fields=["mold"],
                 condition=Q(
-                    status__in=["PLANNED", "RUNNING"], mold__isnull=False
+                    status__in=["PLANNED", "RUNNING", "PAUSED_ON_MACHINE"],
+                    mold__isnull=False,
+                    is_ledger_only=False,
                 ),
                 name="uniq_active_run_per_mold",
             ),
@@ -375,10 +463,16 @@ class ProductionRun(TimeStampedModel):
                 errors["loaded_at"] = "生产中订单必须填写上模时间。"
             if self.unloaded_at:
                 errors["unloaded_at"] = "生产中订单不能填写下机时间。"
+        elif self.status == self.Status.PAUSED_ON_MACHINE:
+            if not self.loaded_at or self.unloaded_at:
+                errors["status"] = "保留模具的暂停任务必须已经上机且不能填写下机时间。"
+        elif self.status == self.Status.PAUSED_UNLOADED:
+            if not self.loaded_at or not self.unloaded_at:
+                errors["status"] = "已下机的暂停任务必须保留上模和下机时间。"
         elif self.status == self.Status.COMPLETED:
-            if not self.loaded_at:
+            if not self.is_ledger_only and not self.loaded_at:
                 errors["loaded_at"] = "完成订单必须填写上模时间。"
-            if not self.unloaded_at:
+            if not self.is_ledger_only and not self.unloaded_at:
                 errors["unloaded_at"] = "完成订单必须填写下机时间。"
         elif self.status == self.Status.CANCELLED:
             if bool(self.loaded_at) != bool(self.unloaded_at):
@@ -401,7 +495,12 @@ class ProductionRun(TimeStampedModel):
                 )
         elif self.settled_by_id:
             errors["settled_by"] = "未结算订单不能填写结算人。"
-        if self.pk and self.status == self.Status.PLANNED and self.daily_logs.exists():
+        if (
+            self.pk
+            and self.status == self.Status.PLANNED
+            and not self.is_ledger_only
+            and self.daily_logs.exists()
+        ):
             errors["status"] = "待上机订单不能保留生产日报。"
         if (
             self.pk
@@ -422,9 +521,12 @@ class ProductionRun(TimeStampedModel):
             elif self.unloaded_at and self.material_changed_at > self.unloaded_at:
                 errors["material_changed_at"] = "换料时间不能晚于生产结束时间。"
 
-        if self.status == self.Status.RUNNING and not self.mold_id:
-            errors["mold"] = "生产中的订单必须关联模具。"
-        if self.status in self.ACTIVE_STATUSES and self.mold_id:
+        if self.status in (self.Status.RUNNING, self.Status.PAUSED_ON_MACHINE) and not self.mold_id:
+            errors["mold"] = "生产中或保留在机台的任务必须关联具体模具。"
+        if self.estimated_defect_mode == self.DefectEstimateMode.QUANTITY:
+            if self.estimated_defect_quantity < 0:
+                errors["estimated_defect_quantity"] = "预估不良件数不能小于0。"
+        if self.status in self.ACTIVE_STATUSES and self.mold_id and not self.is_ledger_only:
             station_machine_id = (
                 ProductionStation.objects.filter(pk=self.station_id)
                 .values_list("machine_id", flat=True)
@@ -444,7 +546,7 @@ class ProductionRun(TimeStampedModel):
                 errors["mold"] = "待上机或生产中的订单不能关联已删除的模具。"
             elif mold_status == MoldAsset.Status.OUTSOURCED:
                 errors["mold"] = "待上机或生产中的订单不能关联客户收回的模具。"
-            elif self.status == self.Status.RUNNING:
+            elif self.status in (self.Status.RUNNING, self.Status.PAUSED_ON_MACHINE):
                 if station_machine_id is None:
                     errors["station"] = "该生产机台尚未关联模具台账机台，不能登记为生产中。"
                 elif (
@@ -519,7 +621,10 @@ class ProductionRun(TimeStampedModel):
         return super().save(*args, **kwargs)
 
     def _logs(self):
-        return list(self.daily_logs.all())
+        prefetched = getattr(self, "_prefetched_objects_cache", {}).get("daily_logs")
+        if prefetched is not None:
+            return [log for log in prefetched if not log.is_cancelled]
+        return list(self.daily_logs.filter(is_cancelled=False))
 
     @property
     def produced_mold_count(self):
@@ -562,6 +667,29 @@ class ProductionRun(TimeStampedModel):
         return max(self.planned_mold_count - self.produced_mold_count, 0)
 
     @property
+    def target_reached(self):
+        return self.produced_mold_count >= self.planned_mold_count
+
+    @property
+    def theoretical_quantity(self):
+        return sum(
+            log.produced_mold_count * (log.cavities_snapshot or self.cavities)
+            for log in self._logs()
+        )
+
+    @property
+    def recorded_defective_quantity(self):
+        return sum(log.defective_quantity for log in self._logs())
+
+    @property
+    def qualified_production_quantity(self):
+        return max(self.theoretical_quantity - self.recorded_defective_quantity, 0)
+
+    @property
+    def overproduction_quantity(self):
+        return max(self.qualified_production_quantity - self.order_quantity, 0)
+
+    @property
     def revenue(self):
         if not self.is_settled:
             return ZERO.quantize(TWO_PLACES)
@@ -592,20 +720,59 @@ class ProductionRun(TimeStampedModel):
         return _quantize(earned_hours / actual * Decimal("100"))
 
     def __str__(self):
-        return f"{self.order_no} - {self.station.code}"
+        station_code = self.station.code if self.station_id else "未指定机台"
+        return f"{self.order_no} - {station_code}"
 
 
 class ProductionDailyLog(TimeStampedModel):
+    class Shift(models.TextChoices):
+        DAY = "DAY", "白班"
+        NIGHT = "NIGHT", "夜班"
+
     run = models.ForeignKey(
         ProductionRun,
         verbose_name="生产订单",
         related_name="daily_logs",
         on_delete=models.CASCADE,
     )
-    production_date = models.DateField("生产日期", db_index=True)
-    operator = models.CharField("作业员", max_length=100)
+    production_date = models.DateField("生产日期", db_index=True, null=True, blank=True)
+    operator = models.CharField("作业员", max_length=100, blank=True)
+    operator_employee = models.ForeignKey(
+        ProductionEmployee,
+        verbose_name="主要作业员",
+        related_name="production_logs",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    assistant_operators = models.ManyToManyField(
+        ProductionEmployee,
+        verbose_name="协助人员",
+        related_name="assisted_production_logs",
+        blank=True,
+    )
+    shift = models.CharField("班次", max_length=10, choices=Shift.choices, blank=True)
+    sequence_no = models.PositiveIntegerField("交接顺序", default=0)
+    counter_segment = models.PositiveIntegerField("计数器分段", default=1)
+    cumulative_mold_count = models.PositiveIntegerField(
+        "累计模数读数", null=True, blank=True
+    )
     produced_mold_count = models.PositiveIntegerField(
         "生产模数", validators=[MinValueValidator(1)]
+    )
+    cavities_snapshot = models.PositiveSmallIntegerField(
+        "本次有效孔数快照", default=1, validators=[MinValueValidator(1)]
+    )
+    defective_quantity = models.PositiveIntegerField("不良/报废数量", default=0)
+    is_cancelled = models.BooleanField("已取消", default=False, db_index=True)
+    cancelled_at = models.DateTimeField("取消时间", null=True, blank=True)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        verbose_name="取消人",
+        related_name="cancelled_production_logs",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
     )
     curing_seconds_snapshot = models.PositiveIntegerField(
         "硫化时间快照(秒)", default=0, editable=False
@@ -633,14 +800,10 @@ class ProductionDailyLog(TimeStampedModel):
     notes = models.TextField("备注", blank=True)
 
     class Meta:
-        ordering = ["production_date", "id"]
+        ordering = ["run_id", "sequence_no", "id"]
         constraints = [
             models.UniqueConstraint(
-                fields=["run", "production_date", "operator"],
-                name="uniq_daily_log_per_run_date_operator",
-            ),
-            models.CheckConstraint(
-                condition=~Q(operator=""), name="prod_daily_operator_not_empty_ck"
+                fields=["run", "sequence_no"], name="uniq_prod_log_run_sequence"
             ),
             models.CheckConstraint(
                 condition=Q(produced_mold_count__gte=1),
@@ -652,14 +815,19 @@ class ProductionDailyLog(TimeStampedModel):
         errors = {}
         if self.run_id:
             run_state = ProductionRun.objects.filter(pk=self.run_id).values_list(
-                "status", "loaded_at", "unloaded_at"
+                "status", "loaded_at", "unloaded_at", "is_ledger_only"
             ).first()
-            run_status, loaded_at, unloaded_at = run_state or (
+            run_status, loaded_at, unloaded_at, is_ledger_only = run_state or (
                 None,
                 None,
                 None,
+                False,
             )
-            if run_status == ProductionRun.Status.PLANNED:
+            if (
+                run_status == ProductionRun.Status.PLANNED
+                and not is_ledger_only
+                and not getattr(self, "_allow_planned_counter", False)
+            ):
                 errors["run"] = "待上机订单不能填写生产日报。"
             elif run_status == ProductionRun.Status.CANCELLED and not loaded_at:
                 errors["run"] = "未上模即取消的订单不能填写生产日报。"
@@ -682,7 +850,7 @@ class ProductionDailyLog(TimeStampedModel):
             ):
                 errors["production_date"] = "生产日期不能晚于下机日期。"
         self.operator = normalize_operator(self.operator)
-        if not self.operator:
+        if not self.operator and self.cumulative_mold_count is None:
             errors["operator"] = "作业员不能为空。"
         if not self.produced_mold_count or self.produced_mold_count < 1:
             errors["produced_mold_count"] = "生产模数必须大于0。"
@@ -691,13 +859,79 @@ class ProductionDailyLog(TimeStampedModel):
 
     def save(self, *args, **kwargs):
         self.operator = normalize_operator(self.operator)
+        if self.operator_employee_id:
+            self.operator = self.operator_employee.name
         if not self.pk and self.run_id:
             self.curing_seconds_snapshot = self.run.curing_seconds
+            if not self.cavities_snapshot or self.cavities_snapshot == 1:
+                self.cavities_snapshot = self.run.cavities
+            if not self.sequence_no:
+                previous = self.run.daily_logs.order_by("-sequence_no", "-id").first()
+                self.sequence_no = (previous.sequence_no if previous else 0) + 1
+            if self.cumulative_mold_count is None:
+                previous = (
+                    self.run.daily_logs.filter(
+                        counter_segment=self.counter_segment,
+                        is_cancelled=False,
+                    )
+                    .order_by("-sequence_no", "-id")
+                    .first()
+                )
+                self.cumulative_mold_count = (
+                    (previous.cumulative_mold_count or 0) if previous else 0
+                ) + int(self.produced_mold_count or 0)
         self.full_clean()
         return super().save(*args, **kwargs)
 
+    @property
+    def theoretical_quantity(self):
+        return self.produced_mold_count * self.cavities_snapshot
+
+    @property
+    def qualified_quantity(self):
+        return max(self.theoretical_quantity - self.defective_quantity, 0)
+
+    @property
+    def operator_pending(self):
+        return not bool(self.operator_employee_id or normalize_operator(self.operator))
+
     def __str__(self):
-        return f"{self.run.order_no} - {self.production_date} - {self.operator}"
+        date_text = self.production_date.isoformat() if self.production_date else "日期未记录"
+        return f"{self.run.order_no} - {date_text} - {self.operator}"
+
+
+class ProductionRecordAudit(models.Model):
+    class Action(models.TextChoices):
+        CREATED = "CREATED", "新增"
+        UPDATED = "UPDATED", "修改"
+        CANCELLED = "CANCELLED", "取消"
+        COUNTER_RESET = "COUNTER_RESET", "计数清零"
+        PAUSED = "PAUSED", "暂停"
+        RESUMED = "RESUMED", "恢复"
+
+    run = models.ForeignKey(
+        ProductionRun, related_name="record_audits", on_delete=models.PROTECT
+    )
+    daily_log = models.ForeignKey(
+        ProductionDailyLog,
+        related_name="audits",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    action = models.CharField(max_length=30, choices=Action.choices)
+    before = models.JSONField(default=dict, blank=True)
+    after = models.JSONField(default=dict, blank=True)
+    reason = models.TextField(blank=True)
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="production_record_audits",
+        on_delete=models.PROTECT,
+    )
+    changed_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-changed_at", "-id"]
 
 
 class ProductionSettlementRevision(models.Model):

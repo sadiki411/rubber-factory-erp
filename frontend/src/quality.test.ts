@@ -1,6 +1,8 @@
 import {
   expectedWeightKg,
   isHighReworkCount,
+  isLikelyProcessCardNo,
+  normalizeProcessCardQrText,
   normalizeWeightKg,
   orderUnitWeightG,
   piecesPerBatchFromTotal,
@@ -20,6 +22,13 @@ import {
 } from './quality'
 
 describe('quality quantity validation', () => {
+  it('reads the real customer process-card QR format without an ERP connection', () => {
+    expect(normalizeProcessCardQrText(' 04-M003-2608210028\n')).toBe('04-M003-2608210028')
+    expect(isLikelyProcessCardNo('04-M003-2608210028')).toBe(true)
+    expect(normalizeProcessCardQrText('https://example.invalid/scan?card_no=04-M003-2608210028')).toBe('04-M003-2608210028')
+    expect(isLikelyProcessCardNo('0028')).toBe(false)
+  })
+
   it('reconciles inspection quantities', () => {
     expect(shipmentQuantitiesMatch(100, 96, 4)).toBe(true)
     expect(shipmentQuantitiesMatch(100, 96, 5)).toBe(false)

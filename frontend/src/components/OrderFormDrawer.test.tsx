@@ -11,9 +11,9 @@ Object.defineProperty(window, 'matchMedia', {
 class ResizeObserverMock { observe() {} unobserve() {} disconnect() {} }
 globalThis.ResizeObserver = ResizeObserverMock
 
-const apiMocks = vi.hoisted(() => ({ create: vi.fn(), update: vi.fn(), listSpecifications: vi.fn() }))
+const apiMocks = vi.hoisted(() => ({ create: vi.fn(), update: vi.fn(), statusHistory: vi.fn(), listSpecifications: vi.fn() }))
 vi.mock('../api/client', () => ({
-  orderApi: { create: apiMocks.create, update: apiMocks.update },
+  orderApi: { create: apiMocks.create, update: apiMocks.update, statusHistory: apiMocks.statusHistory },
   productSpecificationApi: { list: apiMocks.listSpecifications },
   toList: <T,>(payload: T[]) => payload,
 }))
@@ -27,6 +27,7 @@ describe('OrderFormDrawer', () => {
   beforeEach(() => {
     apiMocks.create.mockReset().mockResolvedValue({ id: 1 })
     apiMocks.update.mockReset()
+    apiMocks.statusHistory.mockReset().mockResolvedValue([])
     apiMocks.listSpecifications.mockReset().mockResolvedValue([])
   })
 
@@ -78,5 +79,21 @@ describe('OrderFormDrawer', () => {
 
     expect(screen.getByLabelText(/成型工时/)).toHaveValue('')
     expect(screen.getByText(/模具型号：TEST-MOLD-MODEL-01/)).toBeInTheDocument()
+  }, 20_000)
+
+  it('calculates received cards and covered quantity from standard and tail cards', async () => {
+    renderDrawer()
+
+    fireEvent.change(screen.getByLabelText(/标准卡每张数量/), { target: { value: '1000' } })
+    fireEvent.change(screen.getByLabelText(/标准卡张数/), { target: { value: '10' } })
+    fireEvent.change(screen.getByLabelText(/尾数卡数量/), { target: { value: '800' } })
+    // This action is synchronous.  Using userEvent here makes the full Ant
+    // Design drawer accessibility walk dominate the test runtime on slower
+    // CI runners and can turn a deterministic calculation into a timeout.
+    fireEvent.click(screen.getByRole('button', { name: '计算并写入流程卡登记' }))
+
+    expect(screen.getByLabelText(/流程卡张数/)).toHaveValue('11')
+    expect(screen.getByLabelText(/流程卡覆盖订单数量/)).toHaveValue('10800')
+    expect(screen.getByLabelText(/流程卡（原表内容）/)).toHaveValue('1000×10张＋800×1张＝10800件')
   }, 20_000)
 })
