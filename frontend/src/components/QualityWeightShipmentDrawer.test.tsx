@@ -1,6 +1,6 @@
 import { App } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { QualityEmployee, QualityOrder, QualityProcessCard, QualityShipmentBatch } from '../types'
 import { QualityWeightShipmentDrawer } from './QualityWeightShipmentDrawer'
@@ -22,6 +22,72 @@ const apiMocks = vi.hoisted(() => ({
   confirmShipmentBatch: vi.fn(),
   scanProcessCard: vi.fn(),
 }))
+vi.mock('./QualityQrScanner', async () => {
+  const React = await vi.importActual<typeof import('react')>('react')
+
+  interface ScannerProps {
+    open: boolean
+    title?: string
+    initialValues?: string[]
+    onClose: () => void
+    onScan: (cardNo: string) => boolean | void | Promise<boolean | void>
+  }
+
+  return {
+    QualityQrScanner: function QualityQrScannerTestDouble({
+      open,
+      title = '扫描流程卡',
+      initialValues = [],
+      onClose,
+      onScan,
+    }: ScannerProps) {
+      const [manualValue, setManualValue] = React.useState('')
+      const [scanned, setScanned] = React.useState<string[]>([])
+      const [error, setError] = React.useState('')
+      const wasOpen = React.useRef(false)
+
+      React.useEffect(() => {
+        if (open && !wasOpen.current) {
+          setScanned(initialValues)
+          setManualValue('')
+          setError('')
+        } else if (!open && wasOpen.current) {
+          setScanned([])
+          setManualValue('')
+          setError('')
+        }
+        wasOpen.current = open
+      }, [initialValues, open])
+
+      if (!open) return null
+
+      const submitManual = async () => {
+        const cardNo = manualValue.trim()
+        if (!cardNo || scanned.includes(cardNo)) return
+        try {
+          const accepted = await onScan(cardNo)
+          if (accepted === false) return
+          setScanned((values) => [...values, cardNo])
+          setManualValue('')
+        } catch (scanError) {
+          setError((scanError as Error).message)
+        }
+      }
+
+      return <section role="dialog" aria-label={title}>
+        <span>本次已扫 {scanned.length} 张</span>
+        {error && <span>{error}</span>}
+        <input
+          value={manualValue}
+          onChange={(event) => setManualValue(event.target.value)}
+          placeholder="流程卡完整单号，如 04-M003-2608210028"
+        />
+        <button type="button" disabled={!manualValue.trim()} onClick={() => void submitManual()}>加入</button>
+        <button type="button" onClick={onClose}>{scanned.length ? `完成（已扫 ${scanned.length} 张）` : '关闭扫码'}</button>
+      </section>
+    },
+  }
+})
 vi.mock('../api/client', () => ({
   qualityApi: { checkShipmentNo: apiMocks.checkShipmentNo },
   qualityWorkflowApi: {
@@ -128,7 +194,6 @@ describe('QualityWeightShipmentDrawer', () => {
   })
 
   it('maps ten continuously scanned cards to ten packages and follows the scanned count for equal weights', async () => {
-    const user = userEvent.setup()
     const { onSubmit } = renderDrawer()
     const cards = Array.from({ length: 10 }, (_, index) => `04-M003-260821${String(index + 28).padStart(4, '0')}`)
     apiMocks.scanProcessCard.mockImplementation(async (cardNo: string) => {
@@ -144,14 +209,18 @@ describe('QualityWeightShipmentDrawer', () => {
       return { found: true, scanned_card: card, active_card: card, binding_required: true }
     })
 
-    await user.click(screen.getByRole('button', { name: /连续扫码/ }))
-    for (const [index, cardNo] of cards.entries()) {
-      fireEvent.change(await screen.findByPlaceholderText(/04-M003-2608210028/), { target: { value: cardNo } })
-      await user.click(screen.getByRole('button', { name: /加入/ }))
-      await waitFor(() => expect(apiMocks.scanProcessCard).toHaveBeenCalledWith(cardNo))
-      await waitFor(() => expect(screen.getByText(`本次已扫 ${index + 1} 张`)).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /连续扫码/ }))
+    const scanInput = await screen.findByPlaceholderText(/04-M003-2608210028/)
+    const addButton = screen.getByRole('button', { name: /加入/ })
+    for (const cardNo of cards) {
+      await act(async () => {
+        fireEvent.change(scanInput, { target: { value: cardNo } })
+        fireEvent.click(addButton)
+      })
     }
-    await user.click(screen.getByRole('button', { name: /完成（已扫 10 张）/ }))
+    expect(apiMocks.scanProcessCard.mock.calls.map(([cardNo]) => cardNo)).toEqual(cards)
+    expect(screen.getByText('本次已扫 10 张')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /完成（已扫 10 张）/ }))
 
     await waitFor(() => expect(screen.getByLabelText(/相同称重批数/)).toHaveValue('10'))
     expect(screen.getByText(/已扫 10 张卡＝10 包/)).toBeInTheDocument()
@@ -161,7 +230,7 @@ describe('QualityWeightShipmentDrawer', () => {
     fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '100' } })
     fireEvent.change(screen.getByLabelText('规格'), { target: { value: '连续扫码规格' } })
     fireEvent.change(screen.getByLabelText('材质 / 胶料'), { target: { value: '连续扫码材质' } })
-    await user.click(screen.getByRole('button', { name: '确认出货' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认出货' }))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     expect(onSubmit.mock.calls[0][0]).toMatchObject({
