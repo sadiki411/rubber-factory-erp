@@ -19,7 +19,8 @@ from orders.models import ProductSpecification
 
 from .models import (DefectReason, QualityEmployee, QualityOrder, QualityShipment, ReturnRework,
                      ProductUnitWeight, ProcessCard, ProcessCardUnitBinding, QualityShipmentBatch,
-                     QualityShipmentLine, QualityReworkCase, QualityReworkAttempt)
+                     QualityShipmentLine, QualityShipmentOrderAllocation,
+                     QualityReworkCase, QualityReworkAttempt)
 from .serializers import (
     BindExistingReturnRequestSerializer,
     BulkScannedReturnRequestSerializer,
@@ -40,6 +41,7 @@ from .services import (
     bind_existing_return_to_card,
     bind_process_cards_to_batch,
     build_order_allocation_plan,
+    build_shipment_line_allocation_plans,
     create_scanned_return,
     delivered_quantities_by_order,
     find_process_card,
@@ -442,6 +444,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             "lines__process_card__product_specification__mold_model",
             "lines__process_card__order__product_specification__mold_model",
             "lines__order__product_specification__mold_model",
+            "lines__order_allocations__order",
             "lines__product_specification__mold_model",
         ).all()
         params = self.request.query_params
@@ -484,6 +487,13 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 | Q(lines__order__batch_no__icontains=q)
                 | Q(lines__order__product_code__icontains=q)
                 | Q(lines__order__product_name__icontains=q)
+                | Q(lines__order_allocations__order_no_snapshot__icontains=q)
+                | Q(lines__order_allocations__item_no_snapshot__icontains=q)
+                | Q(lines__order_allocations__order__batch_no__icontains=q)
+                | Q(lines__order_allocations__order__product_code__icontains=q)
+                | Q(lines__order_allocations__order__product_name__icontains=q)
+                | Q(lines__order_allocations__specification_snapshot__icontains=q)
+                | Q(lines__order_allocations__material_snapshot__icontains=q)
                 | Q(lines__specification_snapshot__icontains=q)
                 | Q(lines__material_snapshot__icontains=q)
             ).distinct()
@@ -504,6 +514,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             queryset = queryset.filter(
                 Q(order__status=order_status)
                 | Q(lines__order__status=order_status)
+                | Q(lines__order_allocations__order__status=order_status)
                 | Q(lines__process_card__order__status=order_status)
             ).distinct()
 
@@ -524,6 +535,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             queryset = queryset.filter(
                 Q(order_id__in=matching_order_ids)
                 | Q(lines__order_id__in=matching_order_ids)
+                | Q(lines__order_allocations__order_id__in=matching_order_ids)
                 | Q(lines__process_card__order_id__in=matching_order_ids)
             ).distinct()
 
@@ -539,6 +551,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             for field in (
                 "order__due_date",
                 "lines__order__due_date",
+                "lines__order_allocations__order__due_date",
                 "lines__process_card__order__due_date",
             ):
                 lookups = {}
@@ -556,11 +569,18 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 | Q(order__material__icontains=material)
                 | Q(lines__material_snapshot__icontains=material)
                 | Q(lines__order__material__icontains=material)
+                | Q(lines__order_allocations__material_snapshot__icontains=material)
+                | Q(lines__order_allocations__order__material__icontains=material)
                 | Q(lines__process_card__material_snapshot__icontains=material)
                 | Q(lines__process_card__order__material__icontains=material)
             ).distinct()
 
-        order_value = str(params.get("order", params.get("order_no", ""))).strip()
+        order_value = str(
+            params.get(
+                "order",
+                params.get("order_no", params.get("order_id", "")),
+            )
+        ).strip()
         if order_value:
             order_filter = (
                 Q(order__order_no__iexact=order_value)
@@ -569,6 +589,9 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 | Q(lines__order__order_no__iexact=order_value)
                 | Q(lines__order__item_no__iexact=order_value)
                 | Q(lines__order__batch_no__iexact=order_value)
+                | Q(lines__order_allocations__order_no_snapshot__iexact=order_value)
+                | Q(lines__order_allocations__item_no_snapshot__iexact=order_value)
+                | Q(lines__order_allocations__order__batch_no__iexact=order_value)
                 | Q(lines__process_card__order__order_no__iexact=order_value)
                 | Q(lines__process_card__order__item_no__iexact=order_value)
                 | Q(lines__process_card__order__batch_no__iexact=order_value)
@@ -578,6 +601,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 order_filter |= (
                     Q(order_id=order_id)
                     | Q(lines__order_id=order_id)
+                    | Q(lines__order_allocations__order_id=order_id)
                     | Q(lines__process_card__order_id=order_id)
                 )
             queryset = queryset.filter(order_filter).distinct()
@@ -603,18 +627,23 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             queryset = queryset.annotate(
                 _batch_due_date=F("order__due_date"),
                 _line_due_date=Min("lines__order__due_date"),
+                _allocation_due_date=Min(
+                    "lines__order_allocations__order__due_date"
+                ),
                 _card_due_date=Min("lines__process_card__order__due_date"),
             ).annotate(
                 _earliest_due_date=Case(
                     When(
                         _batch_due_date__isnull=True,
                         _line_due_date__isnull=True,
+                        _allocation_due_date__isnull=True,
                         _card_due_date__isnull=True,
                         then=Value(None, output_field=DateField()),
                     ),
                     default=Least(
                         Coalesce("_batch_due_date", Value(date.max)),
                         Coalesce("_line_due_date", Value(date.max)),
+                        Coalesce("_allocation_due_date", Value(date.max)),
                         Coalesce("_card_due_date", Value(date.max)),
                     ),
                     output_field=DateField(),
@@ -686,7 +715,13 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             # counted against itself a second time.
             if batch.status == QualityShipmentBatch.Status.CONFIRMED:
                 return Response(self.get_serializer(batch).data)
-            lines = list(batch.lines.select_related("process_card", "order", "product_specification"))
+            lines = list(
+                batch.lines.select_for_update()
+                .select_related(
+                    "process_card__order", "order", "product_specification"
+                )
+                .order_by("id")
+            )
             if not lines:
                 raise DRFValidationError({"lines": "At least one shipment line is required."})
             process_card_ids = [
@@ -847,31 +882,10 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                         > maximum_card_pieces
                     ):
                         raise DRFValidationError({"lines": f"流程卡 {card.card_no} 累计出货件数不能超过卡上数量的110%。"})
-            # Only the lightweight, single direct-order form is eligible for
-            # automatic order allocation.  Explicit multi-line and process-card
-            # workflows retain their historical associations exactly as entered.
-            lines, auto_allocated = self._auto_allocate_direct_order_line(
-                batch, lines, created_by=request.user
-            )
-            direct_order_ids = sorted({
-                line.order_id
-                for line in lines
-                if not line.process_card_id and line.order_id
-            })
-            # Acquire every direct-order lock in one stable primary-key order.
-            # The allocator already used this same ordering; this avoids the
-            # source-first/candidates-second inversion that can deadlock when
-            # two simultaneous shipments use each other's source order.
-            locked_orders = {
-                order.pk: order
-                for order in QualityOrder.objects.select_for_update()
-                .filter(pk__in=direct_order_ids)
-                .order_by("pk")
-            }
             for line in lines:
                 if line.process_card_id or not line.order_id:
                     continue
-                order = locked_orders[line.order_id]
+                order = line.order
                 unit = line.unit_weight_g_snapshot or batch.unit_weight_g
                 if unit is None or unit <= 0:
                     raise DRFValidationError({"lines": "自由出货明细必须填写大于 0 的成品单重。"})
@@ -895,8 +909,50 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 self._save_line_history(
                     line, card=None, order=order, created_by=request.user,
                     measured_on=batch.shipment_date,
-                    preserve_piece_quantity=auto_allocated,
                 )
+            # Keep legacy batch-level repeat facts available to older clients
+            # while retaining them on the single physical line as the source
+            # of truth.  Unlike the previous logical-line split, no fields
+            # need to be cleared from that physical package record.
+            if len(lines) == 1:
+                for field_name in (
+                    "single_batch_net_weight_kg",
+                    "process_card_shipment_quantity",
+                    "product_batch_count",
+                    "pieces_per_batch",
+                ):
+                    if getattr(batch, field_name) is None:
+                        value = getattr(lines[0], field_name)
+                        if value is not None:
+                            setattr(batch, field_name, value)
+            try:
+                allocation_plans = build_shipment_line_allocation_plans(
+                    lines, lock=True
+                )
+            except ValueError as exc:
+                raise DRFValidationError({"lines": str(exc)}) from exc
+            allocation_rows = []
+            for plan in allocation_plans:
+                line = plan["shipment_line"]
+                for item in plan["allocations"]:
+                    order = item["order"]
+                    allocation_rows.append(
+                        QualityShipmentOrderAllocation(
+                            shipment_line=line,
+                            order=order,
+                            sequence=item["sequence"],
+                            piece_start=item["piece_start"],
+                            piece_end=item["piece_end"],
+                            piece_quantity=item["piece_quantity"],
+                            net_weight_kg=item["net_weight_kg"],
+                            is_overflow=item["is_overflow"],
+                            order_no_snapshot=order.order_no,
+                            item_no_snapshot=order.item_no,
+                            specification_snapshot=order.specification,
+                            material_snapshot=order.material,
+                        )
+                    )
+            QualityShipmentOrderAllocation.objects.bulk_create(allocation_rows)
             # Ensure batch-level context is also frozen for manually entered
             # rows, and preserve an exact product specification history.
             if lines:
@@ -926,7 +982,9 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             confirmed_lines = list(
                 batch.lines.select_related(
                     "order", "process_card__order", "product_specification"
-                ).order_by("id")
+                )
+                .prefetch_related("order_allocations__order")
+                .order_by("id")
             )
             existing_binding_batches = dict(
                 ProcessCardUnitBinding.objects.filter(
@@ -992,9 +1050,9 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 except ValueError as exc:
                     raise DRFValidationError({"process_card_bindings": str(exc)}) from exc
             affected_order_ids = {
-                line.order_id
-                or (line.process_card.order_id if line.process_card_id else None)
-                for line in batch.lines.select_related("process_card").all()
+                item["order"].pk
+                for plan in allocation_plans
+                for item in plan["allocations"]
             }
             sync_order_status_from_delivery(
                 affected_order_ids,
@@ -1436,8 +1494,10 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
         "inspectors",
         "secondary_reasons",
         "shipment_allocations__shipment_line__order",
+        "shipment_allocations__shipment_order_allocation__order",
         "shipment_batch__inspectors",
         "shipment_batch__lines__order",
+        "shipment_batch__lines__order_allocations__order",
         "shipment_batch__lines__process_card__order",
         "shipment_batch__rework_cases__attempts",
     ).all()
@@ -1457,6 +1517,8 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
                 | Q(process_card__material_snapshot__icontains=q)
                 | Q(shipment_line__order__order_no__icontains=q)
                 | Q(shipment_line__order__item_no__icontains=q)
+                | Q(shipment_line__order_allocations__order_no_snapshot__icontains=q)
+                | Q(shipment_line__order_allocations__item_no_snapshot__icontains=q)
                 | Q(shipment_line__specification_snapshot__icontains=q)
                 | Q(shipment_line__material_snapshot__icontains=q)
                 | Q(shipment_batch__order__order_no__icontains=q)
@@ -1480,6 +1542,7 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
             queryset = queryset.filter(
                 Q(process_card__order__order_no__icontains=order_no)
                 | Q(shipment_line__order__order_no__icontains=order_no)
+                | Q(shipment_line__order_allocations__order_no_snapshot__icontains=order_no)
                 | Q(shipment_batch__order__order_no__icontains=order_no)
             )
         item_no = str(params.get("item_no", "") or "").strip()
@@ -1487,6 +1550,7 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
             queryset = queryset.filter(
                 Q(process_card__order__item_no__icontains=item_no)
                 | Q(shipment_line__order__item_no__icontains=item_no)
+                | Q(shipment_line__order_allocations__item_no_snapshot__icontains=item_no)
                 | Q(shipment_batch__order__item_no__icontains=item_no)
             )
         specification = str(params.get("specification", "") or "").strip()
@@ -1628,7 +1692,11 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
             raise DRFValidationError({"detail": str(exc)}) from exc
         batch = QualityShipmentBatch.objects.select_related(
             "order", "product_specification", "inspector", "created_by"
-        ).prefetch_related("inspectors", "lines", "process_card_bindings").get(pk=batch.pk)
+        ).prefetch_related(
+            "inspectors",
+            "lines__order_allocations__order",
+            "process_card_bindings",
+        ).get(pk=batch.pk)
         return Response(
             QualityShipmentBatchSerializer(batch, context={"request": request}).data,
             status=201,
@@ -1644,6 +1712,7 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
         ).select_related("inspector").prefetch_related(
             "inspectors",
             "lines__order",
+            "lines__order_allocations__order",
             "lines__process_card__order",
             "lines__product_specification",
             Prefetch(
@@ -1671,6 +1740,8 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
                 | Q(order__specification__icontains=q)
                 | Q(order__material__icontains=q)
                 | Q(lines__order__order_no__icontains=q)
+                | Q(lines__order_allocations__order_no_snapshot__icontains=q)
+                | Q(lines__order_allocations__item_no_snapshot__icontains=q)
                 | Q(lines__order__item_no__icontains=q)
                 | Q(lines__order__product_name__icontains=q)
                 | Q(lines__order__specification__icontains=q)
@@ -1690,6 +1761,7 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
             queryset = queryset.filter(
                 Q(order_id=order_id)
                 | Q(lines__order_id=order_id)
+                | Q(lines__order_allocations__order_id=order_id)
                 | Q(lines__process_card__order_id=order_id)
             ).distinct()
 
@@ -1824,6 +1896,7 @@ def _weighted_shipment_queryset():
             "lines__product_specification__mold_model",
             "lines__order__created_by",
             "lines__order__product_specification__mold_model",
+            "lines__order_allocations__order",
             "lines__process_card__product_specification__mold_model",
             "lines__process_card__order__created_by",
             "lines__process_card__order__product_specification__mold_model",
@@ -1862,7 +1935,14 @@ def _batch_lines(batch):
 def _batch_orders(batch, lines):
     orders = []
     seen = set()
-    for order in [batch.order, *(_line_order(line) for line in lines)]:
+    linked_orders = [batch.order]
+    for line in lines:
+        allocations = list(line.order_allocations.all())
+        if allocations:
+            linked_orders.extend(item.order for item in allocations)
+        else:
+            linked_orders.append(_line_order(line))
+    for order in linked_orders:
         if order is None or order.pk in seen:
             continue
         seen.add(order.pk)
@@ -2422,8 +2502,11 @@ def _rework_case_order_shares(case):
     allocations = list(allocation_manager.all()) if allocation_manager else []
     for allocation in allocations:
         line = allocation.shipment_line
-        order = line.order or (
-            line.process_card.order if line.process_card_id else None
+        order = (
+            allocation.shipment_order_allocation.order
+            if allocation.shipment_order_allocation_id
+            else line.order
+            or (line.process_card.order if line.process_card_id else None)
         )
         if order is None:
             continue
@@ -2564,6 +2647,7 @@ class QualitySummaryView(APIView):
                 ),
                 "shipment_allocations__shipment_line__order",
                 "shipment_allocations__shipment_line__process_card__order",
+                "shipment_allocations__shipment_order_allocation__order",
             )
             .distinct()
         )

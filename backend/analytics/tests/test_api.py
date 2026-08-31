@@ -18,6 +18,7 @@ from quality.models import (
     QualityShipment,
     QualityShipmentBatch,
     QualityShipmentLine,
+    QualityShipmentOrderAllocation,
     ReturnRework,
 )
 
@@ -340,6 +341,150 @@ class AnalyticsApiTests(TestCase):
             if item["row_key"] == f"order:{self.order.pk}"
         )
         self.assertEqual(linked["shipped_quantity"], 500)
+
+    def test_cross_order_weighted_allocations_split_orders_without_double_counting(self):
+        day = timezone.localdate()
+        target = QualityOrder.objects.create(
+            order_no="ORD-ANALYTICS-ALLOCATION-TARGET",
+            product_name=self.order.product_name,
+            specification=self.order.specification,
+            material=self.order.material,
+            order_quantity=500,
+            order_date=day,
+            created_by=self.user,
+        )
+        second_inspector = QualityEmployee.objects.create(
+            employee_no="QC-A02",
+            name="赵品检",
+            team="品检组",
+            role=QualityEmployee.Role.BOTH,
+        )
+        batch = QualityShipmentBatch.objects.create(
+            shipment_no="WEIGHTED-CROSS-ORDER-ANALYTICS",
+            shipment_date=day,
+            order=self.order,
+            inspector=self.inspector,
+            unit_weight_g=Decimal("1"),
+            single_batch_net_weight_kg=Decimal("0.300"),
+            product_batch_count=1,
+            pieces_per_batch=300,
+            status=QualityShipmentBatch.Status.CONFIRMED,
+            created_by=self.user,
+        )
+        batch.inspectors.set([self.inspector, second_inspector])
+        line = QualityShipmentLine.objects.create(
+            batch=batch,
+            order=self.order,
+            net_weight_kg=Decimal("0.300"),
+            piece_quantity=300,
+            unit_weight_g_snapshot=Decimal("1"),
+        )
+        source_first = QualityShipmentOrderAllocation.objects.create(
+            shipment_line=line,
+            order=self.order,
+            sequence=1,
+            piece_start=0,
+            piece_end=100,
+            piece_quantity=100,
+            net_weight_kg=Decimal("0.100"),
+        )
+        target_share = QualityShipmentOrderAllocation.objects.create(
+            shipment_line=line,
+            order=target,
+            sequence=2,
+            piece_start=100,
+            piece_end=250,
+            piece_quantity=150,
+            net_weight_kg=Decimal("0.150"),
+        )
+        QualityShipmentOrderAllocation.objects.create(
+            shipment_line=line,
+            order=self.order,
+            sequence=3,
+            piece_start=250,
+            piece_end=300,
+            piece_quantity=50,
+            net_weight_kg=Decimal("0.050"),
+            is_overflow=True,
+        )
+        case = QualityReworkCase.objects.create(
+            origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+            shipment_batch=batch,
+            shipment_line=line,
+            shipment_unit_no=1,
+            opened_on=day,
+            reason_category=ReturnRework.ReasonCategory.STICKING,
+            responsible_inspector=self.inspector,
+            affected_quantity=100,
+            affected_weight_kg=Decimal("0.100"),
+            created_by=self.user,
+        )
+        QualityReturnAllocation.objects.create(
+            case=case,
+            shipment_line=line,
+            shipment_order_allocation=source_first,
+            piece_quantity=40,
+            net_weight_kg=Decimal("0.040"),
+        )
+        QualityReturnAllocation.objects.create(
+            case=case,
+            shipment_line=line,
+            shipment_order_allocation=target_share,
+            piece_quantity=60,
+            net_weight_kg=Decimal("0.060"),
+        )
+        QualityReworkAttempt.objects.create(
+            case=case,
+            attempt_date=day,
+            rework_employee=self.reworker,
+            input_quantity=100,
+            reworked_quantity=100,
+            recovered_quantity=80,
+            scrap_quantity=20,
+            input_weight_kg=Decimal("0.100"),
+            reworked_weight_kg=Decimal("0.100"),
+            recovered_weight_kg=Decimal("0.080"),
+            scrap_weight_kg=Decimal("0.020"),
+            status=QualityReworkCase.Status.COMPLETED,
+            created_by=self.user,
+        )
+
+        response = self.client.get(
+            "/api/analytics/dashboard/",
+            {"date_from": day.isoformat(), "date_to": day.isoformat()},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        automatic = payload["quality"]["automatic"]
+        self.assertEqual(automatic["shipped_quantity"], 300)
+        self.assertEqual(automatic["returned_quantity"], 100)
+        self.assertEqual(automatic["reworked_quantity"], 100)
+        self.assertEqual(payload["daily_trend"][0]["shipped_quantity"], 300)
+        self.assertEqual(payload["quality"]["shipment_count"], 1)
+        self.assertEqual(payload["sources"]["quality"]["automatic"], 1)
+
+        employees = {
+            row["employee_no"]: row
+            for row in payload["quality_employee_performance"]
+        }
+        self.assertEqual(employees[self.inspector.employee_no]["shipped_quantity"], 150)
+        self.assertEqual(employees[second_inspector.employee_no]["shipped_quantity"], 150)
+
+        orders = {
+            row["order_id"]: row
+            for row in payload["order_performance"]
+            if row["order_id"] in {self.order.pk, target.pk}
+        }
+        self.assertEqual(orders[self.order.pk]["shipped_quantity"], 150)
+        self.assertEqual(orders[target.pk]["shipped_quantity"], 150)
+        self.assertEqual(orders[self.order.pk]["returned_quantity"], 40)
+        self.assertEqual(orders[target.pk]["returned_quantity"], 60)
+        self.assertEqual(orders[self.order.pk]["reworked_quantity"], 40)
+        self.assertEqual(orders[target.pk]["reworked_quantity"], 60)
+        self.assertEqual(orders[self.order.pk]["recovered_quantity"], 32)
+        self.assertEqual(orders[target.pk]["recovered_quantity"], 48)
+        self.assertEqual(orders[self.order.pk]["scrap_quantity"], 8)
+        self.assertEqual(orders[target.pk]["scrap_quantity"], 12)
 
     def test_dashboard_includes_whole_batch_returns_and_r1_r2_r3(self):
         day = timezone.localdate()

@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.db.models import Sum
 from django.test import TestCase
 from django.utils import timezone
 
@@ -11,6 +12,7 @@ from quality.models import (
     QualityReworkCase,
     QualityShipmentBatch,
     QualityShipmentLine,
+    QualityShipmentOrderAllocation,
 )
 from quality.services import delivered_quantities_by_order, order_delivery_totals
 
@@ -607,10 +609,14 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
         )
         self.assertEqual(confirmed.status_code, 200, confirmed.content)
         self.assertEqual(
-            dict(
-                QualityShipmentLine.objects.filter(batch_id=draft.json()["id"])
-                .values_list("order_id", "piece_quantity")
-            ),
+            {
+                row["order_id"]: row["total"]
+                for row in QualityShipmentOrderAllocation.objects.filter(
+                    shipment_line__batch_id=draft.json()["id"]
+                )
+                .values("order_id")
+                .annotate(total=Sum("piece_quantity"))
+            },
             {self.order.pk: 500, second.pk: 1_500},
         )
         self.assertEqual(
@@ -677,10 +683,14 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
         )
         self.assertEqual(confirmed.status_code, 200, confirmed.content)
         self.assertEqual(
-            dict(
-                QualityShipmentLine.objects.filter(batch_id=draft.json()["id"])
-                .values_list("order_id", "piece_quantity")
-            ),
+            {
+                row["order_id"]: row["total"]
+                for row in QualityShipmentOrderAllocation.objects.filter(
+                    shipment_line__batch_id=draft.json()["id"]
+                )
+                .values("order_id")
+                .annotate(total=Sum("piece_quantity"))
+            },
             {self.order.pk: 1_000, second.pk: 2_000},
         )
         self.assertEqual(

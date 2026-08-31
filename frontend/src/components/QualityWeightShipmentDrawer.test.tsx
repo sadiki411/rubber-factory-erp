@@ -88,6 +88,21 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(screen.getByText('批数快捷计算：')).toBeInTheDocument()
   })
 
+  it('does not confirm a hand-entered shipment without an explicit order', async () => {
+    const user = userEvent.setup()
+    const { onSubmit } = renderDrawer()
+    fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '25' } })
+    fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '2.5' } })
+    fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '100' } })
+    fireEvent.change(screen.getByLabelText('规格'), { target: { value: '手工规格' } })
+    fireEvent.change(screen.getByLabelText('材质 / 胶料'), { target: { value: '手工材质' } })
+
+    await user.click(screen.getByRole('button', { name: '确认出货' }))
+
+    expect(await screen.findByText('请选择候选订单；无订单出货不能确认')).toBeInTheDocument()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
   it('keeps a normal new shipment empty even when the page supplies every historical process card', () => {
     const historicalCard: QualityProcessCard = {
       id: 91,
@@ -116,6 +131,18 @@ describe('QualityWeightShipmentDrawer', () => {
     const user = userEvent.setup()
     const { onSubmit } = renderDrawer()
     const cards = Array.from({ length: 10 }, (_, index) => `04-M003-260821${String(index + 28).padStart(4, '0')}`)
+    apiMocks.scanProcessCard.mockImplementation(async (cardNo: string) => {
+      const card: QualityProcessCard = {
+        id: 120 + cards.indexOf(cardNo),
+        card_no: cardNo,
+        order_id: order.id,
+        order,
+        quantity: 100,
+        unit_weight_g: 25,
+        status: 'READY',
+      }
+      return { found: true, scanned_card: card, active_card: card, binding_required: true }
+    })
 
     await user.click(screen.getByRole('button', { name: /连续扫码/ }))
     for (const [index, cardNo] of cards.entries()) {
@@ -143,6 +170,7 @@ describe('QualityWeightShipmentDrawer', () => {
       process_card_bindings: cards.map((cardNo, index) => ({
         card_no: cardNo,
         shipment_unit_no: index + 1,
+        order_id: order.id,
       })),
     })
   }, 120_000)
@@ -178,6 +206,16 @@ describe('QualityWeightShipmentDrawer', () => {
   it('keeps one editable weight line per scanned package when their weights differ', async () => {
     const user = userEvent.setup()
     const cards = ['04-M003-2608210041', '04-M003-2608210042']
+    apiMocks.previewShipmentAllocation.mockImplementation(async ({ piece_quantity }: { piece_quantity: number }) => ({
+      source_order_id: order.id,
+      requested_quantity: piece_quantity,
+      specification: order.specification,
+      material: order.material,
+      allocations: [{ order_id: order.id, order_no: order.order_no, item_no: order.item_no, remaining_before: 240, allocated_quantity: piece_quantity, remaining_after: Math.max(0, 240 - piece_quantity), is_source: true, is_overflow: false }],
+      matching_allocated_quantity: 0,
+      overflow_quantity: 0,
+      total_allocated_quantity: piece_quantity,
+    }))
     apiMocks.scanProcessCard.mockImplementation(async (cardNo: string) => {
       const index = cards.indexOf(cardNo)
       const card: QualityProcessCard = {
@@ -219,18 +257,95 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(weightInputs[1]).toHaveValue('2.500')
     fireEvent.change(weightInputs[0], { target: { value: '2.4' } })
     fireEvent.change(weightInputs[1], { target: { value: '2.5' } })
+    await waitFor(() => expect(apiMocks.previewShipmentAllocation).toHaveBeenLastCalledWith({ order_id: order.id, piece_quantity: 196 }))
+    expect(screen.getByText('按重量明细顺序跨订单分配')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '确认出货' }))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     const payload = onSubmit.mock.calls[0][0]
     expect(payload.process_card_bindings).toEqual([
-      { card_no: cards[0], shipment_unit_no: 1 },
-      { card_no: cards[1], shipment_unit_no: 2 },
+      { card_no: cards[0], shipment_unit_no: 1, order_id: order.id },
+      { card_no: cards[1], shipment_unit_no: 2, order_id: order.id },
     ])
     expect(payload.lines).toHaveLength(2)
     expect(payload.lines[0]).toMatchObject({ process_card_id: 141, product_batch_count: 1, single_batch_net_weight_kg: 2.4, net_weight_kg: 2.4, piece_quantity: 96 })
     expect(payload.lines[1]).toMatchObject({ process_card_id: 142, product_batch_count: 1, single_batch_net_weight_kg: 2.5, net_weight_kg: 2.5, piece_quantity: 100 })
   }, 120_000)
+
+  it('allows matching cards from different orders in one continuous scan and keeps the completed first order as the anchor', async () => {
+    const user = userEvent.setup()
+    const sourceOrder: QualityOrder = { ...order, status: 'COMPLETED', remaining_quantity: 0, weighted_remaining_quantity: 0 }
+    const nextOrder: QualityOrder = { ...order, id: 8, order_no: 'NEXT-ORDER-008', item_no: '20', remaining_quantity: 500 }
+    const cards = ['04-M003-2608210061', '04-M003-2608210062']
+    apiMocks.listShipmentCandidates.mockResolvedValue([nextOrder])
+    apiMocks.scanProcessCard.mockImplementation(async (cardNo: string) => {
+      const cardOrder = cardNo === cards[0] ? sourceOrder : nextOrder
+      const card: QualityProcessCard = { id: 161 + cards.indexOf(cardNo), card_no: cardNo, order_id: cardOrder.id, order: cardOrder, quantity: 100, unit_weight_g: 25, status: 'READY' }
+      return { found: true, scanned_card: card, active_card: card, binding_required: true }
+    })
+    apiMocks.previewShipmentAllocation.mockResolvedValue({
+      source_order_id: sourceOrder.id,
+      requested_quantity: 200,
+      specification: sourceOrder.specification,
+      material: sourceOrder.material,
+      allocations: [{ order_id: nextOrder.id, order_no: nextOrder.order_no, item_no: nextOrder.item_no, remaining_before: 500, allocated_quantity: 200, remaining_after: 300, is_source: false, is_overflow: false }],
+      matching_allocated_quantity: 200,
+      overflow_quantity: 0,
+      total_allocated_quantity: 200,
+    })
+    const { onSubmit } = renderDrawer(undefined, { orders: [sourceOrder, nextOrder] })
+
+    fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '2.5' } })
+    await user.click(screen.getByRole('button', { name: /连续扫码/ }))
+    for (const [index, cardNo] of cards.entries()) {
+      fireEvent.change(await screen.findByPlaceholderText(/04-M003-2608210028/), { target: { value: cardNo } })
+      await user.click(screen.getByRole('button', { name: /加入/ }))
+      await waitFor(() => expect(screen.getByText(`本次已扫 ${index + 1} 张`)).toBeInTheDocument())
+    }
+    await user.click(screen.getByRole('button', { name: /完成（已扫 2 张）/ }))
+
+    await waitFor(() => expect(apiMocks.previewShipmentAllocation).toHaveBeenLastCalledWith({ order_id: sourceOrder.id, piece_quantity: 200 }))
+    expect(screen.getByText(/NEXT-ORDER-008/)).toBeInTheDocument()
+    expect(screen.getByText(/来源订单（身份锚点）/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '确认出货' }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0][0].process_card_bindings).toEqual([
+      { card_no: cards[0], shipment_unit_no: 1, order_id: sourceOrder.id },
+      { card_no: cards[1], shipment_unit_no: 2, order_id: nextOrder.id },
+    ])
+  }, 120_000)
+
+  it('shows a grouped allocation preview and submits process-card basket lines', async () => {
+    const user = userEvent.setup()
+    const sourceOrder: QualityOrder = { ...order, remaining_quantity: 100 }
+    const nextOrder: QualityOrder = { ...order, id: 9, order_no: 'BASKET-NEXT-009', item_no: '30', remaining_quantity: 500 }
+    apiMocks.previewShipmentAllocation.mockResolvedValue({
+      source_order_id: sourceOrder.id,
+      requested_quantity: 200,
+      specification: sourceOrder.specification,
+      material: sourceOrder.material,
+      allocations: [
+        { order_id: sourceOrder.id, order_no: sourceOrder.order_no, item_no: sourceOrder.item_no, remaining_before: 100, allocated_quantity: 100, remaining_after: 0, is_source: true, is_overflow: false },
+        { order_id: nextOrder.id, order_no: nextOrder.order_no, item_no: nextOrder.item_no, remaining_before: 500, allocated_quantity: 100, remaining_after: 400, is_source: false, is_overflow: false },
+      ],
+      matching_allocated_quantity: 100,
+      overflow_quantity: 0,
+      total_allocated_quantity: 200,
+    })
+    const lines = [1, 2].map((id) => ({ key: id, process_card_id: id, card_no: `BASKET-CARD-${id}`, order_id: sourceOrder.id, order: sourceOrder, remaining_quantity: 100, unit_weight_g: 25, net_weight_kg: 2.5, specification_snapshot: sourceOrder.specification, material_snapshot: sourceOrder.material }))
+    const confirmed = { id: 901, order_allocations: [{ id: 1, order_id: sourceOrder.id, piece_quantity: 100 }, { id: 2, order_id: nextOrder.id, piece_quantity: 100 }] }
+    const onSubmit = vi.fn().mockResolvedValue(confirmed)
+    renderDrawer(onSubmit, { orders: [sourceOrder, nextOrder], lines })
+
+    fireEvent.change(screen.getByLabelText('规格'), { target: { value: sourceOrder.specification } })
+    fireEvent.change(screen.getByLabelText('材质 / 胶料'), { target: { value: sourceOrder.material } })
+    await waitFor(() => expect(apiMocks.previewShipmentAllocation).toHaveBeenLastCalledWith({ order_id: sourceOrder.id, piece_quantity: 200 }))
+    expect(screen.getByText('按重量明细顺序跨订单分配')).toBeInTheDocument()
+    expect(screen.getByText(/BASKET-NEXT-009/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '确认出货' }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText('重量出货已保存，实际计入 2 个订单')).toBeInTheDocument()
+  }, 30_000)
 
   it('uses the process-card planned quantity when a new card has delivered quantity zero', async () => {
     const user = userEvent.setup()
@@ -269,6 +384,8 @@ describe('QualityWeightShipmentDrawer', () => {
     const onSaved = vi.fn().mockRejectedValue(new Error('列表刷新失败'))
     const { onSubmit } = renderDrawer(vi.fn().mockResolvedValue({ id: 501, shipment_no: 'QS-SAVED-501' }), { onClose, onSaved })
     const cardNo = '04-M003-2608210051'
+    const card: QualityProcessCard = { id: 151, card_no: cardNo, order_id: order.id, order, quantity: 100, unit_weight_g: 25, status: 'READY' }
+    apiMocks.scanProcessCard.mockResolvedValue({ found: true, scanned_card: card, active_card: card, binding_required: true })
 
     fireEvent.change(screen.getByLabelText(/出货单号/), { target: { value: 'QS-SAVED-501' } })
     fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '25' } })
@@ -371,7 +488,7 @@ describe('QualityWeightShipmentDrawer', () => {
 
   it('calculates pieces from one weighed batch and submits snapshots plus inspector ids', async () => {
     const user = userEvent.setup()
-    const { onSubmit } = renderDrawer()
+    const { onSubmit } = renderDrawer(undefined, { initialOrderId: order.id })
     fireEvent.change(screen.getByLabelText(/出货单号/), { target: { value: 'CK-202608-001' } })
     fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '25' } })
     fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '2.5' } })
@@ -396,7 +513,7 @@ describe('QualityWeightShipmentDrawer', () => {
 
   it('updates final pieces and cumulative weight immediately when batch count changes', async () => {
     const user = userEvent.setup()
-    const { onSubmit } = renderDrawer()
+    const { onSubmit } = renderDrawer(undefined, { initialOrderId: order.id })
     fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '8.7423' } })
     fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '10.2' } })
     fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '1091' } })
@@ -461,8 +578,9 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(await screen.findByText('候选订单暂时读取失败')).toBeInTheDocument()
     await user.click(screen.getByRole('combobox', { name: /候选订单/ }))
 
-    expect(await screen.findByRole('option', { name: /手工输入/ })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /手工输入/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('option', { name: /TEST-ORDER-001/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/请恢复候选订单读取或扫描带订单的流程卡/)).toBeInTheDocument()
   }, 20_000)
 
   it('clears order search, reloads exact specification/material candidates, and refreshes allocation when batch count changes', async () => {
@@ -533,7 +651,7 @@ describe('QualityWeightShipmentDrawer', () => {
 
     await user.click(screen.getByRole('button', { name: '确认出货' }))
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith(confirmed))
-    expect(await screen.findByText('重量出货已保存，系统已自动分配到 2 个订单')).toBeInTheDocument()
+    expect(await screen.findByText('重量出货已保存，实际计入 2 个订单')).toBeInTheDocument()
   }, 30_000)
 
   it('clearly allows overflow on the source order when no matching order can receive it', async () => {
@@ -567,9 +685,9 @@ describe('QualityWeightShipmentDrawer', () => {
     fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '100' } })
     fireEvent.change(screen.getByLabelText(/相同称重批数/), { target: { value: '3' } })
 
-    expect(await screen.findByText('没有可补足的匹配订单，允许当前订单超额出货')).toBeInTheDocument()
-    expect(screen.getByText(/仍有 200 件，将作为当前订单超额数量记录/)).toBeInTheDocument()
-    expect(screen.getByText('当前订单超额')).toBeInTheDocument()
+    expect(await screen.findByText('没有可补足的匹配订单，允许来源订单超额出货')).toBeInTheDocument()
+    expect(screen.getByText(/仍有 200 件，将作为来源订单超额数量记录/)).toBeInTheDocument()
+    expect(screen.getByText('来源订单超额')).toBeInTheDocument()
   }, 20_000)
 
   it('saves an unfinished shipment as a server-side draft', async () => {
@@ -726,8 +844,8 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(await screen.findByText('已选择 1 张流程卡')).toBeInTheDocument()
     const restoredSingleWeight = screen.getByText('单批实称净重(kg)').closest('.ant-form-item')?.querySelector('input')
     expect(restoredSingleWeight).toHaveValue('2.500')
-    fireEvent.mouseDown(screen.getByRole('combobox', { name: /候选订单/ }))
-    expect(await screen.findByRole('option', { name: /TEST-ORDER-001.*原草稿订单/ })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: /来源订单/ })).toBeDisabled()
+    expect(screen.getByText('TEST-ORDER-001 / 10')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '确认出货' }))
     await waitFor(() => expect(apiMocks.updateShipmentBatch).toHaveBeenCalledWith(88, expect.any(Object)))

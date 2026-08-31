@@ -13,7 +13,7 @@ from .models import (
     DefectReason,
     QualityEmployee, QualityOrder, QualityShipment, ReturnRework,
     ProductUnitWeight, ProcessCard, ProcessCardUnitBinding,
-    QualityShipmentBatch, QualityShipmentLine,
+    QualityShipmentBatch, QualityShipmentLine, QualityShipmentOrderAllocation,
     QualityReworkCase, QualityReworkAttempt,
 )
 from .services import (
@@ -665,6 +665,28 @@ class ProcessCardSerializer(ValidatedModelSerializer):
         }
 
 
+class QualityShipmentOrderAllocationSerializer(serializers.ModelSerializer):
+    order_id = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = QualityShipmentOrderAllocation
+        fields = [
+            "id",
+            "order_id",
+            "order_no_snapshot",
+            "item_no_snapshot",
+            "specification_snapshot",
+            "material_snapshot",
+            "piece_quantity",
+            "net_weight_kg",
+            "sequence",
+            "piece_start",
+            "piece_end",
+            "is_overflow",
+        ]
+        read_only_fields = fields
+
+
 class QualityShipmentLineSerializer(ValidatedModelSerializer):
     process_card = ProcessCardSerializer(read_only=True)
     process_card_id = serializers.PrimaryKeyRelatedField(
@@ -706,6 +728,9 @@ class QualityShipmentLineSerializer(ValidatedModelSerializer):
         required=False,
         allow_null=True,
     )
+    order_allocations = QualityShipmentOrderAllocationSerializer(
+        many=True, read_only=True
+    )
     class Meta:
         model = QualityShipmentLine
         fields = [
@@ -715,6 +740,7 @@ class QualityShipmentLineSerializer(ValidatedModelSerializer):
             "unit_weight_g_snapshot", "process_card_shipment_quantity",
             "product_batch_count", "pieces_per_batch", "theoretical_weight_kg_snapshot",
             "max_allowed_weight_kg_snapshot", "notes", "created_at", "updated_at",
+            "order_allocations",
         ]
         read_only_fields = [
             "theoretical_weight_kg_snapshot", "max_allowed_weight_kg_snapshot",
@@ -1674,11 +1700,23 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
     def _sync_case_orders(case, reason):
         if case.process_card_id:
             case.process_card.refresh_shipping_status()
-        order_ids = set(
-            case.shipment_allocations.values_list(
-                "shipment_line__order_id", flat=True
-            )
-        )
+        order_ids = set()
+        for allocation in case.shipment_allocations.select_related(
+            "shipment_order_allocation",
+            "shipment_line__process_card",
+        ):
+            if allocation.shipment_order_allocation_id:
+                order_ids.add(allocation.shipment_order_allocation.order_id)
+            else:
+                line = allocation.shipment_line
+                order_ids.add(
+                    line.order_id
+                    or (
+                        line.process_card.order_id
+                        if line.process_card_id
+                        else None
+                    )
+                )
         if case.shipment_line_id:
             line = case.shipment_line
             order_ids.add(

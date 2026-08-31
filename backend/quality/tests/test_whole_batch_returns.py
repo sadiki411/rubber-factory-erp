@@ -439,7 +439,8 @@ class WholeBatchCustomerReturnTests(QualityTestMixin, TestCase):
         )
         self.assertEqual(confirmed.status_code, 200, confirmed.content)
         batch = QualityShipmentBatch.objects.get(pk=draft.json()["id"])
-        self.assertEqual(batch.lines.count(), 2)
+        self.assertEqual(batch.lines.count(), 1)
+        self.assertEqual(batch.lines.get().order_allocations.count(), 2)
         self.assertEqual(
             delivered_quantities_by_order([self.order.pk, second.pk]),
             {self.order.pk: 500, second.pk: 1_500},
@@ -449,11 +450,14 @@ class WholeBatchCustomerReturnTests(QualityTestMixin, TestCase):
         self.assertEqual(returned.status_code, 201, returned.content)
         allocations = list(
             QualityReturnAllocation.objects.filter(case_id=returned.json()["id"])
-            .select_related("shipment_line")
-            .order_by("shipment_line_id")
+            .select_related("shipment_order_allocation__order")
+            .order_by("shipment_order_allocation__sequence")
         )
         self.assertEqual(
-            [(item.shipment_line.order_id, item.piece_quantity) for item in allocations],
+            [
+                (item.shipment_order_allocation.order_id, item.piece_quantity)
+                for item in allocations
+            ],
             [(self.order.pk, 500), (second.pk, 500)],
         )
         self.assertEqual(
@@ -495,6 +499,7 @@ class WholeBatchCustomerReturnTests(QualityTestMixin, TestCase):
                 "attempts",
                 "shipment_batch__inspectors",
                 "shipment_batch__lines__order",
+                "shipment_batch__lines__order_allocations__order",
                 "shipment_batch__lines__process_card__order",
                 "shipment_batch__rework_cases__attempts",
             )

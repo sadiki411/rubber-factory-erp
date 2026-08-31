@@ -94,10 +94,16 @@ def _rework_case_order_shares(case):
     allocation_manager = getattr(case, "shipment_allocations", None)
     allocations = list(allocation_manager.all()) if allocation_manager else []
     for allocation in allocations:
-        line = allocation.shipment_line
-        order = line.order or (
-            line.process_card.order if line.process_card_id else None
+        shipment_order_allocation = getattr(
+            allocation, "shipment_order_allocation", None
         )
+        if shipment_order_allocation is not None:
+            order = shipment_order_allocation.order
+        else:
+            line = allocation.shipment_line
+            order = line.order or (
+                line.process_card.order if line.process_card_id else None
+            )
         if order is None:
             continue
         current = shares.setdefault(order.pk, [order, 0])
@@ -523,6 +529,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             "lines__order",
             "lines__process_card__order",
             "lines__process_card__product_specification",
+            "lines__order_allocations__order",
         )
     )
     reworks = list(
@@ -566,6 +573,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             ),
             "shipment_allocations__shipment_line__order",
             "shipment_allocations__shipment_line__process_card__order",
+            "shipment_allocations__shipment_order_allocation__order",
         )
         .distinct()
     )
@@ -797,24 +805,15 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         row["automatic_record_count"] += 1
 
     for batch in weighted_batches:
-        # A batch may contain several process cards/orders.  Add each line to
-        # the corresponding order while counting the batch only once in the
-        # source counter below.
+        # A batch may contain several physical lines and each line may fulfil
+        # several orders.  Physical/company/day/inspector totals are recorded
+        # once per line; only the order view is split by fulfilment allocation.
         lines = list(batch.lines.all())
         people = list(getattr(batch, "inspectors", []).all()) if hasattr(batch, "inspectors") else []
         if not people and getattr(batch, "inspector", None):
             people = [batch.inspector]
         for line in lines:
             card = line.process_card
-            # Free-form weighted shipments may be linked directly to an order
-            # without a process card.  Do not dereference ``card.order``
-            # unconditionally: one direct line used to crash the dashboard.
-            order = line.order or (card.order if card else None) or batch.order
-            if order is None:
-                # Confirmation rejects new rows without an order/card, but
-                # tolerate any pre-migration residue instead of failing the
-                # complete analytics response.
-                continue
             quantity = getattr(line, "calculated_piece_quantity", None)
             if quantity is None:
                 quantity = getattr(line, "piece_quantity", None)
@@ -838,26 +837,64 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                 employee["inspection_days"].add(batch.shipment_date)
                 employee["automatic_record_count"] += 1
 
-            row = _ensure_order_row(
-                orders,
-                order_id=order.pk,
-                order_no=order.order_no,
-                product_name=order.product_name,
-                specification=(
-                    getattr(card, "specification_snapshot", "")
-                    or getattr(line, "specification_snapshot", "")
-                    or getattr(batch, "specification_snapshot", "")
-                    or order.specification
-                ),
-                material=(
-                    getattr(card, "material_snapshot", "")
-                    or getattr(line, "material_snapshot", "")
-                    or getattr(batch, "material_snapshot", "")
-                    or order.material
-                ),
-            )
-            _add_quality(row, values)
-            row["automatic_record_count"] += 1
+            order_shares = {}
+            allocations = list(line.order_allocations.all())
+            for allocation in allocations:
+                order = allocation.order
+                share = order_shares.setdefault(
+                    order.pk,
+                    {
+                        "order": order,
+                        "quantity": 0,
+                        "order_no": allocation.order_no_snapshot or order.order_no,
+                        "specification": (
+                            allocation.specification_snapshot or order.specification
+                        ),
+                        "material": allocation.material_snapshot or order.material,
+                    },
+                )
+                share["quantity"] += int(allocation.piece_quantity or 0)
+
+            if not allocations:
+                # Historical lines have no fulfilment rows. Preserve their
+                # original order fallback without counting both representations.
+                order = line.order or (card.order if card else None) or batch.order
+                if order is not None:
+                    order_shares[order.pk] = {
+                        "order": order,
+                        "quantity": int(quantity or 0),
+                        "order_no": order.order_no,
+                        "specification": (
+                            getattr(card, "specification_snapshot", "")
+                            or getattr(line, "specification_snapshot", "")
+                            or getattr(batch, "specification_snapshot", "")
+                            or order.specification
+                        ),
+                        "material": (
+                            getattr(card, "material_snapshot", "")
+                            or getattr(line, "material_snapshot", "")
+                            or getattr(batch, "material_snapshot", "")
+                            or order.material
+                        ),
+                    }
+
+            for share in order_shares.values():
+                order = share["order"]
+                row = _ensure_order_row(
+                    orders,
+                    order_id=order.pk,
+                    order_no=share["order_no"],
+                    product_name=order.product_name,
+                    specification=share["specification"],
+                    material=share["material"],
+                )
+                _add_quality(
+                    row,
+                    {
+                        "shipped_quantity": share["quantity"],
+                    },
+                )
+                row["automatic_record_count"] += 1
 
     reason_labels = dict(ReturnRework.ReasonCategory.choices)
     for rework in reworks:

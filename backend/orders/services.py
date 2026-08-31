@@ -172,6 +172,7 @@ def with_order_activity(queryset):
             Q(order_id=OuterRef("pk"))
             | Q(lines__order_id=OuterRef("pk"))
             | Q(lines__process_card__order_id=OuterRef("pk"))
+            | Q(lines__order_allocations__order_id=OuterRef("pk"))
         )
         .order_by("-updated_at")
         .values("updated_at")[:1]

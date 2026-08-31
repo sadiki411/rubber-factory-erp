@@ -15,7 +15,14 @@ from orders.models import (
     ProductSpecification,
 )
 from production.models import ProductionDailyLog, ProductionRun, ProductionStation
-from quality.models import QualityEmployee, QualityOrder, QualityShipment
+from quality.models import (
+    QualityEmployee,
+    QualityOrder,
+    QualityShipment,
+    QualityShipmentBatch,
+    QualityShipmentLine,
+    QualityShipmentOrderAllocation,
+)
 
 
 class BusinessApiTests(APITestCase):
@@ -255,6 +262,52 @@ class BusinessApiTests(APITestCase):
         QualityShipment.objects.filter(pk=shipment.pk).update(updated_at=newest)
 
         response = self.client.get(f"/api/orders/orders/{order.pk}/")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(parse_datetime(response.json()["last_data_updated_at"]), newest)
+
+    def test_order_last_data_updated_at_includes_weighted_allocation_target(self):
+        source = QualityOrder.objects.create(
+            order_no="ACTIVITY-WEIGHTED-SOURCE",
+            specification="TEST-ACTIVITY-WEIGHTED",
+            material="NBR",
+            order_quantity=100,
+            created_by=self.user,
+        )
+        target = QualityOrder.objects.create(
+            order_no="ACTIVITY-WEIGHTED-TARGET",
+            specification=source.specification,
+            material=source.material,
+            order_quantity=200,
+            created_by=self.user,
+        )
+        batch = QualityShipmentBatch.objects.create(
+            shipment_no="ACTIVITY-WEIGHTED-SHIPMENT",
+            shipment_date=timezone.localdate(),
+            order=source,
+            unit_weight_g=Decimal("1"),
+            status=QualityShipmentBatch.Status.CONFIRMED,
+            created_by=self.user,
+        )
+        line = QualityShipmentLine.objects.create(
+            batch=batch,
+            order=source,
+            net_weight_kg=Decimal("0.200"),
+            piece_quantity=200,
+            unit_weight_g_snapshot=Decimal("1"),
+        )
+        QualityShipmentOrderAllocation.objects.create(
+            shipment_line=line,
+            order=target,
+            sequence=1,
+            piece_start=0,
+            piece_end=200,
+            piece_quantity=200,
+            net_weight_kg=Decimal("0.200"),
+        )
+        newest = timezone.now() + timedelta(minutes=3)
+        QualityShipmentBatch.objects.filter(pk=batch.pk).update(updated_at=newest)
+
+        response = self.client.get(f"/api/orders/orders/{target.pk}/")
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(parse_datetime(response.json()["last_data_updated_at"]), newest)
 

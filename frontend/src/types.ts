@@ -985,6 +985,8 @@ export interface QualityShipmentBatchResult {
   actual_weight_kg?: number | string
   warnings?: string[]
   status?: 'DRAFT' | 'CONFIRMED' | 'VOID'
+  /** Actual order fulfilment written when the batch is confirmed. */
+  order_allocations?: QualityShipmentOrderAllocation[]
 }
 
 export interface QualityShipmentBatch extends QualityShipmentBatchResult {
@@ -1001,6 +1003,18 @@ export interface QualityShipmentBatch extends QualityShipmentBatchResult {
   backfill_reason?: string
   notes?: string
   lines?: QualityShipmentBatchLine[]
+}
+
+/** One confirmed allocation of a physical shipment line to an order. */
+export interface QualityShipmentOrderAllocation {
+  id?: string | number
+  shipment_line_id?: string | number | null
+  order_id: number
+  order?: QualityOrder | null
+  piece_quantity: number
+  net_weight_kg?: number | string | null
+  sequence?: number | null
+  is_overflow?: boolean
 }
 
 /** Candidate order returned by the weighted shipment entry helper endpoint. */
@@ -1071,6 +1085,8 @@ export interface QualityShipmentBatchLine {
   theoretical_weight_kg_snapshot?: number | string | null
   max_allowed_weight_kg_snapshot?: number | string | null
   notes?: string
+  /** Read-only fulfilment rows returned after confirmation. */
+  order_allocations?: QualityShipmentOrderAllocation[]
 }
 
 export interface QualityReturnableBatchLineSummary {

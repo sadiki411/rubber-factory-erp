@@ -45,6 +45,7 @@ import type {
   QualityShipmentBatch,
   QualityShipmentBatchLine,
   QualityShipmentBatchInput,
+  QualityShipmentOrderAllocation,
   QualityProcessCardScanResult,
   QualityReworkCase,
 } from '../types'
@@ -52,7 +53,6 @@ import { QualityQrScanner } from './QualityQrScanner'
 
 const DRAFT_KEY = 'erp-quality-weight-shipment-drafts-v2'
 const TOLERANCE_PERCENT = 10
-const MANUAL_ORDER = '__MANUAL_ORDER__'
 const EMPTY_PROCESS_CARDS: QualityProcessCard[] = []
 const EMPTY_LINE_SEEDS: QualityWeightShipmentLineSeed[] = []
 const EMPTY_SHIPMENTS: QualityShipment[] = []
@@ -131,6 +131,20 @@ type DrawerValues = {
 
 type WeightEntryMode = 'same' | 'individual'
 
+type AllocationPreviewGroup = {
+  key: string
+  orderId: number
+  pieceQuantity: number
+  specification: string
+  material: string
+  lineCount: number
+}
+
+type AllocationPreviewResult = AllocationPreviewGroup & {
+  preview?: QualityShipmentAllocationPreview
+  error?: string
+}
+
 type ScannedLineOverride = {
   unit_weight_g?: number | null
   single_batch_net_weight_kg?: number | null
@@ -199,9 +213,29 @@ function inspectorIds(value: QualityShipment | QualityShipmentBatch | undefined)
   return [...new Set([...ids, ...nested, ...first].filter((item): item is number => Number.isFinite(Number(item))).map(Number))]
 }
 
-function allocatedOrderCount(value: unknown) {
-  if (!value || typeof value !== 'object') return 0
+function shipmentAllocationSummary(value: unknown) {
+  if (!value || typeof value !== 'object') return { orderCount: 0, overflowQuantity: 0, hasAllocations: false }
   const batch = value as QualityShipmentBatch
+  const nested = (batch.lines || []).flatMap((line) => line.order_allocations || [])
+  const allocations: QualityShipmentOrderAllocation[] = batch.order_allocations?.length
+    ? batch.order_allocations
+    : nested
+  if (allocations.length) {
+    const orderIds = allocations
+      .map((allocation) => Number(allocation.order_id))
+      .filter(Number.isFinite)
+    const overflowQuantity = allocations.reduce((sum, allocation) => (
+      allocation.is_overflow ? sum + (numeric(allocation.piece_quantity) || 0) : sum
+    ), 0)
+    return {
+      orderCount: new Set(orderIds).size,
+      overflowQuantity,
+      hasAllocations: true,
+    }
+  }
+
+  // Rolling deployments may return the pre-allocation serializer shape. Keep
+  // the success message useful without claiming how the split was produced.
   const orderIds = (batch.lines || []).map((line) => (
     line.order_id
     ?? line.order?.id
@@ -209,7 +243,7 @@ function allocatedOrderCount(value: unknown) {
     ?? line.process_card?.order?.id
   )).filter((id): id is number => id != null && Number.isFinite(Number(id))).map(Number)
   if (batch.order_id != null) orderIds.push(Number(batch.order_id))
-  return new Set(orderIds).size
+  return { orderCount: new Set(orderIds).size, overflowQuantity: 0, hasAllocations: false }
 }
 
 function seedLines(seeds: QualityWeightShipmentLineSeed[] | undefined, cards: QualityProcessCard[]) {
@@ -394,9 +428,8 @@ export function QualityWeightShipmentDrawer({
   const [loadingCandidates, setLoadingCandidates] = useState(false)
   const [candidateError, setCandidateError] = useState('')
   const candidateRequestRef = useRef(0)
-  const [allocationPreview, setAllocationPreview] = useState<QualityShipmentAllocationPreview>()
+  const [allocationPreviews, setAllocationPreviews] = useState<AllocationPreviewResult[]>([])
   const [loadingAllocationPreview, setLoadingAllocationPreview] = useState(false)
-  const [allocationPreviewError, setAllocationPreviewError] = useState('')
   const allocationRequestRef = useRef(0)
   const [lines, setLines] = useState<EditableLine[]>([])
   const [scannerOpen, setScannerOpen] = useState(false)
@@ -434,13 +467,17 @@ export function QualityWeightShipmentDrawer({
 
   const allKnownOrders = useMemo(() => {
     const seen = new Set<number>()
-    return [...candidateOrders, ...orders]
+    const scannedOrders = scannedCards.map((item) => (
+      item.lookup.active_card?.order || item.lookup.scanned_card?.order
+    )).filter((order): order is QualityOrder => Boolean(order?.id))
+    const lineOrders = lines.map((line) => line.order).filter((order): order is QualityOrder => Boolean(order?.id))
+    return [...candidateOrders, ...orders, ...scannedOrders, ...lineOrders]
       .filter((order) => {
         if (seen.has(order.id)) return false
         seen.add(order.id)
         return true
       })
-  }, [candidateOrders, orders])
+  }, [candidateOrders, lines, orders, scannedCards])
 
   const availableOrders = useMemo(() => {
     if (candidateLoaded) return candidateOrders.filter((order) => orderRemaining(order) > 0)
@@ -545,6 +582,57 @@ export function QualityWeightShipmentDrawer({
     }
   }, { quantity: 0, expected: 0, actual: 0, missing: false, over: false, under: false }), [activeLines])
 
+  const allocationPreviewGroups = useMemo<AllocationPreviewGroup[]>(() => {
+    if (!isLineMode) {
+      const quantity = numeric(calculatedPieces)
+      if (!selectedOrder || quantity == null || quantity < 1) return []
+      const selectedId = selectedOrder.id
+      return [{
+        key: `direct-${selectedId}`,
+        orderId: selectedId,
+        pieceQuantity: Math.round(quantity),
+        specification: text(selectedOrder.specification || specificationValue),
+        material: text(selectedOrder.material || materialValue),
+        lineCount: effectiveBatchCount,
+      }]
+    }
+
+    const groups = new Map<string, AllocationPreviewGroup>()
+    activeLines.forEach((line) => {
+      const order = lineOrder(line, allKnownOrders)
+      const orderId = numeric(line.order_id ?? order?.id)
+      const quantity = numeric(editableLineMetrics(line).quantity)
+      if (orderId == null || quantity == null || quantity < 1) return
+      const specification = text(line.specification_snapshot || order?.specification)
+      const material = text(line.material_snapshot || order?.material)
+      const productKey = specification && material
+        ? `${specification.toLocaleLowerCase()}\u0000${material.toLocaleLowerCase()}`
+        : `order-${orderId}`
+      const current = groups.get(productKey)
+      if (current) {
+        current.pieceQuantity += Math.round(quantity)
+        current.lineCount += 1
+      } else {
+        groups.set(productKey, {
+          key: productKey,
+          orderId,
+          pieceQuantity: Math.round(quantity),
+          specification,
+          material,
+          lineCount: 1,
+        })
+      }
+    })
+    return [...groups.values()]
+  }, [activeLines, allKnownOrders, calculatedPieces, effectiveBatchCount, isLineMode, materialValue, selectedOrder, specificationValue])
+
+  const allocationPreviewGroupKey = useMemo(() => JSON.stringify(allocationPreviewGroups.map((group) => ({
+    key: group.key,
+    orderId: group.orderId,
+    pieceQuantity: group.pieceQuantity,
+    lineCount: group.lineCount,
+  }))), [allocationPreviewGroups])
+
   const totalExpected = isLineMode
     ? lineMetrics.expected
     : expectedWeightKg(standardTotalPieces || calculatedPieces, unitWeight) || 0
@@ -583,9 +671,8 @@ export function QualityWeightShipmentDrawer({
     setLoadingCandidates(false)
     setCandidateError('')
     candidateRequestRef.current += 1
-    setAllocationPreview(undefined)
+    setAllocationPreviews([])
     setLoadingAllocationPreview(false)
-    setAllocationPreviewError('')
     allocationRequestRef.current += 1
   }, [form])
 
@@ -670,9 +757,8 @@ export function QualityWeightShipmentDrawer({
     setLoadingCandidates(false)
     setCandidateError('')
     candidateRequestRef.current += 1
-    setAllocationPreview(undefined)
+    setAllocationPreviews([])
     setLoadingAllocationPreview(false)
-    setAllocationPreviewError('')
     allocationRequestRef.current += 1
     // Opening the drawer, changing the target record, or replacing the
     // selected workflow-card set are the only events that should reset typed
@@ -877,20 +963,6 @@ export function QualityWeightShipmentDrawer({
       void loadCandidates('', { specification: '', material: '' })
       return
     }
-    if (value === MANUAL_ORDER) {
-      form.setFieldsValue({
-        order_id: undefined,
-        product_name: '',
-        specification: '',
-        specification_snapshot: '',
-        material: '',
-        material_snapshot: '',
-        product_specification_id: null,
-        unit_weight_g: null,
-      })
-      void loadCandidates('', { specification: '', material: '' })
-      return
-    }
     const order = allKnownOrders.find((item) => String(item.id) === String(value))
     if (!order) return
     form.setFieldsValue({
@@ -910,14 +982,11 @@ export function QualityWeightShipmentDrawer({
   }
 
   useEffect(() => {
-    const selectedId = selectedOrder?.id
-    const quantity = numeric(calculatedPieces)
-    if (!open || isLineMode || selectedId == null || quantity == null || quantity < 1) {
+    if (!open || !allocationPreviewGroups.length) {
       allocationRequestRef.current += 1
       const resetTimer = window.setTimeout(() => {
-        setAllocationPreview(undefined)
+        setAllocationPreviews([])
         setLoadingAllocationPreview(false)
-        setAllocationPreviewError('')
       }, 0)
       return () => window.clearTimeout(resetTimer)
     }
@@ -925,31 +994,33 @@ export function QualityWeightShipmentDrawer({
     allocationRequestRef.current = requestId
     const loadingTimer = window.setTimeout(() => {
       if (requestId !== allocationRequestRef.current) return
-      setAllocationPreview(undefined)
+      setAllocationPreviews([])
       setLoadingAllocationPreview(true)
-      setAllocationPreviewError('')
     }, 0)
     const timer = window.setTimeout(async () => {
-      try {
-        const preview = await qualityWorkflowApi.previewShipmentAllocation({
-          order_id: selectedId,
-          piece_quantity: Math.round(quantity),
-        })
-        if (requestId !== allocationRequestRef.current) return
-        setAllocationPreview(preview)
-      } catch (error) {
-        if (requestId !== allocationRequestRef.current) return
-        setAllocationPreview(undefined)
-        setAllocationPreviewError((error as Error).message || '自动分配预览读取失败。')
-      } finally {
-        if (requestId === allocationRequestRef.current) setLoadingAllocationPreview(false)
-      }
+      const results = await Promise.all(allocationPreviewGroups.map(async (group): Promise<AllocationPreviewResult> => {
+        try {
+          const preview = await qualityWorkflowApi.previewShipmentAllocation({
+            order_id: group.orderId,
+            piece_quantity: group.pieceQuantity,
+          })
+          return { ...group, preview }
+        } catch (error) {
+          return { ...group, error: (error as Error).message || '自动分配预览读取失败。' }
+        }
+      }))
+      if (requestId !== allocationRequestRef.current) return
+      setAllocationPreviews(results)
+      setLoadingAllocationPreview(false)
     }, 250)
     return () => {
       window.clearTimeout(loadingTimer)
       window.clearTimeout(timer)
     }
-  }, [calculatedPieces, isLineMode, open, selectedOrder?.id])
+    // The serialized key prevents weight-line edits that do not change the
+    // allocation inputs from repeatedly issuing the same preview requests.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allocationPreviewGroupKey, open])
 
   const updateLine = (index: number, patch: Partial<EditableLine>) => {
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
@@ -1078,11 +1149,28 @@ export function QualityWeightShipmentDrawer({
     }
     const normalizedCardNo = activeCard?.card_no || cardNo
     const scannedOrder = activeCard?.order || allKnownOrders.find((order) => order.id === activeCard?.order_id)
+    if (String(scannedOrder?.status || '').toUpperCase() === 'CANCELLED') {
+      throw new Error(`流程卡 ${normalizedCardNo} 所属订单已取消，不能登记出货。`)
+    }
     const firstScannedCard = scannedCards[0]?.lookup.active_card || scannedCards[0]?.lookup.scanned_card
+    const firstScannedOrder = firstScannedCard?.order || allKnownOrders.find((order) => order.id === firstScannedCard?.order_id)
     const firstOrderId = numeric(firstScannedCard?.order_id) ?? numeric(orderId)
     const scannedOrderId = numeric(activeCard?.order_id)
     if (scannedCards.length && firstOrderId != null && scannedOrderId != null && firstOrderId !== scannedOrderId) {
-      throw new Error(`流程卡 ${normalizedCardNo} 属于另一张订单，不能和本次已扫流程卡一起出货。请完成本次出货后再扫描。`)
+      const firstSpecification = text(firstScannedCard?.specification_snapshot || firstScannedOrder?.specification).toLocaleLowerCase()
+      const firstMaterial = text(firstScannedCard?.material_snapshot || firstScannedOrder?.material).toLocaleLowerCase()
+      const scannedSpecification = text(activeCard?.specification_snapshot || scannedOrder?.specification).toLocaleLowerCase()
+      const scannedMaterial = text(activeCard?.material_snapshot || scannedOrder?.material).toLocaleLowerCase()
+      const sameProduct = Boolean(
+        firstSpecification
+        && firstMaterial
+        && firstSpecification === scannedSpecification
+        && firstMaterial === scannedMaterial
+      )
+      if (!sameProduct) {
+        throw new Error(`流程卡 ${normalizedCardNo} 属于另一规格或材质，不能和本次已扫包装一起出货。请分开登记。`)
+      }
+      message.info(`流程卡 ${normalizedCardNo} 属于另一张相同规格材质订单，已加入本次出货；确认时会按包装顺序自动分配。`)
     }
     if (!scannedCards.length && activeCard) {
       const scannedSpec = activeCard.specification_snapshot || scannedOrder?.specification || ''
@@ -1157,7 +1245,13 @@ export function QualityWeightShipmentDrawer({
 
   const submit = async () => {
     if (submittingRef.current) return
-    const values = await form.validateFields()
+    let values: DrawerValues
+    try {
+      values = await form.validateFields()
+    } catch {
+      // Ant Design has already rendered the field-level validation message.
+      return
+    }
     const shipmentNo = text(values.shipment_no)
     const duplicateFound = shipmentNo ? await checkShipmentNumber(shipmentNo) : false
     const editingDraft = Boolean(activeBatch?.id && activeBatch.status !== 'CONFIRMED' && activeBatch.status !== 'VOID')
@@ -1172,8 +1266,8 @@ export function QualityWeightShipmentDrawer({
       message.warning('该出货单号已有未完成草稿，请先点击“继续填写草稿”。')
       return
     }
-    if (!selectedOrder && !text(values.specification) && !text(values.material)) {
-      message.warning('请选择候选订单，或至少填写手工规格和材质。')
+    if (!isLineMode && !reshipCase && !selectedOrder) {
+      message.warning('请选择候选订单；无订单关联的手工出货不能确认。')
       return
     }
     const topUnit = numeric(values.unit_weight_g)
@@ -1241,6 +1335,7 @@ export function QualityWeightShipmentDrawer({
       process_card_bindings: basketLineMode ? undefined : scannedCards.map((item, index) => ({
         card_no: item.cardNo,
         shipment_unit_no: index + 1,
+        order_id: numeric((item.lookup.active_card || item.lookup.scanned_card)?.order_id),
       })),
       lines: isLineMode
         ? activeLines.map((line) => {
@@ -1332,15 +1427,19 @@ export function QualityWeightShipmentDrawer({
         // a confirmed shipment in the form where a second tap can retry it.
         message.warning((refreshError as Error).message || '出货已保存，但列表刷新失败；关闭后刷新页面即可查看。')
       }
-      const orderCount = allocatedOrderCount(result)
+      const allocationSummary = shipmentAllocationSummary(result)
+      const previewOverflow = allocationPreviews.reduce((sum, item) => sum + (item.preview?.overflow_quantity || 0), 0)
+      const overflowQuantity = allocationSummary.hasAllocations
+        ? allocationSummary.overflowQuantity
+        : previewOverflow
       message.success(reshipCase
         ? `${reshipCase.return_label || '返工产品'}已重新出货，退货状态和订单有效出货数量已同步更新`
         : shipment || batch
         ? '出货记录已更新'
-        : orderCount > 1
-          ? `重量出货已保存，系统已自动分配到 ${orderCount} 个订单`
-          : allocationPreview?.overflow_quantity
-            ? '重量出货已保存；无可补订单的超出数量已记入当前订单'
+        : allocationSummary.orderCount > 1
+          ? `重量出货已保存，实际计入 ${allocationSummary.orderCount} 个订单`
+          : overflowQuantity > 0
+            ? `重量出货已保存；无可补订单的 ${qualityNumber(overflowQuantity)} 件已记为来源订单超额`
             : '重量出货已保存，订单余量已同步更新')
       if (submitSession === entrySessionRef.current) closeDrawer()
     } catch (error) {
@@ -1470,16 +1569,72 @@ export function QualityWeightShipmentDrawer({
   const inspectorOptions = employees
     .filter((item) => item.is_active && ['INSPECTOR', 'BOTH'].includes(item.role))
     .map((item) => ({ value: item.id, label: `${item.employee_no} · ${item.name}${item.team ? ` · ${item.team}` : ''}` }))
-  const selectableOrders = selectedOrder && activeBatch && !availableOrders.some((order) => order.id === selectedOrder.id)
+  const selectedOrderIsIdentityAnchor = Boolean(selectedOrder && !availableOrders.some((order) => order.id === selectedOrder.id))
+  const selectableOrders = selectedOrder && selectedOrderIsIdentityAnchor
     ? [selectedOrder, ...availableOrders]
     : availableOrders
   const orderOptions = [
-    { value: MANUAL_ORDER, label: '手工输入（无订单关联）' },
     ...selectableOrders.map((order) => ({
       value: order.id,
-      label: `${orderLabel(order)} · 剩余${qualityNumber(orderRemaining(order))}件${activeBatch && order.id === selectedOrder?.id && orderRemaining(order) <= 0 ? ' · 原草稿订单' : ''}`,
+      label: `${orderLabel(order)} · 剩余${qualityNumber(orderRemaining(order))}件${selectedOrderIsIdentityAnchor && order.id === selectedOrder?.id ? ' · 来源订单（身份锚点）' : ''}`,
     })),
   ]
+
+  const allocationPreviewCard = allocationPreviewGroups.length ? <Card
+    size="small"
+    className="quality-weight-allocation-card"
+    title="订单自动分配预览"
+    extra={<Tag color="blue">确认时按最新余量复核</Tag>}
+  >
+    {isLineMode && <Alert
+      type="info"
+      showIcon
+      message="按重量明细顺序跨订单分配"
+      description="流程卡上的唯一订单作为来源身份锚点；系统按规格、材质分组汇总预览，确认时再逐条包装分配到仍未完成的匹配订单。"
+    />}
+    {loadingAllocationPreview && <Typography.Text type="secondary">正在根据相同规格、相同材质订单计算分配…</Typography.Text>}
+    {!loadingAllocationPreview && !allocationPreviews.length && <Typography.Text type="secondary">正在准备分配预览…</Typography.Text>}
+    {!loadingAllocationPreview && allocationPreviews.map((item) => {
+      const preview = item.preview
+      return <div className="quality-weight-allocation-group" key={item.key}>
+        {(isLineMode || allocationPreviews.length > 1) && <Typography.Paragraph strong>
+          {item.specification || '未填写规格'} · {item.material || '未填写材质'} · {item.lineCount} 条明细，共 {qualityNumber(item.pieceQuantity)} 件
+        </Typography.Paragraph>}
+        {item.error && <Alert type="warning" showIcon message="暂时无法显示分配预览" description={`${item.error} 可以继续确认，服务器会在入账时按每条包装重新计算。`} />}
+        {preview && <>
+          <Alert
+            showIcon
+            type={preview.overflow_quantity > 0 ? 'warning' : 'success'}
+            message={preview.matching_allocated_quantity > 0
+              ? `超出部分已预分配 ${qualityNumber(preview.matching_allocated_quantity)} 件到其他匹配订单`
+              : preview.overflow_quantity > 0
+                ? '没有可补足的匹配订单，允许来源订单超额出货'
+                : '本次出货全部计入来源订单'}
+            description={preview.overflow_quantity > 0
+              ? `匹配订单补足后仍有 ${qualityNumber(preview.overflow_quantity)} 件，将作为来源订单超额数量记录。`
+              : `本组共 ${qualityNumber(preview.total_allocated_quantity)} 件；确认时会按最新订单余量重新计算。`}
+          />
+          <div className="quality-weight-allocation-list">
+            {preview.allocations.map((allocation, index) => <div
+              className={`quality-weight-allocation-row${allocation.is_overflow ? ' is-overflow' : ''}`}
+              key={`${item.key}-${allocation.order_id}-${allocation.is_overflow ? 'overflow' : 'normal'}-${index}`}
+            >
+              <div className="quality-weight-allocation-order">
+                <Space size={6} wrap>
+                  <strong>{allocation.order_no} / {allocation.item_no || '-'}</strong>
+                  <Tag color={allocation.is_overflow ? 'orange' : allocation.is_source ? 'blue' : 'green'}>
+                    {allocation.is_overflow ? '来源订单超额' : allocation.is_source ? '来源订单' : '自动补入'}
+                  </Tag>
+                </Space>
+                <Typography.Text type="secondary">{allocation.due_date ? `交期 ${allocation.due_date}` : '未填写交期'} · 分配前剩余 {qualityNumber(allocation.remaining_before)} 件 → 分配后 {qualityNumber(allocation.remaining_after)} 件</Typography.Text>
+              </div>
+              <strong className="quality-weight-allocation-quantity">{qualityNumber(allocation.allocated_quantity)} 件</strong>
+            </div>)}
+          </div>
+        </>}
+      </div>
+    })}
+  </Card> : null
 
   return (
     <Drawer
@@ -1546,13 +1701,21 @@ export function QualityWeightShipmentDrawer({
               <Form.Item name="shipment_date" label="实际出货日期" rules={[{ required: true, message: '请选择实际出货日期' }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
             </Col>
           </Row>
-          <Form.Item name="order_id" label="候选订单 / 批次" extra="已出满订单不会显示；本次超出当前订单余量时，系统会自动补入相同规格、相同材质的未完成订单。">
+          <Form.Item
+            name="order_id"
+            label={isLineMode || scannedCards.length ? '来源订单（由流程卡确定）' : '候选订单 / 批次'}
+            rules={!isLineMode && !reshipCase ? [{ required: true, message: '请选择候选订单；无订单出货不能确认' }] : undefined}
+            extra={isLineMode || scannedCards.length
+              ? '流程卡订单作为来源身份锚点；即使该订单已出满，确认时也会继续顺延到相同规格、相同材质的未完成订单。'
+              : '已出满订单不会显示；本次超出当前订单余量时，系统会自动补入相同规格、相同材质的未完成订单。'}
+          >
             <Select
               showSearch
               allowClear
+              disabled={basketLineMode || Boolean(scannedCards.length && selectedOrder)}
               loading={loadingCandidates}
               optionFilterProp="label"
-              placeholder="选择候选订单（可选）"
+              placeholder={basketLineMode ? '由各流程卡明细确定' : '必须选择候选订单'}
               options={orderOptions}
               onChange={chooseOrder}
               searchValue={candidateQuery}
@@ -1567,7 +1730,9 @@ export function QualityWeightShipmentDrawer({
               notFoundContent={loadingCandidates ? '正在读取可出货订单…' : '没有仍可出货的候选订单'}
             />
           </Form.Item>
-          {candidateError && <Alert className="quality-weight-candidate-alert" type="warning" showIcon message="候选订单暂时读取失败" description={`${candidateError} 确认出货时服务器仍会按最新订单余量重新核算。`} />}
+          {candidateError && <Alert className="quality-weight-candidate-alert" type="warning" showIcon message="候选订单暂时读取失败" description={isLineMode || selectedOrder
+            ? `${candidateError} 确认出货时服务器仍会按最新订单余量重新核算。`
+            : `${candidateError} 请恢复候选订单读取或扫描带订单的流程卡后再确认出货。`} />}
           {selectedOrder && <Descriptions size="small" column={{ xs: 1, sm: 2 }} bordered className="quality-weight-order-preview"><Descriptions.Item label="订单">{selectedOrder.order_no} / {selectedOrder.item_no || '-'}</Descriptions.Item><Descriptions.Item label="剩余数量">{qualityNumber(orderRemaining(selectedOrder))} 件</Descriptions.Item></Descriptions>}
           <Row gutter={14}>
             <Col xs={24} sm={8}><Form.Item name="product_name" label="产品名称"><Input placeholder="可手工输入" /></Form.Item></Col>
@@ -1608,51 +1773,13 @@ export function QualityWeightShipmentDrawer({
             </Row>
             {quantityOverLimit && <Alert className="quality-weight-limit-alert" type="error" showIcon message="单批换算数量超过流程卡标准 +10%" description={`单批称重换算为 ${singleBatchPieces} 件，流程卡标准为 ${processCardShipmentQuantity} 件，允许上限为 ${qualityNumber(quantityUpperLimit, 1)} 件。请核对单重、净重或流程卡数量。`} />}
             {calculatedPieces && singleBatchWeight && unitWeight && <Typography.Paragraph type="secondary" className="quality-weight-calculation-note">单批：{singleBatchWeight} kg × 1000 ÷ {unitWeight} g/件 ≈ {singleBatchPieces} 件；合计：{singleBatchPieces} 件 × {effectiveBatchCount} 批 = {calculatedPieces} 件，累计净重 {qualityNumber(repeatedTotalWeight, 3)} kg。</Typography.Paragraph>}
-            {selectedOrder && calculatedPieces && <Card
-              size="small"
-              className="quality-weight-allocation-card"
-              title="订单自动分配预览"
-              extra={<Tag color="blue">确认时按最新余量复核</Tag>}
-            >
-              {loadingAllocationPreview && <Typography.Text type="secondary">正在根据相同规格、相同材质订单计算分配…</Typography.Text>}
-              {!loadingAllocationPreview && allocationPreviewError && <Alert type="warning" showIcon message="暂时无法显示分配预览" description={`${allocationPreviewError} 可以继续确认，服务器会在入账时重新计算。`} />}
-              {!loadingAllocationPreview && allocationPreview && <>
-                <Alert
-                  showIcon
-                  type={allocationPreview.overflow_quantity > 0 ? 'warning' : 'success'}
-                  message={allocationPreview.matching_allocated_quantity > 0
-                    ? `超出部分已预分配 ${qualityNumber(allocationPreview.matching_allocated_quantity)} 件到其他匹配订单`
-                    : allocationPreview.overflow_quantity > 0
-                      ? '没有可补足的匹配订单，允许当前订单超额出货'
-                      : '本次出货全部计入当前订单'}
-                  description={allocationPreview.overflow_quantity > 0
-                    ? `匹配订单补足后仍有 ${qualityNumber(allocationPreview.overflow_quantity)} 件，将作为当前订单超额数量记录。`
-                    : `本次共 ${qualityNumber(allocationPreview.total_allocated_quantity)} 件；确认时会按最新订单余量重新计算。`}
-                />
-                <div className="quality-weight-allocation-list">
-                  {allocationPreview.allocations.map((allocation, index) => <div
-                    className={`quality-weight-allocation-row${allocation.is_overflow ? ' is-overflow' : ''}`}
-                    key={`${allocation.order_id}-${allocation.is_overflow ? 'overflow' : 'normal'}-${index}`}
-                  >
-                    <div className="quality-weight-allocation-order">
-                      <Space size={6} wrap>
-                        <strong>{allocation.order_no} / {allocation.item_no || '-'}</strong>
-                        <Tag color={allocation.is_overflow ? 'orange' : allocation.is_source ? 'blue' : 'green'}>
-                          {allocation.is_overflow ? '当前订单超额' : allocation.is_source ? '当前订单' : '自动补入'}
-                        </Tag>
-                      </Space>
-                      <Typography.Text type="secondary">{allocation.due_date ? `交期 ${allocation.due_date}` : '未填写交期'} · 分配前剩余 {qualityNumber(allocation.remaining_before)} 件 → 分配后 {qualityNumber(allocation.remaining_after)} 件</Typography.Text>
-                    </div>
-                    <strong className="quality-weight-allocation-quantity">{qualityNumber(allocation.allocated_quantity)} 件</strong>
-                  </div>)}
-                </div>
-              </>}
-            </Card>}
           </> : <>
-            <Alert type="info" showIcon message={`已选择 ${activeLines.length} 张流程卡`} description={scannedVariableMode ? '一卡对应一包；可逐包调整单重、流程卡数量和实称净重，系统分别校验 +10% 上限。' : '每条明细可调整本次件数和实称净重；系统按每条流程卡理论重量 +10% 校验。'} />
+            <Alert type="info" showIcon message={`已选择 ${activeLines.length} 张流程卡`} description={scannedVariableMode
+              ? '一卡对应一包；可逐包调整单重、流程卡数量和实称净重。流程卡原订单仅作身份锚点，确认时会把超出件数顺延到相同规格、相同材质的未完成订单。'
+              : '每条明细可调整本次件数和实称净重；确认时按明细顺序跨匹配订单分配，并分别校验每张流程卡的 +10% 上限。'} />
             <div className="quality-weight-line-list">
               {activeLines.map((line, index) => {
-                const order = lineOrder(line, orders)
+                const order = lineOrder(line, allKnownOrders)
                 const metrics = editableLineMetrics(line)
                 const variance = weightVariancePercent(metrics.actual, metrics.expected)
                 return <Card key={line.key} size="small" className={`quality-weight-line ${metrics.over ? 'is-over' : ''}`}>
@@ -1668,12 +1795,13 @@ export function QualityWeightShipmentDrawer({
               })}
             </div>
           </>}
+          {allocationPreviewCard}
           {(overLimit || underLimit) && <Alert className="quality-weight-limit-alert" type={overLimit ? 'error' : 'warning'} showIcon message={overLimit ? '超过理论重量 +10%，禁止提交' : '实称净重低于理论重量，请核对后确认'} />}
         </Card>
         <Form.Item name="backfill_reason" label="历史日期补录原因" extra="早于今天的出货日期建议填写原因"><Input.TextArea rows={2} maxLength={300} showCount /></Form.Item>
         <Form.Item name="notes" label="备注"><Input.TextArea rows={3} maxLength={500} showCount placeholder="可记录车次、包装、交接或称重说明" /></Form.Item>
       </Form>
-      {!isLineMode && candidateLoaded && !availableOrders.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无仍可出货的候选订单，可直接手工填写规格和材质" />}
+      {!isLineMode && candidateLoaded && !availableOrders.length && !selectedOrder && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无仍可出货的候选订单；无订单关联的手工出货不能确认" />}
       <div className="quality-weight-summary">
         <Statistic title={isLineMode ? '流程卡' : '订单'} value={isLineMode ? activeLines.length : selectedOrder ? 1 : 0} suffix={isLineMode ? '张' : '项'} />
         <Statistic title="本次件数" value={isLineMode ? lineMetrics.quantity : calculatedPieces || 0} suffix="件" />
@@ -1691,5 +1819,3 @@ export function QualityWeightShipmentDrawer({
     </Drawer>
   )
 }
-
-export { MANUAL_ORDER }

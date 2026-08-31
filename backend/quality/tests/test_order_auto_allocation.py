@@ -1,15 +1,18 @@
 from datetime import timedelta
 from decimal import Decimal
 
+from django.db.models import Sum
 from django.test import TestCase
 from django.utils import timezone
 
 from quality.models import (
+    ProcessCard,
     ProductUnitWeight,
     QualityOrder,
     QualityReworkCase,
     QualityShipmentBatch,
     QualityShipmentLine,
+    QualityShipmentOrderAllocation,
 )
 
 from .helpers import QualityTestMixin, response_results
@@ -69,8 +72,12 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
 
     def line_quantities(self, batch_id):
         return {
-            line.order_id: line.piece_quantity
-            for line in QualityShipmentLine.objects.filter(batch_id=batch_id)
+            row["order_id"]: row["total"]
+            for row in QualityShipmentOrderAllocation.objects.filter(
+                shipment_line__batch_id=batch_id
+            )
+            .values("order_id")
+            .annotate(total=Sum("piece_quantity"))
         }
 
     def test_two_thousand_by_ten_fills_same_specification_order_and_is_idempotent(self):
@@ -103,13 +110,13 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
             {self.order.pk: 10_000, second.pk: 10_000},
         )
         lines = QualityShipmentLine.objects.filter(batch_id=draft.json()["id"])
-        self.assertEqual(lines.count(), 2)
+        self.assertEqual(lines.count(), 1)
         self.assertEqual(
             sum((line.net_weight_kg for line in lines), Decimal("0")),
             Decimal("20.000"),
         )
         self.assertEqual(sum(line.piece_quantity for line in lines), 20_000)
-        self.assertTrue(all(line.single_batch_net_weight_kg is None for line in lines))
+        self.assertTrue(all(line.single_batch_net_weight_kg is not None for line in lines))
         self.assertTrue(all(line.product_specification_id for line in lines))
         self.assertTrue(
             all(
@@ -124,7 +131,7 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
 
         retried = self.confirm(draft.json()["id"])
         self.assertEqual(retried.status_code, 200, retried.content)
-        self.assertEqual(QualityShipmentLine.objects.filter(batch_id=draft.json()["id"]).count(), 2)
+        self.assertEqual(QualityShipmentLine.objects.filter(batch_id=draft.json()["id"]).count(), 1)
 
         candidates = response_results(
             self.client.get(
@@ -159,7 +166,9 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
             {self.order.pk: 100, earlier.pk: 30, later.pk: 170},
         )
         ordered_lines = list(
-            QualityShipmentLine.objects.filter(batch_id=draft.json()["id"]).order_by("id")
+            QualityShipmentOrderAllocation.objects.filter(
+                shipment_line__batch_id=draft.json()["id"]
+            ).order_by("shipment_line_id", "sequence")
         )
         self.assertEqual(
             [line.order_id for line in ordered_lines],
@@ -215,12 +224,16 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
             self.line_quantities(draft.json()["id"]),
             {self.order.pk: 250, second.pk: 50},
         )
-        self.assertEqual(
-            QualityShipmentLine.objects.filter(
-                batch_id=draft.json()["id"], order=self.order
-            ).count(),
-            1,
+        allocations = list(
+            QualityShipmentOrderAllocation.objects.filter(
+                shipment_line__batch_id=draft.json()["id"]
+            ).order_by("sequence")
         )
+        self.assertEqual(
+            [item.order_id for item in allocations],
+            [self.order.pk, second.pk, self.order.pk],
+        )
+        self.assertEqual([item.is_overflow for item in allocations], [False, False, True])
         self.assertEqual(
             sum(
                 (
@@ -261,11 +274,9 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
         )
         confirmed = self.confirm(draft.json()["id"])
         self.assertEqual(confirmed.status_code, 200, confirmed.content)
-        lines = list(
-            QualityShipmentLine.objects.filter(batch_id=draft.json()["id"])
-        )
+        lines = list(QualityShipmentLine.objects.filter(batch_id=draft.json()["id"]))
         self.assertEqual(
-            {line.order_id: line.piece_quantity for line in lines},
+            self.line_quantities(draft.json()["id"]),
             {self.order.pk: 230, second.pk: 103},
         )
         self.assertEqual(sum(line.piece_quantity for line in lines), 333)
@@ -310,8 +321,9 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
             self.line_quantities(draft.json()["id"]), {self.order.pk: 200}
         )
 
-    def test_closed_source_is_rejected_by_preview_and_confirmation(self):
+    def test_completed_source_is_identity_anchor_but_cancelled_source_is_rejected(self):
         draft = self.repeat_draft(shipment_no="AUTO-CLOSED-SOURCE")
+        second = self.create_order("ORD-AFTER-COMPLETED", 100, due_days=1)
         self.order.status = QualityOrder.Status.COMPLETED
         self.order.save()
         preview = self.client.post(
@@ -319,10 +331,19 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
             {"order_id": self.order.pk, "piece_quantity": 100},
             format="json",
         )
-        self.assertEqual(preview.status_code, 400, preview.content)
+        self.assertEqual(preview.status_code, 200, preview.content)
+        self.assertEqual(preview.json()["allocations"][0]["order_id"], second.pk)
         confirmed = self.confirm(draft.json()["id"])
-        self.assertEqual(confirmed.status_code, 400, confirmed.content)
-        batch = QualityShipmentBatch.objects.get(pk=draft.json()["id"])
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        self.assertEqual(self.line_quantities(draft.json()["id"]), {second.pk: 100})
+        cancelled_draft = self.repeat_draft(
+            order=second, shipment_no="AUTO-CANCELLED-SOURCE"
+        )
+        second.status = QualityOrder.Status.CANCELLED
+        second.save()
+        cancelled = self.confirm(cancelled_draft.json()["id"])
+        self.assertEqual(cancelled.status_code, 400, cancelled.content)
+        batch = QualityShipmentBatch.objects.get(pk=cancelled_draft.json()["id"])
         self.assertEqual(batch.status, QualityShipmentBatch.Status.DRAFT)
 
     def test_legacy_draft_with_only_batch_unit_weight_can_be_allocated(self):
@@ -426,15 +447,11 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
         self.assertEqual(batch.process_card_shipment_quantity, 100)
         self.assertEqual(batch.product_batch_count, 2)
         self.assertEqual(batch.pieces_per_batch, 100)
-        self.assertTrue(
-            all(
-                line.single_batch_net_weight_kg is None
-                and line.process_card_shipment_quantity is None
-                and line.product_batch_count is None
-                and line.pieces_per_batch is None
-                for line in batch.lines.all()
-            )
-        )
+        line = batch.lines.get()
+        self.assertEqual(line.single_batch_net_weight_kg, Decimal("0.100"))
+        self.assertEqual(line.process_card_shipment_quantity, 100)
+        self.assertEqual(line.product_batch_count, 2)
+        self.assertEqual(line.pieces_per_batch, 100)
 
     def test_legacy_returns_use_same_balance_in_candidate_and_order_detail(self):
         shipment = self.create_shipment(
@@ -471,16 +488,14 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
         second = self.create_order("ORD-RETURN-TARGET", 100, due_days=1)
         draft = self.repeat_draft(batch_count=2, shipment_no="AUTO-RETURN-TARGET")
         self.assertEqual(self.confirm(draft.json()["id"]).status_code, 200)
-        lines = {
-            line.order_id: line
-            for line in QualityShipmentLine.objects.filter(batch_id=draft.json()["id"])
-        }
+        line = QualityShipmentLine.objects.get(batch_id=draft.json()["id"])
         returned = self.client.post(
             "/api/quality/rework-cases/",
             {
                 "origin": QualityReworkCase.Origin.CUSTOMER_RETURN,
-                "shipment_line_id": lines[second.pk].pk,
-                "affected_quantity": 10,
+                "shipment_batch_id": draft.json()["id"],
+                "shipment_unit_no": 2,
+                "reason_category": "OTHER",
             },
             format="json",
         )
@@ -489,7 +504,7 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
             "/api/quality/rework-cases/",
             {
                 "origin": QualityReworkCase.Origin.INTERNAL,
-                "shipment_line_id": lines[self.order.pk].pk,
+                "shipment_line_id": line.pk,
                 "affected_quantity": 20,
             },
             format="json",
@@ -506,7 +521,7 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
         )
         self.assertEqual(
             [(item["order_id"], item["remaining_quantity"]) for item in candidates],
-            [(second.pk, 10)],
+            [(second.pk, 100)],
         )
 
         cancelled = self.client.patch(
@@ -515,6 +530,8 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
             format="json",
         )
         self.assertEqual(cancelled.status_code, 200, cancelled.content)
+        second.refresh_from_db()
+        self.assertEqual(second.status, QualityOrder.Status.COMPLETED)
         candidates = response_results(
             self.client.get(
                 "/api/quality/shipment-batches/candidates/",
@@ -549,7 +566,7 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
         )[0]
         self.assertEqual(after["remaining_quantity"], self.order.order_quantity)
 
-    def test_explicit_multiple_direct_lines_are_not_auto_allocated(self):
+    def test_explicit_multiple_direct_lines_share_one_transaction_balance(self):
         second = self.create_order("ORD-EXPLICIT-SECOND", 50, due_days=1)
         response = self.client.post(
             "/api/quality/shipment-batches/",
@@ -576,5 +593,123 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
         self.assertEqual(confirmed.status_code, 200, confirmed.content)
         self.assertEqual(
             self.line_quantities(response.json()["id"]),
-            {self.order.pk: 100, second.pk: 100},
+            {self.order.pk: 150, second.pk: 50},
         )
+
+    def test_multiple_scanned_card_lines_allocate_in_physical_order(self):
+        self.order.order_quantity = 100
+        self.order.save(update_fields=["order_quantity", "updated_at"])
+        second = self.create_order("ORD-CARD-OVERFLOW", 100, due_days=1)
+        cards = [
+            ProcessCard.objects.create(
+                card_no=f"PC-ALLOC-{index}",
+                order=self.order,
+                quantity=100,
+                unit_weight_g=Decimal("1.00000"),
+                created_by=self.user,
+            )
+            for index in (1, 2)
+        ]
+        draft = self.client.post(
+            "/api/quality/shipment-batches/",
+            {
+                "shipment_no": "AUTO-MULTI-CARD",
+                "shipment_date": timezone.localdate().isoformat(),
+                "lines": [
+                    {
+                        "process_card_id": card.pk,
+                        "net_weight_kg": "0.100",
+                        "piece_quantity": 100,
+                    }
+                    for card in cards
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(draft.status_code, 201, draft.content)
+        confirmed = self.confirm(draft.json()["id"])
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        physical_lines = list(
+            QualityShipmentLine.objects.filter(batch_id=draft.json()["id"])
+            .prefetch_related("order_allocations")
+            .order_by("id")
+        )
+        self.assertEqual(len(physical_lines), 2)
+        self.assertEqual(
+            [line.process_card_id for line in physical_lines],
+            [cards[0].pk, cards[1].pk],
+        )
+        self.assertEqual(
+            [
+                [
+                    (item.order_id, item.piece_quantity)
+                    for item in line.order_allocations.all()
+                ]
+                for line in physical_lines
+            ],
+            [[(self.order.pk, 100)], [(second.pk, 100)]],
+        )
+        response_lines = confirmed.json()["lines"]
+        self.assertEqual(
+            [row["order_allocations"][0]["order_id"] for row in response_lines],
+            [self.order.pk, second.pk],
+        )
+
+    def test_completed_source_card_stays_bound_when_whole_package_moves_next(self):
+        second = self.create_order("ORD-COMPLETED-CARD-NEXT", 100, due_days=1)
+        card = ProcessCard.objects.create(
+            card_no="PC-COMPLETED-SOURCE",
+            order=self.order,
+            quantity=100,
+            unit_weight_g=Decimal("1.00000"),
+            created_by=self.user,
+        )
+        self.order.status = QualityOrder.Status.COMPLETED
+        self.order.save(update_fields=["status", "updated_at"])
+        draft = self.client.post(
+            "/api/quality/shipment-batches/",
+            {
+                "shipment_no": "AUTO-COMPLETED-SOURCE-CARD",
+                "shipment_date": timezone.localdate().isoformat(),
+                "lines": [
+                    {
+                        "process_card_id": card.pk,
+                        "net_weight_kg": "0.100",
+                        "piece_quantity": 100,
+                    }
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(draft.status_code, 201, draft.content)
+        confirmed = self.confirm(draft.json()["id"])
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        line = QualityShipmentLine.objects.get(batch_id=draft.json()["id"])
+        allocation = line.order_allocations.get()
+        self.assertEqual((allocation.order_id, allocation.piece_quantity), (second.pk, 100))
+        binding = card.unit_binding
+        self.assertEqual(binding.shipment_batch_id, draft.json()["id"])
+        self.assertEqual(binding.shipment_unit_no, 1)
+        card.refresh_from_db()
+        self.assertEqual(card.order_id, self.order.pk)
+        for params in (
+            {"q": second.order_no},
+            {"order_id": second.pk},
+            {"order": second.order_no},
+            {
+                "due_date_from": second.due_date.isoformat(),
+                "due_date_to": second.due_date.isoformat(),
+            },
+            {"order_status": QualityOrder.Status.COMPLETED},
+            {"delivery_status": "SHIPPED"},
+        ):
+            rows = response_results(
+                self.client.get("/api/quality/shipment-batches/", params)
+            )
+            self.assertEqual([row["id"] for row in rows], [draft.json()["id"]])
+        ordered = response_results(
+            self.client.get(
+                "/api/quality/shipment-batches/", {"ordering": "due_date"}
+            )
+        )
+        self.assertEqual([row["id"] for row in ordered], [draft.json()["id"]])

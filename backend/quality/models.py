@@ -1448,6 +1448,101 @@ class QualityShipmentLine(TimeStampedModel):
         return f"{self.batch.shipment_no} - {card_label}"
 
 
+class QualityShipmentOrderAllocation(TimeStampedModel):
+    """Immutable order fulfilment share inside one physical shipment line.
+
+    ``QualityShipmentLine`` remains the scale/package fact.  A line can cross
+    several orders (and can return to the source order as allowed overflow),
+    so the ordered piece interval is stored explicitly instead of rewriting
+    the physical line into several synthetic rows.
+    """
+
+    shipment_line = models.ForeignKey(
+        QualityShipmentLine,
+        related_name="order_allocations",
+        on_delete=models.PROTECT,
+    )
+    order = models.ForeignKey(
+        QualityOrder,
+        related_name="quality_shipment_allocations",
+        on_delete=models.PROTECT,
+    )
+    sequence = models.PositiveIntegerField()
+    piece_start = models.PositiveIntegerField()
+    piece_end = models.PositiveIntegerField()
+    piece_quantity = models.PositiveIntegerField()
+    net_weight_kg = models.DecimalField(
+        max_digits=14,
+        decimal_places=3,
+        validators=[MinValueValidator(Decimal("0.001"))],
+    )
+    is_overflow = models.BooleanField(default=False)
+    order_no_snapshot = models.CharField(max_length=100, blank=True, default="")
+    item_no_snapshot = models.CharField(max_length=100, blank=True, default="")
+    specification_snapshot = models.CharField(max_length=200, blank=True, default="")
+    material_snapshot = models.CharField(max_length=100, blank=True, default="")
+
+    class Meta:
+        ordering = ["shipment_line_id", "sequence"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["shipment_line", "sequence"],
+                name="quality_ship_alloc_line_sequence_uniq",
+            ),
+            models.CheckConstraint(
+                condition=Q(piece_quantity__gt=0),
+                name="quality_ship_alloc_piece_gt_zero",
+            ),
+            models.CheckConstraint(
+                condition=Q(piece_end__gt=models.F("piece_start")),
+                name="quality_ship_alloc_piece_range_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(net_weight_kg__gt=0),
+                name="quality_ship_alloc_weight_gt_zero",
+            ),
+        ]
+
+    def clean(self):
+        errors = {}
+        if not self.sequence or self.sequence < 1:
+            errors["sequence"] = "出货订单分配顺序必须大于0。"
+        if self.piece_start is None or self.piece_start < 0:
+            errors["piece_start"] = "出货订单分配起始件数不能小于0。"
+        if self.piece_end is None or self.piece_end <= int(self.piece_start or 0):
+            errors["piece_end"] = "出货订单分配结束件数必须大于起始件数。"
+        if not self.piece_quantity or self.piece_quantity < 1:
+            errors["piece_quantity"] = "出货订单分配件数必须大于0。"
+        if (
+            self.piece_start is not None
+            and self.piece_end is not None
+            and self.piece_quantity
+            and self.piece_end - self.piece_start != self.piece_quantity
+        ):
+            errors["piece_quantity"] = "出货订单分配区间与件数不一致。"
+        if self.net_weight_kg is None or self.net_weight_kg <= 0:
+            errors["net_weight_kg"] = "出货订单分配净重必须大于0。"
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self.order_id:
+            self.order_no_snapshot = self.order_no_snapshot or self.order.order_no
+            self.item_no_snapshot = self.item_no_snapshot or self.order.item_no
+            self.specification_snapshot = (
+                self.specification_snapshot or self.order.specification
+            )
+            self.material_snapshot = self.material_snapshot or self.order.material
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return (
+            f"line {self.shipment_line_id} / {self.order_no_snapshot or self.order_id} "
+            f"/ {self.piece_quantity}"
+        )
+
+
 class ProcessCardUnitBinding(TimeStampedModel):
     """Current outbound occurrence of one physical process-card batch.
 
@@ -1834,6 +1929,13 @@ class QualityReturnAllocation(TimeStampedModel):
         related_name="rework_allocations",
         on_delete=models.PROTECT,
     )
+    shipment_order_allocation = models.ForeignKey(
+        QualityShipmentOrderAllocation,
+        related_name="return_allocations",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
     piece_quantity = models.PositiveIntegerField()
     net_weight_kg = models.DecimalField(
         max_digits=14,
@@ -1846,7 +1948,13 @@ class QualityReturnAllocation(TimeStampedModel):
         constraints = [
             models.UniqueConstraint(
                 fields=["case", "shipment_line"],
-                name="quality_return_case_line_uniq",
+                condition=Q(shipment_order_allocation__isnull=True),
+                name="quality_return_case_legacy_line_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=["case", "shipment_order_allocation"],
+                condition=Q(shipment_order_allocation__isnull=False),
+                name="quality_return_case_order_alloc_uniq",
             ),
             models.CheckConstraint(
                 condition=Q(piece_quantity__gt=0),
@@ -1871,6 +1979,13 @@ class QualityReturnAllocation(TimeStampedModel):
             and self.shipment_line.batch_id != self.case.shipment_batch_id
         ):
             errors["shipment_line"] = "退货分配明细不属于原出货批次。"
+        if (
+            self.shipment_order_allocation_id
+            and self.shipment_line_id
+            and self.shipment_order_allocation.shipment_line_id
+            != self.shipment_line_id
+        ):
+            errors["shipment_order_allocation"] = "退货订单分配不属于所选出货明细。"
         if errors:
             raise ValidationError(errors)
 

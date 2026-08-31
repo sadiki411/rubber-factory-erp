@@ -19,6 +19,7 @@ from .models import (
     QualityShipment,
     QualityShipmentBatch,
     QualityShipmentLine,
+    QualityShipmentOrderAllocation,
 )
 
 
@@ -91,15 +92,85 @@ def delivered_quantities_by_order(
         QualityShipmentLine.objects.filter(
             batch__status=QualityShipmentBatch.Status.CONFIRMED
         )
-        .filter(Q(order_id__in=ids) | Q(process_card__order_id__in=ids))
+        .filter(
+            Q(order_allocations__order_id__in=ids)
+            | Q(order_id__in=ids)
+            | Q(process_card__order_id__in=ids)
+        )
         .select_related("order", "process_card__order")
-        .prefetch_related("rework_cases__shipment_allocations", "rework_allocations__case")
+        .prefetch_related(
+            "order_allocations__return_allocations__case",
+            "rework_cases__shipment_allocations",
+            "rework_allocations__case",
+        )
         .distinct()
     )
     if exclude_batch_id is not None:
         weighted_lines = weighted_lines.exclude(batch_id=exclude_batch_id)
 
     for line in weighted_lines:
+        allocations = list(line.order_allocations.all())
+        if allocations:
+            # New rows are charged to their immutable fulfilment shares.  Old
+            # return rows did not carry a share FK; migration gives their line
+            # exactly one share, so that unambiguous legacy quantity can still
+            # be released without rewriting history.
+            legacy_returned = 0
+            if len(allocations) == 1:
+                legacy_returned = sum(
+                    int(item.piece_quantity or 0)
+                    for item in line.rework_allocations.all()
+                    if (
+                        item.shipment_order_allocation_id is None
+                        and item.case.origin
+                        == QualityReworkCase.Origin.CUSTOMER_RETURN
+                        and item.case.status != QualityReworkCase.Status.CANCELLED
+                    )
+                )
+                unit = line.unit_weight_g_snapshot or (
+                    line.process_card.unit_weight_g
+                    if line.process_card_id
+                    else None
+                )
+                for case in line.rework_cases.all():
+                    if (
+                        case.origin != QualityReworkCase.Origin.CUSTOMER_RETURN
+                        or case.status == QualityReworkCase.Status.CANCELLED
+                        or case.shipment_allocations.all()
+                    ):
+                        continue
+                    if case.affected_quantity is not None:
+                        legacy_returned += int(case.affected_quantity)
+                    elif case.affected_weight_kg is not None and unit:
+                        legacy_returned += int(
+                            (
+                                Decimal(case.affected_weight_kg)
+                                * Decimal("1000")
+                                / Decimal(unit)
+                            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                        )
+            for allocation in allocations:
+                if allocation.order_id not in delivered:
+                    continue
+                returned = sum(
+                    int(item.piece_quantity or 0)
+                    for item in allocation.return_allocations.all()
+                    if (
+                        item.case.origin
+                        == QualityReworkCase.Origin.CUSTOMER_RETURN
+                        and item.case.status != QualityReworkCase.Status.CANCELLED
+                    )
+                )
+                if len(allocations) == 1:
+                    returned += legacy_returned
+                delivered[allocation.order_id] += max(
+                    0, int(allocation.piece_quantity) - returned
+                )
+            continue
+
+        # Rolling-upgrade safety: a confirmed line created before the data
+        # migration (or restored from an old partial backup) still counts by
+        # its historical direct order until it is backfilled.
         order_id = line.order_id or (
             line.process_card.order_id if line.process_card_id else None
         )
@@ -170,8 +241,8 @@ def build_order_allocation_plan(
     requested = int(requested_quantity or 0)
     if requested < 1:
         raise ValueError("出货数量必须大于0。")
-    if source_order.status != QualityOrder.Status.OPEN:
-        raise ValueError("所选订单已完成或已取消，不能再确认出货。")
+    if source_order.status == QualityOrder.Status.CANCELLED:
+        raise ValueError("所选订单已取消，不能再确认出货。")
 
     specification = str(source_order.specification or "").strip()
     material = str(source_order.material or "").strip()
@@ -198,8 +269,8 @@ def build_order_allocation_plan(
         order.pk: order for order in locked_query.order_by("pk")
     }
     source = orders_by_id[source_order.pk]
-    if source.status != QualityOrder.Status.OPEN:
-        raise ValueError("所选订单已完成或已取消，不能再确认出货。")
+    if source.status == QualityOrder.Status.CANCELLED:
+        raise ValueError("所选订单已取消，不能再确认出货。")
     locked_specification = str(source.specification or "").strip().casefold()
     locked_material = str(source.material or "").strip().casefold()
     # ``matching_ids`` is intentionally read before acquiring the stable lock
@@ -224,8 +295,10 @@ def build_order_allocation_plan(
     delivered = delivered_quantities_by_order(all_ids)
 
     allocations: list[dict] = []
-    source_remaining = max(
-        0, int(source.order_quantity or 0) - delivered.get(source.pk, 0)
+    source_remaining = (
+        max(0, int(source.order_quantity or 0) - delivered.get(source.pk, 0))
+        if source.status == QualityOrder.Status.OPEN
+        else 0
     )
     source_base = min(requested, source_remaining)
     if source_base:
@@ -266,26 +339,19 @@ def build_order_allocation_plan(
 
     overflow_quantity = unallocated
     if overflow_quantity:
-        source_item = next(
-            (item for item in allocations if item["order"].pk == source.pk),
-            None,
+        # Keep overflow as its own final segment.  The same physical line can
+        # legitimately be source -> matching order(s) -> source overflow; a
+        # merged source row would lose the package/order boundary ordering.
+        allocations.append(
+            {
+                "order": source,
+                "remaining_before": 0,
+                "allocated_quantity": overflow_quantity,
+                "remaining_after": 0,
+                "is_source": True,
+                "is_overflow": True,
+            }
         )
-        if source_item is None:
-            allocations.insert(
-                0,
-                {
-                    "order": source,
-                    "remaining_before": source_remaining,
-                    "allocated_quantity": overflow_quantity,
-                    "remaining_after": 0,
-                    "is_source": True,
-                    "is_overflow": True,
-                },
-            )
-        else:
-            source_item["allocated_quantity"] += overflow_quantity
-            source_item["remaining_after"] = 0
-            source_item["is_overflow"] = True
 
     return {
         "source_order": source,
@@ -328,6 +394,215 @@ def serialize_order_allocation_plan(plan: dict) -> dict:
         "overflow_quantity": plan["overflow_quantity"],
         "total_allocated_quantity": plan["total_allocated_quantity"],
     }
+
+
+def split_allocation_weights(
+    total_weight: Decimal, quantities: Iterable[int]
+) -> list[Decimal]:
+    """Split one physical three-decimal weight without changing its sum."""
+
+    total = Decimal(total_weight).quantize(
+        Decimal("0.001"), rounding=ROUND_HALF_UP
+    )
+    values = [int(value) for value in quantities]
+    if not values or any(value < 1 for value in values):
+        raise ValueError("自动分配件数必须全部大于0。")
+    if len(values) == 1:
+        return [total]
+    quantum = Decimal("0.001")
+    if total < quantum * len(values):
+        raise ValueError("本次净重过小，无法按当前重量精度分配给多个订单。")
+    total_pieces = sum(values)
+    remaining_weight = total
+    result = []
+    for index, quantity in enumerate(values[:-1]):
+        remaining_rows = len(values) - index - 1
+        proportional = (
+            total * Decimal(quantity) / Decimal(total_pieces)
+        ).quantize(quantum, rounding=ROUND_HALF_UP)
+        maximum = remaining_weight - quantum * remaining_rows
+        allocated = min(max(proportional, quantum), maximum)
+        result.append(allocated)
+        remaining_weight -= allocated
+    result.append(remaining_weight)
+    return result
+
+
+def build_shipment_line_allocation_plans(
+    lines: Iterable[QualityShipmentLine], *, lock: bool = False
+) -> list[dict]:
+    """Allocate physical shipment lines while sharing one locked order balance.
+
+    Every line keeps its package/scale identity.  Only fulfilment shares are
+    returned.  Reservations from an earlier line are immediately visible to
+    later lines in the same confirmation, preventing a multi-card or
+    multi-weight shipment from consuming the same remaining order quantity
+    more than once.
+    """
+
+    physical_lines = sorted(list(lines), key=lambda item: item.pk)
+    if not physical_lines:
+        return []
+    source_ids = set()
+    identities = set()
+    for line in physical_lines:
+        source = line.order or (
+            line.process_card.order if line.process_card_id else None
+        )
+        if source is None:
+            raise ValueError("每条出货明细必须关联流程卡或订单。")
+        source_ids.add(source.pk)
+        specification = str(source.specification or "").strip()
+        material = str(source.material or "").strip()
+        if specification and material:
+            identities.add((specification, material))
+
+    all_ids = set(source_ids)
+    for specification, material in identities:
+        all_ids.update(
+            QualityOrder.objects.filter(
+                status=QualityOrder.Status.OPEN,
+                specification__iexact=specification,
+                material__iexact=material,
+            ).values_list("pk", flat=True)
+        )
+    order_query = QualityOrder.objects.filter(pk__in=all_ids).select_related(
+        "product_specification"
+    )
+    if lock:
+        order_query = order_query.select_for_update()
+    orders = {item.pk: item for item in order_query.order_by("pk")}
+    delivered = delivered_quantities_by_order(all_ids)
+    reserved = {order_id: int(value) for order_id, value in delivered.items()}
+    plans = []
+
+    for line in physical_lines:
+        source_id = line.order_id or (
+            line.process_card.order_id if line.process_card_id else None
+        )
+        source = orders.get(source_id)
+        if source is None:
+            raise ValueError("出货订单不存在，请刷新后重新选择。")
+        if source.status == QualityOrder.Status.CANCELLED:
+            raise ValueError(
+                f"订单 {source.order_no}/{source.item_no} 已取消，不能确认出货。"
+            )
+        requested = shipment_line_piece_quantity(line)
+        if requested < 1:
+            raise ValueError("本次出货件数必须大于0。")
+        specification = str(source.specification or "").strip().casefold()
+        material = str(source.material or "").strip().casefold()
+        candidates = sorted(
+            (
+                item
+                for item in orders.values()
+                if item.pk != source.pk
+                and item.status == QualityOrder.Status.OPEN
+                and specification
+                and material
+                and str(item.specification or "").strip().casefold()
+                == specification
+                and str(item.material or "").strip().casefold() == material
+            ),
+            key=_allocation_order_key,
+        )
+        segments = []
+        unallocated = requested
+        source_remaining = (
+            max(
+                0,
+                int(source.order_quantity or 0)
+                - int(reserved.get(source.pk, 0)),
+            )
+            if source.status == QualityOrder.Status.OPEN
+            else 0
+        )
+        source_quantity = min(unallocated, source_remaining)
+        if source_quantity:
+            segments.append(
+                {
+                    "order": source,
+                    "piece_quantity": source_quantity,
+                    "remaining_before": source_remaining,
+                    "remaining_after": source_remaining - source_quantity,
+                    "is_source": True,
+                    "is_overflow": False,
+                }
+            )
+            reserved[source.pk] = reserved.get(source.pk, 0) + source_quantity
+            unallocated -= source_quantity
+
+        for candidate in candidates:
+            if unallocated <= 0:
+                break
+            remaining = max(
+                0,
+                int(candidate.order_quantity or 0)
+                - int(reserved.get(candidate.pk, 0)),
+            )
+            if remaining <= 0:
+                continue
+            quantity = min(unallocated, remaining)
+            segments.append(
+                {
+                    "order": candidate,
+                    "piece_quantity": quantity,
+                    "remaining_before": remaining,
+                    "remaining_after": remaining - quantity,
+                    "is_source": False,
+                    "is_overflow": False,
+                }
+            )
+            reserved[candidate.pk] = reserved.get(candidate.pk, 0) + quantity
+            unallocated -= quantity
+
+        overflow = unallocated
+        if overflow:
+            segments.append(
+                {
+                    "order": source,
+                    "piece_quantity": overflow,
+                    "remaining_before": 0,
+                    "remaining_after": 0,
+                    "is_source": True,
+                    "is_overflow": True,
+                }
+            )
+            reserved[source.pk] = reserved.get(source.pk, 0) + overflow
+
+        weights = split_allocation_weights(
+            line.net_weight_kg,
+            [item["piece_quantity"] for item in segments],
+        )
+        cursor = 0
+        for sequence, (item, weight) in enumerate(
+            zip(segments, weights), start=1
+        ):
+            item["sequence"] = sequence
+            item["piece_start"] = cursor
+            cursor += int(item["piece_quantity"])
+            item["piece_end"] = cursor
+            item["net_weight_kg"] = weight
+        if cursor != requested or sum(weights, Decimal("0")) != Decimal(
+            line.net_weight_kg
+        ):
+            raise ValueError("自动分配结果与原出货明细不一致。")
+        plans.append(
+            {
+                "shipment_line": line,
+                "source_order": source,
+                "requested_quantity": requested,
+                "allocations": segments,
+                "matching_allocated_quantity": sum(
+                    item["piece_quantity"]
+                    for item in segments
+                    if not item["is_source"]
+                ),
+                "overflow_quantity": overflow,
+                "total_allocated_quantity": cursor,
+            }
+        )
+    return plans
 
 
 def _unique(values) -> list:
@@ -381,7 +656,9 @@ def shipment_return_groups(
         lines = list(
             batch.lines.select_related(
                 "order", "process_card__order", "product_specification"
-            ).order_by("id")
+            )
+            .prefetch_related("order_allocations__order")
+            .order_by("id")
         )
     else:
         lines = sorted(lines, key=lambda item: item.pk)
@@ -577,12 +854,17 @@ def _group_orders(group: dict) -> list[QualityOrder]:
     orders = []
     seen = set()
     for line in group["lines"]:
-        order = line.order or (
-            line.process_card.order if line.process_card_id else None
-        )
-        if order is not None and order.pk not in seen:
-            seen.add(order.pk)
-            orders.append(order)
+        allocations = list(line.order_allocations.all())
+        line_orders = [item.order for item in allocations]
+        if not line_orders:
+            fallback = line.order or (
+                line.process_card.order if line.process_card_id else None
+            )
+            line_orders = [fallback] if fallback is not None else []
+        for order in line_orders:
+            if order.pk not in seen:
+                seen.add(order.pk)
+                orders.append(order)
     return orders
 
 
@@ -657,6 +939,21 @@ def serialize_returnable_group(
                 ),
                 "piece_quantity": shipment_line_piece_quantity(line),
                 "net_weight_kg": format(Decimal(line.net_weight_kg), ".3f"),
+                "order_allocations": [
+                    {
+                        "id": allocation.pk,
+                        "order_id": allocation.order_id,
+                        "order_no": allocation.order_no_snapshot,
+                        "item_no": allocation.item_no_snapshot,
+                        "piece_quantity": allocation.piece_quantity,
+                        "net_weight_kg": format(
+                            Decimal(allocation.net_weight_kg), ".3f"
+                        ),
+                        "sequence": allocation.sequence,
+                        "is_overflow": allocation.is_overflow,
+                    }
+                    for allocation in line.order_allocations.all()
+                ],
             }
         )
     returned_in_group = [
@@ -753,28 +1050,50 @@ def _unit_allocations(group: dict, unit_no: int) -> list[dict]:
         line_pieces = shipment_line_piece_quantity(line)
         line_start = cursor
         line_end = cursor + line_pieces
-        overlap = max(0, min(end, line_end) - max(start, line_start))
+        overlap_start = max(start, line_start)
+        overlap_end = min(end, line_end)
+        overlap = max(0, overlap_end - overlap_start)
         if overlap:
-            allocations.append(
-                {"shipment_line": line, "piece_quantity": int(overlap)}
-            )
+            local_start = overlap_start - line_start
+            local_end = overlap_end - line_start
+            order_allocations = list(line.order_allocations.all())
+            if order_allocations:
+                for order_allocation in order_allocations:
+                    order_overlap = max(
+                        0,
+                        min(local_end, order_allocation.piece_end)
+                        - max(local_start, order_allocation.piece_start),
+                    )
+                    if order_overlap:
+                        allocations.append(
+                            {
+                                "shipment_line": line,
+                                "shipment_order_allocation": order_allocation,
+                                "order": order_allocation.order,
+                                "piece_quantity": int(order_overlap),
+                            }
+                        )
+            else:
+                fallback_order = line.order or (
+                    line.process_card.order if line.process_card_id else None
+                )
+                allocations.append(
+                    {
+                        "shipment_line": line,
+                        "shipment_order_allocation": None,
+                        "order": fallback_order,
+                        "piece_quantity": int(overlap),
+                    }
+                )
         cursor = line_end
     if sum(item["piece_quantity"] for item in allocations) != pieces:
         raise ValueError("原出货明细无法还原该整批件数，请先补录正确的出货记录。")
     single_weight = Decimal(group["single_batch_net_weight_kg"])
-    remaining_weight = single_weight
-    for index, item in enumerate(allocations):
-        if index == len(allocations) - 1:
-            weight = remaining_weight
-        else:
-            weight = (
-                single_weight
-                * Decimal(item["piece_quantity"])
-                / Decimal(pieces)
-            ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
-            weight = min(max(weight, Decimal("0")), remaining_weight)
+    weights = split_allocation_weights(
+        single_weight, [item["piece_quantity"] for item in allocations]
+    )
+    for item, weight in zip(allocations, weights):
         item["net_weight_kg"] = weight
-        remaining_weight -= weight
     return allocations
 
 
@@ -799,6 +1118,7 @@ def create_whole_batch_return_case(validated_data: dict) -> QualityReworkCase:
             .select_related(
                 "order", "process_card__order", "product_specification"
             )
+            .prefetch_related("order_allocations__order")
             .filter(batch=batch)
             .order_by("id")
         )
@@ -867,6 +1187,9 @@ def create_whole_batch_return_case(validated_data: dict) -> QualityReworkCase:
                 QualityReturnAllocation.objects.create(
                     case=case,
                     shipment_line=item["shipment_line"],
+                    shipment_order_allocation=item.get(
+                        "shipment_order_allocation"
+                    ),
                     piece_quantity=item["piece_quantity"],
                     net_weight_kg=item["net_weight_kg"],
                 )
@@ -877,12 +1200,7 @@ def create_whole_batch_return_case(validated_data: dict) -> QualityReworkCase:
         for card_id in process_card_ids:
             ProcessCard.objects.get(pk=card_id).refresh_shipping_status()
         affected_order_ids = {
-            item["shipment_line"].order_id
-            or (
-                item["shipment_line"].process_card.order_id
-                if item["shipment_line"].process_card_id
-                else None
-            )
+            item["order"].pk if item.get("order") is not None else None
             for item in allocations
         }
         sync_order_status_from_delivery(
@@ -907,7 +1225,9 @@ def serialize_rework_source(case: QualityReworkCase) -> dict | None:
         lines = list(
             batch.lines.select_related(
                 "order", "process_card__order", "product_specification"
-            ).order_by("id")
+            )
+            .prefetch_related("order_allocations__order")
+            .order_by("id")
         )
     groups = shipment_return_groups(batch, lines=lines)
     group = next(
@@ -1025,15 +1345,47 @@ def _unit_order_and_weight(group, unit_no, *, requested_order_id=None):
     allocations = _unit_allocations(group, int(unit_no))
     orders = {}
     for item in allocations:
-        line = item["shipment_line"]
-        order = line.order or (line.process_card.order if line.process_card_id else None)
+        order = item.get("order")
+        if order is None:
+            line = item["shipment_line"]
+            order = line.order or (
+                line.process_card.order if line.process_card_id else None
+            )
         if order is not None:
             orders[order.pk] = order
     if requested_order_id is not None:
         try:
-            order = orders[int(requested_order_id)]
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("所选订单不属于该物理出货批次。") from exc
+            requested_id = int(requested_order_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("所选订单格式无效。") from exc
+        order = orders.get(requested_id)
+        if order is None:
+            requested = QualityOrder.objects.filter(pk=requested_id).first()
+            requested_identity = (
+                str(requested.specification or "").strip().casefold(),
+                str(requested.material or "").strip().casefold(),
+            ) if requested is not None else ("", "")
+            allocation_identities = {
+                (
+                    str(item.specification or "").strip().casefold(),
+                    str(item.material or "").strip().casefold(),
+                )
+                for item in orders.values()
+            }
+            # A printed card stays owned by its original unique order even
+            # when every piece in this physical package fulfils the next
+            # same-spec/material order.  Permit that tracking owner without
+            # changing the immutable fulfilment allocations.
+            if (
+                requested is None
+                or not all(requested_identity)
+                or any(
+                    identity != requested_identity
+                    for identity in allocation_identities
+                )
+            ):
+                raise ValueError("所选订单不属于该物理出货批次。")
+            order = requested
     elif orders:
         # Automatic order allocation can place one physical package across an
         # order boundary (for example, the current order needs 500 pieces but
@@ -1087,6 +1439,7 @@ def bind_process_cards_to_batch(
         lines = list(
             QualityShipmentLine.objects.select_for_update()
             .select_related("order", "process_card__order")
+            .prefetch_related("order_allocations__order")
             .filter(batch=locked_batch)
             .order_by("id")
         )
@@ -1515,30 +1868,68 @@ def reship_return_case(
         )
         source_allocations = list(
             locked.shipment_allocations.select_related(
-                "shipment_line__order", "shipment_line__process_card__order"
-            ).order_by("shipment_line_id")
+                "shipment_line__order",
+                "shipment_line__process_card__order",
+                "shipment_order_allocation__order",
+            ).order_by(
+                "shipment_line_id",
+                "shipment_order_allocation__sequence",
+                "id",
+            )
         )
         if source_allocations:
             source_rows = []
             for allocation in source_allocations:
                 source_line = allocation.shipment_line
-                source_order = source_line.order or (
-                    source_line.process_card.order
-                    if source_line.process_card_id
-                    else None
+                shipment_order_allocation = (
+                    allocation.shipment_order_allocation
+                )
+                source_order = (
+                    shipment_order_allocation.order
+                    if shipment_order_allocation is not None
+                    else source_line.order
+                    or (
+                        source_line.process_card.order
+                        if source_line.process_card_id
+                        else None
+                    )
                 )
                 if source_order is not None:
-                    source_rows.append((source_order, int(allocation.piece_quantity)))
+                    source_rows.append(
+                        {
+                            "order": source_order,
+                            "piece_quantity": int(allocation.piece_quantity),
+                            "is_overflow": bool(
+                                shipment_order_allocation
+                                and shipment_order_allocation.is_overflow
+                            ),
+                        }
+                    )
         else:
-            source_rows = [(card.order, int(locked.affected_quantity or quantity))]
+            source_rows = [
+                {
+                    "order": card.order,
+                    "piece_quantity": int(
+                        locked.affected_quantity or quantity
+                    ),
+                    "is_overflow": False,
+                }
+            ]
         if not source_rows:
-            source_rows = [(card.order, quantity)]
+            source_rows = [
+                {
+                    "order": card.order,
+                    "piece_quantity": quantity,
+                    "is_overflow": False,
+                }
+            ]
         if quantity < len(source_rows):
             raise ValueError("重新出货数量过小，无法保持原订单分配。")
-        original_total = sum(value for _, value in source_rows)
+        original_total = sum(item["piece_quantity"] for item in source_rows)
         remaining_quantity = quantity
         allocated_quantities = []
-        for index, (_, source_quantity) in enumerate(source_rows):
+        for index, item in enumerate(source_rows):
+            source_quantity = item["piece_quantity"]
             if index == len(source_rows) - 1:
                 allocated = remaining_quantity
             else:
@@ -1558,62 +1949,64 @@ def reship_return_case(
                 )
             allocated_quantities.append(allocated)
             remaining_quantity -= allocated
-        remaining_weight = weight
-        allocated_weights = []
-        for index, allocated in enumerate(allocated_quantities):
-            if index == len(allocated_quantities) - 1:
-                allocated_weight = remaining_weight
-            else:
-                allocated_weight = (
-                    weight * Decimal(allocated) / Decimal(quantity)
-                ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
-                allocated_weight = min(
-                    max(allocated_weight, Decimal("0.001")),
-                    remaining_weight
-                    - Decimal("0.001") * (len(allocated_quantities) - index - 1),
-                )
-            allocated_weights.append(allocated_weight)
-            remaining_weight -= allocated_weight
+        allocated_weights = split_allocation_weights(
+            weight, allocated_quantities
+        )
         unit_weight = card.unit_weight_g or (
             weight * Decimal("1000") / Decimal(quantity)
         ).quantize(Decimal("0.00001"), rounding=ROUND_HALF_UP)
-        reship_lines = []
-        for index, ((target_order, _), allocated, allocated_weight) in enumerate(
-            zip(source_rows, allocated_quantities, allocated_weights)
+        created_line = QualityShipmentLine.objects.create(
+            batch=batch,
+            process_card=card,
+            order=card.order,
+            product_specification=(
+                card.product_specification or card.order.product_specification
+            ),
+            specification_snapshot=(
+                card.specification_snapshot or card.order.specification
+            ),
+            material_snapshot=(card.material_snapshot or card.order.material),
+            net_weight_kg=weight,
+            piece_quantity=quantity,
+            unit_weight_g_snapshot=unit_weight,
+            single_batch_net_weight_kg=weight,
+            process_card_shipment_quantity=quantity,
+            product_batch_count=1,
+            pieces_per_batch=quantity,
+            notes=(
+                f"退货返工 {locked.case_no} "
+                f"第{locked.return_round or 1}次重新出货"
+            ),
+        )
+        # Model validation may derive pieces from rounded kg/g.  The return
+        # quantity is the immutable physical fact and must remain exact.
+        if created_line.piece_quantity != quantity:
+            QualityShipmentLine.objects.filter(pk=created_line.pk).update(
+                piece_quantity=quantity, updated_at=timezone.now()
+            )
+            created_line.piece_quantity = quantity
+        cursor = 0
+        reship_order_ids = set()
+        for sequence, (source_row, allocated, allocated_weight) in enumerate(
+            zip(source_rows, allocated_quantities, allocated_weights), start=1
         ):
-            # A single-order return can keep the direct process-card FK.  For
-            # an old auto-allocation boundary the binding itself remains the
-            # physical identity while logical order shares stay separate.
-            linked_card = card if len(source_rows) == 1 else None
-            created_line = QualityShipmentLine.objects.create(
-                    batch=batch,
-                    process_card=linked_card,
-                    order=target_order,
-                    product_specification=(
-                        target_order.product_specification
-                        or card.product_specification
-                    ),
-                    specification_snapshot=target_order.specification,
-                    material_snapshot=target_order.material,
-                    net_weight_kg=allocated_weight,
-                    piece_quantity=allocated,
-                    unit_weight_g_snapshot=unit_weight,
-                    single_batch_net_weight_kg=(
-                        weight if len(source_rows) == 1 else None
-                    ),
-                    process_card_shipment_quantity=(
-                        quantity if len(source_rows) == 1 else None
-                    ),
-                    product_batch_count=(1 if len(source_rows) == 1 else None),
-                    pieces_per_batch=(quantity if len(source_rows) == 1 else None),
-                    notes=f"退货返工 {locked.case_no} 第{locked.return_round or 1}次重新出货",
-                )
-            if len(source_rows) > 1 and created_line.piece_quantity != allocated:
-                QualityShipmentLine.objects.filter(pk=created_line.pk).update(
-                    piece_quantity=allocated, updated_at=timezone.now()
-                )
-                created_line.piece_quantity = allocated
-            reship_lines.append(created_line)
+            target_order = source_row["order"]
+            QualityShipmentOrderAllocation.objects.create(
+                shipment_line=created_line,
+                order=target_order,
+                sequence=sequence,
+                piece_start=cursor,
+                piece_end=cursor + allocated,
+                piece_quantity=allocated,
+                net_weight_kg=allocated_weight,
+                is_overflow=source_row["is_overflow"],
+                order_no_snapshot=target_order.order_no,
+                item_no_snapshot=target_order.item_no,
+                specification_snapshot=target_order.specification,
+                material_snapshot=target_order.material,
+            )
+            cursor += allocated
+            reship_order_ids.add(target_order.pk)
         QualityShipmentBatch.objects.filter(pk=batch.pk).update(
             status=QualityShipmentBatch.Status.CONFIRMED,
             updated_at=timezone.now(),
@@ -1638,7 +2031,7 @@ def reship_return_case(
         locked.save(update_fields=["status", "closed_on", "updated_at"])
         card.refresh_shipping_status()
         sync_order_status_from_delivery(
-            {line.order_id or card.order_id for line in reship_lines},
+            reship_order_ids,
             source="SHIPMENT",
             operator=created_by,
             reason_prefix=f"退货返工 {locked.case_no} 已重新出货。",
@@ -1659,10 +2052,27 @@ def order_delivery_totals(order_ids: Iterable[int]) -> dict[int, dict[str, int]]
         }
         for order_id in ids
     }
-    lines = QualityShipmentLine.objects.filter(
-        batch__status=QualityShipmentBatch.Status.CONFIRMED
-    ).filter(Q(order_id__in=ids) | Q(process_card__order_id__in=ids)).select_related(
-        "process_card"
+    allocation_totals = (
+        QualityShipmentOrderAllocation.objects.filter(
+            shipment_line__batch__status=QualityShipmentBatch.Status.CONFIRMED,
+            order_id__in=ids,
+        )
+        .values("order_id")
+        .annotate(total=Sum("piece_quantity"))
+    )
+    for row in allocation_totals:
+        result[row["order_id"]]["gross_shipped_quantity"] += int(
+            row["total"] or 0
+        )
+    # Safe rolling-upgrade fallback for a confirmed historical line that has
+    # not yet received its migration allocation.
+    lines = (
+        QualityShipmentLine.objects.filter(
+            batch__status=QualityShipmentBatch.Status.CONFIRMED,
+            order_allocations__isnull=True,
+        )
+        .filter(Q(order_id__in=ids) | Q(process_card__order_id__in=ids))
+        .select_related("process_card")
     )
     for line in lines:
         order_id = line.order_id or (line.process_card.order_id if line.process_card_id else None)
