@@ -1,4 +1,6 @@
-FROM node:22-alpine AS frontend-build
+# The React output is architecture-independent. Build it on the native runner
+# instead of executing Node under QEMU once for every target architecture.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-build
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm ci --no-audit --no-fund
