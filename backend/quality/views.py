@@ -48,6 +48,7 @@ from .services import (
     returnable_groups_for_batch,
     serialize_order_allocation_plan,
     shipment_line_piece_quantity,
+    shipment_return_groups,
     sync_order_status_from_delivery,
 )
 from .unit_weights import (
@@ -688,6 +689,42 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             lines = list(batch.lines.select_related("process_card", "order", "product_specification"))
             if not lines:
                 raise DRFValidationError({"lines": "At least one shipment line is required."})
+            process_card_ids = [
+                line.process_card_id for line in lines if line.process_card_id
+            ]
+            duplicate_process_card_ids = {
+                card_id
+                for card_id in process_card_ids
+                if process_card_ids.count(card_id) > 1
+            }
+            if duplicate_process_card_ids:
+                duplicate_cards = list(
+                    ProcessCard.objects.filter(pk__in=duplicate_process_card_ids)
+                    .order_by("card_no")
+                    .values_list("card_no", flat=True)
+                )
+                raise DRFValidationError(
+                    {
+                        "lines": (
+                            "一张流程卡只能对应一包货，同一出货中不能重复："
+                            + "、".join(duplicate_cards)
+                        )
+                    }
+                )
+            repeated_process_cards = [
+                line.process_card.card_no
+                for line in lines
+                if line.process_card_id and int(line.product_batch_count or 1) != 1
+            ]
+            if repeated_process_cards:
+                raise DRFValidationError(
+                    {
+                        "lines": (
+                            "一张流程卡只能对应一包货；请将以下流程卡分别称重："
+                            + "、".join(sorted(repeated_process_cards))
+                        )
+                    }
+                )
             if batch.shipment_date is None:
                 raise DRFValidationError({"shipment_date": "请先填写实际出货日期后再确认。"})
             inspectors = list(batch.inspectors.all())
@@ -880,6 +917,60 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             # by an older client without inspector_ids.
             if not batch.inspectors.exists() and batch.inspector_id:
                 batch.inspectors.add(batch.inspector_id)
+            # A process-card line is one physical package.  Bind it to the
+            # corresponding physical unit automatically so a later return can
+            # be located by scanning the card without asking the operator to
+            # choose the original shipment again.  Equal-weight quick entry
+            # without process-card lines continues to use the optional binding
+            # payload below and remains fully backward compatible.
+            confirmed_lines = list(
+                batch.lines.select_related(
+                    "order", "process_card__order", "product_specification"
+                ).order_by("id")
+            )
+            existing_binding_batches = dict(
+                ProcessCardUnitBinding.objects.filter(
+                    process_card_id__in=[
+                        line.process_card_id
+                        for line in confirmed_lines
+                        if line.process_card_id
+                    ]
+                ).values_list("process_card_id", "shipment_batch_id")
+            )
+            automatic_bindings = []
+            for group in shipment_return_groups(batch, lines=confirmed_lines):
+                if group["total_batches"] != 1 or len(group["lines"]) != 1:
+                    continue
+                process_card = group["lines"][0].process_card
+                if process_card is None:
+                    continue
+                # Historical APIs allowed a card to be shipped again after a
+                # partial quantity return.  Do not silently move that old
+                # binding here: the dedicated whole-package reship workflow
+                # is the only operation authorised to move physical identity.
+                # New cards (and idempotent confirmation of this same batch)
+                # still receive their automatic binding below.
+                binding_batch_id = existing_binding_batches.get(process_card.pk)
+                if binding_batch_id is not None and binding_batch_id != batch.pk:
+                    continue
+                automatic_bindings.append(
+                    {
+                        "card_no": process_card.card_no,
+                        "shipment_unit_no": group["first_unit_no"],
+                        "order_id": process_card.order_id,
+                    }
+                )
+            if automatic_bindings:
+                try:
+                    bind_process_cards_to_batch(
+                        batch,
+                        automatic_bindings,
+                        created_by=request.user,
+                    )
+                except ValueError as exc:
+                    raise DRFValidationError(
+                        {"process_card_bindings": str(exc)}
+                    ) from exc
             for card_id in by_card:
                 ProcessCard.objects.get(pk=card_id).refresh_shipping_status()
             # Optional QR scans can be sent with the confirmation request.

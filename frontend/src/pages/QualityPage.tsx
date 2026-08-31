@@ -137,9 +137,11 @@ export function QualityPage() {
   const [ordering, setOrdering] = useState('-shipment_date')
   const [activeTab, setActiveTab] = useState('workflow')
   const [shipmentForm, setShipmentForm] = useState<{ shipment?: QualityShipment }>()
+  const [shipmentSessionKey, setShipmentSessionKey] = useState(0)
   const [batchReviewItem, setBatchReviewItem] = useState<QualityShipmentBatch>()
   const [returnReworkOpen, setReturnReworkOpen] = useState(false)
   const [flowCardReturnOpen, setFlowCardReturnOpen] = useState(false)
+  const [flowCardReturnSessionKey, setFlowCardReturnSessionKey] = useState(0)
   const [replacementOpen, setReplacementOpen] = useState(false)
   const [returnReworkDetail, setReturnReworkDetail] = useState<QualityReworkCase>()
   const [returnReworkAttempt, setReturnReworkAttempt] = useState<QualityReworkCase>()
@@ -154,6 +156,16 @@ export function QualityPage() {
   const dateTo = range[1].format('YYYY-MM-DD')
   const dueDateFrom = dueRange?.[0].format('YYYY-MM-DD')
   const dueDateTo = dueRange?.[1].format('YYYY-MM-DD')
+
+  const openShipmentForm = (shipment?: QualityShipment) => {
+    setShipmentSessionKey((value) => value + 1)
+    setShipmentForm({ shipment })
+  }
+
+  const openFlowCardReturn = () => {
+    setFlowCardReturnSessionKey((value) => value + 1)
+    setFlowCardReturnOpen(true)
+  }
 
   const summaryQuery = useQuery({
     queryKey: ['quality', 'summary', dateFrom, dateTo],
@@ -305,7 +317,7 @@ export function QualityPage() {
       if (batch) setBatchReviewItem(batch)
       return
     }
-    if (row.shipment) setShipmentForm({ shipment: row.shipment })
+    if (row.shipment) openShipmentForm(row.shipment)
   }
   const ledgerColumns: TableColumnsType<QualityShipmentLedgerRow> = [
     { title: '出货日期', dataIndex: 'shipment_date', fixed: 'left', width: 110, render: (value) => value ? formatQualityDate(value) : <Tag color="warning">待补日期</Tag> },
@@ -399,14 +411,14 @@ export function QualityPage() {
       label: '流程卡出货',
       children: <div className="quality-tab-content">
         {(processCardsQuery.error || unitWeightsQuery.error || batchesQuery.error || workflowBatchesQuery.error || shipmentBatchOptionsQuery.error || reworkCasesQuery.error) && <Alert type="warning" showIcon style={{ marginBottom: 16 }} title="流程卡重量出货模块暂不可用" description="当前服务器未返回一期流程卡接口，页面已保留原有件数出货功能；完成后端迁移后刷新即可启用。" />}
-        <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} shipments={shipmentOptions} batches={workflowBatches} reworks={reworks} reworkCases={filteredReworkCases} searchText={query} loading={ordersQuery.isLoading || processCardsQuery.isLoading || workflowBatchesQuery.isLoading} onOpenShipment={() => setShipmentForm({})} onOpenRework={() => setFlowCardReturnOpen(true)} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); await refreshAfterShipment() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} /><QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions} reworkCases={filteredReworkCases} onOpenReturnRework={() => setFlowCardReturnOpen(true)} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={async () => { await refreshAfterShipment(); await reworkCasesQuery.refetch() }} /></div>,
+        <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} shipments={shipmentOptions} batches={workflowBatches} reworks={reworks} reworkCases={filteredReworkCases} searchText={query} loading={ordersQuery.isLoading || processCardsQuery.isLoading || workflowBatchesQuery.isLoading} onOpenShipment={() => openShipmentForm()} onOpenRework={openFlowCardReturn} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); await refreshAfterShipment() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} /><QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions} reworkCases={filteredReworkCases} onOpenReturnRework={openFlowCardReturn} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={async () => { await refreshAfterShipment(); await reworkCasesQuery.refetch() }} /></div>,
     },
     {
       key: 'daily',
       label: '每日出货',
       children: <div className="quality-tab-content">
         <DailyTrend rows={summary?.daily_trend || []} loading={summaryQuery.isLoading} />
-        <div className="section-heading"><div><Typography.Title level={3}>每日出货台账</Typography.Title><Typography.Text type="secondary">统一显示重量出货与历史出货；点击出货单号即可查看产品、材质、称重和批数明细。</Typography.Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => setShipmentForm({})}>新增出货</Button></div>
+        <div className="section-heading"><div><Typography.Title level={3}>每日出货台账</Typography.Title><Typography.Text type="secondary">统一显示重量出货与历史出货；点击出货单号即可查看产品、材质、称重和批数明细。</Typography.Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => openShipmentForm()}>新增出货</Button></div>
         {tableCard(shipmentLedger, ledgerColumns, shipmentLedgerQuery.isLoading, 'key', 1765, '当前筛选条件下暂无出货记录')}
       </div>,
     },
@@ -415,8 +427,8 @@ export function QualityPage() {
       label: '退货返工',
       children: <div className="quality-tab-content">
         <Alert className="quality-responsibility-alert" type="info" showIcon title="绩效口径分开统计" description="责任品检员记录退货责任；返工处理人记录实际返工工作量，两项不会混为同一指标。" />
-        {mobile && <div className="quality-return-scan-toolbar"><Button type="primary" icon={<QrcodeOutlined />} onClick={() => setFlowCardReturnOpen(true)}>扫码登记退货</Button><Button onClick={() => setReplacementOpen(true)}>补卡换号</Button></div>}
-        <div className="section-heading"><div><Typography.Title level={3}>流程卡退货返工追踪</Typography.Title><Typography.Text type="secondary">每批产品按流程卡独立显示“第N次退货返工”；同卡再次退回会自动接续次数，点开可看完整时间线。</Typography.Text></div><Space wrap><Button onClick={() => setReplacementOpen(true)}>补卡换号</Button><Button type="primary" icon={<QrcodeOutlined />} onClick={() => setFlowCardReturnOpen(true)}>扫描登记退货</Button></Space></div>
+        {mobile && <div className="quality-return-scan-toolbar"><Button type="primary" icon={<QrcodeOutlined />} onClick={openFlowCardReturn}>扫码登记退货</Button><Button onClick={() => setReplacementOpen(true)}>补卡换号</Button></div>}
+        <div className="section-heading"><div><Typography.Title level={3}>流程卡退货返工追踪</Typography.Title><Typography.Text type="secondary">每批产品按流程卡独立显示“第N次退货返工”；同卡再次退回会自动接续次数，点开可看完整时间线。</Typography.Text></div><Space wrap><Button onClick={() => setReplacementOpen(true)}>补卡换号</Button><Button type="primary" icon={<QrcodeOutlined />} onClick={openFlowCardReturn}>扫描登记退货</Button></Space></div>
         <div className="quality-return-filter-chips" aria-label="退货返工快捷筛选">
           {[
             ['ALL', '全部'],
@@ -482,7 +494,7 @@ export function QualityPage() {
       <PageTitle
         title="品检出货与退货返工"
         description="记录每日质检与出货、每次退货返工和订单批次；员工绩效与跨模块趋势统一在“数据分析”查看。"
-        extra={<Space wrap><Button icon={<QrcodeOutlined />} onClick={() => setFlowCardReturnOpen(true)}>扫码登记退货</Button><Button onClick={() => setReturnReworkOpen(true)}>登记整批退货返工（无扫码）</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => setShipmentForm({})}>新增出货</Button></Space>}
+        extra={<Space wrap><Button icon={<QrcodeOutlined />} onClick={openFlowCardReturn}>扫码登记退货</Button><Button onClick={() => setReturnReworkOpen(true)}>登记整批退货返工（无扫码）</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => openShipmentForm()}>新增出货</Button></Space>}
       />
 
       <Card className="filter-card quality-filter-card">
@@ -520,13 +532,14 @@ export function QualityPage() {
           entry is routed through the weighted workflow drawer by the
           compatibility component. */}
       <QualityShipmentDrawer
+        key={`shipment-session-${shipmentSessionKey}`}
         open={!!shipmentForm}
         shipment={shipmentForm?.shipment}
         orders={orders}
         employees={employees}
-        processCards={processCards}
         existingShipments={shipmentOptions}
         existingBatches={shipmentBatchOptions}
+        resetKey={shipmentSessionKey}
         onClose={() => {
           setShipmentForm(undefined)
           setResumeReturnAfterShipment(false)
@@ -558,18 +571,19 @@ export function QualityPage() {
         onBackfillShipment={() => {
           setReturnReworkOpen(false)
           setResumeReturnAfterShipment(true)
-          setShipmentForm({})
+          openShipmentForm()
         }}
         onSaved={refreshAfterShipment}
       />
       <QualityFlowCardReturnDrawer
+        key={`flow-card-return-session-${flowCardReturnSessionKey}`}
         open={flowCardReturnOpen}
         employees={employees}
         onClose={() => setFlowCardReturnOpen(false)}
         onBackfillShipment={() => {
           setFlowCardReturnOpen(false)
           setResumeReturnAfterShipment(true)
-          setShipmentForm({})
+          openShipmentForm()
         }}
         onSaved={refreshAfterShipment}
       />

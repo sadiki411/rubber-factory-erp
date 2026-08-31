@@ -550,6 +550,9 @@ button, input, textarea, select { font: inherit; }
 .quality-weight-scan-card .ant-card-body { display: grid; gap: 10px; }
 .quality-weight-scanned-cards { display: flex; flex-wrap: wrap; gap: 6px; }
 .quality-weight-scanned-cards .ant-tag { max-width: 100%; margin: 0; overflow-wrap: anywhere; white-space: normal; }
+.quality-weight-scan-mode { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+.quality-weight-scan-mode .ant-radio-group { display: flex; flex-wrap: wrap; }
+.quality-weight-scan-mode .ant-radio-button-wrapper { min-height: 40px; line-height: 38px; }
 .quality-weight-basic-card .ant-card-head, .quality-weight-inspector-card .ant-card-head, .quality-weight-measure-card .ant-card-head, .quality-weight-allocation-card .ant-card-head { min-height: 42px; padding-inline: 14px; background: #f7fbf9; }
 .quality-weight-basic-card .ant-card-body, .quality-weight-inspector-card .ant-card-body, .quality-weight-measure-card .ant-card-body, .quality-weight-allocation-card .ant-card-body { padding: 14px; }
 .quality-weight-order-preview { margin: -3px 0 14px; }
@@ -818,6 +821,10 @@ button, input, textarea, select { font: inherit; }
   .quality-weight-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .quality-weight-derived-row { row-gap: 8px; }
   .quality-weight-derived-row .ant-statistic-content { font-size: 18px; }
+  .quality-weight-scan-mode { align-items: stretch; flex-direction: column; }
+  .quality-weight-scan-mode .ant-radio-group { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .quality-weight-scan-mode .ant-radio-button-wrapper { height: auto; min-height: 44px; padding: 3px 8px; line-height: 36px; text-align: center; white-space: normal; }
+  .quality-weight-scan-mode > .ant-btn { min-height: 44px; }
   .quality-weight-allocation-card .ant-card-head { align-items: flex-start; }
   .quality-weight-allocation-card .ant-card-extra { margin-inline-start: 8px; padding-top: 9px; }
   .quality-weight-allocation-row { align-items: flex-start; padding: 10px; }

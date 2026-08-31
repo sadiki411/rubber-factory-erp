@@ -19,6 +19,7 @@ interface ShipmentDrawerProps extends BaseDrawerProps {
   processCards?: QualityProcessCard[]
   existingShipments?: QualityShipment[]
   existingBatches?: QualityShipmentBatch[]
+  resetKey?: string | number
   onSubmit?: (payload: import('../types').QualityShipmentBatchInput) => Promise<unknown>
   onSaved?: (result?: unknown) => void | Promise<void>
 }
@@ -138,6 +139,7 @@ export function QualityShipmentDrawer(props: ShipmentDrawerProps) {
       processCards={props.processCards}
       existingShipments={props.existingShipments}
       existingBatches={props.existingBatches}
+      resetKey={props.resetKey}
       onSubmit={props.onSubmit}
       onSaved={props.onSaved}
       onClose={props.onClose}

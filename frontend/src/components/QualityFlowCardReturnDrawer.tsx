@@ -137,6 +137,14 @@ export function QualityFlowCardReturnDrawer({
   const reasonOptions = reasons.map((item) => ({ value: item.id, label: item.name || item.label || item.code || String(item.id) }))
   const secondaryOptions = reasonOptions.filter((item) => String(item.value) !== String(primaryReasonId ?? ''))
 
+  const closeDrawer = () => {
+    setScannerOpen(false)
+    setCards([])
+    setSources({})
+    form.resetFields()
+    onClose()
+  }
+
   const handleScan = async (cardNo: string) => {
     let lookup: QualityProcessCardScanResult
     try {
@@ -215,7 +223,7 @@ export function QualityFlowCardReturnDrawer({
       else await qualityWorkflowApi.bulkScanReturn({ cards: scanCards, ...common })
       await onSaved()
       message.success(`已登记 ${scanCards.length} 批退货，每张流程卡均建立独立返工追踪。`)
-      onClose()
+      closeDrawer()
     } catch (error) {
       message.error((error as Error).message || '扫描退货登记失败')
     } finally {
@@ -226,11 +234,11 @@ export function QualityFlowCardReturnDrawer({
   return <>
     <Drawer
       open={open}
-      onClose={onClose}
+      onClose={closeDrawer}
       width={720}
       className="quality-return-rework-drawer quality-flow-card-return-drawer"
       title="扫描登记退货返工"
-      footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button icon={<CameraOutlined />} onClick={() => setScannerOpen(true)}>继续扫码</Button><Button type="primary" loading={saving} disabled={!cards.length} onClick={() => void submit()}>确认登记 {cards.length || ''} 批退货</Button></Space>}
+      footer={<Space className="drawer-footer-actions"><Button onClick={closeDrawer}>取消</Button><Button icon={<CameraOutlined />} onClick={() => setScannerOpen(true)}>继续扫码</Button><Button type="primary" loading={saving} disabled={!cards.length} onClick={() => void submit()}>确认登记 {cards.length || ''} 批退货</Button></Space>}
     >
       <Alert type="info" showIcon message="一张流程卡追踪一批产品" description="多批退货可连续扫码后统一填写日期和原因；系统仍为每张流程卡建立独立的第1次、第2次、第3次退货记录。" />
       <Button className="quality-flow-card-scan-button" type="primary" size="large" block icon={<QrcodeOutlined />} onClick={() => setScannerOpen(true)}>扫描流程卡二维码</Button>
@@ -310,6 +318,14 @@ export function QualityProcessCardReplacementDrawer({
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
 
+  const closeReplacement = () => {
+    setScannerTarget(undefined)
+    setOldCard(undefined)
+    setNewCardNo('')
+    setNotes('')
+    onClose()
+  }
+
   useEffect(() => {
     if (!open) return
     // This drawer is a one-shot replacement workflow, so every opening starts
@@ -351,7 +367,7 @@ export function QualityProcessCardReplacementDrawer({
       await qualityWorkflowApi.replaceProcessCard(oldCard.id, { new_card_no: newCardNo, notes })
       await onSaved()
       message.success(`补卡完成：${newCardNo} 已继承 ${oldCard.card_no} 的全部追踪历史。`)
-      onClose()
+      closeReplacement()
     } catch (error) {
       message.error((error as Error).message || '流程卡换号失败')
     } finally {
@@ -360,7 +376,7 @@ export function QualityProcessCardReplacementDrawer({
   }
 
   return <>
-    <Drawer open={open} onClose={onClose} width={560} className="quality-return-rework-drawer" title="流程卡丢失 / 补卡换号" footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} disabled={!oldCard || !newCardNo} onClick={() => void submitReplacement()}>确认补卡换号</Button></Space>}>
+    <Drawer open={open} onClose={closeReplacement} width={560} className="quality-return-rework-drawer" title="流程卡丢失 / 补卡换号" footer={<Space className="drawer-footer-actions"><Button onClick={closeReplacement}>取消</Button><Button type="primary" loading={saving} disabled={!oldCard || !newCardNo} onClick={() => void submitReplacement()}>确认补卡换号</Button></Space>}>
       <Alert type="info" showIcon message="新卡继承旧卡历史" description="旧卡会保留查询记录并标记作废；以后扫描新卡，返工次数会从原来的次数继续累计。" />
       <div className="quality-replacement-steps">
         <Card size="small" title="1. 扫描新补开的流程卡" extra={newCardNo && <Tag color="success">已扫描</Tag>}><Space direction="vertical" style={{ width: '100%' }}><Input value={newCardNo} readOnly placeholder="尚未扫描新卡" /><Button block type="primary" icon={<QrcodeOutlined />} onClick={() => setScannerTarget('new')}>扫描新卡</Button></Space></Card>

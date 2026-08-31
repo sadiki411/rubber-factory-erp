@@ -11,6 +11,7 @@ import {
   Form,
   Input,
   InputNumber,
+  Radio,
   Row,
   Select,
   Space,
@@ -20,7 +21,7 @@ import {
 } from 'antd'
 import { QrcodeOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { qualityApi, qualityWorkflowApi, toList } from '../api/client'
 import {
   expectedWeightKg,
@@ -90,6 +91,10 @@ export interface QualityWeightShipmentDrawerProps {
   existingShipments?: QualityShipment[]
   existingBatches?: QualityShipmentBatch[]
   initialOrderId?: number
+  /** Increment for every new entry session.  It prevents a kept-alive drawer
+   * from reusing a previous scanner/form instance when the parent opens a new
+   * shipment without an intermediate unmount. */
+  resetKey?: string | number
   onClose: () => void
   /** Override persistence when the parent owns query refresh/fallback logic. */
   onSubmit?: (payload: QualityShipmentBatchInput) => Promise<unknown>
@@ -124,6 +129,15 @@ type DrawerValues = {
   backfill_reason?: string
 }
 
+type WeightEntryMode = 'same' | 'individual'
+
+type ScannedLineOverride = {
+  unit_weight_g?: number | null
+  single_batch_net_weight_kg?: number | null
+  process_card_shipment_quantity?: number | null
+  product_batch_count?: number
+}
+
 interface EditableLine extends QualityWeightShipmentLineSeed {
   key: string
   quantity: number | null
@@ -142,6 +156,17 @@ function numeric(value: unknown) {
 
 function text(value: unknown) {
   return String(value ?? '').trim()
+}
+
+function processCardStandardQuantity(card?: QualityProcessCard | null) {
+  // `delivered_piece_quantity` is commonly zero on a card that has not yet
+  // shipped.  Zero is not the printed package standard and `??` would wrongly
+  // keep it instead of falling back.  The card's quantity is authoritative;
+  // the delivered value only supports older rows that lack quantity.
+  const quantity = numeric(card?.quantity)
+  if (quantity != null && quantity > 0) return quantity
+  const delivered = numeric(card?.delivered_piece_quantity)
+  return delivered != null && delivered > 0 ? delivered : null
 }
 
 function orderRemaining(order: QualityOrder) {
@@ -345,11 +370,11 @@ export function QualityWeightShipmentDrawer({
   batch,
   orders,
   employees,
-  processCards = EMPTY_PROCESS_CARDS,
   lines: lineSeeds,
   existingShipments = EMPTY_SHIPMENTS,
   existingBatches = EMPTY_BATCHES,
   initialOrderId,
+  resetKey,
   onClose,
   onSubmit,
   onSaved,
@@ -376,15 +401,24 @@ export function QualityWeightShipmentDrawer({
   const [lines, setLines] = useState<EditableLine[]>([])
   const [scannerOpen, setScannerOpen] = useState(false)
   const [scannedCards, setScannedCards] = useState<Array<{ cardNo: string; lookup: QualityProcessCardScanResult }>>([])
+  const [weightEntryMode, setWeightEntryMode] = useState<WeightEntryMode>('same')
+  // In per-card mode the scanned cards become one editable shipment line per
+  // physical package.  Keep only operator overrides here; card/order facts
+  // continue to come from the scan response so a refresh cannot overwrite a
+  // changed weight or standard quantity.
+  const [scannedLineOverrides, setScannedLineOverrides] = useState<Record<string, ScannedLineOverride>>({})
+  const shipmentCheckRequestRef = useRef(0)
+  const entrySessionRef = useRef(0)
+  const submittingRef = useRef(false)
   const [reshipCase, setReshipCase] = useState<QualityReworkCase>()
 
   const stableLineSeeds = lineSeeds || EMPTY_LINE_SEEDS
-  const lineSeedKey = useMemo(() => (lineSeeds || processCards).map((item) => {
+  const lineSeedKey = useMemo(() => (lineSeeds || EMPTY_LINE_SEEDS).map((item) => {
     if ('key' in item && item.key != null) return String(item.key)
     if ('process_card_id' in item && item.process_card_id != null) return String(item.process_card_id)
     return String('id' in item ? item.id : '')
-  }).join(','), [lineSeeds, processCards])
-  const isLineMode = lines.length > 0
+  }).join(','), [lineSeeds])
+  const basketLineMode = lines.length > 0
   const shipmentNumberValue = Form.useWatch('shipment_no', form)
   const orderId = Form.useWatch('order_id', form)
   const unitWeight = Form.useWatch('unit_weight_g', form)
@@ -397,17 +431,6 @@ export function QualityWeightShipmentDrawer({
   const processCardShipmentQuantity = Form.useWatch('process_card_shipment_quantity', form)
   const selectedInspectors = Form.useWatch('inspector_ids', form) || []
   const activeBatch = loadedDraft || batch
-
-  useEffect(() => {
-    if (open) return
-    // Do not carry a previously loaded draft into the next new-shipment
-    // drawer.  The parent-provided `batch` remains the authoritative edit
-    // target when one is supplied.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLoadedDraft(undefined)
-    setDraftMatch(undefined)
-    draftMatchRef.current = undefined
-  }, [open])
 
   const allKnownOrders = useMemo(() => {
     const seen = new Set<number>()
@@ -431,6 +454,58 @@ export function QualityWeightShipmentDrawer({
     const id = numeric(orderId)
     return id == null ? undefined : allKnownOrders.find((order) => order.id === id)
   }, [allKnownOrders, orderId])
+
+  const scannedLines = useMemo<EditableLine[]>(() => {
+    if (basketLineMode || !scannedCards.length) return []
+    const fallbackOrderId = numeric(orderId)
+    const fallbackOrder = selectedOrder
+    return scannedCards.map((item, index) => {
+      const card = item.lookup.active_card || item.lookup.scanned_card
+      const override = scannedLineOverrides[item.cardNo] || {}
+      const cardOrderId = numeric(card?.order_id)
+      const lineOrderId = cardOrderId ?? fallbackOrderId ?? undefined
+      const lineOrder = allKnownOrders.find((candidate) => candidate.id === lineOrderId) || fallbackOrder
+      const cardQuantity = processCardStandardQuantity(card)
+      const standardQuantity = override.process_card_shipment_quantity
+        ?? cardQuantity
+        ?? numeric(processCardShipmentQuantity)
+      const cardUnit = numeric(card?.unit_weight_g)
+      const lineUnit = override.unit_weight_g ?? cardUnit ?? numeric(unitWeight)
+      const lineSingleWeight = override.single_batch_net_weight_kg ?? null
+      return {
+        key: `scanned-${item.cardNo}-${index}`,
+        process_card_id: card?.id,
+        card_no: item.cardNo,
+        order_id: lineOrderId,
+        order: lineOrder,
+        quantity: cardQuantity,
+        piece_quantity: null,
+        remaining_quantity: cardQuantity,
+        unit_weight_g: lineUnit,
+        net_weight_kg: lineSingleWeight,
+        single_batch_net_weight_kg: lineSingleWeight,
+        product_batch_count: override.product_batch_count || 1,
+        process_card_shipment_quantity: standardQuantity,
+        specification_snapshot: card?.specification_snapshot || text(specificationValue),
+        material_snapshot: card?.material_snapshot || text(materialValue),
+      }
+    })
+  }, [allKnownOrders, basketLineMode, materialValue, orderId, processCardShipmentQuantity, scannedCards, scannedLineOverrides, selectedOrder, specificationValue, unitWeight])
+
+  // A scan is a physical package.  In the equal-weight shortcut, make the
+  // batch count follow the number of scanned cards (while preserving an
+  // intentionally larger count for unscanned packages).
+  useEffect(() => {
+    if (!open || basketLineMode || weightEntryMode !== 'same' || !scannedCards.length) return
+    const current = numeric(form.getFieldValue('product_batch_count')) || 0
+    if (current < scannedCards.length) {
+      form.setFieldsValue({ product_batch_count: scannedCards.length, batch_count: scannedCards.length })
+    }
+  }, [basketLineMode, form, open, scannedCards.length, weightEntryMode])
+
+  const scannedVariableMode = !basketLineMode && weightEntryMode === 'individual' && scannedCards.length > 0
+  const activeLines = basketLineMode ? lines : scannedVariableMode ? scannedLines : EMPTY_LINE_SEEDS as EditableLine[]
+  const isLineMode = basketLineMode || scannedVariableMode
 
   const calculatedPieces = useMemo(() => shipmentPieceQuantity({
     totalNetWeightKg: singleBatchWeight,
@@ -458,7 +533,7 @@ export function QualityWeightShipmentDrawer({
     && !shipmentQuantityWithinFlowCardLimit(singleBatchPieces, processCardShipmentQuantity, TOLERANCE_PERCENT),
   )
 
-  const lineMetrics = useMemo(() => lines.reduce((result, line) => {
+  const lineMetrics = useMemo(() => activeLines.reduce((result, line) => {
     const metrics = editableLineMetrics(line)
     return {
       quantity: result.quantity + (metrics.quantity || 0),
@@ -468,7 +543,7 @@ export function QualityWeightShipmentDrawer({
       over: result.over || metrics.over,
       under: result.under || metrics.under,
     }
-  }, { quantity: 0, expected: 0, actual: 0, missing: false, over: false, under: false }), [lines])
+  }, { quantity: 0, expected: 0, actual: 0, missing: false, over: false, under: false }), [activeLines])
 
   const totalExpected = isLineMode
     ? lineMetrics.expected
@@ -482,8 +557,47 @@ export function QualityWeightShipmentDrawer({
     : Boolean(singleBatchPieces && numeric(processCardShipmentQuantity) && singleBatchPieces < Number(processCardShipmentQuantity))
   const unscannedBatchCount = Math.max(0, effectiveBatchCount - scannedCards.length)
 
+  const resetTransientState = useCallback(() => {
+    // Invalidate scanner lookups and saves started by the session being
+    // closed.  A slow response from the previous drawer must never write into
+    // the next new-shipment session.
+    entrySessionRef.current += 1
+    submittingRef.current = false
+    form.resetFields()
+    setLines([])
+    setScannedCards([])
+    setScannedLineOverrides({})
+    setWeightEntryMode('same')
+    setReshipCase(undefined)
+    setScannerOpen(false)
+    setDuplicate(false)
+    setCheckingNumber(false)
+    shipmentCheckRequestRef.current += 1
+    setDraftMatch(undefined)
+    draftMatchRef.current = undefined
+    setLoadedDraft(undefined)
+    setLoadingDraft(false)
+    setCandidateOrders([])
+    setCandidateQuery('')
+    setCandidateLoaded(false)
+    setLoadingCandidates(false)
+    setCandidateError('')
+    candidateRequestRef.current += 1
+    setAllocationPreview(undefined)
+    setLoadingAllocationPreview(false)
+    setAllocationPreviewError('')
+    allocationRequestRef.current += 1
+  }, [form])
+
+  const closeDrawer = useCallback(() => {
+    resetTransientState()
+    onClose()
+  }, [onClose, resetTransientState])
+
   useEffect(() => {
     if (!open) return
+    entrySessionRef.current += 1
+    submittingRef.current = false
     form.resetFields()
     const source = shipment || activeBatch
     const sourceOrder = source && 'order' in source ? source.order : undefined
@@ -534,12 +648,20 @@ export function QualityWeightShipmentDrawer({
       ? batchLineSeeds(activeBatch.lines)
       : stableLineSeeds
     // Keep this state reset tied to the drawer opening/line selection only.
+    // `processCards` is the page-wide lookup dataset, not an implicit
+    // selection. Only explicit line seeds (the shipment basket) may activate
+    // line mode; otherwise every historic card would reappear in the next new
+    // shipment and hide the scanner.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLines(seedLines(draftLines, processCards))
+    setLines(seedLines(draftLines, EMPTY_PROCESS_CARDS))
     setScannedCards([])
+    setScannedLineOverrides({})
+    setWeightEntryMode('same')
     setReshipCase(undefined)
     setScannerOpen(false)
     setDuplicate(false)
+    setCheckingNumber(false)
+    shipmentCheckRequestRef.current += 1
     setDraftMatch(undefined)
     draftMatchRef.current = undefined
     setCandidateOrders([])
@@ -556,7 +678,7 @@ export function QualityWeightShipmentDrawer({
     // selected workflow-card set are the only events that should reset typed
     // values. Background order/query refreshes must not wipe a mobile form.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeBatch?.id, form, initialOrderId, lineSeedKey, open, shipment?.id])
+  }, [activeBatch?.id, form, initialOrderId, lineSeedKey, open, resetKey, shipment?.id])
 
   useEffect(() => {
     if (!open || !selectedOrder) return
@@ -578,6 +700,8 @@ export function QualityWeightShipmentDrawer({
 
   const checkShipmentNumber = async (value?: string): Promise<boolean> => {
     const number = text(value ?? form.getFieldValue('shipment_no'))
+    const requestId = shipmentCheckRequestRef.current + 1
+    shipmentCheckRequestRef.current = requestId
     if (!number) {
       setDuplicate(false)
       setDraftMatch(undefined)
@@ -614,6 +738,7 @@ export function QualityWeightShipmentDrawer({
       const legacy = results[1].status === 'fulfilled' ? results[1].value : undefined
       const found = weighted?.shipment || legacy?.shipment
       const exists = Boolean(weighted?.exists || weighted?.duplicate || legacy?.exists || legacy?.duplicate)
+      if (requestId !== shipmentCheckRequestRef.current || number !== text(form.getFieldValue('shipment_no'))) return false
       if (exists && found && 'status' in found && String(found.status || '').toUpperCase() === 'DRAFT') {
         const record = found as QualityShipmentBatch
         draftMatchRef.current = record
@@ -628,12 +753,13 @@ export function QualityWeightShipmentDrawer({
     } catch {
       // Rolling deployments may not expose either check action.  The local
       // duplicate guard still protects records already loaded in this page.
+      if (requestId !== shipmentCheckRequestRef.current) return false
       setDraftMatch(undefined)
       draftMatchRef.current = undefined
       setDuplicate(false)
       return false
     } finally {
-      setCheckingNumber(false)
+      if (requestId === shipmentCheckRequestRef.current) setCheckingNumber(false)
     }
   }
 
@@ -829,7 +955,82 @@ export function QualityWeightShipmentDrawer({
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
   }
 
+  const updateActiveLine = (index: number, patch: Partial<EditableLine>) => {
+    if (!scannedVariableMode) {
+      updateLine(index, patch)
+      return
+    }
+    const cardNo = scannedCards[index]?.cardNo
+    if (!cardNo) return
+    setScannedLineOverrides((previous) => ({
+      ...previous,
+      [cardNo]: {
+        ...previous[cardNo],
+        ...('unit_weight_g' in patch ? { unit_weight_g: numeric(patch.unit_weight_g) } : {}),
+        ...('single_batch_net_weight_kg' in patch ? { single_batch_net_weight_kg: numeric(patch.single_batch_net_weight_kg) } : {}),
+        ...('process_card_shipment_quantity' in patch ? { process_card_shipment_quantity: numeric(patch.process_card_shipment_quantity) } : {}),
+        product_batch_count: 1,
+      },
+    }))
+  }
+
+  const changeWeightEntryMode = (mode: WeightEntryMode) => {
+    setWeightEntryMode(mode)
+    if (mode !== 'individual') return
+    const commonUnit = numeric(form.getFieldValue('unit_weight_g'))
+    const commonWeight = numeric(form.getFieldValue('single_batch_net_weight_kg'))
+    const commonQuantity = numeric(form.getFieldValue('process_card_shipment_quantity'))
+    setScannedLineOverrides((previous) => {
+      const next = { ...previous }
+      scannedCards.forEach((item) => {
+        next[item.cardNo] = {
+          unit_weight_g: next[item.cardNo]?.unit_weight_g ?? commonUnit,
+          single_batch_net_weight_kg: next[item.cardNo]?.single_batch_net_weight_kg ?? commonWeight,
+          process_card_shipment_quantity: next[item.cardNo]?.process_card_shipment_quantity ?? commonQuantity,
+          product_batch_count: 1,
+        }
+      })
+      return next
+    })
+  }
+
+  const removeScannedCard = (cardNo: string) => {
+    setScannedCards((previous) => {
+      const next = previous.filter((item) => item.cardNo !== cardNo)
+      if (weightEntryMode === 'same') {
+        const current = numeric(form.getFieldValue('product_batch_count')) || 1
+        if (current === previous.length) {
+          const nextCount = Math.max(1, next.length)
+          form.setFieldsValue({ product_batch_count: nextCount, batch_count: nextCount })
+        }
+      }
+      return next
+    })
+    setScannedLineOverrides((previous) => {
+      const next = { ...previous }
+      delete next[cardNo]
+      return next
+    })
+  }
+
+  const clearScannedCards = () => {
+    setScannedCards([])
+    setScannedLineOverrides({})
+    setWeightEntryMode('same')
+    form.setFieldsValue({ product_batch_count: 1, batch_count: 1 })
+  }
+
+  const setEqualBatchCount = (value: number | null) => {
+    const requested = numeric(value) || 1
+    const next = Math.max(requested, scannedCards.length || 1)
+    form.setFieldsValue({ product_batch_count: next, batch_count: next })
+    if (requested < scannedCards.length) {
+      message.info(`本次已扫 ${scannedCards.length} 张流程卡，一张卡对应一包，批数不能少于 ${scannedCards.length}。`)
+    }
+  }
+
   const handleShipmentCardScan = async (cardNo: string) => {
+    const entrySession = entrySessionRef.current
     let lookup: QualityProcessCardScanResult
     try {
       lookup = await qualityWorkflowApi.scanProcessCard(cardNo)
@@ -837,6 +1038,7 @@ export function QualityWeightShipmentDrawer({
       if (/404|未找到|不存在/.test((error as Error).message || '')) lookup = { code: cardNo }
       else throw error
     }
+    if (entrySession !== entrySessionRef.current || !open) return false
     const scanned = lookup.scanned_card
     const activeCard = lookup.active_card || scanned
     if (scanned?.replaced_by_id || (scanned && activeCard && String(scanned.id) !== String(activeCard.id))) {
@@ -870,11 +1072,91 @@ export function QualityWeightShipmentDrawer({
       return true
     }
     if (reshipCase) throw new Error('当前正在处理返工品重新出货，请先完成或关闭后再扫描普通出货。')
-    setScannedCards((items) => [...items, { cardNo: activeCard?.card_no || cardNo, lookup }])
+    const existingBinding = activeCard?.unit_binding || activeCard?.binding || lookup.binding
+    if (existingBinding) {
+      throw new Error(`流程卡 ${activeCard?.card_no || cardNo} 已绑定出货单 ${existingBinding.shipment_no || existingBinding.shipment_batch_id} 第 ${existingBinding.shipment_unit_no} 包，不能重复出货；如为退货返工，请先在退货端登记。`)
+    }
+    const normalizedCardNo = activeCard?.card_no || cardNo
+    const scannedOrder = activeCard?.order || allKnownOrders.find((order) => order.id === activeCard?.order_id)
+    const firstScannedCard = scannedCards[0]?.lookup.active_card || scannedCards[0]?.lookup.scanned_card
+    const firstOrderId = numeric(firstScannedCard?.order_id) ?? numeric(orderId)
+    const scannedOrderId = numeric(activeCard?.order_id)
+    if (scannedCards.length && firstOrderId != null && scannedOrderId != null && firstOrderId !== scannedOrderId) {
+      throw new Error(`流程卡 ${normalizedCardNo} 属于另一张订单，不能和本次已扫流程卡一起出货。请完成本次出货后再扫描。`)
+    }
+    if (!scannedCards.length && activeCard) {
+      const scannedSpec = activeCard.specification_snapshot || scannedOrder?.specification || ''
+      const scannedMaterial = activeCard.material_snapshot || scannedOrder?.material || ''
+      const scannedUnit = numeric(activeCard.unit_weight_g)
+      form.setFieldsValue({
+        order_id: scannedOrder?.id || activeCard.order_id,
+        product_name: activeCard.product_name_snapshot || scannedOrder?.product_name || '',
+        specification: scannedSpec,
+        specification_snapshot: scannedSpec,
+        material: scannedMaterial,
+        material_snapshot: scannedMaterial,
+        product_specification_id: scannedOrder?.product_specification_id ?? null,
+        unit_weight_g: scannedUnit ?? form.getFieldValue('unit_weight_g'),
+        process_card_shipment_quantity: processCardStandardQuantity(activeCard) ?? form.getFieldValue('process_card_shipment_quantity'),
+      })
+    }
+    const commonUnit = numeric(form.getFieldValue('unit_weight_g'))
+    const commonWeight = numeric(form.getFieldValue('single_batch_net_weight_kg'))
+    const commonQuantity = numeric(form.getFieldValue('process_card_shipment_quantity'))
+    const scannedUnit = numeric(activeCard?.unit_weight_g)
+    const scannedQuantity = processCardStandardQuantity(activeCard)
+    const needsIndividualWeights = Boolean(
+      weightEntryMode === 'same'
+      && scannedCards.length
+      && (
+        (scannedUnit != null && commonUnit != null && scannedUnit !== commonUnit)
+        || (scannedQuantity != null && commonQuantity != null && scannedQuantity !== commonQuantity)
+      )
+    )
+    if (needsIndividualWeights) {
+      // A tail card or a card with another saved unit weight cannot safely use
+      // one shared 10% limit. Preserve the fast scan flow, but switch to one
+      // editable row per physical package automatically.
+      setWeightEntryMode('individual')
+      setScannedLineOverrides((previous) => {
+        const next = { ...previous }
+        scannedCards.forEach((item) => {
+          const card = item.lookup.active_card || item.lookup.scanned_card
+          next[item.cardNo] = {
+            unit_weight_g: next[item.cardNo]?.unit_weight_g ?? numeric(card?.unit_weight_g) ?? commonUnit,
+            single_batch_net_weight_kg: next[item.cardNo]?.single_batch_net_weight_kg ?? commonWeight,
+            process_card_shipment_quantity: next[item.cardNo]?.process_card_shipment_quantity
+              ?? processCardStandardQuantity(card)
+              ?? commonQuantity,
+            product_batch_count: 1,
+          }
+        })
+        next[normalizedCardNo] = {
+          unit_weight_g: scannedUnit ?? commonUnit,
+          single_batch_net_weight_kg: commonWeight,
+          process_card_shipment_quantity: scannedQuantity ?? commonQuantity,
+          product_batch_count: 1,
+        }
+        return next
+      })
+      message.warning('检测到流程卡标准数量或产品单重不同，已自动切换为“逐包填写不同重量”，避免套用错误的10%上限。')
+    } else if (weightEntryMode === 'individual') {
+      setScannedLineOverrides((previous) => ({
+        ...previous,
+        [normalizedCardNo]: {
+          unit_weight_g: scannedUnit ?? commonUnit,
+          single_batch_net_weight_kg: commonWeight,
+          process_card_shipment_quantity: scannedQuantity ?? commonQuantity,
+          product_batch_count: 1,
+        },
+      }))
+    }
+    setScannedCards((items) => [...items, { cardNo: normalizedCardNo, lookup }])
     return true
   }
 
   const submit = async () => {
+    if (submittingRef.current) return
     const values = await form.validateFields()
     const shipmentNo = text(values.shipment_no)
     const duplicateFound = shipmentNo ? await checkShipmentNumber(shipmentNo) : false
@@ -916,6 +1198,10 @@ export function QualityWeightShipmentDrawer({
       message.warning('请为每条流程卡填写件数、产品单重和实称净重。')
       return
     }
+    if (isLineMode && activeLines.some((line) => line.process_card_id == null && line.order_id == null)) {
+      message.warning('存在尚未关联订单的流程卡，请先选择候选订单后再确认。')
+      return
+    }
     if (overLimit) {
       message.error('存在超过理论重量上限 10% 的明细，提交已被阻止。')
       return
@@ -923,11 +1209,15 @@ export function QualityWeightShipmentDrawer({
     const inspectorSelection = Array.from(new Set((values.inspector_ids || []).map(Number).filter((id) => Number.isFinite(id))))
     const snapshotSpec = text(values.specification_snapshot || values.specification)
     const snapshotMaterial = text(values.material_snapshot || values.material)
+    const directOrderId = numeric(values.order_id)
+    const payloadOrderIds = isLineMode
+      ? Array.from(new Set(activeLines.map((line) => line.order_id).filter((value): value is number => value != null).map(Number)))
+      : directOrderId == null ? [] : [directOrderId]
     const payload: QualityShipmentBatchInput = {
       shipment_no: shipmentNo || undefined,
       shipment_date: values.shipment_date?.format('YYYY-MM-DD') || null,
-      order_id: numeric(values.order_id),
-      order_ids: numeric(values.order_id) == null ? [] : [Number(values.order_id)],
+      order_id: scannedVariableMode ? null : directOrderId,
+      order_ids: payloadOrderIds,
       product_specification_id: values.product_specification_id ?? selectedOrder?.product_specification_id ?? null,
       product_name: text(values.product_name),
       specification: snapshotSpec,
@@ -948,12 +1238,12 @@ export function QualityWeightShipmentDrawer({
       client_key: activeBatch?.client_key || `quality-weight-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       notes: text(values.notes),
       confirm_warnings: false,
-      process_card_bindings: isLineMode ? undefined : scannedCards.map((item, index) => ({
+      process_card_bindings: basketLineMode ? undefined : scannedCards.map((item, index) => ({
         card_no: item.cardNo,
         shipment_unit_no: index + 1,
       })),
       lines: isLineMode
-        ? lines.map((line) => {
+        ? activeLines.map((line) => {
           const metrics = editableLineMetrics(line)
           return {
             process_card_id: line.process_card_id,
@@ -968,8 +1258,8 @@ export function QualityWeightShipmentDrawer({
             single_batch_net_weight_kg: metrics.singleWeight || undefined,
             product_batch_count: metrics.batchCount,
             process_card_shipment_quantity: metrics.standardQuantity || undefined,
-            specification_snapshot: snapshotSpec,
-            material_snapshot: snapshotMaterial,
+            specification_snapshot: text(line.specification_snapshot) || snapshotSpec,
+            material_snapshot: text(line.material_snapshot) || snapshotMaterial,
             notes: text(line.notes),
           }
         })
@@ -993,6 +1283,12 @@ export function QualityWeightShipmentDrawer({
           material_snapshot: snapshotMaterial,
         }],
     }
+    // Re-check after the asynchronous validation/duplicate calls. Two very
+    // fast taps must not create two confirmed shipments with different
+    // generated numbers.
+    if (submittingRef.current) return
+    const submitSession = entrySessionRef.current
+    submittingRef.current = true
     setSaving(true)
     try {
       let result: unknown
@@ -1029,7 +1325,13 @@ export function QualityWeightShipmentDrawer({
       } else {
         result = await qualityWorkflowApi.createAndConfirmShipmentBatch(payload)
       }
-      await onSaved?.(result)
+      try {
+        await onSaved?.(result)
+      } catch (refreshError) {
+        // Persistence already succeeded. A failed list refresh must not leave
+        // a confirmed shipment in the form where a second tap can retry it.
+        message.warning((refreshError as Error).message || '出货已保存，但列表刷新失败；关闭后刷新页面即可查看。')
+      }
       const orderCount = allocatedOrderCount(result)
       message.success(reshipCase
         ? `${reshipCase.return_label || '返工产品'}已重新出货，退货状态和订单有效出货数量已同步更新`
@@ -1040,11 +1342,14 @@ export function QualityWeightShipmentDrawer({
           : allocationPreview?.overflow_quantity
             ? '重量出货已保存；无可补订单的超出数量已记入当前订单'
             : '重量出货已保存，订单余量已同步更新')
-      onClose()
+      if (submitSession === entrySessionRef.current) closeDrawer()
     } catch (error) {
       message.error((error as Error).message || '重量出货提交失败')
     } finally {
-      setSaving(false)
+      if (submitSession === entrySessionRef.current) {
+        submittingRef.current = false
+        setSaving(false)
+      }
     }
   }
 
@@ -1057,7 +1362,7 @@ export function QualityWeightShipmentDrawer({
           created_at: new Date().toISOString(),
           ...values,
           shipment_date: values.shipment_date?.format?.('YYYY-MM-DD') || null,
-          lines,
+          lines: activeLines,
         })
         localStorage.setItem(DRAFT_KEY, JSON.stringify(current.slice(-30)))
         return true
@@ -1083,7 +1388,7 @@ export function QualityWeightShipmentDrawer({
     const draftSingleBatchWeight = numeric(values.single_batch_net_weight_kg)
     const draftTotalWeight = repeatedBatchNetWeightKg(draftSingleBatchWeight, draftBatchCount)
     const draftProcessCardQuantity = numeric(values.process_card_shipment_quantity ?? values.pieces_per_batch)
-    const draftLines = lines
+    const draftLines = activeLines
       // The current database requires a positive weight for a persisted line.
       // Keep incomplete line inputs in the local fallback, while still saving
       // the batch header on the server so it can be found from another device.
@@ -1141,7 +1446,7 @@ export function QualityWeightShipmentDrawer({
       draftMatchRef.current = result as QualityShipmentBatch
       setDraftMatch(result as QualityShipmentBatch)
       await onSaved?.(result)
-      if (draftLines.length < lines.length) {
+      if (draftLines.length < activeLines.length) {
         const locallySaved = saveLocalCopy()
         message.warning(locallySaved
           ? '服务器草稿已保存；尚未称重的流程卡明细同时保存在本机。'
@@ -1179,20 +1484,20 @@ export function QualityWeightShipmentDrawer({
   return (
     <Drawer
       open={open}
-      onClose={onClose}
+      onClose={closeDrawer}
       size={760}
       title={shipment ? `编辑重量出货 · ${shipment.shipment_no}` : activeBatch ? `${activeBatch.status === 'DRAFT' ? '继续填写草稿' : '编辑重量出货'} · ${activeBatch.shipment_no}` : '新增重量出货'}
       className="quality-weight-shipment-drawer"
-      footer={<Space className="drawer-footer-actions"><Button onClick={saveDraft}>保存草稿</Button><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} disabled={duplicate || checkingNumber || Boolean(draftMatch && !activeBatch)} onClick={() => void submit()}>确认出货</Button></Space>}
+      footer={<Space className="drawer-footer-actions"><Button onClick={saveDraft}>保存草稿</Button><Button onClick={closeDrawer}>取消</Button><Button type="primary" loading={saving} disabled={duplicate || checkingNumber || Boolean(draftMatch && !activeBatch)} onClick={() => void submit()}>确认出货</Button></Space>}
     >
       <Alert
         className="quality-form-alert"
         type="info"
         showIcon
         message="新出货统一按成品重量登记"
-        description="单批只称重一次，再填写相同称重的出货批数；系统会立即计算最终总件数和累计总净重。单批换算件数超过流程卡标准数量 10% 会阻止提交。"
+        description="连续扫码时一张流程卡对应一包：重量相同可只填一次，扫码张数自动成为批数；重量不同可切换为逐包填写。每包换算件数超过对应流程卡标准数量 10% 会阻止提交。"
       />
-      {!isLineMode && <Card size="small" className="quality-weight-scan-card" title="流程卡扫码（选填）" extra={<Button type="primary" icon={<QrcodeOutlined />} onClick={() => setScannerOpen(true)}>连续扫码</Button>}>
+      {!basketLineMode && <Card size="small" className="quality-weight-scan-card" title="流程卡扫码（选填）" extra={<Button type="primary" icon={<QrcodeOutlined />} onClick={() => setScannerOpen(true)}>连续扫码</Button>}>
         {reshipCase ? <Alert
           type="warning"
           showIcon
@@ -1200,9 +1505,24 @@ export function QualityWeightShipmentDrawer({
           description={`流程卡 ${reshipCase.active_process_card_no || reshipCase.process_card_no || reshipCase.process_card?.card_no || '已识别'}；已带出上一次的数量和重量，现场有变化可以直接修改。确认后自动变为“已重新出货”。`}
           action={<Button size="small" onClick={() => setReshipCase(undefined)}>取消返工出货</Button>}
         /> : scannedCards.length ? <>
-          <div className="quality-weight-scanned-cards">{scannedCards.map((item, index) => <Tag key={item.cardNo} closable onClose={() => setScannedCards((values) => values.filter((value) => value.cardNo !== item.cardNo))}>{index + 1}. {item.cardNo}</Tag>)}</div>
-          <Typography.Text type="secondary">已绑定 {scannedCards.length} 批；当前称重批数为 {effectiveBatchCount} 批，剩余 {unscannedBatchCount} 批未录卡号也可正常出货。</Typography.Text>
-          {scannedCards.length > effectiveBatchCount && <Alert type="error" showIcon message="扫码张数超过相同称重批数" description="请增加批数或移除多余流程卡后再确认。" />}
+          <div className="quality-weight-scanned-cards">{scannedCards.map((item, index) => <Tag key={item.cardNo} closable onClose={() => removeScannedCard(item.cardNo)}>{index + 1}. {item.cardNo}</Tag>)}</div>
+          <Space wrap className="quality-weight-scan-mode">
+            <Radio.Group
+              value={weightEntryMode}
+              optionType="button"
+              buttonStyle="solid"
+              onChange={(event) => changeWeightEntryMode(event.target.value as WeightEntryMode)}
+              options={[
+                { value: 'same', label: '这些包重量相同' },
+                { value: 'individual', label: '逐包填写不同重量' },
+              ]}
+            />
+            <Button danger type="link" onClick={clearScannedCards}>清空本次扫码</Button>
+          </Space>
+          {weightEntryMode === 'same'
+            ? <Typography.Text type="secondary">已扫 {scannedCards.length} 张卡＝{scannedCards.length} 包；共用一次单重和单批净重，批数已自动设为至少 {scannedCards.length} 批。当前共 {effectiveBatchCount} 批，另有 {unscannedBatchCount} 批未扫码。</Typography.Text>
+            : <Alert type="info" showIcon message={`已扫 ${scannedCards.length} 张卡＝${scannedCards.length} 包`} description="每张卡会生成一条独立重量明细；切换时已用当前公共单重、净重和流程卡数量预填，可只修改重量不同的包。" />}
+          {weightEntryMode === 'same' && scannedCards.length > effectiveBatchCount && <Alert type="error" showIcon message="扫码张数超过相同称重批数" description="请增加批数或移除多余流程卡后再确认。" />}
         </> : <Typography.Text type="secondary">正常出货不强制逐张扫码；愿意扫码时可连续扫任意部分，其余批次仍按“卡号未录入”正常出货。退货时再扫码即可首次绑定。</Typography.Text>}
       </Card>}
       {duplicate && <Alert type="error" showIcon message="出货单号重复" description="请更换出货单号；系统不会覆盖已有出货记录。" className="quality-weight-duplicate-alert" />}
@@ -1273,11 +1593,11 @@ export function QualityWeightShipmentDrawer({
               <Col xs={12} sm={6}><Form.Item name="unit_weight_g" label="成品单重(g/件)" rules={[{ required: true, type: 'number', min: 0.00001, message: '请输入大于0的单重' }]}><InputNumber min={0.00001} precision={5} style={{ width: '100%' }} /></Form.Item></Col>
               <Col xs={12} sm={6}><Form.Item name="single_batch_net_weight_kg" label="单批实称净重(kg)" rules={[{ required: true, type: 'number', min: 0.001, message: '请输入单批实称净重' }]}><InputNumber min={0.001} precision={3} style={{ width: '100%' }} /></Form.Item></Col>
               <Col xs={12} sm={6}><Form.Item name="process_card_shipment_quantity" label="流程卡出货数量" rules={[{ required: true, type: 'number', min: 1, message: '请输入流程卡单批出货数量' }]} extra="一批的标准件数"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
-              <Col xs={12} sm={6}><Form.Item name="product_batch_count" label="相同称重批数"><InputNumber min={1} precision={0} style={{ width: '100%' }} placeholder="默认1批" onChange={(value) => form.setFieldValue('batch_count', value)} /></Form.Item></Col>
+              <Col xs={12} sm={6}><Form.Item name="product_batch_count" label="相同称重批数"><InputNumber min={Math.max(1, scannedCards.length)} precision={0} style={{ width: '100%' }} placeholder="默认1批" onChange={setEqualBatchCount} /></Form.Item></Col>
             </Row>
             <div className="quality-weight-quick-batches" aria-label="批数快捷计算">
               <Typography.Text type="secondary">批数快捷计算：</Typography.Text>
-              {[1, 5, 10].map((value) => <Button key={value} size="small" onClick={() => form.setFieldsValue({ product_batch_count: value, batch_count: value })}>{value} 批</Button>)}
+              {[1, 5, 10].map((value) => <Button key={value} size="small" onClick={() => setEqualBatchCount(value)}>{value} 批</Button>)}
               {selectedOrder && <Button size="small" onClick={() => { const pieces = numeric(form.getFieldValue('process_card_shipment_quantity')) || orderRemaining(selectedOrder); form.setFieldsValue({ product_batch_count: 1, batch_count: 1, process_card_shipment_quantity: pieces }) }}>按订单剩余量</Button>}
             </div>
             <Row gutter={14} className="quality-weight-derived-row">
@@ -1329,19 +1649,19 @@ export function QualityWeightShipmentDrawer({
               </>}
             </Card>}
           </> : <>
-            <Alert type="info" showIcon message={`已选择 ${lines.length} 张流程卡`} description="每条明细可调整本次件数和实称净重；系统按每条流程卡理论重量 +10% 校验。" />
+            <Alert type="info" showIcon message={`已选择 ${activeLines.length} 张流程卡`} description={scannedVariableMode ? '一卡对应一包；可逐包调整单重、流程卡数量和实称净重，系统分别校验 +10% 上限。' : '每条明细可调整本次件数和实称净重；系统按每条流程卡理论重量 +10% 校验。'} />
             <div className="quality-weight-line-list">
-              {lines.map((line, index) => {
+              {activeLines.map((line, index) => {
                 const order = lineOrder(line, orders)
                 const metrics = editableLineMetrics(line)
                 const variance = weightVariancePercent(metrics.actual, metrics.expected)
                 return <Card key={line.key} size="small" className={`quality-weight-line ${metrics.over ? 'is-over' : ''}`}>
                   <div className="quality-weight-line-heading"><div><strong>{line.card_no || `流程卡 ${line.process_card_id}`}</strong><Typography.Text type="secondary">{order ? ` · ${orderLabel(order)}` : ''}</Typography.Text></div>{metrics.over ? <Tag color="error">超上限</Tag> : <Tag color="success">可提交</Tag>}</div>
                   <Row gutter={10}>
-                    <Col xs={12} sm={6}><Form.Item label="流程卡出货数量"><InputNumber min={1} max={numeric(line.remaining_quantity) || undefined} precision={0} value={line.process_card_shipment_quantity ?? undefined} onChange={(value) => updateLine(index, { process_card_shipment_quantity: numeric(value) })} style={{ width: '100%' }} /></Form.Item></Col>
-                    <Col xs={12} sm={6}><Form.Item label="单重(g)"><InputNumber min={0.00001} precision={5} value={line.unit_weight_g ?? undefined} onChange={(value) => updateLine(index, { unit_weight_g: numeric(value) })} style={{ width: '100%' }} /></Form.Item></Col>
-                    <Col xs={12} sm={6}><Form.Item label="单批实称净重(kg)"><InputNumber min={0.001} precision={3} value={line.single_batch_net_weight_kg ?? undefined} onChange={(value) => updateLine(index, { single_batch_net_weight_kg: numeric(value) })} style={{ width: '100%' }} /></Form.Item></Col>
-                    <Col xs={12} sm={6}><Form.Item label="相同称重批数"><InputNumber min={1} precision={0} value={line.product_batch_count} onChange={(value) => updateLine(index, { product_batch_count: numeric(value) || 1 })} style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col xs={12} sm={6}><Form.Item label="流程卡出货数量"><InputNumber min={1} max={numeric(line.remaining_quantity) || undefined} precision={0} value={line.process_card_shipment_quantity ?? undefined} onChange={(value) => updateActiveLine(index, { process_card_shipment_quantity: numeric(value) })} style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col xs={12} sm={6}><Form.Item label="单重(g)"><InputNumber min={0.00001} precision={5} value={line.unit_weight_g ?? undefined} onChange={(value) => updateActiveLine(index, { unit_weight_g: numeric(value) })} style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col xs={12} sm={6}><Form.Item label="单批实称净重(kg)"><InputNumber min={0.001} precision={3} value={line.single_batch_net_weight_kg ?? undefined} onChange={(value) => updateActiveLine(index, { single_batch_net_weight_kg: numeric(value) })} style={{ width: '100%' }} /></Form.Item></Col>
+                    <Col xs={12} sm={6}>{scannedVariableMode ? <Form.Item label="物理包装"><Input value="1张卡 = 1包" disabled /></Form.Item> : <Form.Item label="相同称重批数"><InputNumber min={1} precision={0} value={line.product_batch_count} onChange={(value) => updateActiveLine(index, { product_batch_count: numeric(value) || 1 })} style={{ width: '100%' }} /></Form.Item>}</Col>
                   </Row>
                   <Typography.Text type="secondary">单批换算 {metrics.singlePieces == null ? '-' : qualityNumber(metrics.singlePieces, Number.isInteger(metrics.singlePieces) ? 0 : 2)} 件（允许上限 {metrics.quantityUpper ?? '-'} 件） · 最终 {metrics.quantity || '-'} 件 / {metrics.actual == null ? '-' : metrics.actual.toFixed(3)} kg · 偏差 {variance == null ? '-' : `${variance >= 0 ? '+' : ''}${variance.toFixed(2)}%`}</Typography.Text>
                 </Card>
@@ -1355,7 +1675,7 @@ export function QualityWeightShipmentDrawer({
       </Form>
       {!isLineMode && candidateLoaded && !availableOrders.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无仍可出货的候选订单，可直接手工填写规格和材质" />}
       <div className="quality-weight-summary">
-        <Statistic title={isLineMode ? '流程卡' : '订单'} value={isLineMode ? lines.length : selectedOrder ? 1 : 0} suffix={isLineMode ? '张' : '项'} />
+        <Statistic title={isLineMode ? '流程卡' : '订单'} value={isLineMode ? activeLines.length : selectedOrder ? 1 : 0} suffix={isLineMode ? '张' : '项'} />
         <Statistic title="本次件数" value={isLineMode ? lineMetrics.quantity : calculatedPieces || 0} suffix="件" />
         <Statistic title="理论重量" value={isLineMode ? lineMetrics.expected : totalExpected} precision={3} suffix="kg" />
         <Statistic title="实称净重" value={isLineMode ? lineMetrics.actual : totalActual} precision={3} suffix="kg" />

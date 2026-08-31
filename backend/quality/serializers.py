@@ -1032,6 +1032,29 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
             raise serializers.ValidationError({"status": "出货批次状态只能通过确认或作废操作变更。"})
         if lines is not serializers.empty and not lines and status != QualityShipmentBatch.Status.DRAFT:
             raise serializers.ValidationError({"lines": "At least one shipment line is required."})
+        if lines is not serializers.empty:
+            card_ids = [
+                line["process_card"].pk
+                for line in lines
+                if line.get("process_card") is not None
+            ]
+            duplicate_ids = {
+                card_id for card_id in card_ids if card_ids.count(card_id) > 1
+            }
+            if duplicate_ids:
+                duplicate_cards = list(
+                    ProcessCard.objects.filter(pk__in=duplicate_ids)
+                    .order_by("card_no")
+                    .values_list("card_no", flat=True)
+                )
+                raise serializers.ValidationError(
+                    {
+                        "lines": (
+                            "一张流程卡只能对应一包货，同一出货中不能重复："
+                            + "、".join(duplicate_cards)
+                        )
+                    }
+                )
         order = attrs.get("order")
         if order and lines is not serializers.empty:
             for line in lines:

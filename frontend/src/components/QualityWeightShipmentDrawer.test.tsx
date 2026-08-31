@@ -2,7 +2,7 @@ import { App } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { QualityEmployee, QualityOrder, QualityShipmentBatch } from '../types'
+import type { QualityEmployee, QualityOrder, QualityProcessCard, QualityShipmentBatch } from '../types'
 import { QualityWeightShipmentDrawer } from './QualityWeightShipmentDrawer'
 
 Object.defineProperty(window, 'matchMedia', {
@@ -20,6 +20,7 @@ const apiMocks = vi.hoisted(() => ({
   createShipmentBatch: vi.fn(),
   updateShipmentBatch: vi.fn(),
   confirmShipmentBatch: vi.fn(),
+  scanProcessCard: vi.fn(),
 }))
 vi.mock('../api/client', () => ({
   qualityApi: { checkShipmentNo: apiMocks.checkShipmentNo },
@@ -31,6 +32,7 @@ vi.mock('../api/client', () => ({
     createShipmentBatch: apiMocks.createShipmentBatch,
     updateShipmentBatch: apiMocks.updateShipmentBatch,
     confirmShipmentBatch: apiMocks.confirmShipmentBatch,
+    scanProcessCard: apiMocks.scanProcessCard,
   },
   toList: <T,>(payload: T[] | { results?: T[] }) => Array.isArray(payload) ? payload : payload.results || [],
 }))
@@ -69,6 +71,11 @@ describe('QualityWeightShipmentDrawer', () => {
     apiMocks.createShipmentBatch.mockReset()
     apiMocks.updateShipmentBatch.mockReset()
     apiMocks.confirmShipmentBatch.mockReset()
+    apiMocks.scanProcessCard.mockReset().mockImplementation(async (code: string) => ({
+      found: false,
+      card_no: code,
+      code,
+    }))
   })
 
   it('shows candidate-order and manual snapshot fields with multiple inspectors', () => {
@@ -80,6 +87,249 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(screen.getByLabelText('流程卡出货数量')).toBeInTheDocument()
     expect(screen.getByText('批数快捷计算：')).toBeInTheDocument()
   })
+
+  it('keeps a normal new shipment empty even when the page supplies every historical process card', () => {
+    const historicalCard: QualityProcessCard = {
+      id: 91,
+      card_no: '04-M003-2608210028',
+      order_id: order.id,
+      order,
+      quantity: 100,
+      unit_weight_g: 25,
+      status: 'SHIPPED',
+      binding: {
+        shipment_batch_id: 801,
+        shipment_unit_no: 1,
+        shipment_no: 'QS-HISTORICAL-001',
+      },
+    }
+
+    renderDrawer(undefined, { processCards: [historicalCard] })
+
+    expect(screen.getByRole('button', { name: /连续扫码/ })).toBeInTheDocument()
+    expect(screen.getByLabelText('成品单重(g/件)')).toBeInTheDocument()
+    expect(screen.queryByText('已选择 1 张流程卡')).not.toBeInTheDocument()
+    expect(screen.queryByText(historicalCard.card_no)).not.toBeInTheDocument()
+  })
+
+  it('maps ten continuously scanned cards to ten packages and follows the scanned count for equal weights', async () => {
+    const user = userEvent.setup()
+    const { onSubmit } = renderDrawer()
+    const cards = Array.from({ length: 10 }, (_, index) => `04-M003-260821${String(index + 28).padStart(4, '0')}`)
+
+    await user.click(screen.getByRole('button', { name: /连续扫码/ }))
+    for (const [index, cardNo] of cards.entries()) {
+      fireEvent.change(await screen.findByPlaceholderText(/04-M003-2608210028/), { target: { value: cardNo } })
+      await user.click(screen.getByRole('button', { name: /加入/ }))
+      await waitFor(() => expect(apiMocks.scanProcessCard).toHaveBeenCalledWith(cardNo))
+      await waitFor(() => expect(screen.getByText(`本次已扫 ${index + 1} 张`)).toBeInTheDocument())
+    }
+    await user.click(screen.getByRole('button', { name: /完成（已扫 10 张）/ }))
+
+    await waitFor(() => expect(screen.getByLabelText(/相同称重批数/)).toHaveValue('10'))
+    expect(screen.getByText(/已扫 10 张卡＝10 包/)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '25' } })
+    fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '2.5' } })
+    fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '100' } })
+    fireEvent.change(screen.getByLabelText('规格'), { target: { value: '连续扫码规格' } })
+    fireEvent.change(screen.getByLabelText('材质 / 胶料'), { target: { value: '连续扫码材质' } })
+    await user.click(screen.getByRole('button', { name: '确认出货' }))
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({
+      product_batch_count: 10,
+      batch_count: 10,
+      process_card_bindings: cards.map((cardNo, index) => ({
+        card_no: cardNo,
+        shipment_unit_no: index + 1,
+      })),
+    })
+  }, 120_000)
+
+  it('clears the previous shipment number and scanned cards before a kept-alive drawer opens again', async () => {
+    const user = userEvent.setup()
+    const onClose = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    const view = (open: boolean) => <QueryClientProvider client={client}><App><QualityWeightShipmentDrawer open={open} orders={[order]} employees={employees} onClose={onClose} onSubmit={vi.fn().mockResolvedValue({ id: 1 })} /></App></QueryClientProvider>
+    const rendered = render(view(true))
+    const previousNumber = 'CK-SCANNED-PREVIOUS'
+    const previousCard = '04-M003-2608210030'
+
+    fireEvent.change(screen.getByLabelText(/出货单号/), { target: { value: previousNumber } })
+    await user.click(screen.getByRole('button', { name: /连续扫码/ }))
+    await user.type(await screen.findByPlaceholderText(/04-M003-2608210028/), previousCard)
+    await user.click(screen.getByRole('button', { name: /加入/ }))
+    await waitFor(() => expect(screen.getByText('本次已扫 1 张')).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /完成（已扫 1 张）/ }))
+    expect(screen.getByText((_, element) => Boolean(element?.classList.contains('ant-tag') && element.textContent?.includes(previousCard)))).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /取\s*消/ }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+    rendered.rerender(view(false))
+    rendered.rerender(view(true))
+
+    await waitFor(() => expect(screen.getByLabelText(/出货单号/)).toHaveValue(''))
+    expect(screen.queryByText(previousCard)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /连续扫码/ })).toBeInTheDocument()
+    expect(screen.getByLabelText(/相同称重批数/)).toHaveValue('1')
+  }, 30_000)
+
+  it('keeps one editable weight line per scanned package when their weights differ', async () => {
+    const user = userEvent.setup()
+    const cards = ['04-M003-2608210041', '04-M003-2608210042']
+    apiMocks.scanProcessCard.mockImplementation(async (cardNo: string) => {
+      const index = cards.indexOf(cardNo)
+      const card: QualityProcessCard = {
+        id: 141 + index,
+        card_no: cardNo,
+        order_id: order.id,
+        order,
+        quantity: 100,
+        unit_weight_g: 25,
+        status: 'READY',
+      }
+      return { found: true, scanned_card: card, active_card: card, binding_required: true }
+    })
+    const { onSubmit } = renderDrawer()
+
+    fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '25' } })
+    fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '2.5' } })
+    fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '100' } })
+    fireEvent.change(screen.getByLabelText('规格'), { target: { value: '逐包规格' } })
+    fireEvent.change(screen.getByLabelText('材质 / 胶料'), { target: { value: '逐包材质' } })
+    await user.click(screen.getByRole('button', { name: /连续扫码/ }))
+    for (const [index, cardNo] of cards.entries()) {
+      fireEvent.change(await screen.findByPlaceholderText(/04-M003-2608210028/), { target: { value: cardNo } })
+      await user.click(screen.getByRole('button', { name: /加入/ }))
+      await waitFor(() => expect(screen.getByText(`本次已扫 ${index + 1} 张`)).toBeInTheDocument())
+    }
+    await user.click(screen.getByRole('button', { name: /完成（已扫 2 张）/ }))
+    fireEvent.click(screen.getByRole('radio', { name: '逐包填写不同重量' }))
+
+    expect(await screen.findByText(/已扫 2 张卡＝2 包/)).toBeInTheDocument()
+    await waitFor(() => expect(document.querySelectorAll('.quality-weight-line')).toHaveLength(2))
+    const weightInputs = Array.from(document.querySelectorAll<HTMLElement>('.quality-weight-line')).map((line) => {
+      const input = within(line).getByText('单批实称净重(kg)').closest('.ant-form-item')?.querySelector('input')
+      if (!input) throw new Error('逐包实称净重输入框不存在')
+      return input
+    })
+    expect(weightInputs).toHaveLength(2)
+    expect(weightInputs[0]).toHaveValue('2.500')
+    expect(weightInputs[1]).toHaveValue('2.500')
+    fireEvent.change(weightInputs[0], { target: { value: '2.4' } })
+    fireEvent.change(weightInputs[1], { target: { value: '2.5' } })
+    await user.click(screen.getByRole('button', { name: '确认出货' }))
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    const payload = onSubmit.mock.calls[0][0]
+    expect(payload.process_card_bindings).toEqual([
+      { card_no: cards[0], shipment_unit_no: 1 },
+      { card_no: cards[1], shipment_unit_no: 2 },
+    ])
+    expect(payload.lines).toHaveLength(2)
+    expect(payload.lines[0]).toMatchObject({ process_card_id: 141, product_batch_count: 1, single_batch_net_weight_kg: 2.4, net_weight_kg: 2.4, piece_quantity: 96 })
+    expect(payload.lines[1]).toMatchObject({ process_card_id: 142, product_batch_count: 1, single_batch_net_weight_kg: 2.5, net_weight_kg: 2.5, piece_quantity: 100 })
+  }, 40_000)
+
+  it('uses the process-card planned quantity when a new card has delivered quantity zero', async () => {
+    const user = userEvent.setup()
+    const cardNo = '04-M003-2608210043'
+    const card: QualityProcessCard = {
+      id: 143,
+      card_no: cardNo,
+      order_id: order.id,
+      order,
+      quantity: 100,
+      delivered_piece_quantity: 0,
+      unit_weight_g: 25,
+      status: 'READY',
+    }
+    apiMocks.scanProcessCard.mockResolvedValue({ found: true, scanned_card: card, active_card: card, binding_required: true })
+    renderDrawer()
+
+    fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '999' } })
+    await user.click(screen.getByRole('button', { name: /连续扫码/ }))
+    fireEvent.change(await screen.findByPlaceholderText(/04-M003-2608210028/), { target: { value: cardNo } })
+    await user.click(screen.getByRole('button', { name: /加入/ }))
+    await waitFor(() => expect(screen.getByText('本次已扫 1 张')).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /完成（已扫 1 张）/ }))
+
+    await waitFor(() => expect(screen.getByLabelText('流程卡出货数量')).toHaveValue('100'))
+    fireEvent.click(screen.getByRole('radio', { name: '逐包填写不同重量' }))
+    await waitFor(() => expect(document.querySelectorAll('.quality-weight-line')).toHaveLength(1))
+    const line = document.querySelector<HTMLElement>('.quality-weight-line')
+    const lineQuantityInput = line && within(line).getByText('流程卡出货数量').closest('.ant-form-item')?.querySelector('input')
+    expect(lineQuantityInput).toHaveValue('100')
+  }, 30_000)
+
+  it('clears and closes after persistence succeeds even when the parent refresh fails', async () => {
+    const user = userEvent.setup()
+    const onClose = vi.fn()
+    const onSaved = vi.fn().mockRejectedValue(new Error('列表刷新失败'))
+    const { onSubmit } = renderDrawer(vi.fn().mockResolvedValue({ id: 501, shipment_no: 'QS-SAVED-501' }), { onClose, onSaved })
+    const cardNo = '04-M003-2608210051'
+
+    fireEvent.change(screen.getByLabelText(/出货单号/), { target: { value: 'QS-SAVED-501' } })
+    fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '25' } })
+    fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '2.5' } })
+    fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '100' } })
+    fireEvent.change(screen.getByLabelText('规格'), { target: { value: '刷新失败规格' } })
+    fireEvent.change(screen.getByLabelText('材质 / 胶料'), { target: { value: '刷新失败材质' } })
+    await user.click(screen.getByRole('button', { name: /连续扫码/ }))
+    fireEvent.change(await screen.findByPlaceholderText(/04-M003-2608210028/), { target: { value: cardNo } })
+    await user.click(screen.getByRole('button', { name: /加入/ }))
+    await waitFor(() => expect(screen.getByText('本次已扫 1 张')).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /完成（已扫 1 张）/ }))
+    await user.click(screen.getByRole('button', { name: '确认出货' }))
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+    expect(screen.getByLabelText(/出货单号/)).toHaveValue('')
+    expect(screen.queryByText((_, element) => Boolean(element?.classList.contains('ant-tag') && element.textContent?.includes(cardNo)))).not.toBeInTheDocument()
+    expect(screen.getByLabelText(/相同称重批数/)).toHaveValue('')
+  }, 30_000)
+
+  it('rejects an already bound process card before it can enter a new shipment', async () => {
+    const user = userEvent.setup()
+    const cardNo = '04-M003-2608210031'
+    const boundCard: QualityProcessCard = {
+      id: 92,
+      card_no: cardNo,
+      order_id: order.id,
+      order,
+      quantity: 100,
+      unit_weight_g: 25,
+      status: 'SHIPPED',
+      binding: {
+        shipment_batch_id: 802,
+        shipment_unit_no: 3,
+        shipment_no: 'QS-ALREADY-SHIPPED',
+      },
+      unit_binding: {
+        shipment_batch_id: 802,
+        shipment_unit_no: 3,
+        shipment_no: 'QS-ALREADY-SHIPPED',
+      },
+    }
+    apiMocks.scanProcessCard.mockResolvedValue({
+      found: true,
+      scanned_card: boundCard,
+      active_card: boundCard,
+      binding_required: false,
+    })
+    renderDrawer()
+
+    await user.click(screen.getByRole('button', { name: /连续扫码/ }))
+    await user.type(await screen.findByPlaceholderText(/04-M003-2608210028/), cardNo)
+    await user.click(screen.getByRole('button', { name: /加入/ }))
+
+    await waitFor(() => expect(apiMocks.scanProcessCard).toHaveBeenCalledWith(cardNo))
+    await waitFor(() => expect(screen.getByText(/已绑定|已经出货|不能再次出货|不能重复/)).toBeInTheDocument())
+    expect(screen.getByText('本次已扫 0 张')).toBeInTheDocument()
+    expect(screen.queryByText(/已绑定 1 批/)).not.toBeInTheDocument()
+  }, 20_000)
 
   it('prefills the saved candidate unit weight and does not carry it to another product', async () => {
     const user = userEvent.setup()

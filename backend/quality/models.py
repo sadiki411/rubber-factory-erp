@@ -1340,6 +1340,10 @@ class QualityShipmentLine(TimeStampedModel):
         # readings.  Persist the expanded total weight/count while retaining
         # the single reading so reopening a draft cannot multiply it twice.
         repeat_count = int(self.product_batch_count or 1)
+        if card and repeat_count != 1:
+            errors["product_batch_count"] = (
+                "一张流程卡只能对应一包货；多张流程卡请分别建立出货明细。"
+            )
         single_batch_pieces = None
         if self.single_batch_net_weight_kg is not None:
             if self.process_card_shipment_quantity is None:

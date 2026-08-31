@@ -80,9 +80,15 @@ export function QualityQrScanner({
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | undefined>(undefined)
   const frameRef = useRef<number | undefined>(undefined)
+  const cameraSessionRef = useRef(0)
   const lastDetectionRef = useRef(0)
   const handlingRef = useRef(false)
   const scannedRef = useRef(new Set<string>())
+  const initialValuesRef = useRef<string[]>([])
+  const onCloseRef = useRef(onClose)
+  const onScanRef = useRef(onScan)
+  const continuousRef = useRef(continuous)
+  const messageRef = useRef(message)
   const [manualValue, setManualValue] = useState('')
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState('')
@@ -90,12 +96,28 @@ export function QualityQrScanner({
   const [torchAvailable, setTorchAvailable] = useState(false)
   const [torchEnabled, setTorchEnabled] = useState(false)
 
+  // Parent forms update after every accepted scan. Keep the latest callbacks
+  // and seed values in refs without making those ordinary renders tear down
+  // and restart an active phone camera session. This effect is declared before
+  // the open/close effect below, so a newly opened session sees fresh seeds.
+  useEffect(() => {
+    initialValuesRef.current = initialValues.map(normalizeProcessCardQrText).filter(Boolean)
+    onCloseRef.current = onClose
+    onScanRef.current = onScan
+    continuousRef.current = continuous
+    messageRef.current = message
+  }, [continuous, initialValues, message, onClose, onScan])
+
   const stopCamera = useCallback(() => {
+    cameraSessionRef.current += 1
     if (frameRef.current != null) window.cancelAnimationFrame(frameRef.current)
     frameRef.current = undefined
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = undefined
     if (videoRef.current) videoRef.current.srcObject = null
+    handlingRef.current = false
+    lastDetectionRef.current = 0
+    setStarting(false)
     setTorchAvailable(false)
     setTorchEnabled(false)
   }, [])
@@ -104,37 +126,38 @@ export function QualityQrScanner({
     const cardNo = normalizeProcessCardQrText(rawValue)
     if (!isLikelyProcessCardNo(cardNo)) {
       scanFeedback('error')
-      message.warning('未识别为流程卡单号，请对准完整二维码或手动核对。')
+      messageRef.current.warning('未识别为流程卡单号，请对准完整二维码或手动核对。')
       return false
     }
     if (scannedRef.current.has(cardNo)) {
       scanFeedback('duplicate')
-      message.info(`流程卡 ${cardNo} 已扫过，本次未重复加入。`)
+      messageRef.current.info(`流程卡 ${cardNo} 已扫过，本次未重复加入。`)
       return false
     }
     scannedRef.current.add(cardNo)
     setScanned((values) => [...values, cardNo])
     scanFeedback('success')
     try {
-      const accepted = await onScan(cardNo)
+      const accepted = await onScanRef.current(cardNo)
       if (accepted === false) {
         scannedRef.current.delete(cardNo)
         setScanned((values) => values.filter((value) => value !== cardNo))
         return false
       }
-      if (!continuous) onClose()
+      if (!continuousRef.current) onCloseRef.current()
       return true
     } catch (scanError) {
       scannedRef.current.delete(cardNo)
       setScanned((values) => values.filter((value) => value !== cardNo))
       scanFeedback('error')
-      message.error((scanError as Error).message || `流程卡 ${cardNo} 处理失败`)
+      messageRef.current.error((scanError as Error).message || `流程卡 ${cardNo} 处理失败`)
       return false
     }
-  }, [continuous, message, onClose, onScan])
+  }, [])
 
   const startCamera = useCallback(async () => {
     stopCamera()
+    const cameraSession = cameraSessionRef.current
     setStarting(true)
     setError('')
     try {
@@ -151,6 +174,10 @@ export function QualityQrScanner({
         audio: false,
         video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
       })
+      if (cameraSession !== cameraSessionRef.current) {
+        stream.getTracks().forEach((track) => track.stop())
+        return
+      }
       streamRef.current = stream
       const video = videoRef.current
       if (!video) {
@@ -159,11 +186,16 @@ export function QualityQrScanner({
       }
       video.srcObject = stream
       await video.play()
+      if (cameraSession !== cameraSessionRef.current) {
+        stream.getTracks().forEach((track) => track.stop())
+        return
+      }
       const track = stream.getVideoTracks()[0]
       const capabilities = track?.getCapabilities?.() as MediaTrackCapabilities & { torch?: boolean }
       setTorchAvailable(Boolean(capabilities?.torch))
 
       const detectFrame = async (timestamp: number) => {
+        if (cameraSession !== cameraSessionRef.current) return
         frameRef.current = window.requestAnimationFrame(detectFrame)
         if (handlingRef.current || timestamp - lastDetectionRef.current < 220 || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return
         lastDetectionRef.current = timestamp
@@ -181,10 +213,12 @@ export function QualityQrScanner({
       }
       frameRef.current = window.requestAnimationFrame(detectFrame)
     } catch (cameraError) {
-      stopCamera()
-      setError(cameraErrorText(cameraError))
+      if (cameraSession === cameraSessionRef.current) {
+        stopCamera()
+        setError(cameraErrorText(cameraError))
+      }
     } finally {
-      setStarting(false)
+      if (cameraSession === cameraSessionRef.current) setStarting(false)
     }
   }, [acceptValue, stopCamera])
 
@@ -194,9 +228,13 @@ export function QualityQrScanner({
       // the scanner closes; stopCamera also clears the torch indicator.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       stopCamera()
+      scannedRef.current.clear()
+      setScanned([])
+      setManualValue('')
+      setError('')
       return
     }
-    scannedRef.current = new Set(initialValues.map(normalizeProcessCardQrText).filter(Boolean))
+    scannedRef.current = new Set(initialValuesRef.current)
     setScanned([...scannedRef.current])
     setManualValue('')
     const timer = window.setTimeout(() => void startCamera(), 120)
@@ -204,7 +242,7 @@ export function QualityQrScanner({
       window.clearTimeout(timer)
       stopCamera()
     }
-  }, [initialValues, open, startCamera, stopCamera])
+  }, [open, startCamera, stopCamera])
 
   const toggleTorch = async () => {
     const track = streamRef.current?.getVideoTracks()[0]

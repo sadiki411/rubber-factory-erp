@@ -267,6 +267,7 @@ function ProcessCardDrawer({ open, card, orders, onClose, onSave }: { open: bool
 export function QualityShippingWorkflow({ orders, employees = [], processCards = [], shipments, batches = [], reworks, reworkCases = [], searchText = '', loading, onOpenRework, onOpenTimeline, onSubmitBatch, onOpenShipment, onSaveProcessCard }: WorkflowProps) {
   const [selectedKeys, setSelectedKeys] = useState<React.Key[]>([])
   const [basketOpen, setBasketOpen] = useState(false)
+  const [basketSessionKey, setBasketSessionKey] = useState(0)
   const [onlyAlerts, setOnlyAlerts] = useState(false)
   const [timelineCard, setTimelineCard] = useState<WorkflowCard>()
   const [processCardForm, setProcessCardForm] = useState<QualityProcessCard | null | undefined>(undefined)
@@ -309,6 +310,10 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
   const pendingCards = cards.filter((card) => card.remainingQuantity > 0)
   const missingDateCount = cards.filter((card) => card.missingDate).length
   const pendingReworkCount = reworks.filter((item) => item.status !== 'COMPLETED').length + reworkCases.filter((item) => !['COMPLETED', 'SCRAPPED', 'CANCELLED'].includes(item.status)).length
+  const openBasket = () => {
+    setBasketSessionKey((value) => value + 1)
+    setBasketOpen(true)
+  }
 
   const columns: TableColumnsType<WorkflowCard> = [
     { title: '流程卡', key: 'card', fixed: 'left', width: 190, render: (_, card) => <Space direction="vertical" size={0}><Button type="link" className="table-primary-link" onClick={() => { setTimelineCard(card); onOpenTimeline(card) }}><strong>{card.cardNo}</strong><br /><Typography.Text type="secondary">{card.order.order_no} / {card.order.item_no || '-'}</Typography.Text></Button>{onSaveProcessCard && <Button type="link" size="small" icon={<EditOutlined />} onClick={() => setProcessCardForm(processCards.find((item) => String(item.id) === card.key) || null)}>编辑</Button>}</Space> },
@@ -318,7 +323,7 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
     { title: '交期', dataIndex: 'dueDate', width: 110, render: (value) => formatQualityDate(value) },
     { title: '状态', key: 'status', width: 130, render: (_, card) => statusTag(card) },
     { title: '返工', dataIndex: 'reworkCount', width: 80, render: (value) => value ? <Badge count={value} overflowCount={99} color="#c4433b" /> : '-' },
-    { title: '操作', key: 'actions', fixed: 'right', width: 170, render: (_, card) => <Space size={2}><Button type="link" size="small" disabled={!card.processCard || !card.remainingQuantity || !card.unitWeightG} onClick={() => { setSelectedKeys([card.key]); setBasketOpen(true) }}>加入出货篮</Button><Button type="link" size="small" onClick={() => { setTimelineCard(card); onOpenTimeline(card) }}>时间线</Button></Space> },
+    { title: '操作', key: 'actions', fixed: 'right', width: 170, render: (_, card) => <Space size={2}><Button type="link" size="small" disabled={!card.processCard || !card.remainingQuantity || !card.unitWeightG} onClick={() => { setSelectedKeys([card.key]); openBasket() }}>加入出货篮</Button><Button type="link" size="small" onClick={() => { setTimelineCard(card); onOpenTimeline(card) }}>时间线</Button></Space> },
   ]
   const rowSelection: TableProps<WorkflowCard>['rowSelection'] = { selectedRowKeys: selectedKeys, onChange: setSelectedKeys, getCheckboxProps: (card) => ({ disabled: !card.processCard || !card.remainingQuantity || !card.unitWeightG }) }
   return (
@@ -330,10 +335,10 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
         <Col xs={12} md={6}><Card className={`quality-workflow-kpi ${pendingReworkCount ? 'has-warning' : ''}`}><Statistic title="待处理返工" value={pendingReworkCount} suffix="条" /></Card></Col>
       </Row>
       {(missingDateCount || cards.some((card) => card.overdue)) && <Alert className="quality-workflow-alert" type="warning" showIcon message={`需要关注 ${missingDateCount + cards.filter((card) => card.overdue).length} 项记录`} description="出货日期缺失、交期已过或返工未完成的流程卡会显示在这里。先补日期，再安排出货。" action={<Button size="small" onClick={() => setOnlyAlerts((value) => !value)}>{onlyAlerts ? '显示全部' : '只看提醒'}</Button>} />}
-      <Card className="quality-workflow-card" title={<div className="quality-workflow-heading"><div><Typography.Title level={4}>流程卡与待出货篮</Typography.Title><Typography.Text type="secondary">流程卡单重未录入时可保存，但不可加入出货篮；胶料重量仅作记录，不参与成品重量计算。新增出货统一使用重量登记抽屉。</Typography.Text></div><Space wrap><Button onClick={() => setProcessCardForm(null)} icon={<PlusOutlined />}>新增流程卡</Button>{onOpenShipment && <Button onClick={onOpenShipment}>新增重量出货</Button>}<Button disabled={!selectedCards.length} onClick={() => setBasketOpen(true)}>出货篮（{selectedCards.length}）</Button><Button type="primary" disabled={!selectedCards.length} onClick={() => setBasketOpen(true)}>批量登记出货</Button></Space></div>}>
+      <Card className="quality-workflow-card" title={<div className="quality-workflow-heading"><div><Typography.Title level={4}>流程卡与待出货篮</Typography.Title><Typography.Text type="secondary">流程卡单重未录入时可保存，但不可加入出货篮；胶料重量仅作记录，不参与成品重量计算。新增出货统一使用重量登记抽屉。</Typography.Text></div><Space wrap><Button onClick={() => setProcessCardForm(null)} icon={<PlusOutlined />}>新增流程卡</Button>{onOpenShipment && <Button onClick={onOpenShipment}>新增重量出货</Button>}<Button disabled={!selectedCards.length} onClick={openBasket}>出货篮（{selectedCards.length}）</Button><Button type="primary" disabled={!selectedCards.length} onClick={openBasket}>批量登记出货</Button></Space></div>}>
         <Table<WorkflowCard> rowKey="key" loading={loading} dataSource={visibleCards} columns={columns} rowSelection={rowSelection} scroll={{ x: 1170 }} pagination={{ pageSize: 12, showSizeChanger: true, showTotal: (total) => `共 ${total} 张流程卡` }} locale={{ emptyText: <Empty description={onlyAlerts ? '暂无待处理提醒' : '暂无可用流程卡'} /> }} />
       </Card>
-      <BatchShipmentDrawer open={basketOpen} cards={selectedCards} orders={orders} employees={employees} shipments={shipments} batches={batches} onClose={() => setBasketOpen(false)} onSubmit={async (payload) => { await onSubmitBatch(payload); setSelectedKeys([]) }} />
+      <BatchShipmentDrawer key={`shipment-basket-session-${basketSessionKey}`} open={basketOpen} cards={selectedCards} orders={orders} employees={employees} shipments={shipments} batches={batches} onClose={() => setBasketOpen(false)} onSubmit={async (payload) => { await onSubmitBatch(payload); setSelectedKeys([]) }} />
       <ProcessCardDrawer open={processCardForm !== undefined} card={processCardForm || undefined} orders={orders} onClose={() => setProcessCardForm(undefined)} onSave={onSaveProcessCard} />
       <ReworkTimelineDrawer open={!!timelineCard} card={timelineCard} reworks={reworks} reworkCases={reworkCases} shipments={shipments} onClose={() => setTimelineCard(undefined)} onAdd={() => onOpenRework()} />
     </div>

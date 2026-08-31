@@ -400,6 +400,117 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
         self.assertEqual(confirmed.status_code, 200, confirmed.content)
         self.assertEqual(len(confirmed.json()["process_card_bindings"]), 2)
 
+    def test_different_weight_card_lines_are_one_package_each_and_auto_bound(self):
+        self.order.order_quantity = 5_000
+        self.order.save(update_fields=["order_quantity", "updated_at"])
+        first = ProcessCard.objects.create(
+            card_no="CARD-VARIABLE-1",
+            order=self.order,
+            quantity=1_000,
+            unit_weight_g="10.00000",
+            created_by=self.user,
+        )
+        second = ProcessCard.objects.create(
+            card_no="CARD-VARIABLE-2",
+            order=self.order,
+            quantity=1_000,
+            unit_weight_g="10.00000",
+            created_by=self.user,
+        )
+        draft = self.client.post(
+            self.batch_endpoint,
+            {
+                "shipment_no": "QS-CARD-VARIABLE-WEIGHT",
+                "lines": [
+                    {
+                        "process_card_id": first.pk,
+                        "single_batch_net_weight_kg": "9.800",
+                    },
+                    {
+                        "process_card_id": second.pk,
+                        "single_batch_net_weight_kg": "10.200",
+                    },
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(draft.status_code, 201, draft.content)
+
+        confirmed = self.client.post(
+            f"{self.batch_endpoint}{draft.json()['id']}/confirm/",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        self.assertEqual(Decimal(confirmed.json()["net_weight_kg"]), Decimal("20.000"))
+        bindings = {
+            row["card_no"]: (
+                row["shipment_unit_no"],
+                Decimal(row["net_weight_kg"]),
+                row["piece_quantity"],
+            )
+            for row in confirmed.json()["process_card_bindings"]
+        }
+        self.assertEqual(
+            bindings,
+            {
+                "CARD-VARIABLE-1": (1, Decimal("9.800"), 980),
+                "CARD-VARIABLE-2": (2, Decimal("10.200"), 1_020),
+            },
+        )
+
+        returned = self.scan_return("CARD-VARIABLE-2")
+        self.assertEqual(returned.status_code, 201, returned.content)
+        self.assertEqual(returned.json()["shipment_unit_no"], 2)
+        self.assertEqual(returned.json()["affected_quantity"], 1_020)
+        self.assertEqual(
+            Decimal(returned.json()["affected_weight_kg"]), Decimal("10.200")
+        )
+
+    def test_duplicate_process_card_lines_are_rejected_before_draft_creation(self):
+        card = ProcessCard.objects.create(
+            card_no="CARD-DUPLICATE-LINE",
+            order=self.order,
+            quantity=1_000,
+            unit_weight_g="10.00000",
+            created_by=self.user,
+        )
+        response = self.client.post(
+            self.batch_endpoint,
+            {
+                "shipment_no": "QS-DUPLICATE-CARD-LINE",
+                "lines": [
+                    {"process_card_id": card.pk, "net_weight_kg": "4.000"},
+                    {"process_card_id": card.pk, "net_weight_kg": "6.000"},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("一张流程卡只能对应一包货", str(response.json()))
+        self.assertFalse(
+            QualityShipmentBatch.objects.filter(
+                shipment_no="QS-DUPLICATE-CARD-LINE"
+            ).exists()
+        )
+
+    def test_duplicate_equal_weight_scan_is_atomic_and_creates_no_bindings(self):
+        batch = self.create_confirmed_repeat(
+            count=2, shipment_no="QS-DUPLICATE-SCAN"
+        )
+        response = self.bind(
+            batch,
+            [
+                {"shipment_unit_no": 1, "card_no": "CARD-DUPLICATE-SCAN"},
+                {"shipment_unit_no": 2, "card_no": "CARD-DUPLICATE-SCAN"},
+            ],
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("本次扫描中重复", str(response.json()))
+        self.assertFalse(
+            ProcessCardUnitBinding.objects.filter(shipment_batch=batch).exists()
+        )
+
     def test_cross_order_repeat_bindings_infer_each_physical_units_order(self):
         """A selected source order must not be copied onto every scanned card."""
 

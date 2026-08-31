@@ -490,7 +490,7 @@ class ShippingEnhancementApiTests(QualityTestMixin, TestCase):
         )
         self.assertEqual(confirmed.status_code, 200, confirmed.content)
 
-    def test_process_card_repeat_compares_each_batch_not_expanded_total_to_one_batch(self):
+    def test_one_process_card_cannot_represent_three_physical_packages(self):
         card = self.card("PC-REPEAT-THREE", quantity=100, unit="10")
         response = self.client.post(
             "/api/quality/shipment-batches/",
@@ -505,17 +505,8 @@ class ShippingEnhancementApiTests(QualityTestMixin, TestCase):
             },
             format="json",
         )
-        self.assertEqual(response.status_code, 201, response.content)
-        line = QualityShipmentLine.objects.get(batch_id=response.json()["id"])
-        self.assertEqual(line.pieces_per_batch, 105)
-        self.assertEqual(line.piece_quantity, 315)
-        self.assertEqual(line.net_weight_kg, Decimal("3.150"))
-        confirmed = self.client.post(
-            f"/api/quality/shipment-batches/{response.json()['id']}/confirm/",
-            {},
-            format="json",
-        )
-        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("一张流程卡只能对应一包货", str(response.json()))
 
     def test_confirmation_allows_later_inspector_and_accepts_line_unit_weight_for_card(self):
         card = self.card("PC-LINE-UNIT", quantity=500, unit=None)
