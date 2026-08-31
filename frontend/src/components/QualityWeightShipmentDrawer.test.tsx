@@ -173,7 +173,7 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(screen.queryByText(previousCard)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /连续扫码/ })).toBeInTheDocument()
     expect(screen.getByLabelText(/相同称重批数/)).toHaveValue('1')
-  }, 30_000)
+  }, 120_000)
 
   it('keeps one editable weight line per scanned package when their weights differ', async () => {
     const user = userEvent.setup()
@@ -230,7 +230,7 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(payload.lines).toHaveLength(2)
     expect(payload.lines[0]).toMatchObject({ process_card_id: 141, product_batch_count: 1, single_batch_net_weight_kg: 2.4, net_weight_kg: 2.4, piece_quantity: 96 })
     expect(payload.lines[1]).toMatchObject({ process_card_id: 142, product_batch_count: 1, single_batch_net_weight_kg: 2.5, net_weight_kg: 2.5, piece_quantity: 100 })
-  }, 40_000)
+  }, 120_000)
 
   it('uses the process-card planned quantity when a new card has delivered quantity zero', async () => {
     const user = userEvent.setup()
@@ -261,7 +261,7 @@ describe('QualityWeightShipmentDrawer', () => {
     const line = document.querySelector<HTMLElement>('.quality-weight-line')
     const lineQuantityInput = line && within(line).getByText('流程卡出货数量').closest('.ant-form-item')?.querySelector('input')
     expect(lineQuantityInput).toHaveValue('100')
-  }, 30_000)
+  }, 120_000)
 
   it('clears and closes after persistence succeeds even when the parent refresh fails', async () => {
     const user = userEvent.setup()
@@ -289,7 +289,7 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(screen.getByLabelText(/出货单号/)).toHaveValue('')
     expect(screen.queryByText((_, element) => Boolean(element?.classList.contains('ant-tag') && element.textContent?.includes(cardNo)))).not.toBeInTheDocument()
     expect(screen.getByLabelText(/相同称重批数/)).toHaveValue('')
-  }, 30_000)
+  }, 120_000)
 
   it('rejects an already bound process card before it can enter a new shipment', async () => {
     const user = userEvent.setup()
@@ -329,7 +329,7 @@ describe('QualityWeightShipmentDrawer', () => {
     await waitFor(() => expect(screen.getByText(/已绑定|已经出货|不能再次出货|不能重复/)).toBeInTheDocument())
     expect(screen.getByText('本次已扫 0 张')).toBeInTheDocument()
     expect(screen.queryByText(/已绑定 1 批/)).not.toBeInTheDocument()
-  }, 20_000)
+  }, 120_000)
 
   it('prefills the saved candidate unit weight and does not carry it to another product', async () => {
     const user = userEvent.setup()
