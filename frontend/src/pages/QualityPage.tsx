@@ -38,6 +38,7 @@ import type {
   QualityEmployeeRole,
   QualityOrder,
   QualityOrderStatistics,
+  QualityReworkAttempt,
   QualityReworkCase,
   QualityShipment,
   QualityShipmentBatch,
@@ -295,10 +296,105 @@ export function QualityPage() {
       reworkCasesQuery.refetch(),
       summaryQuery.refetch(),
       queryClient.invalidateQueries({ queryKey: ['quality', 'returnable-batches'] }),
-      queryClient.invalidateQueries({ queryKey: ['orders'] }),
       queryClient.invalidateQueries({ queryKey: ['analytics'] }),
       queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
       queryClient.invalidateQueries({ queryKey: ['product-specifications'] }),
+    ])
+  }
+
+  const refreshAfterShipmentInBackground = () => {
+    void refreshAfterShipment().catch(() => {
+      message.warning('业务数据已经保存，但部分看板刷新失败，请稍后手动刷新。')
+    })
+  }
+
+  const upsertReworkCaseCache = (saved: QualityReworkCase | QualityReworkCase[]) => {
+    const incoming = Array.isArray(saved) ? saved : [saved]
+    if (!incoming.length) return
+    queryClient.setQueryData<QualityReworkCase[]>(['quality', 'rework-cases'], (current = []) => {
+      const merged = new Map(current.map((item) => [String(item.id), item]))
+      incoming.forEach((item) => merged.set(String(item.id), { ...merged.get(String(item.id)), ...item }))
+      return [...merged.values()].sort((left, right) =>
+        String(right.opened_on || '').localeCompare(String(left.opened_on || ''))
+        || String(right.id).localeCompare(String(left.id), undefined, { numeric: true }),
+      )
+    })
+  }
+
+  const markRelatedCachesStale = (keys: string[][]) => {
+    keys.forEach((queryKey) => {
+      void queryClient.invalidateQueries({ queryKey, refetchType: 'none' })
+    })
+  }
+
+  const refreshReturnDataInBackground = (tasks: Array<() => Promise<unknown>>) => {
+    void Promise.allSettled(tasks.map((task) => task()))
+  }
+
+  const refreshAfterReturn = (saved: QualityReworkCase | QualityReworkCase[]) => {
+    upsertReworkCaseCache(saved)
+    markRelatedCachesStale([
+      ['quality', 'returnable-batches'],
+      ['analytics'],
+      ['dashboard'],
+    ])
+    refreshReturnDataInBackground([
+      () => reworkCasesQuery.refetch(),
+      () => processCardsQuery.refetch(),
+      () => shipmentLedgerQuery.refetch(),
+      () => summaryQuery.refetch(),
+      () => ordersQuery.refetch(),
+    ])
+  }
+
+  const refreshAfterReworkAttempt = (saved: QualityReworkAttempt, caseId: number | string) => {
+    queryClient.setQueryData<QualityReworkCase[]>(['quality', 'rework-cases'], (current = []) => current.map((item) => {
+      if (String(item.id) !== String(caseId)) return item
+      const attempts = [...(item.attempts || []).filter((attempt) => String(attempt.id) !== String(saved.id)), saved]
+        .sort((left, right) => Number(left.attempt_no || 0) - Number(right.attempt_no || 0))
+      const status = saved.status === 'COMPLETED'
+        ? 'COMPLETED'
+        : saved.status === 'SCRAPPED'
+          ? 'SCRAPPED'
+          : saved.status === 'WAITING_REINSPECTION'
+            ? 'WAITING_REINSPECTION'
+            : 'PROCESSING'
+      return {
+        ...item,
+        attempts,
+        attempt_count: Math.max(Number(item.attempt_count || 0), attempts.length, Number(saved.attempt_no || 0)),
+        status,
+      }
+    }))
+    markRelatedCachesStale([['analytics'], ['dashboard']])
+    refreshReturnDataInBackground([
+      () => reworkCasesQuery.refetch(),
+      () => shipmentLedgerQuery.refetch(),
+      () => summaryQuery.refetch(),
+    ])
+  }
+
+  const refreshAfterReturnChange = (saved: QualityReworkCase) => {
+    upsertReworkCaseCache(saved)
+    markRelatedCachesStale([
+      ['quality', 'returnable-batches'],
+      ['analytics'],
+      ['dashboard'],
+    ])
+    refreshReturnDataInBackground([
+      () => reworkCasesQuery.refetch(),
+      () => processCardsQuery.refetch(),
+      () => shipmentLedgerQuery.refetch(),
+      () => summaryQuery.refetch(),
+      () => ordersQuery.refetch(),
+    ])
+  }
+
+  const refreshAfterCardReplacement = () => {
+    markRelatedCachesStale([['quality', 'process-card-timeline']])
+    refreshReturnDataInBackground([
+      () => processCardsQuery.refetch(),
+      () => reworkCasesQuery.refetch(),
     ])
   }
 
@@ -411,7 +507,7 @@ export function QualityPage() {
       label: '流程卡出货',
       children: <div className="quality-tab-content">
         {(processCardsQuery.error || unitWeightsQuery.error || batchesQuery.error || workflowBatchesQuery.error || shipmentBatchOptionsQuery.error || reworkCasesQuery.error) && <Alert type="warning" showIcon style={{ marginBottom: 16 }} title="流程卡重量出货模块暂不可用" description="当前服务器未返回一期流程卡接口，页面已保留原有件数出货功能；完成后端迁移后刷新即可启用。" />}
-        <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} shipments={shipmentOptions} batches={workflowBatches} reworks={reworks} reworkCases={filteredReworkCases} searchText={query} loading={ordersQuery.isLoading || processCardsQuery.isLoading || workflowBatchesQuery.isLoading} onOpenShipment={() => openShipmentForm()} onOpenRework={openFlowCardReturn} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); await refreshAfterShipment() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} /><QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions} reworkCases={filteredReworkCases} onOpenReturnRework={openFlowCardReturn} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={async () => { await refreshAfterShipment(); await reworkCasesQuery.refetch() }} /></div>,
+        <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} shipments={shipmentOptions} batches={workflowBatches} reworks={reworks} reworkCases={filteredReworkCases} searchText={query} loading={ordersQuery.isLoading || processCardsQuery.isLoading || workflowBatchesQuery.isLoading} onOpenShipment={() => openShipmentForm()} onOpenRework={openFlowCardReturn} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); refreshAfterShipmentInBackground() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} /><QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions} reworkCases={filteredReworkCases} onOpenReturnRework={openFlowCardReturn} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={refreshAfterShipment} /></div>,
     },
     {
       key: 'daily',
@@ -546,7 +642,7 @@ export function QualityPage() {
         }}
         onSubmit={(payload) => qualityWorkflowApi.createAndConfirmShipmentBatch(payload)}
         onSaved={async (result) => {
-          await refreshAfterShipment()
+          refreshAfterShipmentInBackground()
           if (resumeReturnAfterShipment) {
             const status = result && typeof result === 'object' && 'status' in result ? String(result.status || '').toUpperCase() : ''
             if (status === 'CONFIRMED') {
@@ -563,7 +659,7 @@ export function QualityPage() {
         item={batchReviewItem}
         employees={employees}
         onClose={() => setBatchReviewItem(undefined)}
-        onSaved={refreshAfterShipment}
+        onSaved={async () => refreshAfterShipmentInBackground()}
       />
       <QualityReturnReworkDrawer
         open={returnReworkOpen}
@@ -573,7 +669,7 @@ export function QualityPage() {
           setResumeReturnAfterShipment(true)
           openShipmentForm()
         }}
-        onSaved={refreshAfterShipment}
+        onSaved={refreshAfterReturn}
       />
       <QualityFlowCardReturnDrawer
         key={`flow-card-return-session-${flowCardReturnSessionKey}`}
@@ -585,11 +681,11 @@ export function QualityPage() {
           setResumeReturnAfterShipment(true)
           openShipmentForm()
         }}
-        onSaved={refreshAfterShipment}
+        onSaved={refreshAfterReturn}
       />
-      <QualityProcessCardReplacementDrawer open={replacementOpen} onClose={() => setReplacementOpen(false)} onSaved={refreshAfterShipment} />
-      <QualityReturnReworkAttemptDrawer open={!!returnReworkAttempt} item={returnReworkAttempt} employees={employees} onClose={() => setReturnReworkAttempt(undefined)} onSaved={refreshAfterShipment} />
-      <QualityReworkCaseDetailDrawer open={!!returnReworkDetail} item={returnReworkDetail} onClose={() => setReturnReworkDetail(undefined)} onAddAttempt={setReturnReworkAttempt} onSaved={refreshAfterShipment} />
+      <QualityProcessCardReplacementDrawer open={replacementOpen} onClose={() => setReplacementOpen(false)} onSaved={refreshAfterCardReplacement} />
+      <QualityReturnReworkAttemptDrawer open={!!returnReworkAttempt} item={returnReworkAttempt} employees={employees} onClose={() => setReturnReworkAttempt(undefined)} onSaved={refreshAfterReworkAttempt} />
+      <QualityReworkCaseDetailDrawer open={!!returnReworkDetail} item={returnReworkDetail} onClose={() => setReturnReworkDetail(undefined)} onAddAttempt={setReturnReworkAttempt} onSaved={refreshAfterReturnChange} />
       <QualityEmployeeDrawer open={!!employeeForm} employee={employeeForm?.employee} onClose={() => setEmployeeForm(undefined)} />
     </div>
   )

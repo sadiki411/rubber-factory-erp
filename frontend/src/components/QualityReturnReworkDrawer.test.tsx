@@ -117,6 +117,21 @@ describe('QualityReturnReworkDrawer', () => {
     expect(onSaved).toHaveBeenCalled()
   })
 
+  it('closes immediately after the return is saved without waiting for a slow list refresh', async () => {
+    const refreshNeverFinishes = new Promise<void>(() => undefined)
+    const onSaved = vi.fn(() => refreshNeverFinishes)
+    const onClose = vi.fn()
+    renderWithQuery(<QualityReturnReworkDrawer open onClose={onClose} onSaved={onSaved} onBackfillShipment={vi.fn()} />)
+
+    await screen.findByText(/04-A001-2607040001 \/ 11/)
+    fireEvent.click(screen.getByRole('button', { name: '选择一整批退货' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认登记整批退货' }))
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+    expect(apiMocks.createReworkCase).toHaveBeenCalledTimes(1)
+    expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ id: 9 }))
+  })
+
   it('offers a direct backfill action when no confirmed shipment can be selected', async () => {
     apiMocks.listReturnableBatches.mockResolvedValue([])
     const onBackfillShipment = vi.fn()
@@ -168,6 +183,12 @@ describe('QualityReturnReworkAttemptDrawer', () => {
     },
   }
 
+  beforeEach(() => {
+    vi.clearAllMocks()
+    apiMocks.updateReworkCase.mockResolvedValue({ id: 9, case_no: 'R9', status: 'CANCELLED' })
+    apiMocks.createReworkAttempt.mockResolvedValue({ id: 19, attempt_no: 1 })
+  })
+
   it('records R3 without asking for recovered or scrap quantities', async () => {
     const today = dayjs().format('YYYY-MM-DD')
     const onSaved = vi.fn().mockResolvedValue(undefined)
@@ -190,6 +211,19 @@ describe('QualityReturnReworkAttemptDrawer', () => {
     expect(body).not.toHaveProperty('recovered_quantity')
     expect(body).not.toHaveProperty('scrap_quantity')
     expect(onSaved).toHaveBeenCalled()
+  })
+
+  it('closes after saving a round even when background refresh remains slow', async () => {
+    const refreshNeverFinishes = new Promise<void>(() => undefined)
+    const onSaved = vi.fn(() => refreshNeverFinishes)
+    const onClose = vi.fn()
+    renderWithQuery(<QualityReturnReworkAttemptDrawer open item={item} employees={[employee]} onClose={onClose} onSaved={onSaved} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '保存本轮返工' }))
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+    expect(apiMocks.createReworkAttempt).toHaveBeenCalledTimes(1)
+    expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ id: 19 }), 9)
   })
 
   it('hides further rounds for scrapped cases', () => {

@@ -15,6 +15,7 @@ import type {
   QualityProcessCard,
   QualityProcessCardScanResult,
   QualityReturnableBatch,
+  QualityReworkCase,
 } from '../types'
 import { QualityQrScanner } from './QualityQrScanner'
 
@@ -86,7 +87,7 @@ export function QualityFlowCardReturnDrawer({
   open: boolean
   employees: QualityEmployee[]
   onClose: () => void
-  onSaved: () => Promise<void>
+  onSaved: (saved: QualityReworkCase[]) => void | Promise<void>
   onBackfillShipment: () => void
 }) {
   const [form] = Form.useForm<ReturnFormValues>()
@@ -179,6 +180,7 @@ export function QualityFlowCardReturnDrawer({
   }
 
   const submit = async () => {
+    if (saving) return
     if (!cards.length) {
       message.warning('请先扫描至少一张退回产品的流程卡。')
       return
@@ -219,11 +221,18 @@ export function QualityFlowCardReturnDrawer({
     })
     setSaving(true)
     try {
-      if (scanCards.length === 1) await qualityWorkflowApi.scanReturn({ ...scanCards[0], ...common })
-      else await qualityWorkflowApi.bulkScanReturn({ cards: scanCards, ...common })
-      await onSaved()
+      let saved: QualityReworkCase[]
+      if (scanCards.length === 1) {
+        saved = [await qualityWorkflowApi.scanReturn({ ...scanCards[0], ...common })]
+      } else {
+        const response = await qualityWorkflowApi.bulkScanReturn({ cards: scanCards, ...common })
+        saved = Array.isArray(response) ? response : response.results || response.cases || []
+      }
       message.success(`已登记 ${scanCards.length} 批退货，每张流程卡均建立独立返工追踪。`)
       closeDrawer()
+      void Promise.resolve()
+        .then(() => onSaved(saved))
+        .catch(() => message.warning('退货已经登记成功，但页面数据刷新失败，请稍后手动刷新。'))
     } catch (error) {
       message.error((error as Error).message || '扫描退货登记失败')
     } finally {
@@ -309,7 +318,7 @@ export function QualityProcessCardReplacementDrawer({
 }: {
   open: boolean
   onClose: () => void
-  onSaved: () => Promise<void>
+  onSaved: () => void | Promise<void>
 }) {
   const { message } = App.useApp()
   const [scannerTarget, setScannerTarget] = useState<'old' | 'new'>()
@@ -358,6 +367,7 @@ export function QualityProcessCardReplacementDrawer({
   }
 
   const submitReplacement = async () => {
+    if (saving) return
     if (!oldCard || !newCardNo) {
       message.warning('请先扫描新流程卡，再扫描或选择被替代的旧流程卡。')
       return
@@ -365,9 +375,11 @@ export function QualityProcessCardReplacementDrawer({
     setSaving(true)
     try {
       await qualityWorkflowApi.replaceProcessCard(oldCard.id, { new_card_no: newCardNo, notes })
-      await onSaved()
       message.success(`补卡完成：${newCardNo} 已继承 ${oldCard.card_no} 的全部追踪历史。`)
       closeReplacement()
+      void Promise.resolve()
+        .then(() => onSaved())
+        .catch(() => message.warning('补卡已经保存，但页面数据刷新失败，请稍后手动刷新。'))
     } catch (error) {
       message.error((error as Error).message || '流程卡换号失败')
     } finally {

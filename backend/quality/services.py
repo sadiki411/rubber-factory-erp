@@ -1034,12 +1034,17 @@ def _unit_order_and_weight(group, unit_no, *, requested_order_id=None):
             order = orders[int(requested_order_id)]
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("所选订单不属于该物理出货批次。") from exc
-    elif len(orders) == 1:
+    elif orders:
+        # Automatic order allocation can place one physical package across an
+        # order boundary (for example, the current order needs 500 pieces but
+        # the package contains 1,000).  The quantity ledger already preserves
+        # both order allocations.  A single process card still needs one
+        # tracking owner, so use the first allocation in fulfilment order
+        # instead of blocking confirmation and forcing the operator to split
+        # a package that physically remains whole.
         order = next(iter(orders.values()))
-    elif not orders:
-        raise ValueError("原出货批次没有可识别订单，请先补录订单。")
     else:
-        raise ValueError("该物理批次跨多个订单，请明确选择流程卡所属订单。")
+        raise ValueError("原出货批次没有可识别订单，请先补录订单。")
     unit_weight = None
     for item in allocations:
         line = item["shipment_line"]
@@ -1129,7 +1134,25 @@ def bind_process_cards_to_batch(
                 if card.status == ProcessCard.Status.CANCELLED:
                     raise ValueError(f"流程卡 {code} 已作废。")
                 if card.order_id != order.pk:
-                    raise ValueError(f"流程卡 {code} 已属于其他订单，不能跨订单绑定。")
+                    card_identity = (
+                        str(card.order.specification or "").strip().casefold(),
+                        str(card.order.material or "").strip().casefold(),
+                    )
+                    allocation_identity = (
+                        str(order.specification or "").strip().casefold(),
+                        str(order.material or "").strip().casefold(),
+                    )
+                    if (
+                        not all(card_identity)
+                        or card_identity != allocation_identity
+                    ):
+                        raise ValueError(
+                            f"流程卡 {code} 所属订单的规格或材质与本次出货不一致。"
+                        )
+                    # The printed card remains owned by its original unique
+                    # order.  Logical fulfilment can still spill into the next
+                    # same-spec/material order; the shipment lines and later
+                    # return allocations retain that accounting split.
             else:
                 card = ProcessCard.objects.create(
                     card_no=code,

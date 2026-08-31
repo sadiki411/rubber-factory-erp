@@ -32,6 +32,7 @@ import type {
   QualityEmployee,
   QualityEmployeeSummary,
   QualityReturnableBatch,
+  QualityReworkAttempt,
   QualityReworkCase,
 } from '../types'
 
@@ -97,7 +98,7 @@ function WholeBatchSummary({ item }: { item: QualityReturnableBatch }) {
 interface ReturnDrawerProps {
   open: boolean
   onClose: () => void
-  onSaved: () => Promise<void>
+  onSaved: (saved: QualityReworkCase) => void | Promise<void>
   onBackfillShipment: () => void
 }
 
@@ -140,6 +141,7 @@ export function QualityReturnReworkDrawer({ open, onClose, onSaved, onBackfillSh
 
   const historical = Boolean(openedOn?.isValid() && openedOn.startOf('day').isBefore(dayjs().startOf('day')))
   const submit = async () => {
+    if (saving) return
     if (!activeSelected) {
       message.warning('请先选择一条已确认出货记录')
       return
@@ -148,7 +150,7 @@ export function QualityReturnReworkDrawer({ open, onClose, onSaved, onBackfillSh
     const date = values.opened_on as Dayjs
     setSaving(true)
     try {
-      await qualityWorkflowApi.createReworkCase({
+      const saved = await qualityWorkflowApi.createReworkCase({
         origin: 'CUSTOMER_RETURN',
         shipment_batch_id: activeSelected.shipment_batch_id,
         shipment_unit_no: values.shipment_unit_no,
@@ -158,9 +160,11 @@ export function QualityReturnReworkDrawer({ open, onClose, onSaved, onBackfillSh
         reason: values.reason || '',
         notes: values.notes || '',
       })
-      await onSaved()
       message.success(`已登记 ${activeSelected.shipment_no} 第${values.shipment_unit_no}批整批退货`)
       onClose()
+      void Promise.resolve()
+        .then(() => onSaved(saved))
+        .catch(() => message.warning('退货已经登记成功，但页面数据刷新失败，请稍后手动刷新。'))
     } catch (error) {
       message.error((error as Error).message || '登记退货返工失败')
     } finally {
@@ -233,7 +237,7 @@ interface AttemptDrawerProps {
   item?: QualityReworkCase
   employees: QualityEmployee[]
   onClose: () => void
-  onSaved: () => Promise<void>
+  onSaved: (saved: QualityReworkAttempt, caseId: number | string) => void | Promise<void>
 }
 
 export function QualityReturnReworkAttemptDrawer({ open, item, employees, onClose, onSaved }: AttemptDrawerProps) {
@@ -252,12 +256,13 @@ export function QualityReturnReworkAttemptDrawer({ open, item, employees, onClos
   }, [form, open, item?.id])
 
   const submit = async () => {
+    if (saving) return
     if (!item) return
     const values = await form.validateFields()
     const attemptDate = values.attempt_date as Dayjs
     setSaving(true)
     try {
-      await qualityWorkflowApi.createReworkAttempt({
+      const saved = await qualityWorkflowApi.createReworkAttempt({
         case_id: item.id,
         attempt_date: attemptDate.format('YYYY-MM-DD'),
         backfill_reason: values.backfill_reason || '',
@@ -265,9 +270,11 @@ export function QualityReturnReworkAttemptDrawer({ open, item, employees, onClos
         status: values.status || 'PROCESSING',
         notes: values.notes || '',
       })
-      await onSaved()
       message.success(`已记录 ${item.case_no} · R${attemptNo}`)
       onClose()
+      void Promise.resolve()
+        .then(() => onSaved(saved, item.id))
+        .catch(() => message.warning('本轮返工已经保存，但页面数据刷新失败，请稍后手动刷新。'))
     } catch (error) {
       message.error((error as Error).message || '保存返工轮次失败')
     } finally {
@@ -292,7 +299,7 @@ export function QualityReturnReworkAttemptDrawer({ open, item, employees, onClos
   </Drawer>
 }
 
-export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttempt, onSaved }: { open: boolean; item?: QualityReworkCase; onClose: () => void; onAddAttempt: (item: QualityReworkCase) => void; onSaved: () => Promise<void> }) {
+export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttempt, onSaved }: { open: boolean; item?: QualityReworkCase; onClose: () => void; onAddAttempt: (item: QualityReworkCase) => void; onSaved: (saved: QualityReworkCase) => void | Promise<void> }) {
   const [form] = Form.useForm<Record<string, unknown>>()
   const [localItem, setLocalItem] = useState<QualityReworkCase>()
   const [editing, setEditing] = useState(false)
@@ -332,6 +339,7 @@ export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttemp
   }
 
   const saveEdits = async () => {
+    if (saving) return
     if (!currentItem) return
     const values = await form.validateFields()
     const opened = values.opened_on as Dayjs
@@ -345,9 +353,11 @@ export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttemp
         notes: values.notes || '',
       })
       setLocalItem({ ...currentItem, ...updated })
-      await onSaved()
       message.success('退货日期、原因和备注已更新')
       setEditing(false)
+      void Promise.resolve()
+        .then(() => onSaved(updated))
+        .catch(() => message.warning('修改已经保存，但页面数据刷新失败，请稍后手动刷新。'))
     } catch (error) {
       message.error((error as Error).message || '修改退货信息失败')
     } finally {
@@ -356,13 +366,16 @@ export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttemp
   }
 
   const cancelCase = async () => {
+    if (cancelling) return
     if (!currentItem) return
     setCancelling(true)
     try {
-      await qualityWorkflowApi.updateReworkCase(currentItem.id, { status: 'CANCELLED' })
-      await onSaved()
+      const updated = await qualityWorkflowApi.updateReworkCase(currentItem.id, { status: 'CANCELLED' })
       message.success('误登记已取消，原物理批号已释放，可重新选择。')
       onClose()
+      void Promise.resolve()
+        .then(() => onSaved(updated))
+        .catch(() => message.warning('取消已经保存，但页面数据刷新失败，请稍后手动刷新。'))
     } catch (error) {
       message.error((error as Error).message || '取消误登记失败')
     } finally {

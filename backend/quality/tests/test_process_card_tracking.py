@@ -564,3 +564,135 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
                 "CARD-CROSS-3": second.pk,
             },
         )
+
+    def test_cross_order_boundary_inside_one_package_still_binds_scanned_cards(self):
+        """One physical package may finish one order and start the next."""
+
+        self.order.order_quantity = 500
+        self.order.save(update_fields=["order_quantity", "updated_at"])
+        second = QualityOrder.objects.create(
+            order_no="ORD-CARD-BOUNDARY-SECOND",
+            item_no="20",
+            product_name=self.order.product_name,
+            specification=self.order.specification,
+            material=self.order.material,
+            order_quantity=2_000,
+            order_date=self.order.order_date,
+            due_date=self.order.due_date,
+            created_by=self.user,
+        )
+        draft = self.client.post(
+            self.batch_endpoint,
+            {
+                "shipment_no": "QS-CARD-ORDER-BOUNDARY",
+                "order_id": self.order.pk,
+                "unit_weight_g": "10.00000",
+                "single_batch_net_weight_kg": "10.000",
+                "process_card_shipment_quantity": 1_000,
+                "product_batch_count": 2,
+                "lines": [{"order_id": self.order.pk}],
+            },
+            format="json",
+        )
+        self.assertEqual(draft.status_code, 201, draft.content)
+        confirmed = self.client.post(
+            f"{self.batch_endpoint}{draft.json()['id']}/confirm/",
+            {
+                "process_card_bindings": [
+                    {"shipment_unit_no": 1, "card_no": "CARD-BOUNDARY-1"},
+                    {"shipment_unit_no": 2, "card_no": "CARD-BOUNDARY-2"},
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        self.assertEqual(
+            dict(
+                QualityShipmentLine.objects.filter(batch_id=draft.json()["id"])
+                .values_list("order_id", "piece_quantity")
+            ),
+            {self.order.pk: 500, second.pk: 1_500},
+        )
+        self.assertEqual(
+            dict(
+                ProcessCard.objects.filter(card_no__startswith="CARD-BOUNDARY-")
+                .values_list("card_no", "order_id")
+            ),
+            {
+                "CARD-BOUNDARY-1": self.order.pk,
+                "CARD-BOUNDARY-2": second.pk,
+            },
+        )
+
+    def test_existing_source_cards_remain_bound_when_fulfilment_moves_to_next_order(self):
+        """Printed card ownership and logical order allocation are independent."""
+
+        self.order.order_quantity = 1_000
+        self.order.save(update_fields=["order_quantity", "updated_at"])
+        second = QualityOrder.objects.create(
+            order_no="ORD-EXISTING-CARD-SECOND",
+            item_no="20",
+            product_name=self.order.product_name,
+            specification=self.order.specification,
+            material=self.order.material,
+            order_quantity=2_000,
+            order_date=self.order.order_date,
+            due_date=self.order.due_date,
+            created_by=self.user,
+        )
+        for index in range(1, 4):
+            ProcessCard.objects.create(
+                card_no=f"CARD-EXISTING-SOURCE-{index}",
+                order=self.order,
+                quantity=1_000,
+                unit_weight_g="10.00000",
+                created_by=self.user,
+            )
+        draft = self.client.post(
+            self.batch_endpoint,
+            {
+                "shipment_no": "QS-EXISTING-CARD-CROSS-ORDER",
+                "order_id": self.order.pk,
+                "unit_weight_g": "10.00000",
+                "single_batch_net_weight_kg": "10.000",
+                "process_card_shipment_quantity": 1_000,
+                "product_batch_count": 3,
+                "lines": [{"order_id": self.order.pk}],
+            },
+            format="json",
+        )
+        self.assertEqual(draft.status_code, 201, draft.content)
+        confirmed = self.client.post(
+            f"{self.batch_endpoint}{draft.json()['id']}/confirm/",
+            {
+                "process_card_bindings": [
+                    {
+                        "shipment_unit_no": index,
+                        "card_no": f"CARD-EXISTING-SOURCE-{index}",
+                    }
+                    for index in range(1, 4)
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        self.assertEqual(
+            dict(
+                QualityShipmentLine.objects.filter(batch_id=draft.json()["id"])
+                .values_list("order_id", "piece_quantity")
+            ),
+            {self.order.pk: 1_000, second.pk: 2_000},
+        )
+        self.assertEqual(
+            set(
+                ProcessCard.objects.filter(card_no__startswith="CARD-EXISTING-SOURCE-")
+                .values_list("order_id", flat=True)
+            ),
+            {self.order.pk},
+        )
+        self.assertEqual(
+            ProcessCardUnitBinding.objects.filter(
+                shipment_batch_id=draft.json()["id"]
+            ).count(),
+            3,
+        )
