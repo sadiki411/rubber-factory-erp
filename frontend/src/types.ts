@@ -794,6 +794,7 @@ export type QualityProcessCardStatus = 'OPEN' | 'PARTIAL_SHIPPED' | 'SHIPPED' | 
 export interface QualityProcessCardBinding {
   id?: number | string
   process_card_id?: number | string
+  card_no?: string
   shipment_batch_id: number | string
   shipment_line_id?: number | string | null
   shipment_unit_no: number
@@ -886,6 +887,11 @@ export interface QualityProcessCard {
 
 export interface QualityShipmentBatchLineInput {
   process_card_id?: string | number
+  /** Printed flow-card number.  Used by confirmed-shipment corrections when
+   * the physical card was scanned incorrectly and must be replaced. */
+  card_no?: string
+  /** Physical package sequence within the shipment. */
+  shipment_unit_no?: number
   order_id?: number
   /** Optional snapshots for a manually entered order/specification. */
   order_no?: string
@@ -940,6 +946,8 @@ export interface QualityShipmentBatchInput {
   inspector_ids?: number[]
   client_key?: string
   notes?: string
+  /** Required by the confirmed-batch amendment action; ignored for creates. */
+  amend_reason?: string
   confirm_warnings?: boolean
   /** Optional card-to-physical-batch links; unscanned repeated batches remain valid. */
   process_card_bindings?: Array<{
@@ -987,6 +995,10 @@ export interface QualityShipmentBatchResult {
   status?: 'DRAFT' | 'CONFIRMED' | 'VOID'
   /** Actual order fulfilment written when the batch is confirmed. */
   order_allocations?: QualityShipmentOrderAllocation[]
+  /** Physical flow-card bindings returned with a batch detail. */
+  process_card_bindings?: QualityProcessCardBinding[]
+  /** Optional audit reason returned by amendment/void actions. */
+  void_reason?: string
 }
 
 export interface QualityShipmentBatch extends QualityShipmentBatchResult {
@@ -1004,6 +1016,11 @@ export interface QualityShipmentBatch extends QualityShipmentBatchResult {
   notes?: string
   lines?: QualityShipmentBatchLine[]
 }
+
+/** Payload accepted by the confirmed-shipment amendment action.  It is kept
+ * as a named alias so callers can distinguish an auditable correction from a
+ * normal draft create/update while sharing the same line contract. */
+export type QualityShipmentBatchAmendInput = QualityShipmentBatchInput
 
 /** One confirmed allocation of a physical shipment line to an order. */
 export interface QualityShipmentOrderAllocation {

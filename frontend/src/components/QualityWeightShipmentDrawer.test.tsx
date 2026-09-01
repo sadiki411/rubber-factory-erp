@@ -19,6 +19,7 @@ const apiMocks = vi.hoisted(() => ({
   getShipmentBatch: vi.fn(),
   createShipmentBatch: vi.fn(),
   updateShipmentBatch: vi.fn(),
+  amendShipmentBatch: vi.fn(),
   confirmShipmentBatch: vi.fn(),
   scanProcessCard: vi.fn(),
 }))
@@ -97,6 +98,7 @@ vi.mock('../api/client', () => ({
     getShipmentBatch: apiMocks.getShipmentBatch,
     createShipmentBatch: apiMocks.createShipmentBatch,
     updateShipmentBatch: apiMocks.updateShipmentBatch,
+    amendShipmentBatch: apiMocks.amendShipmentBatch,
     confirmShipmentBatch: apiMocks.confirmShipmentBatch,
     scanProcessCard: apiMocks.scanProcessCard,
   },
@@ -136,6 +138,7 @@ describe('QualityWeightShipmentDrawer', () => {
     apiMocks.getShipmentBatch.mockReset()
     apiMocks.createShipmentBatch.mockReset()
     apiMocks.updateShipmentBatch.mockReset()
+    apiMocks.amendShipmentBatch.mockReset()
     apiMocks.confirmShipmentBatch.mockReset()
     apiMocks.scanProcessCard.mockReset().mockImplementation(async (code: string) => ({
       found: false,
@@ -925,5 +928,118 @@ describe('QualityWeightShipmentDrawer', () => {
     })
     expect(apiMocks.confirmShipmentBatch).toHaveBeenCalledWith(88, [])
     expect(onSaved).toHaveBeenCalledTimes(1)
+  }, 40_000)
+
+  it('prefills a confirmed shipment and sends an explicit empty binding list when all scanned cards are cleared', async () => {
+    const user = userEvent.setup()
+    const confirmed: QualityShipmentBatch = {
+      id: 99,
+      shipment_no: 'QS-CONFIRMED-AMEND-099',
+      shipment_date: '2026-08-31',
+      status: 'CONFIRMED',
+      order_id: order.id,
+      order,
+      specification_snapshot: order.specification,
+      material_snapshot: order.material,
+      unit_weight_g: 25,
+      single_batch_net_weight_kg: 2.5,
+      process_card_shipment_quantity: 100,
+      product_batch_count: 2,
+      pieces_per_batch: 100,
+      total_net_weight_kg: 5,
+      process_card_bindings: [
+        { id: 1, process_card_id: 201, card_no: 'CARD-AMEND-201', shipment_batch_id: 99, shipment_unit_no: 1, order_id: order.id },
+        { id: 2, process_card_id: 202, card_no: 'CARD-AMEND-202', shipment_batch_id: 99, shipment_unit_no: 2, order_id: order.id },
+      ],
+      lines: [{
+        id: 991,
+        order_id: order.id,
+        order,
+        unit_weight_g_snapshot: 25,
+        single_batch_net_weight_kg: 2.5,
+        product_batch_count: 2,
+        pieces_per_batch: 100,
+        process_card_shipment_quantity: 100,
+        piece_quantity: 200,
+        specification_snapshot: order.specification,
+        material_snapshot: order.material,
+        net_weight_kg: 5,
+      }],
+    }
+    apiMocks.amendShipmentBatch.mockResolvedValue({ ...confirmed, process_card_bindings: [] })
+    const onSaved = vi.fn().mockResolvedValue(undefined)
+    const onClose = vi.fn()
+    renderDrawer(undefined, {
+      batch: confirmed,
+      amendConfirmed: true,
+      existingBatches: [confirmed],
+      onSaved,
+      onClose,
+    })
+
+    expect(await screen.findByText(`纠正已确认出货 · ${confirmed.shipment_no}`)).toBeInTheDocument()
+    expect(screen.getByLabelText(/出货单号/)).toHaveValue(confirmed.shipment_no)
+    expect(screen.getByDisplayValue('CARD-AMEND-201')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('CARD-AMEND-202')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '清空全部卡号' }))
+    await user.click(await screen.findByRole('button', { name: '确认清空' }))
+    expect(await screen.findByText('本批暂无流程卡绑定')).toBeInTheDocument()
+    await user.type(screen.getByLabelText('纠正原因'), '扫描卡号录入错误，解除全部绑定')
+    await user.click(screen.getByRole('button', { name: '保存纠正' }))
+
+    await waitFor(() => expect(apiMocks.amendShipmentBatch).toHaveBeenCalledTimes(1))
+    expect(apiMocks.amendShipmentBatch).toHaveBeenCalledWith(99, expect.objectContaining({
+      shipment_no: confirmed.shipment_no,
+      amend_reason: '扫描卡号录入错误，解除全部绑定',
+      process_card_bindings: [],
+    }))
+    expect(apiMocks.checkShipmentNo).toHaveBeenCalledWith(confirmed.shipment_no, confirmed.id)
+    expect(onSaved).toHaveBeenCalledTimes(1)
+    expect(onClose).toHaveBeenCalledTimes(1)
+  }, 40_000)
+
+  it('keeps the confirmed correction form open and displays an actionable backend error', async () => {
+    const user = userEvent.setup()
+    const confirmed: QualityShipmentBatch = {
+      id: 100,
+      shipment_no: 'QS-CONFIRMED-AMEND-100',
+      shipment_date: '2026-08-31',
+      status: 'CONFIRMED',
+      order_id: order.id,
+      order,
+      specification_snapshot: order.specification,
+      material_snapshot: order.material,
+      unit_weight_g: 25,
+      single_batch_net_weight_kg: 2.5,
+      process_card_shipment_quantity: 100,
+      product_batch_count: 1,
+      pieces_per_batch: 100,
+      total_net_weight_kg: 2.5,
+      lines: [{
+        id: 1001,
+        order_id: order.id,
+        order,
+        unit_weight_g_snapshot: 25,
+        single_batch_net_weight_kg: 2.5,
+        product_batch_count: 1,
+        pieces_per_batch: 100,
+        process_card_shipment_quantity: 100,
+        piece_quantity: 100,
+        specification_snapshot: order.specification,
+        material_snapshot: order.material,
+        net_weight_kg: 2.5,
+      }],
+    }
+    apiMocks.amendShipmentBatch.mockRejectedValue(new Error('该出货已有关联退货，不能直接纠正'))
+    const onClose = vi.fn()
+    renderDrawer(undefined, { batch: confirmed, amendConfirmed: true, onClose })
+
+    await user.type(screen.getByLabelText('纠正原因'), '修正标准数量')
+    await user.click(screen.getByRole('button', { name: '保存纠正' }))
+
+    expect(await screen.findByText('该出货已有关联退货，不能直接纠正')).toBeInTheDocument()
+    expect(apiMocks.amendShipmentBatch).toHaveBeenCalledTimes(1)
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByText(`纠正已确认出货 · ${confirmed.shipment_no}`)).toBeInTheDocument()
   }, 40_000)
 })

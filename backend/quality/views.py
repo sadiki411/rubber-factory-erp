@@ -1,5 +1,7 @@
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
+from types import SimpleNamespace
+from copy import deepcopy
 
 from django.db import IntegrityError, transaction
 from django.db.models import Case, Count, DateField, F, IntegerField, Min, Prefetch, Q, Sum, Value, When
@@ -20,7 +22,8 @@ from orders.models import ProductSpecification
 from .models import (DefectReason, QualityEmployee, QualityOrder, QualityShipment, ReturnRework,
                      ProductUnitWeight, ProcessCard, ProcessCardUnitBinding, QualityShipmentBatch,
                      QualityShipmentLine, QualityShipmentOrderAllocation,
-                     QualityReworkCase, QualityReworkAttempt)
+                     QualityReworkCase, QualityReworkAttempt, QualityReturnAllocation,
+                     QualityShipmentBatchRevision)
 from .serializers import (
     BindExistingReturnRequestSerializer,
     BulkScannedReturnRequestSerializer,
@@ -36,6 +39,8 @@ from .serializers import (
     QualityReturnableBatchPageSerializer,
     ReturnReshipRequestSerializer,
     ScannedReturnRequestSerializer,
+    QualityShipmentBatchAmendRequestSerializer,
+    QualityShipmentBatchVoidConfirmedRequestSerializer,
 )
 from .services import (
     bind_existing_return_to_card,
@@ -409,6 +414,118 @@ class QualityShippingCandidatesView(APIView):
         return Response(rows)
 
 
+def _shipment_snapshot_value(value):
+    """Convert model values to stable JSON primitives for audit snapshots."""
+
+    if isinstance(value, Decimal):
+        return str(value)
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
+def _shipment_batch_snapshot(batch, *, lines=None, bindings=None):
+    """Capture the physical and accounting facts of a shipment batch."""
+
+    if lines is None:
+        lines = list(
+            batch.lines.select_related("process_card", "order")
+            .prefetch_related("order_allocations__order")
+            .order_by("id")
+        )
+    if bindings is None:
+        bindings = list(
+            batch.process_card_bindings.select_related("process_card")
+            .order_by("shipment_unit_no", "id")
+        )
+    batch_fields = (
+        "id", "shipment_no", "shipment_date", "order_id",
+        "product_specification_id", "product_name_snapshot",
+        "specification_snapshot", "material_snapshot", "unit_weight_g",
+        "single_batch_net_weight_kg", "process_card_shipment_quantity",
+        "product_batch_count", "pieces_per_batch", "inspector_id", "status",
+        "customer", "delivery_info", "backfill_reason", "notes",
+    )
+    result = {
+        field: _shipment_snapshot_value(getattr(batch, field))
+        for field in batch_fields
+    }
+    result["inspector_ids"] = list(batch.inspectors.values_list("id", flat=True))
+    result["lines"] = []
+    for line in lines:
+        line_snapshot = {
+            "id": line.pk,
+            "process_card_id": line.process_card_id,
+            "card_no": line.process_card.card_no if line.process_card_id else None,
+            "order_id": line.order_id,
+            "product_specification_id": line.product_specification_id,
+            "specification_snapshot": line.specification_snapshot,
+            "material_snapshot": line.material_snapshot,
+            "net_weight_kg": _shipment_snapshot_value(line.net_weight_kg),
+            "piece_quantity": line.piece_quantity,
+            "unit_weight_g_snapshot": _shipment_snapshot_value(line.unit_weight_g_snapshot),
+            "single_batch_net_weight_kg": _shipment_snapshot_value(line.single_batch_net_weight_kg),
+            "process_card_shipment_quantity": line.process_card_shipment_quantity,
+            "product_batch_count": line.product_batch_count,
+            "pieces_per_batch": line.pieces_per_batch,
+            "theoretical_weight_kg_snapshot": _shipment_snapshot_value(
+                line.theoretical_weight_kg_snapshot
+            ),
+            "max_allowed_weight_kg_snapshot": _shipment_snapshot_value(
+                line.max_allowed_weight_kg_snapshot
+            ),
+            "notes": line.notes,
+            "order_allocations": [
+                {
+                    "id": allocation.pk,
+                    "order_id": allocation.order_id,
+                    "sequence": allocation.sequence,
+                    "piece_start": allocation.piece_start,
+                    "piece_end": allocation.piece_end,
+                    "piece_quantity": allocation.piece_quantity,
+                    "net_weight_kg": _shipment_snapshot_value(
+                        allocation.net_weight_kg
+                    ),
+                    "is_overflow": allocation.is_overflow,
+                }
+                for allocation in line.order_allocations.all()
+            ],
+        }
+        result["lines"].append(line_snapshot)
+    result["process_card_bindings"] = [
+        {
+            "id": binding.pk,
+            "process_card_id": binding.process_card_id,
+            "card_no": binding.process_card.card_no,
+            "shipment_unit_no": binding.shipment_unit_no,
+            "piece_quantity": binding.piece_quantity,
+            "net_weight_kg": _shipment_snapshot_value(binding.net_weight_kg),
+        }
+        for binding in bindings
+    ]
+    return result
+
+
+def _shipment_line_amend_payload(line):
+    """Build a writable nested-line payload from an existing line row."""
+
+    return {
+        "process_card_id": line.process_card_id,
+        "order_id": line.order_id,
+        "product_specification_id": line.product_specification_id,
+        "specification_snapshot": line.specification_snapshot,
+        "material_snapshot": line.material_snapshot,
+        "net_weight_kg": line.net_weight_kg,
+        "piece_quantity": line.piece_quantity,
+        "unit_weight_g_snapshot": line.unit_weight_g_snapshot,
+        "single_batch_net_weight_kg": line.single_batch_net_weight_kg,
+        "process_card_shipment_quantity": line.process_card_shipment_quantity,
+        "product_batch_count": line.product_batch_count,
+        "pieces_per_batch": line.pieces_per_batch,
+        "notes": line.notes,
+    }
+
+
 class QualityShipmentBatchViewSet(WorkflowModelViewSet):
     serializer_class = QualityShipmentBatchSerializer
 
@@ -683,6 +800,576 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             raise DRFValidationError({"detail": str(exc)}) from exc
         batch = self.get_queryset().get(pk=batch.pk)
         return Response(self.get_serializer(batch).data)
+
+    @staticmethod
+    def _amend_payload(request_data):
+        """Return a mutable copy of a JSON/QueryDict request payload."""
+
+        if hasattr(request_data, "dict") and not isinstance(request_data, dict):
+            # DRF's JSONParser returns a plain dict.  QueryDict is mostly used
+            # by old browser clients; ``dict`` preserves repeated list values
+            # poorly, so copy its keys explicitly below.
+            payload = {}
+            for key in request_data.keys():
+                value = request_data.getlist(key)
+                payload[key] = value if len(value) != 1 else value[0]
+        else:
+            payload = dict(request_data or {})
+        return deepcopy(payload)
+
+    @staticmethod
+    def _amend_binding_entries(payload, old_lines, old_bindings):
+        """Preserve omitted bindings while remapping cards changed by lines."""
+
+        explicit = "process_card_bindings" in payload or "cards" in payload
+        if "process_card_bindings" not in payload and "cards" in payload:
+            payload["process_card_bindings"] = payload.pop("cards")
+        if explicit:
+            entries = payload.get("process_card_bindings")
+            if entries is None:
+                entries = []
+            normalized = []
+            for raw in entries:
+                if not isinstance(raw, dict):
+                    raise DRFValidationError(
+                        {
+                            "process_card_bindings": (
+                                "每张流程卡绑定必须包含卡号和物理批号。"
+                            )
+                        }
+                    )
+                item = dict(raw or {})
+                if "card_no" not in item:
+                    item["card_no"] = item.get("process_card_no") or item.get("code")
+                normalized.append(item)
+            payload["process_card_bindings"] = normalized
+            return True
+
+        # No binding field means "keep the current physical identity".  A
+        # line-level card replacement should move that identity to the new
+        # card at the same physical unit, while clearing a line card removes
+        # the corresponding old binding.  Unrelated quick-entry bindings are
+        # retained unchanged.
+        entries = [
+            {
+                "card_no": binding.process_card.card_no,
+                "shipment_unit_no": binding.shipment_unit_no,
+                "order_id": binding.process_card.order_id,
+            }
+            for binding in old_bindings
+        ]
+        line_payloads = payload.get("lines") or []
+        binding_by_old_card = {
+            binding.process_card_id: {
+                "card_no": binding.process_card.card_no,
+                "shipment_unit_no": binding.shipment_unit_no,
+                "order_id": binding.process_card.order_id,
+            }
+            for binding in old_bindings
+        }
+        old_line_by_index = {
+            index: line for index, line in enumerate(old_lines)
+        }
+        for index, item in enumerate(line_payloads):
+            old_line = old_line_by_index.get(index)
+            if old_line is None or not old_line.process_card_id:
+                continue
+            if "process_card_id" not in item:
+                continue
+            try:
+                new_card_id = int(item.get("process_card_id")) if item.get("process_card_id") is not None else None
+            except (TypeError, ValueError):
+                new_card_id = None
+            if new_card_id == old_line.process_card_id:
+                continue
+            old_binding = binding_by_old_card.get(old_line.process_card_id)
+            if old_binding is None:
+                continue
+            entries = [
+                entry
+                for entry in entries
+                if not (
+                    str(entry.get("card_no", "")).strip().casefold()
+                    == str(old_binding.get("card_no", "")).strip().casefold()
+                    and int(entry.get("shipment_unit_no") or 0)
+                    == int(old_binding.get("shipment_unit_no") or 0)
+                )
+            ]
+            if new_card_id is not None:
+                new_card = ProcessCard.objects.filter(pk=new_card_id).first()
+                if new_card is not None:
+                    entries.append(
+                        {
+                            "card_no": new_card.card_no,
+                            "shipment_unit_no": (
+                                item.get("_shipment_unit_no")
+                                or item.get("shipment_unit_no")
+                                or old_binding["shipment_unit_no"]
+                            ),
+                            "order_id": item.get("order_id") or new_card.order_id,
+                        }
+                    )
+        payload["process_card_bindings"] = entries
+        return False
+
+    @staticmethod
+    def _amend_downstream(batch, line_ids):
+        """Lock and report every immutable fact that points at this batch."""
+
+        case_filter = Q(shipment_batch_id=batch.pk)
+        if line_ids:
+            case_filter |= Q(shipment_line_id__in=line_ids)
+        # A process card can have an older, unrelated internal-rework or
+        # shipment history.  Card identity alone therefore must not block a
+        # correction of this batch; only rows that point at this exact batch
+        # or one of its physical lines are downstream facts of this posting.
+        cases = list(
+            QualityReworkCase.objects.select_for_update()
+            .filter(case_filter)
+            .distinct()
+        )
+        case_ids = [case.pk for case in cases]
+        # Explicitly lock attempts too.  Attempts are reached through cases,
+        # but locking the rows makes the amend/void decision stable if a
+        # rework worker is writing a round concurrently.
+        if case_ids:
+            list(
+                QualityReworkAttempt.objects.select_for_update().filter(
+                    case_id__in=case_ids
+                )
+            )
+        return_alloc_filter = Q()
+        if line_ids:
+            return_alloc_filter |= Q(shipment_line_id__in=line_ids)
+            return_alloc_filter |= Q(
+                shipment_order_allocation__shipment_line_id__in=line_ids
+            )
+        if return_alloc_filter:
+            return_allocations = list(
+                QualityReturnAllocation.objects.select_for_update().filter(
+                    return_alloc_filter
+                )
+            )
+        else:
+            return_allocations = []
+        if cases or return_allocations:
+            detail = []
+            if cases:
+                detail.append(f"{len(cases)}条返工/退货记录")
+            if return_allocations:
+                detail.append(f"{len(return_allocations)}条退货分配")
+            raise DRFValidationError(
+                {
+                    "detail": (
+                        "该出货已产生下游关联（"
+                        + "、".join(detail)
+                        + "），为保留审计链不能修订或作废。请先处理下游记录。"
+                    )
+                }
+            )
+        return cases, return_allocations
+
+    @staticmethod
+    def _apply_explicit_binding_line_intent(
+        line_payloads, old_lines, old_bindings, binding_entries
+    ):
+        """Prevent an old line card from recreating a cleared/replaced scan.
+
+        Process-card shipment lines are automatically bound during normal
+        confirmation.  During a correction, however, an explicit binding
+        list is the operator's authoritative physical-card choice.  If that
+        choice differs from the card still attached to a rebuilt line, turn
+        the line into an order-linked physical fact before replaying confirm;
+        the binding service will then create or attach exactly the requested
+        card without the automatic old-card binding racing it.
+        """
+
+        desired_by_unit = {}
+        for entry in binding_entries:
+            try:
+                unit_no = int(entry.get("shipment_unit_no"))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            desired_by_unit[unit_no] = str(entry.get("card_no") or "").strip().casefold()
+        old_unit_by_card = {
+            binding.process_card_id: binding.shipment_unit_no
+            for binding in old_bindings
+        }
+        current_card_ids = set()
+        for item in line_payloads:
+            value = item.get("process_card_id")
+            if value in (None, ""):
+                continue
+            try:
+                current_card_ids.add(int(value))
+            except (TypeError, ValueError):
+                # Leave malformed values untouched so the normal nested-line
+                # serializer can return its field-specific 400 response.
+                continue
+        current_codes = dict(
+            ProcessCard.objects.filter(pk__in=current_card_ids).values_list(
+                "id", "card_no"
+            )
+        )
+        for index, item in enumerate(line_payloads):
+            current_card_id = item.get("process_card_id")
+            if current_card_id in (None, ""):
+                continue
+            try:
+                current_card_id = int(current_card_id)
+            except (TypeError, ValueError):
+                continue
+            old_line = old_lines[index] if index < len(old_lines) else None
+            unit_no = item.get("_shipment_unit_no")
+            if unit_no in (None, ""):
+                unit_no = old_unit_by_card.get(
+                    old_line.process_card_id if old_line else current_card_id
+                )
+            try:
+                unit_no = int(unit_no) if unit_no not in (None, "") else index + 1
+            except (TypeError, ValueError):
+                unit_no = index + 1
+            desired_code = desired_by_unit.get(unit_no)
+            current_code = str(current_codes.get(current_card_id) or "").strip().casefold()
+            if desired_code == current_code:
+                continue
+            if item.get("order_id") in (None, "") and old_line is not None:
+                item["order_id"] = old_line.order_id or (
+                    old_line.process_card.order_id
+                    if old_line.process_card_id
+                    else None
+                )
+            item["process_card_id"] = None
+
+    @action(detail=True, methods=["post"], url_path="amend")
+    @extend_schema(
+        request=QualityShipmentBatchAmendRequestSerializer,
+        responses=QualityShipmentBatchSerializer,
+    )
+    def amend(self, request, pk=None):
+        """Atomically correct a confirmed shipment and replay its posting.
+
+        Confirmed rows are never edited in place through PATCH.  This action
+        keeps the batch identity, records an audit snapshot, temporarily
+        reopens the physical facts inside one transaction, and then invokes
+        the existing confirmation path so all quantity/weight/allocation
+        guards remain in force.
+        """
+
+        envelope = QualityShipmentBatchAmendRequestSerializer(data=request.data)
+        envelope.is_valid(raise_exception=True)
+        reason = envelope.validated_data["amend_reason"]
+        with transaction.atomic():
+            batch = (
+                QualityShipmentBatch.objects.select_for_update()
+                .get(pk=pk)
+            )
+            if batch.status == QualityShipmentBatch.Status.VOID:
+                raise DRFValidationError({"status": "已作废的出货批次不能再次修订。"})
+            if batch.status != QualityShipmentBatch.Status.CONFIRMED:
+                raise DRFValidationError(
+                    {"status": "只有已确认的出货批次可以使用修订接口。"}
+                )
+            old_lines = list(
+                QualityShipmentLine.objects.select_for_update()
+                .select_related("process_card", "order")
+                .filter(batch=batch)
+                .order_by("id")
+            )
+            old_line_ids = [line.pk for line in old_lines]
+            old_card_ids = {line.process_card_id for line in old_lines if line.process_card_id}
+            old_bindings = list(
+                ProcessCardUnitBinding.objects.select_for_update()
+                .select_related("process_card")
+                .filter(shipment_batch=batch)
+                .order_by("shipment_unit_no", "id")
+            )
+            old_card_ids.update(binding.process_card_id for binding in old_bindings)
+            old_order_ids = {
+                line.order_id or (line.process_card.order_id if line.process_card_id else None)
+                for line in old_lines
+            }
+            old_order_ids.update(
+                QualityShipmentOrderAllocation.objects.filter(
+                    shipment_line_id__in=old_line_ids
+                ).values_list("order_id", flat=True)
+            )
+            old_order_ids.discard(None)
+            self._amend_downstream(batch, old_line_ids)
+            before = _shipment_batch_snapshot(
+                batch, lines=old_lines, bindings=old_bindings
+            )
+
+            payload = self._amend_payload(request.data)
+            supplied_lines = "lines" in payload
+            raw_lines = payload.get("lines")
+            if raw_lines is None:
+                raw_lines = []
+            if not isinstance(raw_lines, list):
+                raise DRFValidationError({"lines": "明细必须是数组。"})
+            if not supplied_lines:
+                line_payloads = [
+                    _shipment_line_amend_payload(line) for line in old_lines
+                ]
+            else:
+                line_payloads = []
+                for index, raw_line in enumerate(raw_lines):
+                    if not isinstance(raw_line, dict):
+                        raise DRFValidationError({"lines": "每条明细必须是对象。"})
+                    base = (
+                        _shipment_line_amend_payload(old_lines[index])
+                        if index < len(old_lines)
+                        else {}
+                    )
+                    base.update(deepcopy(raw_line))
+                    line_payloads.append(base)
+            if not line_payloads:
+                raise DRFValidationError({"lines": "至少需要一条出货明细。"})
+
+            # Resolve printed card numbers to the current card record.  The
+            # original ProcessCard row remains immutable; replacing a scan
+            # simply points this shipment line at the supplied active card.
+            for item in line_payloads:
+                marker = None
+                marker_present = False
+                for key in ("card_no", "process_card_no"):
+                    if key in item:
+                        marker = item.pop(key)
+                        marker_present = True
+                        break
+                shipment_unit_no = item.pop("shipment_unit_no", None)
+                if marker_present:
+                    code = str(marker or "").strip()
+                    if not code:
+                        item["process_card_id"] = None
+                    else:
+                        try:
+                            _scanned, current = find_process_card(code, lock=True)
+                        except ValueError as exc:
+                            raise DRFValidationError({"lines": str(exc)}) from exc
+                        item["process_card_id"] = current.pk
+                if shipment_unit_no is not None:
+                    item["_shipment_unit_no"] = shipment_unit_no
+
+            # Batch-level fields are the source of truth for the common
+            # one-line form.  Copy them to its physical line so changing the
+            # standard quantity, unit weight, repeat count, or measured weight
+            # cannot leave a stale nested row behind.
+            if len(line_payloads) == 1 and len(old_lines) == 1:
+                item = line_payloads[0]
+                direct_map = {
+                    "order_id": "order_id",
+                    "product_specification_id": "product_specification_id",
+                    "specification_snapshot": "specification_snapshot",
+                    "material_snapshot": "material_snapshot",
+                    "single_batch_net_weight_kg": "single_batch_net_weight_kg",
+                    "process_card_shipment_quantity": "process_card_shipment_quantity",
+                    "product_batch_count": "product_batch_count",
+                    "pieces_per_batch": "pieces_per_batch",
+                    "piece_quantity": "piece_quantity",
+                }
+                for source, target in direct_map.items():
+                    if source in payload:
+                        item[target] = payload[source]
+                if "unit_weight_g" in payload:
+                    item["unit_weight_g_snapshot"] = payload["unit_weight_g"]
+                elif "unit_weight_g_snapshot" in payload:
+                    item["unit_weight_g_snapshot"] = payload["unit_weight_g_snapshot"]
+                if "total_net_weight_kg" in payload:
+                    item["net_weight_kg"] = payload["total_net_weight_kg"]
+                elif "net_weight_kg" in payload:
+                    item["net_weight_kg"] = payload["net_weight_kg"]
+                elif "actual_weight_kg" in payload:
+                    item["net_weight_kg"] = payload["actual_weight_kg"]
+            # Preserve omitted physical bindings, while allowing an explicit
+            # empty list to clear all optional scan bindings.
+            payload["lines"] = line_payloads
+            bindings_were_explicit = self._amend_binding_entries(
+                payload, old_lines, old_bindings
+            )
+            binding_entries = deepcopy(
+                payload.get("process_card_bindings", [])
+            )
+            if bindings_were_explicit:
+                self._apply_explicit_binding_line_intent(
+                    line_payloads, old_lines, old_bindings, binding_entries
+                )
+            for item in line_payloads:
+                item.pop("_shipment_unit_no", None)
+
+            # Action-only and read-only response fields must not reach the
+            # normal batch serializer.  ``client_key`` is immutable identity.
+            for key in (
+                "amend_reason", "reason", "void_reason", "status", "client_key",
+                "created_by", "created_at", "updated_at", "actual_weight_kg",
+                "shipped_quantity", "line_count", "date_pending", "warnings",
+                "process_card_bindings", "cards",
+            ):
+                payload.pop(key, None)
+            payload["lines"] = line_payloads
+            if "backfill_reason" not in payload:
+                payload["backfill_reason"] = batch.backfill_reason
+
+            # Allocations and current bindings are derived facts.  Remove and
+            # rebuild them only after downstream protection has passed; the
+            # surrounding transaction restores everything on any validation
+            # or confirmation error.
+            QualityShipmentOrderAllocation.objects.filter(
+                shipment_line_id__in=old_line_ids
+            ).delete()
+            ProcessCardUnitBinding.objects.filter(shipment_batch=batch).delete()
+            QualityShipmentBatch.objects.filter(pk=batch.pk).update(
+                status=QualityShipmentBatch.Status.DRAFT,
+                updated_at=timezone.now(),
+            )
+            batch.status = QualityShipmentBatch.Status.DRAFT
+
+            serializer = QualityShipmentBatchSerializer(
+                batch,
+                data=payload,
+                partial=True,
+                context={"request": request},
+            )
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+
+            # Replay the exact confirmation transaction.  A proxy request
+            # keeps the original request immutable and supplies preserved or
+            # explicitly replaced bindings to the existing implementation.
+            # ``process_card_bindings`` was removed before serializer
+            # validation because it is an action-only field.  Keep the
+            # normalized copy above and pass it to confirmation here.  An
+            # omitted field has already been expanded to the old bindings;
+            # an explicitly supplied [] remains empty and therefore clears
+            # every optional scan binding after the old rows were removed.
+            confirm_data = (
+                {"process_card_bindings": binding_entries}
+                if binding_entries or bindings_were_explicit
+                else {}
+            )
+            self.confirm(
+                SimpleNamespace(user=request.user, data=confirm_data),
+                pk=batch.pk,
+            )
+
+            refreshed = QualityShipmentBatch.objects.select_for_update().get(pk=batch.pk)
+            new_lines = list(
+                refreshed.lines.select_related("process_card", "order")
+                .prefetch_related("order_allocations")
+                .order_by("id")
+            )
+            new_card_ids = {
+                line.process_card_id for line in new_lines if line.process_card_id
+            }
+            new_order_ids = set(old_order_ids)
+            new_order_ids.update(
+                line.order_id or (line.process_card.order_id if line.process_card_id else None)
+                for line in new_lines
+            )
+            new_order_ids.update(
+                QualityShipmentOrderAllocation.objects.filter(
+                    shipment_line__batch=refreshed
+                ).values_list("order_id", flat=True)
+            )
+            new_order_ids.discard(None)
+            for card_id in old_card_ids | new_card_ids:
+                card = ProcessCard.objects.filter(pk=card_id).first()
+                if card is not None:
+                    card.refresh_shipping_status()
+            sync_order_status_from_delivery(
+                new_order_ids,
+                source="SHIPMENT",
+                operator=request.user,
+                reason_prefix=f"修订出货 {refreshed.shipment_no}。",
+            )
+            refreshed = QualityShipmentBatch.objects.select_for_update().get(pk=batch.pk)
+            after = _shipment_batch_snapshot(refreshed)
+            QualityShipmentBatchRevision.objects.create(
+                batch=refreshed,
+                action=QualityShipmentBatchRevision.Action.AMEND,
+                reason=reason,
+                before_snapshot=before,
+                after_snapshot=after,
+                operator=request.user,
+            )
+            return Response(self.get_serializer(refreshed).data)
+
+    @action(detail=True, methods=["post"], url_path="void-confirmed")
+    @extend_schema(
+        request=QualityShipmentBatchVoidConfirmedRequestSerializer,
+        responses=QualityShipmentBatchSerializer,
+    )
+    def void_confirmed(self, request, pk=None):
+        """Void a confirmed batch while retaining its posting audit facts."""
+
+        envelope = QualityShipmentBatchVoidConfirmedRequestSerializer(data=request.data)
+        envelope.is_valid(raise_exception=True)
+        reason = envelope.validated_data["void_reason"]
+        with transaction.atomic():
+            batch = QualityShipmentBatch.objects.select_for_update().get(pk=pk)
+            if batch.status == QualityShipmentBatch.Status.VOID:
+                return Response(self.get_serializer(batch).data)
+            if batch.status != QualityShipmentBatch.Status.CONFIRMED:
+                raise DRFValidationError(
+                    {"status": "只有已确认的出货批次可以使用确认作废接口。"}
+                )
+            lines = list(
+                QualityShipmentLine.objects.select_for_update()
+                .select_related("process_card", "order")
+                .filter(batch=batch)
+                .order_by("id")
+            )
+            line_ids = [line.pk for line in lines]
+            card_ids = {line.process_card_id for line in lines if line.process_card_id}
+            bindings = list(
+                ProcessCardUnitBinding.objects.select_for_update()
+                .select_related("process_card")
+                .filter(shipment_batch=batch)
+            )
+            card_ids.update(binding.process_card_id for binding in bindings)
+            order_ids = {
+                line.order_id or (line.process_card.order_id if line.process_card_id else None)
+                for line in lines
+            }
+            order_ids.update(
+                QualityShipmentOrderAllocation.objects.filter(
+                    shipment_line_id__in=line_ids
+                ).values_list("order_id", flat=True)
+            )
+            order_ids.discard(None)
+            self._amend_downstream(batch, line_ids)
+            before = _shipment_batch_snapshot(batch, lines=lines, bindings=bindings)
+
+            # A binding is the *current* physical identity, not the immutable
+            # shipment posting.  Remove it so scans cannot treat a VOID batch
+            # as an active outbound occurrence; the audit snapshot retains the
+            # exact old binding.
+            ProcessCardUnitBinding.objects.filter(shipment_batch=batch).delete()
+            QualityShipmentBatch.objects.filter(pk=batch.pk).update(
+                status=QualityShipmentBatch.Status.VOID,
+                updated_at=timezone.now(),
+            )
+            batch.status = QualityShipmentBatch.Status.VOID
+            for card_id in card_ids:
+                card = ProcessCard.objects.filter(pk=card_id).first()
+                if card is not None:
+                    card.refresh_shipping_status()
+            sync_order_status_from_delivery(
+                order_ids,
+                source="SHIPMENT",
+                operator=request.user,
+                reason_prefix=f"作废出货 {batch.shipment_no}。",
+            )
+            after = _shipment_batch_snapshot(batch, lines=lines, bindings=[])
+            QualityShipmentBatchRevision.objects.create(
+                batch=batch,
+                action=QualityShipmentBatchRevision.Action.VOID,
+                reason=reason,
+                before_snapshot=before,
+                after_snapshot=after,
+                operator=request.user,
+            )
+            return Response(self.get_serializer(batch).data)
 
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):

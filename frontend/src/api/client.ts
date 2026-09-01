@@ -33,6 +33,7 @@ import type {
   QualityUnitWeight,
   QualityShipmentBatch,
   QualityShipmentBatchInput,
+  QualityShipmentBatchAmendInput,
   QualityShipmentBatchResult,
   QualityShipmentAllocationPreview,
   QualityReworkCase,
@@ -623,6 +624,16 @@ export const qualityWorkflowApi = {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),
+  /**
+   * Correct a confirmed weighted shipment in place.  This is intentionally a
+   * separate action from PATCH: the server replays order allocation and card
+   * binding atomically and records the operation as an auditable amendment.
+   */
+  amendShipmentBatch: (id: number | string, body: QualityShipmentBatchAmendInput | Record<string, unknown>) =>
+    apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/amend/`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   confirmShipmentBatch: (id: number | string, processCardBindings: NonNullable<QualityShipmentBatchInput['process_card_bindings']> = []) => apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/confirm/`, {
     method: 'POST',
     body: JSON.stringify(processCardBindings.length ? { process_card_bindings: processCardBindings } : {}),
@@ -638,6 +649,12 @@ export const qualityWorkflowApi = {
       body: JSON.stringify({ cards }),
     }),
   voidShipmentBatch: (id: number | string) => apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/void/`, { method: 'POST', body: JSON.stringify({}) }),
+  /** Void an already-confirmed shipment while retaining its audit row. */
+  voidConfirmedShipmentBatch: (id: number | string, voidReason = '用户作废') =>
+    apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/void-confirmed/`, {
+      method: 'POST',
+      body: JSON.stringify({ void_reason: voidReason }),
+    }),
   createAndConfirmShipmentBatch: async (body: QualityShipmentBatchInput) => {
     const { process_card_bindings: processCardBindings = [], ...createBody } = body
     const draft = await qualityWorkflowApi.createShipmentBatch(createBody as QualityShipmentBatchInput)

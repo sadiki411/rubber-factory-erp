@@ -11,6 +11,7 @@ import {
   Form,
   Input,
   InputNumber,
+  Popconfirm,
   Radio,
   Row,
   Select,
@@ -44,6 +45,7 @@ import type {
   QualityShipmentAllocationPreview,
   QualityShipmentBatch,
   QualityShipmentBatchLine,
+  QualityProcessCardBinding,
   QualityShipmentBatchInput,
   QualityShipmentOrderAllocation,
   QualityProcessCardScanResult,
@@ -62,6 +64,7 @@ export interface QualityWeightShipmentLineSeed {
   key?: string | number
   process_card_id?: string | number
   card_no?: string
+  shipment_unit_no?: number | string | null
   order_id?: number
   order?: QualityOrder
   quantity?: number | string | null
@@ -99,6 +102,12 @@ export interface QualityWeightShipmentDrawerProps {
   /** Override persistence when the parent owns query refresh/fallback logic. */
   onSubmit?: (payload: QualityShipmentBatchInput) => Promise<unknown>
   onSaved?: (result?: unknown) => void | Promise<void>
+  /**
+   * Open the drawer as an auditable correction for an already-confirmed
+   * weighted batch.  Confirmed rows are immutable through PATCH; submit is
+   * routed to the dedicated amend action instead.
+   */
+  amendConfirmed?: boolean
 }
 
 type DrawerValues = {
@@ -127,6 +136,7 @@ type DrawerValues = {
   customer?: string
   delivery_info?: string
   backfill_reason?: string
+  amend_reason?: string
 }
 
 type WeightEntryMode = 'same' | 'individual'
@@ -150,6 +160,13 @@ type ScannedLineOverride = {
   single_batch_net_weight_kg?: number | null
   process_card_shipment_quantity?: number | null
   product_batch_count?: number
+}
+
+type EditableBinding = {
+  key: string
+  card_no: string
+  shipment_unit_no: number
+  order_id?: number | null
 }
 
 interface EditableLine extends QualityWeightShipmentLineSeed {
@@ -328,6 +345,7 @@ function batchLineSeeds(lines?: QualityShipmentBatchLine[]) {
       key: String(line.id ?? line.process_card_id ?? `draft-line-${index}`),
       process_card_id: line.process_card_id ?? processCard?.id,
       card_no: line.card_no || processCard?.card_no,
+      shipment_unit_no: (line as QualityShipmentBatchLine & { shipment_unit_no?: number | string | null }).shipment_unit_no,
       order_id: line.order_id ?? order?.id ?? processCard?.order_id,
       order,
       quantity: numeric(line.quantity ?? line.piece_quantity),
@@ -342,6 +360,49 @@ function batchLineSeeds(lines?: QualityShipmentBatchLine[]) {
       material_snapshot: line.material_snapshot,
     } satisfies QualityWeightShipmentLineSeed
   })
+}
+
+/** Find the physical package number for a persisted line.  Older serializer
+ * responses do not expose shipment_unit_no on the line itself, so prefer the
+ * explicit binding relation and finally fall back to the stable line order. */
+function shipmentUnitNoForLine(
+  line: EditableLine,
+  index: number,
+  bindings: QualityProcessCardBinding[] = [],
+) {
+  const explicit = numeric(line.shipment_unit_no)
+  if (explicit != null && explicit > 0) return explicit
+  const match = bindings.find((binding) => (
+    (line.process_card_id != null && String(binding.process_card_id) === String(line.process_card_id))
+      || (line.key && binding.shipment_line_id != null && String(binding.shipment_line_id) === String(line.key))
+  ))
+  const bound = numeric(match?.shipment_unit_no)
+  return bound != null && bound > 0 ? bound : index + 1
+}
+
+function editableBindingSeeds(
+  batch: QualityShipmentBatch | undefined,
+  lines: EditableLine[],
+) {
+  const bindings = batch?.process_card_bindings || []
+  if (bindings.length) {
+    return [...bindings]
+      .map((binding, index) => ({
+        key: String(binding.id ?? `binding-${binding.shipment_unit_no ?? index + 1}`),
+        card_no: text(binding.card_no),
+        shipment_unit_no: numeric(binding.shipment_unit_no) || index + 1,
+        order_id: numeric(binding.order_id),
+      }))
+      .sort((left, right) => left.shipment_unit_no - right.shipment_unit_no)
+  }
+  return lines
+    .filter((line) => text(line.card_no))
+    .map((line, index) => ({
+      key: `line-binding-${line.key}`,
+      card_no: text(line.card_no),
+      shipment_unit_no: shipmentUnitNoForLine(line, index),
+      order_id: numeric(line.order_id),
+    }))
 }
 
 function lineOrder(line: EditableLine, orders: QualityOrder[]) {
@@ -412,6 +473,7 @@ export function QualityWeightShipmentDrawer({
   onClose,
   onSubmit,
   onSaved,
+  amendConfirmed = false,
 }: QualityWeightShipmentDrawerProps) {
   const [form] = Form.useForm<DrawerValues>()
   const { message } = App.useApp()
@@ -440,6 +502,11 @@ export function QualityWeightShipmentDrawer({
   // continue to come from the scan response so a refresh cannot overwrite a
   // changed weight or standard quantity.
   const [scannedLineOverrides, setScannedLineOverrides] = useState<Record<string, ScannedLineOverride>>({})
+  // Confirmed batches keep physical card bindings separately from shipment
+  // lines.  One line may represent many equally-weighed packages, so deriving
+  // bindings from lines would silently drop cards during an amendment.
+  const [editableBindings, setEditableBindings] = useState<EditableBinding[]>([])
+  const [bindingScannerIndex, setBindingScannerIndex] = useState<number | undefined>()
   const shipmentCheckRequestRef = useRef(0)
   const entrySessionRef = useRef(0)
   const submittingRef = useRef(false)
@@ -464,6 +531,7 @@ export function QualityWeightShipmentDrawer({
   const processCardShipmentQuantity = Form.useWatch('process_card_shipment_quantity', form)
   const selectedInspectors = Form.useWatch('inspector_ids', form) || []
   const activeBatch = loadedDraft || batch
+  const activeBatchBindings = activeBatch?.process_card_bindings || []
 
   const allKnownOrders = useMemo(() => {
     const seen = new Set<number>()
@@ -653,6 +721,8 @@ export function QualityWeightShipmentDrawer({
     submittingRef.current = false
     form.resetFields()
     setLines([])
+    setEditableBindings([])
+    setBindingScannerIndex(undefined)
     setScannedCards([])
     setScannedLineOverrides({})
     setWeightEntryMode('same')
@@ -739,8 +809,13 @@ export function QualityWeightShipmentDrawer({
     // selection. Only explicit line seeds (the shipment basket) may activate
     // line mode; otherwise every historic card would reappear in the next new
     // shipment and hide the scanner.
+    const seededLines = seedLines(draftLines, EMPTY_PROCESS_CARDS)
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLines(seedLines(draftLines, EMPTY_PROCESS_CARDS))
+    setLines(seededLines)
+    setEditableBindings(amendConfirmed && activeBatch?.status === 'CONFIRMED'
+      ? editableBindingSeeds(activeBatch, seededLines)
+      : [])
+    setBindingScannerIndex(undefined)
     setScannedCards([])
     setScannedLineOverrides({})
     setWeightEntryMode('same')
@@ -764,7 +839,7 @@ export function QualityWeightShipmentDrawer({
     // selected workflow-card set are the only events that should reset typed
     // values. Background order/query refreshes must not wipe a mobile form.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeBatch?.id, form, initialOrderId, lineSeedKey, open, resetKey, shipment?.id])
+  }, [activeBatch?.id, activeBatch?.status, amendConfirmed, form, initialOrderId, lineSeedKey, open, resetKey, shipment?.id])
 
   useEffect(() => {
     if (!open || !selectedOrder) return
@@ -1084,6 +1159,43 @@ export function QualityWeightShipmentDrawer({
     })
   }
 
+  const updateEditableBinding = (index: number, cardNo: string) => {
+    setEditableBindings((previous) => previous.map((binding, bindingIndex) => (
+      bindingIndex === index ? { ...binding, card_no: cardNo } : binding
+    )))
+  }
+
+  const removeEditableBinding = (index: number) => {
+    setEditableBindings((previous) => previous.filter((_, bindingIndex) => bindingIndex !== index))
+  }
+
+  const handleEditableBindingScan = async (cardNo: string) => {
+    if (bindingScannerIndex == null) return false
+    const entered = text(cardNo).toUpperCase()
+    if (!entered) return false
+    const duplicate = editableBindings.some((binding, index) => index !== bindingScannerIndex && text(binding.card_no).toUpperCase() === entered)
+    if (duplicate) throw new Error(`流程卡 ${entered} 已在本批其他包装中使用。`)
+    let normalized = entered
+    try {
+      const lookup = await qualityWorkflowApi.scanProcessCard(entered)
+      const active = lookup.active_card || lookup.scanned_card
+      if (lookup.scanned_card?.replaced_by_id || (lookup.scanned_card && active && String(lookup.scanned_card.id) !== String(active.id))) {
+        throw new Error(`旧流程卡 ${entered} 已作废，请扫描替代卡 ${active?.card_no || '（见补卡记录）'}。`)
+      }
+      normalized = text(active?.card_no) || entered
+    } catch (error) {
+      // A card may have been entered while its new record is still being
+      // synchronized.  Let the authoritative amend endpoint decide in that
+      // case; only surface explicit replacement/validation errors.
+      if ((error as Error).message && !/404|未找到|不存在/.test((error as Error).message)) throw error
+    }
+    setEditableBindings((previous) => previous.map((binding, index) => (
+      index === bindingScannerIndex ? { ...binding, card_no: normalized } : binding
+    )))
+    setBindingScannerIndex(undefined)
+    return true
+  }
+
   const clearScannedCards = () => {
     setScannedCards([])
     setScannedLineOverrides({})
@@ -1255,14 +1367,15 @@ export function QualityWeightShipmentDrawer({
     const shipmentNo = text(values.shipment_no)
     const duplicateFound = shipmentNo ? await checkShipmentNumber(shipmentNo) : false
     const editingDraft = Boolean(activeBatch?.id && activeBatch.status !== 'CONFIRMED' && activeBatch.status !== 'VOID')
+    const editingConfirmed = Boolean(amendConfirmed && activeBatch?.id && activeBatch.status === 'CONFIRMED')
     const localMatch = shipmentNo
       ? localDuplicateRecord(shipmentNo, shipment, activeBatch, existingShipments, existingBatches)
       : undefined
-    if ((localMatch && localMatch.status !== 'DRAFT' && !editingDraft) || duplicateFound) {
+    if ((localMatch && localMatch.status !== 'DRAFT' && !editingDraft && !editingConfirmed) || duplicateFound) {
       message.error('出货单号已存在且已确认或已作废，请更换后再提交。')
       return
     }
-    if ((draftMatchRef.current || draftMatch) && !editingDraft) {
+    if ((draftMatchRef.current || draftMatch) && !editingDraft && !editingConfirmed) {
       message.warning('该出货单号已有未完成草稿，请先点击“继续填写草稿”。')
       return
     }
@@ -1295,6 +1408,22 @@ export function QualityWeightShipmentDrawer({
     if (isLineMode && activeLines.some((line) => line.process_card_id == null && line.order_id == null)) {
       message.warning('存在尚未关联订单的流程卡，请先选择候选订单后再确认。')
       return
+    }
+    if (editingConfirmed && !text(values.amend_reason)) {
+      message.warning('请填写本次纠正原因，便于追溯。')
+      return
+    }
+    if (editingConfirmed) {
+      const seenCardNos = new Set<string>()
+      for (const binding of editableBindings) {
+        const cardNo = text(binding.card_no).toUpperCase()
+        if (!cardNo) continue // An empty row explicitly removes that binding.
+        if (seenCardNos.has(cardNo)) {
+          message.error(`流程卡 ${cardNo} 重复，请保留一个包装绑定。`)
+          return
+        }
+        seenCardNos.add(cardNo)
+      }
     }
     if (overLimit) {
       message.error('存在超过理论重量上限 10% 的明细，提交已被阻止。')
@@ -1331,17 +1460,28 @@ export function QualityWeightShipmentDrawer({
       inspector_id: inspectorSelection[0] ?? null,
       client_key: activeBatch?.client_key || `quality-weight-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       notes: text(values.notes),
+      amend_reason: amendConfirmed ? text(values.amend_reason) : undefined,
       confirm_warnings: false,
-      process_card_bindings: basketLineMode ? undefined : scannedCards.map((item, index) => ({
-        card_no: item.cardNo,
-        shipment_unit_no: index + 1,
-        order_id: numeric((item.lookup.active_card || item.lookup.scanned_card)?.order_id),
-      })),
+      process_card_bindings: editingConfirmed
+        ? editableBindings
+          .filter((binding) => text(binding.card_no))
+          .map((binding) => ({
+          card_no: text(binding.card_no).toUpperCase(),
+          shipment_unit_no: binding.shipment_unit_no,
+          order_id: numeric(binding.order_id) ?? null,
+        }))
+        : basketLineMode ? undefined : scannedCards.map((item, index) => ({
+          card_no: item.cardNo,
+          shipment_unit_no: index + 1,
+          order_id: numeric((item.lookup.active_card || item.lookup.scanned_card)?.order_id),
+        })),
       lines: isLineMode
-        ? activeLines.map((line) => {
+        ? activeLines.map((line, index) => {
           const metrics = editableLineMetrics(line)
           return {
             process_card_id: line.process_card_id,
+            card_no: text(line.card_no) || undefined,
+            shipment_unit_no: shipmentUnitNoForLine(line, index, activeBatchBindings),
             order_id: line.order_id,
             quantity: metrics.quantity || undefined,
             piece_quantity: metrics.quantity || undefined,
@@ -1395,6 +1535,8 @@ export function QualityWeightShipmentDrawer({
           inspector_ids: inspectorSelection,
           notes: text(values.notes),
         })
+      } else if (editingConfirmed && activeBatch?.id) {
+        result = await qualityWorkflowApi.amendShipmentBatch(activeBatch.id, payload)
       } else if (editingDraft && activeBatch?.id) {
         // A duplicate number points at an unfinished server-side draft.  Edit
         // that row in place and confirm it; creating a second row would leave
@@ -1443,7 +1585,9 @@ export function QualityWeightShipmentDrawer({
             : '重量出货已保存，订单余量已同步更新')
       if (submitSession === entrySessionRef.current) closeDrawer()
     } catch (error) {
-      message.error((error as Error).message || '重量出货提交失败')
+      message.error((error as Error).message || (editingConfirmed
+        ? '已确认出货纠正失败；如该批次已有退货或返工记录，请先核对关联记录。'
+        : '重量出货提交失败'))
     } finally {
       if (submitSession === entrySessionRef.current) {
         submittingRef.current = false
@@ -1641,16 +1785,24 @@ export function QualityWeightShipmentDrawer({
       open={open}
       onClose={closeDrawer}
       size={760}
-      title={shipment ? `编辑重量出货 · ${shipment.shipment_no}` : activeBatch ? `${activeBatch.status === 'DRAFT' ? '继续填写草稿' : '编辑重量出货'} · ${activeBatch.shipment_no}` : '新增重量出货'}
+      title={shipment
+        ? `编辑重量出货 · ${shipment.shipment_no}`
+        : activeBatch
+          ? `${amendConfirmed && activeBatch.status === 'CONFIRMED' ? '纠正已确认出货' : activeBatch.status === 'DRAFT' ? '继续填写草稿' : '编辑重量出货'} · ${activeBatch.shipment_no}`
+          : '新增重量出货'}
       className="quality-weight-shipment-drawer"
-      footer={<Space className="drawer-footer-actions"><Button onClick={saveDraft}>保存草稿</Button><Button onClick={closeDrawer}>取消</Button><Button type="primary" loading={saving} disabled={duplicate || checkingNumber || Boolean(draftMatch && !activeBatch)} onClick={() => void submit()}>确认出货</Button></Space>}
+      footer={amendConfirmed && activeBatch?.status === 'CONFIRMED'
+        ? <Space className="drawer-footer-actions"><Button onClick={closeDrawer}>取消</Button><Button type="primary" loading={saving} disabled={duplicate || checkingNumber} onClick={() => void submit()}>保存纠正</Button></Space>
+        : <Space className="drawer-footer-actions"><Button onClick={saveDraft}>保存草稿</Button><Button onClick={closeDrawer}>取消</Button><Button type="primary" loading={saving} disabled={duplicate || checkingNumber || Boolean(draftMatch && !activeBatch)} onClick={() => void submit()}>确认出货</Button></Space>}
     >
       <Alert
         className="quality-form-alert"
         type="info"
         showIcon
-        message="新出货统一按成品重量登记"
-        description="连续扫码时一张流程卡对应一包：重量相同可只填一次，扫码张数自动成为批数；重量不同可切换为逐包填写。每包换算件数超过对应流程卡标准数量 10% 会阻止提交。"
+        message={amendConfirmed && activeBatch?.status === 'CONFIRMED' ? '纠正已确认出货' : '新出货统一按成品重量登记'}
+        description={amendConfirmed && activeBatch?.status === 'CONFIRMED'
+          ? '修改会原地重算出货件数、重量、订单分配和流程卡绑定，并保留纠正审计记录；请填写纠正原因后保存。'
+          : '连续扫码时一张流程卡对应一包：重量相同可只填一次，扫码张数自动成为批数；重量不同可切换为逐包填写。每包换算件数超过对应流程卡标准数量 10% 会阻止提交。'}
       />
       {!basketLineMode && <Card size="small" className="quality-weight-scan-card" title="流程卡扫码（选填）" extra={<Button type="primary" icon={<QrcodeOutlined />} onClick={() => setScannerOpen(true)}>连续扫码</Button>}>
         {reshipCase ? <Alert
@@ -1679,6 +1831,40 @@ export function QualityWeightShipmentDrawer({
             : <Alert type="info" showIcon message={`已扫 ${scannedCards.length} 张卡＝${scannedCards.length} 包`} description="每张卡会生成一条独立重量明细；切换时已用当前公共单重、净重和流程卡数量预填，可只修改重量不同的包。" />}
           {weightEntryMode === 'same' && scannedCards.length > effectiveBatchCount && <Alert type="error" showIcon message="扫码张数超过相同称重批数" description="请增加批数或移除多余流程卡后再确认。" />}
         </> : <Typography.Text type="secondary">正常出货不强制逐张扫码；愿意扫码时可连续扫任意部分，其余批次仍按“卡号未录入”正常出货。退货时再扫码即可首次绑定。</Typography.Text>}
+      </Card>}
+      {amendConfirmed && activeBatch?.status === 'CONFIRMED' && <Card
+        size="small"
+        className="quality-weight-binding-card"
+        title="已扫描流程卡（可纠正）"
+        extra={editableBindings.length > 0 && <Popconfirm
+          title="清空本批全部流程卡绑定？"
+          description="保存纠正后将解除这些包装与流程卡的关联，之后无法通过原卡扫码定位本批。"
+          okText="确认清空"
+          cancelText="取消"
+          onConfirm={() => setEditableBindings([])}
+        ><Button danger type="link">清空全部卡号</Button></Popconfirm>}
+      >
+        <Alert type="info" showIcon message="每行对应一个物理包装" description="可直接改写卡号、扫码替换，或清空某一行解除绑定；保存纠正后系统会校验卡号归属与重复绑定。" />
+        {editableBindings.length ? <div className="quality-weight-binding-list">
+          {editableBindings.map((binding, index) => <div className="quality-weight-binding-row" key={binding.key}>
+            <Typography.Text strong>第 {binding.shipment_unit_no} 包</Typography.Text>
+            <Input
+              allowClear
+              value={binding.card_no}
+              placeholder="流程卡号（留空解除绑定）"
+              onChange={(event) => updateEditableBinding(index, event.target.value)}
+            />
+            <Space wrap>
+              <Button size="small" icon={<QrcodeOutlined />} onClick={() => setBindingScannerIndex(index)}>扫码替换</Button>
+              <Popconfirm
+                title="解除这一包的流程卡绑定？"
+                okText="解除"
+                cancelText="取消"
+                onConfirm={() => removeEditableBinding(index)}
+              ><Button size="small" danger type="link">移除</Button></Popconfirm>
+            </Space>
+          </div>)}
+        </div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本批暂无流程卡绑定" />}
       </Card>}
       {duplicate && <Alert type="error" showIcon message="出货单号重复" description="请更换出货单号；系统不会覆盖已有出货记录。" className="quality-weight-duplicate-alert" />}
       {draftMatch && !activeBatch && <Alert
@@ -1799,6 +1985,12 @@ export function QualityWeightShipmentDrawer({
           {(overLimit || underLimit) && <Alert className="quality-weight-limit-alert" type={overLimit ? 'error' : 'warning'} showIcon message={overLimit ? '超过理论重量 +10%，禁止提交' : '实称净重低于理论重量，请核对后确认'} />}
         </Card>
         <Form.Item name="backfill_reason" label="历史日期补录原因" extra="早于今天的出货日期建议填写原因"><Input.TextArea rows={2} maxLength={300} showCount /></Form.Item>
+        {amendConfirmed && activeBatch?.status === 'CONFIRMED' && <Form.Item
+          name="amend_reason"
+          label="纠正原因"
+          rules={[{ required: true, whitespace: true, message: '请填写本次纠正原因' }]}
+          extra="例如：标准数量录入错误、称重修正、扫描卡号录入错误"
+        ><Input.TextArea rows={2} maxLength={300} showCount placeholder="请说明为什么修改已确认出货" /></Form.Item>}
         <Form.Item name="notes" label="备注"><Input.TextArea rows={3} maxLength={500} showCount placeholder="可记录车次、包装、交接或称重说明" /></Form.Item>
       </Form>
       {!isLineMode && candidateLoaded && !availableOrders.length && !selectedOrder && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无仍可出货的候选订单；无订单关联的手工出货不能确认" />}
@@ -1815,6 +2007,15 @@ export function QualityWeightShipmentDrawer({
         initialValues={scannedCards.map((item) => item.cardNo)}
         onClose={() => setScannerOpen(false)}
         onScan={handleShipmentCardScan}
+      />
+      <QualityQrScanner
+        open={open && bindingScannerIndex != null}
+        title="扫描替换流程卡"
+        description="扫描后将替换当前物理包装的流程卡号；保存纠正时才会正式写入。"
+        initialValues={bindingScannerIndex == null ? [] : [editableBindings[bindingScannerIndex]?.card_no].filter(Boolean) as string[]}
+        continuous={false}
+        onClose={() => setBindingScannerIndex(undefined)}
+        onScan={handleEditableBindingScan}
       />
     </Drawer>
   )

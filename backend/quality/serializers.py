@@ -1408,6 +1408,47 @@ class ProcessCardBindingRequestSerializer(serializers.Serializer):
     cards = ProcessCardBindingInputSerializer(many=True, allow_empty=False)
 
 
+class QualityShipmentBatchAmendRequestSerializer(serializers.Serializer):
+    """Request envelope for an auditable correction of a confirmed batch.
+
+    The mutable shipment payload intentionally remains open-ended here so the
+    action can share the normal batch/line serializer (including its legacy
+    aliases).  Only the operation reason and the two special replacement
+    fields are defined at this envelope level.
+    """
+
+    amend_reason = serializers.CharField(required=False, allow_blank=False)
+    reason = serializers.CharField(required=False, allow_blank=False)
+    lines = serializers.ListField(required=False, allow_empty=False)
+    process_card_bindings = serializers.ListField(required=False, allow_empty=True)
+    cards = serializers.ListField(required=False, allow_empty=True)
+
+    def validate(self, attrs):
+        reason = str(attrs.get("amend_reason") or attrs.get("reason") or "").strip()
+        if not reason:
+            raise serializers.ValidationError(
+                {"amend_reason": "已确认出货修订必须填写原因。"}
+            )
+        attrs["amend_reason"] = reason
+        return attrs
+
+
+class QualityShipmentBatchVoidConfirmedRequestSerializer(serializers.Serializer):
+    """Request envelope for voiding a confirmed shipment batch."""
+
+    void_reason = serializers.CharField(required=False, allow_blank=False)
+    reason = serializers.CharField(required=False, allow_blank=False)
+
+    def validate(self, attrs):
+        reason = str(attrs.get("void_reason") or attrs.get("reason") or "").strip()
+        if not reason:
+            raise serializers.ValidationError(
+                {"void_reason": "已确认出货作废必须填写原因。"}
+            )
+        attrs["void_reason"] = reason
+        return attrs
+
+
 class ProcessCardReplaceRequestSerializer(serializers.Serializer):
     new_card_no = serializers.CharField(max_length=150)
     notes = serializers.CharField(required=False, allow_blank=True)

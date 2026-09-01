@@ -28,6 +28,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { PlusOutlined } from '@ant-design/icons'
 import { qualityWorkflowApi } from '../api/client'
 import { QualityReworkCaseMobileList } from './QualityReworkCaseMobileList'
+import { QualityWeightShipmentDrawer } from './QualityWeightShipmentDrawer'
 import type {
   QualityEmployee,
   QualityOrder,
@@ -80,6 +81,8 @@ export interface ShipmentBatchReviewDrawerProps {
   employees: QualityEmployee[]
   onClose: () => void
   onSaved: () => Promise<void>
+  /** Open the full auditable amendment editor for a confirmed batch. */
+  onAmend?: (item: QualityShipmentBatch) => void
 }
 
 export function ShipmentBatchReviewDrawer({
@@ -88,6 +91,7 @@ export function ShipmentBatchReviewDrawer({
   employees,
   onClose,
   onSaved,
+  onAmend,
 }: ShipmentBatchReviewDrawerProps) {
   const [form] = Form.useForm<Record<string, unknown>>()
   const [saving, setSaving] = useState(false)
@@ -227,6 +231,26 @@ export function ShipmentBatchReviewDrawer({
     }
   }
 
+  const voidConfirmed = async () => {
+    if (!item || item.status !== 'CONFIRMED') return
+    const voidReason = String(form.getFieldValue('void_reason') || '').trim()
+    if (!voidReason) {
+      message.warning('请填写作废原因，便于追溯。')
+      return
+    }
+    setSaving(true)
+    try {
+      await qualityWorkflowApi.voidConfirmedShipmentBatch(item.id, voidReason)
+      await onSaved()
+      message.success('已确认出货已作废，订单与流程卡余量已同步恢复')
+      onClose()
+    } catch (error) {
+      message.error((error as Error).message || '已确认出货作废失败；如存在退货或返工关联，请先处理关联记录。')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const voidDraft = async () => {
     if (!item) return
     setSaving(true)
@@ -246,11 +270,12 @@ export function ShipmentBatchReviewDrawer({
     open={open}
     onClose={onClose}
     width="min(960px, 100vw)"
+    className="quality-shipment-batch-drawer"
     title={item ? `出货批次详情 · ${item.shipment_no}` : '出货批次详情'}
     footer={item?.status === 'VOID'
       ? <Button onClick={onClose}>关闭</Button>
       : item?.status === 'CONFIRMED'
-      ? <Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} onClick={() => void submit(false)}>保存品检员</Button></Space>
+      ? <Space className="drawer-footer-actions"><Popconfirm title="确定作废这张已确认出货单吗？" description="作废会恢复订单/流程卡可出货余量，且仅允许在没有退货或返工关联时执行。" okText="确认作废" cancelText="取消" onConfirm={() => void voidConfirmed()}><Button danger loading={saving}>作废出货</Button></Popconfirm><Button onClick={() => onAmend?.(item)}>纠正出货</Button><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} onClick={() => void submit(false)}>保存品检员</Button></Space>
       : <Space className="drawer-footer-actions"><Popconfirm title="确定作废这个草稿批次吗？" onConfirm={() => void voidDraft()}><Button danger loading={saving}>作废草稿</Button></Popconfirm><Button onClick={onClose}>取消</Button><Button loading={saving} onClick={() => void submit(false)}>保存草稿</Button><Button type="primary" loading={saving} onClick={() => void submit(true)}>保存并确认</Button></Space>}
   >
     {hasAutoAllocation && <Alert
@@ -314,6 +339,7 @@ export function ShipmentBatchReviewDrawer({
             <Form.Item name="backfill_reason" label="历史日期补录原因" extra="仅补录早于今天的日期时必填"><Input.TextArea rows={2} maxLength={300} showCount /></Form.Item>
             <Form.Item name="notes" label="备注"><Input.TextArea rows={3} maxLength={300} showCount /></Form.Item>
           </>}
+          {item?.status === 'CONFIRMED' && <Form.Item name="void_reason" label="作废原因（作废时必填）" extra="仅在确需撤销整张出货单时填写"><Input.TextArea rows={2} maxLength={300} showCount placeholder="例如：标准数量录入错误，需要重新登记" /></Form.Item>}
         </Form>
       </>}
   </Drawer>
@@ -560,6 +586,7 @@ export function QualityWorkflowManagement({ orders, employees, cards, unitWeight
   const [caseItem, setCaseItem] = useState<QualityReworkCase | null | undefined>(undefined)
   const [attemptCase, setAttemptCase] = useState<QualityReworkCase | undefined>(undefined)
   const [batchItem, setBatchItem] = useState<QualityShipmentBatch | undefined>(undefined)
+  const [amendItem, setAmendItem] = useState<QualityShipmentBatch | undefined>(undefined)
   const cardLabels = useMemo(() => new Map(cards.map((card) => [String(card.id), card.card_no])), [cards])
   const weightColumns: TableColumnsType<QualityUnitWeight> = [
     { title: '产品 / 材质', key: 'spec', render: (_, row) => {
@@ -649,7 +676,27 @@ export function QualityWorkflowManagement({ orders, employees, cards, unitWeight
         : reworkCases.length ? <Table rowKey="id" dataSource={reworkCases} columns={caseColumns} scroll={{ x: 1260 }} pagination={{ pageSize: 8 }} /> : <Empty description="暂无退货返工记录" />}</Card> },
     ]} />
     <WeightDrawer open={weightItem !== undefined} item={weightItem || undefined} orders={orders} onClose={() => setWeightItem(undefined)} onSaved={onRefresh} />
-    <ShipmentBatchReviewDrawer open={!!batchItem} item={batchItem} employees={employees} onClose={() => setBatchItem(undefined)} onSaved={onRefresh} />
+    <ShipmentBatchReviewDrawer
+      open={!!batchItem}
+      item={batchItem}
+      employees={employees}
+      onClose={() => setBatchItem(undefined)}
+      onSaved={onRefresh}
+      onAmend={(item) => {
+        setBatchItem(undefined)
+        setAmendItem(item)
+      }}
+    />
+    <QualityWeightShipmentDrawer
+      open={!!amendItem}
+      batch={amendItem}
+      amendConfirmed
+      orders={orders}
+      employees={employees}
+      existingBatches={batches}
+      onClose={() => setAmendItem(undefined)}
+      onSaved={async () => onRefresh()}
+    />
     <ReworkCaseDrawer open={caseItem !== undefined} item={caseItem || undefined} cards={cards} batches={batches} shipmentOptions={shipmentOptions} onClose={() => setCaseItem(undefined)} onSaved={onRefresh} />
     <AttemptDrawer open={!!attemptCase} item={attemptCase} onClose={() => setAttemptCase(undefined)} onSaved={onRefresh} />
   </div>

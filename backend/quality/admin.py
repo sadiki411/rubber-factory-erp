@@ -5,7 +5,8 @@ from orders.services import model_snapshot, record_revision
 
 from .models import (DefectReason, QualityEmployee, QualityOrder, QualityShipment, ReturnRework,
                      ProductUnitWeight, ProcessCard, ProcessCardUnitBinding, QualityShipmentBatch,
-                     QualityShipmentLine, QualityReworkCase, QualityReworkAttempt)
+                     QualityShipmentBatchRevision, QualityShipmentLine, QualityReworkCase,
+                     QualityReworkAttempt)
 
 
 class NoDeleteAdmin(admin.ModelAdmin):
@@ -195,6 +196,22 @@ class QualityShipmentBatchAdmin(AuditAdmin):
         if obj and obj.status == QualityShipmentBatch.Status.CONFIRMED:
             return tuple(field.name for field in self.model._meta.fields)
         return super().get_readonly_fields(request, obj)
+
+
+@admin.register(QualityShipmentBatchRevision)
+class QualityShipmentBatchRevisionAdmin(NoDeleteAdmin):
+    """Read-only audit trail for confirmed shipment amendments/voids."""
+
+    list_display = ("batch", "action", "reason", "operator", "created_at")
+    list_filter = ("action", "created_at")
+    search_fields = ("batch__shipment_no", "reason", "operator__username")
+    readonly_fields = tuple(field.name for field in QualityShipmentBatchRevision._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(QualityShipmentLine)

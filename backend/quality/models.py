@@ -1135,6 +1135,56 @@ class QualityShipmentBatch(TimeStampedModel):
         return self.shipment_no
 
 
+class QualityShipmentBatchRevision(TimeStampedModel):
+    """Immutable audit event for a confirmed shipment correction or void.
+
+    Shipment batches and their physical lines are intentionally retained as
+    workflow history.  This separate event row records exactly what an
+    operator changed, including the before/after snapshots, without relying
+    on mutable ``notes`` text or the generic order-revision table.
+    """
+
+    class Action(models.TextChoices):
+        AMEND = "AMEND", "修订"
+        VOID = "VOID", "作废"
+
+    batch = models.ForeignKey(
+        QualityShipmentBatch,
+        verbose_name="shipment batch",
+        related_name="revisions",
+        on_delete=models.PROTECT,
+    )
+    action = models.CharField(
+        "action", max_length=20, choices=Action.choices, db_index=True
+    )
+    reason = models.TextField("reason")
+    before_snapshot = models.JSONField("before snapshot", default=dict)
+    after_snapshot = models.JSONField("after snapshot", default=dict)
+    operator = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        verbose_name="operator",
+        related_name="quality_shipment_batch_revisions",
+        on_delete=models.PROTECT,
+    )
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def clean(self):
+        self.reason = str(self.reason or "").strip()
+        if not self.reason:
+            raise ValidationError({"reason": "修订或作废原因不能为空。"})
+        if self.action not in self.Action.values:
+            raise ValidationError({"action": "无效的出货批次审计动作。"})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.batch.shipment_no} / {self.action}"
+
+
 class QualityShipmentLine(TimeStampedModel):
     """Net-weight delivery line for one process card."""
 

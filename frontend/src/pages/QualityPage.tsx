@@ -24,6 +24,7 @@ import {
 import { PageTitle } from '../components/PageTitle'
 import { QualityShippingWorkflow } from '../components/QualityShippingWorkflow'
 import { QualityWorkflowManagement, ShipmentBatchReviewDrawer } from '../components/QualityWorkflowManagement'
+import { QualityWeightShipmentDrawer } from '../components/QualityWeightShipmentDrawer'
 import {
   QualityReturnReworkAttemptDrawer,
   QualityReturnReworkDrawer,
@@ -140,6 +141,7 @@ export function QualityPage() {
   const [shipmentForm, setShipmentForm] = useState<{ shipment?: QualityShipment }>()
   const [shipmentSessionKey, setShipmentSessionKey] = useState(0)
   const [batchReviewItem, setBatchReviewItem] = useState<QualityShipmentBatch>()
+  const [batchAmendItem, setBatchAmendItem] = useState<QualityShipmentBatch>()
   const [returnReworkOpen, setReturnReworkOpen] = useState(false)
   const [flowCardReturnOpen, setFlowCardReturnOpen] = useState(false)
   const [flowCardReturnSessionKey, setFlowCardReturnSessionKey] = useState(0)
@@ -659,6 +661,20 @@ export function QualityPage() {
         item={batchReviewItem}
         employees={employees}
         onClose={() => setBatchReviewItem(undefined)}
+        onSaved={async () => refreshAfterShipmentInBackground()}
+        onAmend={(item) => {
+          setBatchReviewItem(undefined)
+          setBatchAmendItem(item)
+        }}
+      />
+      <QualityWeightShipmentDrawer
+        open={!!batchAmendItem}
+        batch={batchAmendItem}
+        amendConfirmed
+        orders={orders}
+        employees={employees}
+        existingBatches={shipmentBatchOptions}
+        onClose={() => setBatchAmendItem(undefined)}
         onSaved={async () => refreshAfterShipmentInBackground()}
       />
       <QualityReturnReworkDrawer
