@@ -1,9 +1,10 @@
+import time
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from types import SimpleNamespace
 from copy import deepcopy
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, OperationalError, connection, transaction
 from django.db.models import Case, Count, DateField, F, IntegerField, Min, Prefetch, Q, Sum, Value, When
 from django.db.models.functions import Coalesce, Least
 from django.utils import timezone
@@ -11,7 +12,7 @@ from django.utils.dateparse import parse_date
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.exceptions import APIException, ValidationError as DRFValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -28,6 +29,7 @@ from .serializers import (
     BindExistingReturnRequestSerializer,
     BulkScannedReturnRequestSerializer,
     DefectReasonSerializer,
+    QualityEmployeeQuickResolveSerializer,
     ProcessCardBindingRequestSerializer,
     ProcessCardReplaceRequestSerializer,
     QualityEmployeeSerializer,
@@ -119,6 +121,12 @@ def _filter_order(queryset, value, field="order"):
 class NoDeleteModelViewSet(viewsets.ModelViewSet):
     pagination_class = QualityPagination
     http_method_names = ["get", "post", "put", "patch", "head", "options"]
+
+
+class QuickResolveBusy(APIException):
+    status_code = 503
+    default_detail = "员工档案暂时忙，请稍后重试。"
+    default_code = "employee_directory_busy"
 
 
 class WorkflowModelViewSet(viewsets.ModelViewSet):
@@ -2481,6 +2489,135 @@ class QualityReworkAttemptViewSet(WorkflowModelViewSet):
 
 class QualityEmployeeViewSet(NoDeleteModelViewSet):
     serializer_class = QualityEmployeeSerializer
+
+    @extend_schema(
+        request=QualityEmployeeQuickResolveSerializer,
+        responses={
+            200: QualityEmployeeSerializer,
+            201: QualityEmployeeSerializer,
+        },
+    )
+    @action(detail=False, methods=["post"], url_path="quick-resolve")
+    def quick_resolve(self, request):
+        input_serializer = QualityEmployeeQuickResolveSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        name = input_serializer.validated_data["name"]
+        purpose = input_serializer.validated_data["purpose"]
+        resolve_key = QualityEmployee.normalize_quick_resolve_key(name)
+
+        # Manual employee records intentionally allow duplicate names.  A
+        # quick-entry key is therefore assigned only after we have proved that
+        # the typed name identifies at most one existing row.
+        matches = [
+            employee
+            for employee in QualityEmployee.objects.filter(
+                Q(quick_resolve_key=resolve_key) | Q(quick_resolve_key__isnull=True)
+            ).order_by("id")
+            if employee.quick_resolve_key == resolve_key
+            or QualityEmployee.normalize_quick_resolve_key(employee.name) == resolve_key
+        ]
+        if len(matches) > 1:
+            raise DRFValidationError(
+                {"name": f"存在多名同名员工“{name}”，请从员工档案中按工号选择。"}
+            )
+
+        created = False
+        if matches:
+            employee = matches[0]
+        else:
+            # Insert without Django's uniqueness SELECT.  The database unique
+            # constraint elects exactly one winner; a losing request re-reads
+            # it after the savepoint has rolled back.  Retrying also covers the
+            # vanishingly unlikely generated employee-number collision.
+            employee = None
+            for attempt in range(5):
+                try:
+                    with transaction.atomic():
+                        candidate = QualityEmployee(
+                            name=name,
+                            role=purpose,
+                            quick_resolve_key=resolve_key,
+                        )
+                        candidate.save(force_insert=True, _skip_unique_validation=True)
+                    employee = candidate
+                    created = True
+                    break
+                except IntegrityError:
+                    employee = QualityEmployee.objects.filter(
+                        quick_resolve_key=resolve_key
+                    ).first()
+                    if employee is not None:
+                        break
+                except OperationalError as exc:
+                    if not self._is_sqlite_lock(exc):
+                        raise
+                    if not self._retry_sqlite_lock(attempt):
+                        raise QuickResolveBusy() from exc
+            if employee is None:
+                raise DRFValidationError(
+                    {"detail": "员工档案冲突，请重试。"}
+                )
+
+        if created:
+            employee.refresh_from_db()
+            return Response(self.get_serializer(employee).data, status=201)
+
+        # Use one conditional UPDATE rather than a read followed by save.  This
+        # is an atomic write on SQLite and a row-safe update on other engines;
+        # the role transition is monotonic (INSPECTOR/REWORKER -> BOTH).
+        for attempt in range(5):
+            try:
+                updated = QualityEmployee.objects.filter(
+                    pk=employee.pk,
+                    is_active=True,
+                ).update(
+                    quick_resolve_key=resolve_key,
+                    role=Case(
+                        When(
+                            role__in=(purpose, QualityEmployee.Role.BOTH),
+                            then=F("role"),
+                        ),
+                        default=Value(QualityEmployee.Role.BOTH),
+                        output_field=QualityEmployee._meta.get_field("role"),
+                    ),
+                    updated_at=timezone.now(),
+                )
+                break
+            except IntegrityError:
+                # A concurrent request may have claimed the normalized key for
+                # the same typed identity between the scan and this write.
+                employee = QualityEmployee.objects.get(
+                    quick_resolve_key=resolve_key
+                )
+            except OperationalError as exc:
+                if not self._is_sqlite_lock(exc):
+                    raise
+                if not self._retry_sqlite_lock(attempt):
+                    raise QuickResolveBusy() from exc
+        else:
+            raise QuickResolveBusy()
+        employee.refresh_from_db()
+        if not updated or not employee.is_active:
+            raise DRFValidationError(
+                {"name": f"员工“{name}”已停用，请先在员工档案中确认并启用。"}
+            )
+
+        return Response(self.get_serializer(employee).data, status=200)
+
+    @staticmethod
+    def _is_sqlite_lock(exc):
+        return connection.vendor == "sqlite" and any(
+            marker in str(exc).lower() for marker in ("locked", "busy")
+        )
+
+    @staticmethod
+    def _retry_sqlite_lock(attempt):
+        """Back off after a recognized SQLite concurrent-writer error."""
+
+        if attempt >= 4:
+            return False
+        time.sleep(0.01 * (2**attempt))
+        return True
 
     def get_queryset(self):
         queryset = QualityEmployee.objects.all()

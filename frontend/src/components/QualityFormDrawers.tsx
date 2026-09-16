@@ -6,6 +6,7 @@ import { qualityApi } from '../api/client'
 import { reworkQuantitiesValid, shipmentQuantitiesMatch, shipmentQuantityAllowed } from '../quality'
 import type { QualityEmployee, QualityOrder, QualityProcessCard, QualityShipment, QualityShipmentBatch, ReturnRework } from '../types'
 import { QualityWeightShipmentDrawer } from './QualityWeightShipmentDrawer'
+import { QualityEmployeeSelect } from './QualityEmployeeSelect'
 
 interface BaseDrawerProps {
   open: boolean
@@ -57,8 +58,6 @@ function LegacyQualityShipmentDrawer({ open, shipment, orders, employees, onClos
   })
 
   const submit = async () => mutation.mutate(await form.validateFields())
-  const inspectors = employees.filter((item) => item.is_active && ['INSPECTOR', 'BOTH'].includes(item.role))
-
   return (
     <Drawer
       open={open}
@@ -77,7 +76,7 @@ function LegacyQualityShipmentDrawer({ open, shipment, orders, employees, onClos
           <Select showSearch optionFilterProp="label" placeholder="选择订单批次" options={orders.map((item) => ({ value: item.id, label: [item.order_no, item.batch_no, item.product_name || item.specification].filter(Boolean).join(' · ') }))} />
         </Form.Item>
         <Form.Item name="inspector_id" label="责任品检员" rules={[{ required: true, message: '请选择品检员' }]}>
-          <Select showSearch optionFilterProp="label" placeholder="选择品检员" options={inspectors.map((item) => ({ value: item.id, label: `${item.employee_no} · ${item.name}${item.team ? ` · ${item.team}` : ''}` }))} />
+          <QualityEmployeeSelect employees={employees} allowClear={false} placeholder="选择或新增品检员" />
         </Form.Item>
         <Row gutter={14}>
           <Col xs={12} sm={6}><Form.Item name="inspection_quantity" label="质检数量" rules={[{ required: true, type: 'number', min: 1, message: '质检数量必须大于 0' }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
@@ -181,7 +180,7 @@ export function QualityEmployeeDrawer({ open, employee, onClose }: EmployeeDrawe
   return (
     <Drawer open={open} onClose={onClose} size={520} title={employee ? `编辑员工 · ${employee.name}` : '新增员工档案'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={mutation.isPending} onClick={() => void submit()}>保存</Button></Space>}>
       <Form form={form} layout="vertical" requiredMark="optional">
-        <Form.Item name="employee_no" label="员工工号" rules={[{ required: true, whitespace: true, message: '请输入员工工号' }]}><Input placeholder="必须唯一" /></Form.Item>
+        <Form.Item name="employee_no" label="员工工号（选填）" extra={employee ? '已有员工的工号不能清空；可以修改为其他唯一编号。' : '不填写时由系统自动生成，保存后仍可编辑。'}><Input placeholder="可留空自动生成" /></Form.Item>
         <Form.Item name="name" label="姓名" rules={[{ required: true, whitespace: true, message: '请输入员工姓名' }]}><Input /></Form.Item>
         <Form.Item name="team" label="班组"><Input placeholder="例如 品检一组" /></Form.Item>
         <Form.Item name="role" label="岗位角色" rules={[{ required: true }]}><Select options={[{ value: 'INSPECTOR', label: '品检员' }, { value: 'REWORKER', label: '返工员' }, { value: 'BOTH', label: '品检兼返工' }]} /></Form.Item>
@@ -239,8 +238,6 @@ export function QualityReworkDrawer({ open, rework, shipments, employees, onClos
   })
 
   const submit = async () => mutation.mutate(await form.validateFields())
-  const inspectors = employees.filter((item) => item.is_active && ['INSPECTOR', 'BOTH'].includes(item.role))
-  const reworkers = employees.filter((item) => item.is_active && ['REWORKER', 'BOTH'].includes(item.role))
   const selectShipment = (shipmentId: number) => {
     const selected = shipments.find((item) => item.id === shipmentId)
     if (selected?.inspector?.id) {
@@ -257,8 +254,8 @@ export function QualityReworkDrawer({ open, rework, shipments, employees, onClos
           <Col xs={24} sm={10}><Form.Item name="rework_date" label="退货 / 返工日期" rules={[{ required: true }]}><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
         </Row>
         <Row gutter={14}>
-          <Col xs={24} sm={12}><Form.Item name="responsible_inspector_id" label="责任品检员" rules={[{ required: true, message: '请选择责任品检员' }]}><Select showSearch optionFilterProp="label" options={inspectors.map((item) => ({ value: item.id, label: `${item.employee_no} · ${item.name}` }))} /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="rework_employee_id" label="返工处理人" rules={[{ required: true, message: '请选择返工处理人' }]}><Select showSearch optionFilterProp="label" options={reworkers.map((item) => ({ value: item.id, label: `${item.employee_no} · ${item.name}` }))} /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="responsible_inspector_id" label="责任品检员" rules={[{ required: true, message: '请选择责任品检员' }]}><QualityEmployeeSelect employees={employees} allowClear={false} placeholder="选择或新增责任品检员" /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="rework_employee_id" label="返工处理人" rules={[{ required: true, message: '请选择返工处理人' }]}><QualityEmployeeSelect employees={employees} purpose="REWORKER" allowClear={false} placeholder="选择或新增返工处理人" /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="reason_category" label="原因分类" rules={[{ required: true }]}><Select options={[{ value: 'APPEARANCE', label: '外观' }, { value: 'STICKING', label: '粘皮' }, { value: 'DIMENSION', label: '尺寸' }, { value: 'MATERIAL', label: '材料' }, { value: 'MIXED', label: '混料' }, { value: 'PACKAGING', label: '包装' }, { value: 'OTHER', label: '其他' }]} /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="status" label="处理状态" rules={[{ required: true }]}><Select options={[{ value: 'PENDING', label: '待处理' }, { value: 'PROCESSING', label: '处理中' }, { value: 'COMPLETED', label: '已完成' }]} /></Form.Item></Col>
         </Row>

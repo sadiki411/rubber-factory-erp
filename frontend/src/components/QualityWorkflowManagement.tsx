@@ -29,6 +29,7 @@ import { PlusOutlined } from '@ant-design/icons'
 import { qualityWorkflowApi } from '../api/client'
 import { QualityReworkCaseMobileList } from './QualityReworkCaseMobileList'
 import { QualityWeightShipmentDrawer } from './QualityWeightShipmentDrawer'
+import { QualityEmployeeSelect } from './QualityEmployeeSelect'
 import type {
   QualityEmployee,
   QualityOrder,
@@ -333,7 +334,7 @@ export function ShipmentBatchReviewDrawer({
       : <>
         <Alert type="info" showIcon message={item?.status === 'CONFIRMED' ? '品检员可以在确认出货后补录' : '出货日期必须与实际单据一致'} description={item?.status === 'CONFIRMED' ? '可选择一人或多人；留空保存也不会改变出货数量和重量。' : '如果补录历史日期，请填写补录原因；未填写日期的草稿不能确认入账。'} />
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
-          <Form.Item name="inspector_ids" label="品检员（选填，可多选）"><Select mode="multiple" allowClear showSearch optionFilterProp="label" placeholder="选择品检员或暂时留空" options={employees.filter((employee) => employee.is_active && ['INSPECTOR', 'BOTH'].includes(employee.role)).map((employee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}${employee.team ? ` · ${employee.team}` : ''}` }))} /></Form.Item>
+          <Form.Item name="inspector_ids" label="品检员（选填，可多选）"><QualityEmployeeSelect employees={employees} multiple placeholder="选择/新增品检员，或暂时留空" /></Form.Item>
           {item?.status !== 'CONFIRMED' && <>
             <Form.Item name="shipment_date" label="实际出货日期" rules={[{ required: true, message: '请选择实际出货日期' }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
             <Form.Item name="backfill_reason" label="历史日期补录原因" extra="仅补录早于今天的日期时必填"><Input.TextArea rows={2} maxLength={300} showCount /></Form.Item>

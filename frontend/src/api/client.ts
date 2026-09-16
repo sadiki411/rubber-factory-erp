@@ -544,6 +544,10 @@ export const qualityApi = {
     method: 'POST',
     body: JSON.stringify(body),
   }),
+  quickResolveEmployee: (body: { name: string; purpose: 'INSPECTOR' | 'REWORKER' }) => apiFetch<QualityEmployee>('/api/quality/employees/quick-resolve/', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
   updateEmployee: (id: number, body: Record<string, unknown>) => apiFetch<QualityEmployee>(`/api/quality/employees/${id}/`, {
     method: 'PATCH',
     body: JSON.stringify(body),

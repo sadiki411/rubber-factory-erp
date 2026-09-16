@@ -130,6 +130,10 @@ button, input, textarea, select { font: inherit; }
 .record-card-heading h4 { margin: 0; }
 .record-location { margin-bottom: 14px; }
 .drawer-footer-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; width: 100%; }
+.quality-employee-select { width: 100%; }
+.quality-employee-quick-create { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-top: 8px; }
+.quality-employee-empty-hint { display: block; margin-top: 6px; line-height: 1.5; }
+.quality-employee-quick-create .ant-btn { min-height: 40px; }
 .operation-subject { background: #f1f7f4; border-radius: 12px; padding: 17px; margin-bottom: 24px; }
 .operation-subject h4 { margin: 3px 0 !important; }
 .current-status-block { min-height: 140px; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; background: linear-gradient(135deg, #eff8f4, #f8fbfa); border-radius: 14px; padding: 24px; }
@@ -695,6 +699,9 @@ button, input, textarea, select { font: inherit; }
   .filter-row .ant-input-affix-wrapper, .filter-row .ant-select, .business-filter-row .ant-input-affix-wrapper, .business-filter-row .ant-select, .rack-toolbar .ant-select, .rack-toolbar .ant-input-search { min-height: 44px; }
   .mobile-record-card .ant-btn { min-height: 44px; }
   .drawer-footer-actions .ant-btn { min-height: 44px; }
+  .quality-employee-quick-create { grid-template-columns: 1fr; }
+  .quality-employee-quick-create .ant-input, .quality-employee-quick-create .ant-btn { min-height: 44px; width: 100%; }
+  .quality-employee-select .ant-select-selector { min-height: 44px !important; align-items: center; }
   .drawer-footer-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .drawer-footer-actions .ant-btn { width: 100%; }
   .ant-drawer-content-wrapper { width: 100% !important; max-width: 100%; }

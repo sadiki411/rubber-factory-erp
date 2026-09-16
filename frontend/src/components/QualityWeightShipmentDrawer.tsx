@@ -52,6 +52,7 @@ import type {
   QualityReworkCase,
 } from '../types'
 import { QualityQrScanner } from './QualityQrScanner'
+import { QualityEmployeeSelect } from './QualityEmployeeSelect'
 
 const DRAFT_KEY = 'erp-quality-weight-shipment-drafts-v2'
 const TOLERANCE_PERCENT = 10
@@ -1710,9 +1711,6 @@ export function QualityWeightShipmentDrawer({
     }
   }
 
-  const inspectorOptions = employees
-    .filter((item) => item.is_active && ['INSPECTOR', 'BOTH'].includes(item.role))
-    .map((item) => ({ value: item.id, label: `${item.employee_no} · ${item.name}${item.team ? ` · ${item.team}` : ''}` }))
   const selectedOrderIsIdentityAnchor = Boolean(selectedOrder && !availableOrders.some((order) => order.id === selectedOrder.id))
   const selectableOrders = selectedOrder && selectedOrderIsIdentityAnchor
     ? [selectedOrder, ...availableOrders]
@@ -1934,7 +1932,7 @@ export function QualityWeightShipmentDrawer({
 
         <Card size="small" className="quality-weight-inspector-card" title="品检责任">
           <Form.Item name="inspector_ids" label="品检员（选填，可后续补录）" extra={selectedInspectors.length > 1 ? `已选择 ${selectedInspectors.length} 人，将共同计入本批责任` : '新增出货时可以留空，确认后仍可在重量出货批次中补录'}>
-            <Select mode="multiple" allowClear showSearch optionFilterProp="label" placeholder="暂不填写或选择一名/多名品检员" options={inspectorOptions} maxTagCount="responsive" />
+            <QualityEmployeeSelect employees={employees} multiple placeholder="暂不填写，或选择/新增一名或多名品检员" />
           </Form.Item>
         </Card>
 

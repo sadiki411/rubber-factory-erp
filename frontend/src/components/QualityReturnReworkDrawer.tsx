@@ -26,6 +26,7 @@ import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { qualityWorkflowApi } from '../api/client'
+import { QualityEmployeeSelect } from './QualityEmployeeSelect'
 import { formatQualityDate, qualityNumber, reworkCaseSourceTitle } from '../quality'
 import type {
   ApiList,
@@ -247,7 +248,6 @@ export function QualityReturnReworkAttemptDrawer({ open, item, employees, onClos
   const attemptNo = Number(item?.attempt_count || item?.attempts?.length || 0) + 1
   const date = Form.useWatch('attempt_date', form) as Dayjs | undefined
   const historical = Boolean(date?.isValid() && date.startOf('day').isBefore(dayjs().startOf('day')))
-  const reworkers = useMemo(() => employees.filter((person) => person.is_active && ['REWORKER', 'BOTH'].includes(person.role)), [employees])
 
   useEffect(() => {
     if (!open) return
@@ -292,7 +292,7 @@ export function QualityReturnReworkAttemptDrawer({ open, item, employees, onClos
     <Form form={form} layout="vertical" style={{ marginTop: 16 }} requiredMark="optional">
       <Form.Item name="attempt_date" label="本轮日期" rules={[{ required: true, message: '请选择日期' }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
       {historical && <Form.Item name="backfill_reason" label="补录原因" rules={[{ required: true, whitespace: true, message: '补录历史日期时请填写原因' }]}><Input /></Form.Item>}
-      <Form.Item name="rework_employee_id" label="返工处理人（选填，可后补）"><Select allowClear showSearch optionFilterProp="label" placeholder={reworkers.length ? '选择返工处理人' : '尚未维护返工人员'} options={reworkers.map((person) => ({ value: person.id, label: `${person.employee_no} · ${person.name}` }))} /></Form.Item>
+      <Form.Item name="rework_employee_id" label="返工处理人（选填，可后补）"><QualityEmployeeSelect employees={employees} purpose="REWORKER" placeholder="选择或新增返工处理人" /></Form.Item>
       <Form.Item name="status" label="本轮状态"><Select options={[{ value: 'PROCESSING', label: '返工中' }, { value: 'WAITING_REINSPECTION', label: '待复检' }, { value: 'COMPLETED', label: '本轮完成' }, { value: 'SCRAPPED', label: '报废' }]} /></Form.Item>
       <Form.Item name="notes" label="本轮说明（选填）"><Input.TextArea rows={3} maxLength={500} showCount /></Form.Item>
     </Form>

@@ -18,6 +18,7 @@ import type {
   QualityReworkCase,
 } from '../types'
 import { QualityQrScanner } from './QualityQrScanner'
+import { QualityEmployeeSelect } from './QualityEmployeeSelect'
 
 type SourceSelection = {
   batch: QualityReturnableBatch
@@ -132,9 +133,6 @@ export function QualityFlowCardReturnDrawer({
     value: sourceOptionKey(batch, unitNo),
     label: `${batch.shipment_no} · ${batch.order_no || '未关联订单'}${batch.item_no ? ` / ${batch.item_no}` : ''} · 第${unitNo}批 · ${batch.product_name || ''} ${batch.specification || ''} ${batch.material || ''}`.trim(),
   }))), [candidates])
-  const inspectorOptions = employees
-    .filter((item) => item.is_active && ['INSPECTOR', 'BOTH'].includes(item.role))
-    .map((item) => ({ value: item.id, label: `${item.employee_no} · ${item.name}` }))
   const reasonOptions = reasons.map((item) => ({ value: item.id, label: item.name || item.label || item.code || String(item.id) }))
   const secondaryOptions = reasonOptions.filter((item) => String(item.value) !== String(primaryReasonId ?? ''))
 
@@ -295,7 +293,7 @@ export function QualityFlowCardReturnDrawer({
           <Col xs={24} sm={12}><Form.Item name="secondary_reason_ids" label="次要问题标签（可多选）"><Select mode="multiple" showSearch optionFilterProp="label" options={secondaryOptions} placeholder="可不填或选择多项" maxTagCount="responsive" /></Form.Item></Col>
         </Row>
         {reasonsQuery.error && <Alert type="warning" showIcon message="退货原因库暂时读取失败" description="请刷新后重试，避免原因统计缺失。" />}
-        <Form.Item name="inspector_ids" label="责任品检员（选填，可多人、可后补）"><Select mode="multiple" allowClear showSearch optionFilterProp="label" options={inspectorOptions} placeholder="暂不填写或选择一名/多名" maxTagCount="responsive" /></Form.Item>
+        <Form.Item name="inspector_ids" label="责任品检员（选填，可多人、可后补）"><QualityEmployeeSelect employees={employees} multiple placeholder="暂不填写，或选择/新增一名或多名" /></Form.Item>
         <Form.Item name="reason" label="具体问题说明（选填）"><Input.TextArea rows={2} maxLength={500} showCount /></Form.Item>
         <Form.Item name="notes" label="备注（选填）"><Input.TextArea rows={2} maxLength={500} showCount /></Form.Item>
       </Form>}

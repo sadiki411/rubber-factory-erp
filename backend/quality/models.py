@@ -1,4 +1,5 @@
 import uuid
+import unicodedata
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
@@ -23,9 +24,39 @@ class QualityEmployee(TimeStampedModel):
     role = models.CharField("岗位", max_length=20, choices=Role.choices)
     is_active = models.BooleanField("在职/启用", default=True)
     notes = models.TextField("备注", blank=True)
+    # Only employees claimed or created through ``quick-resolve`` receive a
+    # key.  Keeping the column nullable preserves the employee directory's
+    # existing ability to contain legitimate people with the same name, while
+    # the unique non-null value makes repeated quick-entry requests idempotent.
+    quick_resolve_key = models.CharField(
+        max_length=512,
+        null=True,
+        blank=True,
+        unique=True,
+        editable=False,
+    )
 
     class Meta:
         ordering = ["employee_no"]
+
+    @staticmethod
+    def generate_employee_no():
+        """Return a human-readable, collision-resistant number for quick entry.
+
+        Employee numbers remain editable, but operators creating a person from
+        a shipment drawer should not have to invent one before they can keep
+        working.  A random suffix avoids unsafe ``MAX + 1`` allocation under
+        SQLite's limited write concurrency.
+        """
+
+        return f"EMP-{timezone.localdate():%y%m%d}-{uuid.uuid4().hex[:12].upper()}"
+
+    @staticmethod
+    def normalize_quick_resolve_key(value):
+        """Normalize a typed name into the quick-entry identity key."""
+
+        normalized = unicodedata.normalize("NFKC", str(value or ""))
+        return " ".join(normalized.split()).casefold()
 
     def clean(self):
         self.employee_no = str(self.employee_no or "").strip().upper()
@@ -37,7 +68,29 @@ class QualityEmployee(TimeStampedModel):
             raise ValidationError({"name": "员工姓名不能为空。"})
 
     def save(self, *args, **kwargs):
-        self.full_clean()
+        skip_unique_validation = kwargs.pop("_skip_unique_validation", False)
+        if self._state.adding and not str(self.employee_no or "").strip():
+            self.employee_no = self.generate_employee_no()
+        update_fields = kwargs.get("update_fields")
+        name_is_being_saved = update_fields is None or "name" in update_fields
+        if not self._state.adding and name_is_being_saved:
+            previous_name = type(self).objects.filter(pk=self.pk).values_list(
+                "name", flat=True
+            ).first()
+            if self.normalize_quick_resolve_key(previous_name) != self.normalize_quick_resolve_key(
+                self.name
+            ):
+                # Renaming a directory entry releases its old quick-entry
+                # identity.  This remains a model invariant for admin/direct
+                # saves, and nullable keys keep legitimate duplicate names
+                # valid.
+                self.quick_resolve_key = None
+                if update_fields is not None:
+                    kwargs["update_fields"] = set(update_fields) | {"quick_resolve_key"}
+        # Quick resolve deliberately lets the database arbitrate its unique
+        # key.  Avoiding Django's pre-insert uniqueness SELECT is what keeps a
+        # concurrent SQLite insert from becoming a read-to-write lock upgrade.
+        self.full_clean(validate_unique=not skip_unique_validation)
         return super().save(*args, **kwargs)
 
     def __str__(self):

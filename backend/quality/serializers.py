@@ -56,6 +56,17 @@ class ValidatedModelSerializer(serializers.ModelSerializer):
 
 
 class QualityEmployeeSerializer(ValidatedModelSerializer):
+    employee_no = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=50,
+        help_text="可留空，由系统自动生成唯一员工编号。",
+    )
+    role = serializers.ChoiceField(
+        choices=QualityEmployee.Role.choices,
+        required=False,
+        default=serializers.CreateOnlyDefault(QualityEmployee.Role.INSPECTOR),
+    )
     role_display = serializers.CharField(source="get_role_display", read_only=True)
 
     class Meta:
@@ -73,6 +84,46 @@ class QualityEmployeeSerializer(ValidatedModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]
+
+    def validate_employee_no(self, value):
+        normalized = str(value or "").strip().upper()
+        if self.instance is not None and not normalized:
+            raise serializers.ValidationError("已建员工的编号不能为空；如不再使用请将员工停用。")
+        return normalized
+
+    def update(self, instance, validated_data):
+        # Refresh before applying the submitted fields, then persist only those
+        # fields.  A full-row save from a stale PATCH instance could otherwise
+        # undo a concurrent quick-resolve role upgrade or key assignment.
+        instance.refresh_from_db()
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        try:
+            instance.save(update_fields={*validated_data, "updated_at"})
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(_validation_details(exc)) from exc
+        except IntegrityError as exc:
+            raise serializers.ValidationError({"detail": self.conflict_message}) from exc
+        return instance
+
+class QualityEmployeeQuickResolveSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=100, trim_whitespace=True)
+    purpose = serializers.ChoiceField(
+        choices=[
+            QualityEmployee.Role.INSPECTOR,
+            QualityEmployee.Role.REWORKER,
+        ],
+        default=QualityEmployee.Role.INSPECTOR,
+    )
+
+    def validate_name(self, value):
+        key = QualityEmployee.normalize_quick_resolve_key(value)
+        key_max_length = QualityEmployee._meta.get_field(
+            "quick_resolve_key"
+        ).max_length
+        if len(key) > key_max_length:
+            raise serializers.ValidationError("员工姓名规范化后过长。")
+        return value
 
 
 class ProductSpecificationReferenceSerializer(serializers.ModelSerializer):

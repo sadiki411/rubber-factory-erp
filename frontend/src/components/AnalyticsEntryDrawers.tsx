@@ -6,6 +6,7 @@ import { useEffect } from 'react'
 import { analyticsApi } from '../api/client'
 import { reworkQuantitiesValid, shipmentQuantitiesMatch, shipmentQuantityAllowed } from '../quality'
 import type { Machine, ManualFinancialEntry, ManualPerformanceEntry, ManualPerformanceEntryType, QualityEmployee } from '../types'
+import { QualityEmployeeSelect } from './QualityEmployeeSelect'
 
 interface CommonProps {
   open: boolean
@@ -64,8 +65,7 @@ export function ManualPerformanceDrawer({ open, entry, machines, employees, onCl
     })
   }
 
-  const selectEmployee = (id?: number) => {
-    const employee = employees.find((item) => item.id === id)
+  const selectEmployee = (employee?: QualityEmployee) => {
     if (employee) form.setFieldValue('staff_name', employee.name)
   }
 
@@ -117,7 +117,7 @@ export function ManualPerformanceDrawer({ open, entry, machines, employees, onCl
 
         {entryType === 'QUALITY' && (
           <>
-            <Form.Item name="quality_employee_id" label="品检员工" rules={[{ required: true, message: '品检补录必须选择品检员工' }]}><Select showSearch optionFilterProp="label" onChange={selectEmployee} options={employees.filter((item) => item.is_active && ['INSPECTOR', 'BOTH'].includes(item.role)).map((item) => ({ value: item.id, label: `${item.employee_no} · ${item.name}${item.team ? ` · ${item.team}` : ''}` }))} /></Form.Item>
+            <Form.Item name="quality_employee_id" label="品检员工" rules={[{ required: true, message: '品检补录必须选择品检员工' }]}><QualityEmployeeSelect employees={employees} allowClear={false} placeholder="选择或新增品检员工" onEmployeeSelected={selectEmployee} /></Form.Item>
             <Row gutter={14}>
               <Col xs={12} sm={6}><Form.Item name="inspection_quantity" label="质检数量" rules={[{ required: true, type: 'number', min: 1, message: '质检数量必须大于0' }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
               <Col xs={12} sm={6}><Form.Item name="qualified_quantity" label="合格数量" rules={[{ required: true }]}><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
@@ -129,7 +129,7 @@ export function ManualPerformanceDrawer({ open, entry, machines, employees, onCl
 
         {entryType === 'REWORK' && (
           <>
-            <Form.Item name="quality_employee_id" label="返工员工" rules={[{ required: true, message: '返工补录必须选择返工员工' }]}><Select showSearch optionFilterProp="label" onChange={selectEmployee} options={employees.filter((item) => item.is_active && ['REWORKER', 'BOTH'].includes(item.role)).map((item) => ({ value: item.id, label: `${item.employee_no} · ${item.name}${item.team ? ` · ${item.team}` : ''}` }))} /></Form.Item>
+            <Form.Item name="quality_employee_id" label="返工员工" rules={[{ required: true, message: '返工补录必须选择返工员工' }]}><QualityEmployeeSelect employees={employees} purpose="REWORKER" allowClear={false} placeholder="选择或新增返工员工" onEmployeeSelected={selectEmployee} /></Form.Item>
             <Form.Item name="reason_category" label="原因分类"><Select options={[{ value: 'APPEARANCE', label: '外观' }, { value: 'STICKING', label: '粘皮' }, { value: 'DIMENSION', label: '尺寸' }, { value: 'MATERIAL', label: '材料' }, { value: 'MIXED', label: '混料 / 混装' }, { value: 'PACKAGING', label: '包装' }, { value: 'OTHER', label: '其他' }]} /></Form.Item>
             <Row gutter={14}>
               <Col xs={12} sm={6}><Form.Item name="returned_quantity" label="退回数量" rules={[{ required: true, type: 'number', min: 1, message: '退回数量必须大于0' }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
