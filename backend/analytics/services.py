@@ -346,6 +346,58 @@ def _production_order_reference(run):
     }
 
 
+def _production_order_shares(run):
+    """Return every selected order and its task quantity for report splitting."""
+
+    prefetched = getattr(run, "_prefetched_objects_cache", {}).get("order_links")
+    links = list(prefetched) if prefetched is not None else list(
+        run.order_links.select_related("order")
+    )
+    if links:
+        return [
+            (link.order, max(1, int(link.planned_quantity or 0)))
+            for link in sorted(links, key=lambda item: (item.sequence, item.pk))
+        ]
+    return [(run.order, max(1, int(run.order_quantity or 0)))] if run.order_id else []
+
+
+def _order_reference(order, run):
+    fallback_product_name = (
+        run.mold.mold_model.product_name if run.mold_id else ""
+    )
+    return {
+        "order_id": order.pk,
+        "order_no": order.order_no,
+        "product_name": order.product_name or fallback_product_name,
+        "specification": order.specification or run.specification,
+        "material": order.material or run.material,
+    }
+
+
+def _split_finance_by_order_shares(finance, shares):
+    total = sum(max(0, int(weight or 0)) for _order, weight in shares)
+    if total <= 0:
+        return []
+    rows = []
+    consumed = {field: ZERO for field in FINANCE_FIELDS}
+    for index, (order, weight) in enumerate(shares):
+        if index == len(shares) - 1:
+            values = {
+                field: _decimal(finance[field]) - consumed[field]
+                for field in FINANCE_FIELDS
+            }
+        else:
+            ratio = Decimal(max(0, int(weight or 0))) / Decimal(total)
+            values = {
+                field: _decimal(finance[field]) * ratio
+                for field in FINANCE_FIELDS
+            }
+            for field in FINANCE_FIELDS:
+                consumed[field] += values[field]
+        rows.append((order, values))
+    return rows
+
+
 def _employee_row(employee=None, staff_name=""):
     return {
         "employee_id": employee.pk if employee else None,
@@ -499,7 +551,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         production_date__lte=date_to,
     ).select_related(
         "run__station__machine", "run__mold__mold_model", "run__order"
-    )
+    ).prefetch_related("run__order_links__order")
     logs_qs = _filter_production(
         logs_qs, group=group, machine_id=machine_id, prefix="run__"
     )
@@ -594,7 +646,8 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
     ).select_related(
         "station__machine", "mold__mold_model", "order"
     ).prefetch_related(
-        "daily_logs"
+        "daily_logs",
+        "order_links__order",
     )
     settled_qs = _filter_production(
         settled_qs, group=group, machine_id=machine_id
@@ -705,16 +758,31 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         machine_row["run_ids"].add(run.pk)
         machine_row["automatic_record_count"] += 1
 
-        row = _ensure_order_row(
-            orders,
-            **_production_order_reference(run),
-        )
-        if row is not None:
-            row["automatic_produced_mold_count"] += molds
-            row["produced_mold_count"] += molds
-            row["theoretical_output_quantity"] += output
-            row["automatic_record_count"] += 1
-            row["_run_ids"].add(run.pk)
+        shares = _production_order_shares(run)
+        if shares:
+            molds_by_order = dict(_split_integer_by_order_shares(molds, shares))
+            output_by_order = dict(_split_integer_by_order_shares(output, shares))
+            for order, _weight in shares:
+                row = _ensure_order_row(
+                    orders,
+                    **_order_reference(order, run),
+                )
+                row["automatic_produced_mold_count"] += molds_by_order.get(order, 0)
+                row["produced_mold_count"] += molds_by_order.get(order, 0)
+                row["theoretical_output_quantity"] += output_by_order.get(order, 0)
+                row["automatic_record_count"] += 1
+                row["_run_ids"].add(run.pk)
+        else:
+            row = _ensure_order_row(
+                orders,
+                **_production_order_reference(run),
+            )
+            if row is not None:
+                row["automatic_produced_mold_count"] += molds
+                row["produced_mold_count"] += molds
+                row["theoretical_output_quantity"] += output
+                row["automatic_record_count"] += 1
+                row["_run_ids"].add(run.pk)
 
     for run in settled_runs:
         finance = _run_finance(run)
@@ -734,13 +802,23 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         machine_row = machines.setdefault(machine_key, _machine_row(machine, run.station))
         _add_finance(machine_row, finance)
 
-        row = _ensure_order_row(
-            orders,
-            **_production_order_reference(run),
-        )
-        if row is not None:
-            _add_finance(row, finance)
-            row["_run_ids"].add(run.pk)
+        shares = _production_order_shares(run)
+        if shares:
+            for order, values in _split_finance_by_order_shares(finance, shares):
+                row = _ensure_order_row(
+                    orders,
+                    **_order_reference(order, run),
+                )
+                _add_finance(row, values)
+                row["_run_ids"].add(run.pk)
+        else:
+            row = _ensure_order_row(
+                orders,
+                **_production_order_reference(run),
+            )
+            if row is not None:
+                _add_finance(row, finance)
+                row["_run_ids"].add(run.pk)
 
     def _split_quantity(quantity, people):
         """Split one quantity across unique participating inspectors."""

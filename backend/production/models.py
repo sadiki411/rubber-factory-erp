@@ -1,5 +1,5 @@
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
@@ -719,9 +719,95 @@ class ProductionRun(TimeStampedModel):
         )
         return _quantize(earned_hours / actual * Decimal("100"))
 
+    def order_distribution(self):
+        """Allocate qualified output to selected orders by due date.
+
+        Each link stores the remaining quantity that was selected for this
+        production task.  Output fills the earliest due order first.  When
+        every selected target is satisfied, any deliberate overproduction is
+        retained on the last selected order so it is never assigned to an
+        order the operator did not choose.
+        """
+
+        prefetched = getattr(self, "_prefetched_objects_cache", {}).get(
+            "order_links"
+        )
+        if prefetched is None:
+            links = list(self.order_links.select_related("order"))
+        else:
+            links = list(prefetched)
+        links = sorted(
+            links,
+            key=lambda link: (
+                link.due_date_snapshot is None,
+                link.due_date_snapshot or date.max,
+                link.sequence,
+                link.pk,
+            ),
+        )
+        if not links:
+            return []
+        remaining = max(int(self.qualified_production_quantity or 0), 0)
+        distribution = []
+        for link in links:
+            allocated = min(remaining, int(link.planned_quantity or 0))
+            distribution.append((link, allocated))
+            remaining -= allocated
+        if remaining > 0:
+            link, allocated = distribution[-1]
+            distribution[-1] = (link, allocated + remaining)
+        return distribution
+
     def __str__(self):
         station_code = self.station.code if self.station_id else "未指定机台"
         return f"{self.order_no} - {station_code}"
+
+
+class ProductionRunOrder(TimeStampedModel):
+    """One explicitly selected order inside a combined production task."""
+
+    run = models.ForeignKey(
+        ProductionRun,
+        verbose_name="生产任务",
+        related_name="order_links",
+        on_delete=models.CASCADE,
+    )
+    order = models.ForeignKey(
+        "quality.QualityOrder",
+        verbose_name="订单明细",
+        related_name="production_run_links",
+        on_delete=models.PROTECT,
+    )
+    planned_quantity = models.PositiveIntegerField(
+        "本次计划数量", validators=[MinValueValidator(1)]
+    )
+    due_date_snapshot = models.DateField("交期快照", null=True, blank=True)
+    sequence = models.PositiveIntegerField("显示顺序", default=1)
+
+    class Meta:
+        ordering = ["due_date_snapshot", "sequence", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["run", "order"], name="uniq_production_run_order"
+            ),
+            models.CheckConstraint(
+                condition=Q(planned_quantity__gt=0),
+                name="production_run_order_quantity_gt_zero",
+            ),
+        ]
+
+    def clean(self):
+        errors = {}
+        if self.planned_quantity < 1:
+            errors["planned_quantity"] = "本次计划数量必须大于0。"
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self.order_id and self.due_date_snapshot is None:
+            self.due_date_snapshot = self.order.due_date
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
 
 class ProductionDailyLog(TimeStampedModel):

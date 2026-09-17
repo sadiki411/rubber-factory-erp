@@ -701,7 +701,7 @@ export function QualityPage() {
       />
       <QualityProcessCardReplacementDrawer open={replacementOpen} onClose={() => setReplacementOpen(false)} onSaved={refreshAfterCardReplacement} />
       <QualityReturnReworkAttemptDrawer open={!!returnReworkAttempt} item={returnReworkAttempt} employees={employees} onClose={() => setReturnReworkAttempt(undefined)} onSaved={refreshAfterReworkAttempt} />
-      <QualityReworkCaseDetailDrawer open={!!returnReworkDetail} item={returnReworkDetail} onClose={() => setReturnReworkDetail(undefined)} onAddAttempt={setReturnReworkAttempt} onSaved={refreshAfterReturnChange} />
+      <QualityReworkCaseDetailDrawer open={!!returnReworkDetail} item={returnReworkDetail} employees={employees} onClose={() => setReturnReworkDetail(undefined)} onAddAttempt={setReturnReworkAttempt} onSaved={refreshAfterReturnChange} />
       <QualityEmployeeDrawer open={!!employeeForm} employee={employeeForm?.employee} onClose={() => setEmployeeForm(undefined)} />
     </div>
   )

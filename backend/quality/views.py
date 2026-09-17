@@ -58,6 +58,7 @@ from .services import (
     serialize_order_allocation_plan,
     shipment_line_piece_quantity,
     shipment_return_groups,
+    shipment_unit_allocations,
     sync_order_status_from_delivery,
 )
 from .unit_weights import (
@@ -518,6 +519,7 @@ def _shipment_line_amend_payload(line):
     """Build a writable nested-line payload from an existing line row."""
 
     return {
+        "_source_line_id": line.pk,
         "process_card_id": line.process_card_id,
         "order_id": line.order_id,
         "product_specification_id": line.product_specification_id,
@@ -921,7 +923,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
         return False
 
     @staticmethod
-    def _amend_downstream(batch, line_ids):
+    def _amend_downstream(batch, line_ids, *, allow_amend=False):
         """Lock and report every immutable fact that points at this batch."""
 
         case_filter = Q(shipment_batch_id=batch.pk)
@@ -960,7 +962,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             )
         else:
             return_allocations = []
-        if cases or return_allocations:
+        if (cases or return_allocations) and not allow_amend:
             detail = []
             if cases:
                 detail.append(f"{len(cases)}条返工/退货记录")
@@ -976,6 +978,218 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 }
             )
         return cases, return_allocations
+
+    @staticmethod
+    def _restore_amended_returns(
+        batch,
+        lines,
+        cases,
+        removed_units,
+        line_replacements,
+    ):
+        """Reconnect return facts after confirmed shipment lines are replayed.
+
+        Confirmed-shipment amendment intentionally rebuilds physical lines and
+        order allocations.  Customer-return records remain the audit history;
+        this method points them at the rebuilt package and refreshes their
+        quantity/weight snapshots.  If the exact returned package was deleted,
+        an unfinished return is cancelled while a completed/reshipped history
+        is retained without subtracting a shipment that no longer exists.
+        """
+
+        removed = sorted({int(value) for value in removed_units if int(value) > 0})
+        terminal = {
+            QualityReworkCase.Status.RESHIPPED,
+            QualityReworkCase.Status.SCRAPPED,
+            QualityReworkCase.Status.CANCELLED,
+        }
+        for stale_case in cases:
+            old_line_id = stale_case.shipment_line_id
+            case = QualityReworkCase.objects.select_for_update().get(pk=stale_case.pk)
+            old_unit = case.shipment_unit_no
+            if old_unit is not None and old_unit in removed:
+                updates = {
+                    "shipment_line": None,
+                    "shipment_unit_no": None,
+                    "is_current_return": False,
+                    "updated_at": timezone.now(),
+                    "notes": "\n".join(
+                        value
+                        for value in (
+                            str(case.notes or "").strip(),
+                            f"原出货第{old_unit}包已在出货纠正中删除。",
+                        )
+                        if value
+                    ),
+                }
+                if case.status not in terminal:
+                    updates["status"] = QualityReworkCase.Status.CANCELLED
+                    updates["closed_on"] = timezone.localdate()
+                QualityReworkCase.objects.filter(pk=case.pk).update(**updates)
+                continue
+
+            if old_unit is None:
+                representative = line_replacements.get(old_line_id)
+                if representative is None:
+                    updates = {
+                        "shipment_line": None,
+                        "is_current_return": False,
+                        "updated_at": timezone.now(),
+                        "notes": "\n".join(
+                            value
+                            for value in (
+                                str(case.notes or "").strip(),
+                                "原出货明细已在出货纠正中删除。",
+                            )
+                            if value
+                        ),
+                    }
+                    if case.status not in terminal:
+                        updates["status"] = QualityReworkCase.Status.CANCELLED
+                        updates["closed_on"] = timezone.localdate()
+                    QualityReworkCase.objects.filter(pk=case.pk).update(**updates)
+                    continue
+                QualityReworkCase.objects.filter(pk=case.pk).update(
+                    shipment_line=representative,
+                    updated_at=timezone.now(),
+                )
+                if (
+                    case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
+                    and case.affected_quantity
+                    and case.affected_weight_kg is not None
+                ):
+                    QualityReturnAllocation.objects.create(
+                        case=case,
+                        shipment_line=representative,
+                        piece_quantity=case.affected_quantity,
+                        net_weight_kg=case.affected_weight_kg,
+                    )
+                continue
+
+            new_unit = old_unit - sum(1 for value in removed if value < old_unit)
+            try:
+                group, allocations = shipment_unit_allocations(
+                    batch,
+                    new_unit,
+                    lines=lines,
+                )
+            except ValueError:
+                # A direct API caller may replace the entire physical layout
+                # without supplying removed unit numbers.  Preserve the case
+                # as historical evidence but do not leave stale line FKs.
+                QualityReworkCase.objects.filter(pk=case.pk).update(
+                    shipment_line=None,
+                    shipment_unit_no=None,
+                    is_current_return=False,
+                    status=(
+                        case.status
+                        if case.status in terminal
+                        else QualityReworkCase.Status.CANCELLED
+                    ),
+                    closed_on=(
+                        case.closed_on
+                        if case.status in terminal
+                        else timezone.localdate()
+                    ),
+                    updated_at=timezone.now(),
+                )
+                continue
+
+            representative = allocations[0]["shipment_line"]
+            quantity = int(group["pieces_per_batch"])
+            weight = Decimal(group["single_batch_net_weight_kg"])
+            QualityReworkCase.objects.filter(pk=case.pk).update(
+                shipment_line=representative,
+                shipment_unit_no=new_unit,
+                affected_quantity=quantity,
+                affected_weight_kg=weight,
+                updated_at=timezone.now(),
+            )
+            QualityShipmentBatchViewSet._scale_amended_attempts(
+                case.pk,
+                quantity,
+                weight,
+            )
+            for allocation in allocations:
+                QualityReturnAllocation.objects.create(
+                    case=case,
+                    shipment_line=allocation["shipment_line"],
+                    shipment_order_allocation=allocation.get(
+                        "shipment_order_allocation"
+                    ),
+                    piece_quantity=allocation["piece_quantity"],
+                    net_weight_kg=allocation["net_weight_kg"],
+                )
+
+    @staticmethod
+    def _scale_amended_attempts(case_id, quantity, weight):
+        """Keep completed rework outcomes valid after source quantity changes."""
+
+        quantity = max(int(quantity or 0), 0)
+        weight = max(Decimal(weight or 0), Decimal("0")).quantize(
+            Decimal("0.001"), rounding=ROUND_HALF_UP
+        )
+
+        def scaled_integer(value, previous_total):
+            previous_total = max(int(previous_total or 0), 0)
+            if previous_total == 0:
+                return 0
+            return min(
+                quantity,
+                int(
+                    (
+                        Decimal(int(value or 0))
+                        * Decimal(quantity)
+                        / Decimal(previous_total)
+                    ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                ),
+            )
+
+        def scaled_weight(value, previous_total):
+            previous_total = Decimal(previous_total or 0)
+            if previous_total <= 0:
+                return Decimal("0.000")
+            return min(
+                weight,
+                (
+                    Decimal(value or 0) * weight / previous_total
+                ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP),
+            )
+
+        attempts = QualityReworkAttempt.objects.select_for_update().filter(
+            case_id=case_id
+        )
+        for attempt in attempts:
+            recovered_quantity = scaled_integer(
+                attempt.recovered_quantity,
+                attempt.reworked_quantity,
+            )
+            scrap_quantity = min(
+                scaled_integer(attempt.scrap_quantity, attempt.reworked_quantity),
+                max(quantity - recovered_quantity, 0),
+            )
+            recovered_weight = scaled_weight(
+                attempt.recovered_weight_kg,
+                attempt.reworked_weight_kg,
+            )
+            scrap_weight = min(
+                scaled_weight(
+                    attempt.scrap_weight_kg,
+                    attempt.reworked_weight_kg,
+                ),
+                max(weight - recovered_weight, Decimal("0")),
+            )
+            QualityReworkAttempt.objects.filter(pk=attempt.pk).update(
+                input_quantity=quantity,
+                reworked_quantity=quantity,
+                recovered_quantity=recovered_quantity,
+                scrap_quantity=scrap_quantity,
+                input_weight_kg=weight,
+                reworked_weight_kg=weight,
+                recovered_weight_kg=recovered_weight,
+                scrap_weight_kg=scrap_weight,
+                updated_at=timezone.now(),
+            )
 
     @staticmethod
     def _apply_explicit_binding_line_intent(
@@ -1003,6 +1217,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             binding.process_card_id: binding.shipment_unit_no
             for binding in old_bindings
         }
+        old_lines_by_id = {line.pk: line for line in old_lines}
         current_card_ids = set()
         for item in line_payloads:
             value = item.get("process_card_id")
@@ -1027,7 +1242,10 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 current_card_id = int(current_card_id)
             except (TypeError, ValueError):
                 continue
-            old_line = old_lines[index] if index < len(old_lines) else None
+            source_line_id = item.get("_source_line_id")
+            old_line = old_lines_by_id.get(source_line_id)
+            if old_line is None and index < len(old_lines):
+                old_line = old_lines[index]
             unit_no = item.get("_shipment_unit_no")
             if unit_no in (None, ""):
                 unit_no = old_unit_by_card.get(
@@ -1085,6 +1303,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 .order_by("id")
             )
             old_line_ids = [line.pk for line in old_lines]
+            old_lines_by_id = {line.pk: line for line in old_lines}
             old_card_ids = {line.process_card_id for line in old_lines if line.process_card_id}
             old_bindings = list(
                 ProcessCardUnitBinding.objects.select_for_update()
@@ -1103,12 +1322,19 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 ).values_list("order_id", flat=True)
             )
             old_order_ids.discard(None)
-            self._amend_downstream(batch, old_line_ids)
+            downstream_cases, downstream_allocations = self._amend_downstream(
+                batch,
+                old_line_ids,
+                allow_amend=True,
+            )
             before = _shipment_batch_snapshot(
                 batch, lines=old_lines, bindings=old_bindings
             )
 
             payload = self._amend_payload(request.data)
+            removed_units = envelope.validated_data.get(
+                "removed_shipment_units", []
+            )
             supplied_lines = "lines" in payload
             raw_lines = payload.get("lines")
             if raw_lines is None:
@@ -1124,12 +1350,26 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 for index, raw_line in enumerate(raw_lines):
                     if not isinstance(raw_line, dict):
                         raise DRFValidationError({"lines": "每条明细必须是对象。"})
+                    raw_line_id = raw_line.get("line_id", raw_line.get("id"))
+                    if raw_line_id not in (None, ""):
+                        try:
+                            source_line = old_lines_by_id.get(int(raw_line_id))
+                        except (TypeError, ValueError):
+                            source_line = None
+                        if source_line is None:
+                            raise DRFValidationError(
+                                {"lines": f"出货明细 {raw_line_id} 不属于当前批次。"}
+                            )
+                    else:
+                        source_line = old_lines[index] if index < len(old_lines) else None
                     base = (
-                        _shipment_line_amend_payload(old_lines[index])
-                        if index < len(old_lines)
+                        _shipment_line_amend_payload(source_line)
+                        if source_line is not None
                         else {}
                     )
-                    base.update(deepcopy(raw_line))
+                    raw_copy = deepcopy(raw_line)
+                    raw_copy.pop("_source_line_id", None)
+                    base.update(raw_copy)
                     line_payloads.append(base)
             if not line_payloads:
                 raise DRFValidationError({"lines": "至少需要一条出货明细。"})
@@ -1138,6 +1378,11 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             # original ProcessCard row remains immutable; replacing a scan
             # simply points this shipment line at the supplied active card.
             for item in line_payloads:
+                # Existing ids are amendment-only identity hints.  Shipment
+                # lines are replayed after validation, so nested serializers
+                # must not treat them as writable model fields.
+                item.pop("line_id", None)
+                item.pop("id", None)
                 marker = None
                 marker_present = False
                 for key in ("card_no", "process_card_no"):
@@ -1202,7 +1447,9 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 self._apply_explicit_binding_line_intent(
                     line_payloads, old_lines, old_bindings, binding_entries
                 )
+            source_line_ids = []
             for item in line_payloads:
+                source_line_ids.append(item.pop("_source_line_id", None))
                 item.pop("_shipment_unit_no", None)
 
             # Action-only and read-only response fields must not reach the
@@ -1212,6 +1459,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 "created_by", "created_at", "updated_at", "actual_weight_kg",
                 "shipped_quantity", "line_count", "date_pending", "warnings",
                 "process_card_bindings", "cards",
+                "removed_shipment_units",
             ):
                 payload.pop(key, None)
             payload["lines"] = line_payloads
@@ -1222,6 +1470,14 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             # rebuild them only after downstream protection has passed; the
             # surrounding transaction restores everything on any validation
             # or confirmation error.
+            if downstream_allocations:
+                QualityReturnAllocation.objects.filter(
+                    pk__in=[item.pk for item in downstream_allocations]
+                ).delete()
+            if downstream_cases:
+                QualityReworkCase.objects.filter(
+                    pk__in=[item.pk for item in downstream_cases]
+                ).update(shipment_line=None, updated_at=timezone.now())
             QualityShipmentOrderAllocation.objects.filter(
                 shipment_line_id__in=old_line_ids
             ).delete()
@@ -1266,6 +1522,19 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 .prefetch_related("order_allocations")
                 .order_by("id")
             )
+            line_replacements = {
+                int(source_line_id): new_lines[index]
+                for index, source_line_id in enumerate(source_line_ids)
+                if source_line_id not in (None, "") and index < len(new_lines)
+            }
+            if downstream_cases:
+                self._restore_amended_returns(
+                    refreshed,
+                    new_lines,
+                    downstream_cases,
+                    removed_units,
+                    line_replacements,
+                )
             new_card_ids = {
                 line.process_card_id for line in new_lines if line.process_card_id
             }
@@ -2181,6 +2450,7 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
         "process_card",
         "shipment_line__batch",
         "shipment_batch__inspector",
+        "reshipment_batch__inspector",
         "responsible_inspector",
         "primary_reason",
         "created_by",
@@ -2195,6 +2465,11 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
         "shipment_batch__lines__order_allocations__order",
         "shipment_batch__lines__process_card__order",
         "shipment_batch__rework_cases__attempts",
+        "reshipment_batch__inspectors",
+        "reshipment_batch__lines__order",
+        "reshipment_batch__lines__process_card__order",
+        "reshipment_batch__lines__order_allocations__order",
+        "reshipment_batch__process_card_bindings__process_card__order",
     ).all()
 
     def get_queryset(self):

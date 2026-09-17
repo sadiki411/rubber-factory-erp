@@ -739,6 +739,28 @@ def shipment_return_groups(
     return groups
 
 
+def shipment_unit_allocations(
+    batch: QualityShipmentBatch,
+    unit_no: int,
+    *,
+    lines: list[QualityShipmentLine] | None = None,
+) -> tuple[dict, list[dict]]:
+    """Return the physical group and accounting shares for one package."""
+
+    groups = shipment_return_groups(batch, lines=lines)
+    group = next(
+        (
+            item
+            for item in groups
+            if item["first_unit_no"] <= int(unit_no) <= item["last_unit_no"]
+        ),
+        None,
+    )
+    if group is None:
+        raise ValueError("所选整批序号不存在，请刷新后重新选择。")
+    return group, _unit_allocations(group, int(unit_no))
+
+
 def _reserved_return_units(
     batch: QualityShipmentBatch,
     groups: list[dict],
@@ -2028,7 +2050,12 @@ def reship_return_case(
         )
         locked.status = QualityReworkCase.Status.RESHIPPED
         locked.closed_on = actual_date
-        locked.save(update_fields=["status", "closed_on", "updated_at"])
+        locked.reshipment_batch = batch
+        locked.save(
+            update_fields=[
+                "status", "closed_on", "reshipment_batch", "updated_at",
+            ]
+        )
         card.refresh_shipping_status()
         sync_order_status_from_delivery(
             reship_order_ids,

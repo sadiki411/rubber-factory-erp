@@ -1473,6 +1473,11 @@ class QualityShipmentBatchAmendRequestSerializer(serializers.Serializer):
     lines = serializers.ListField(required=False, allow_empty=False)
     process_card_bindings = serializers.ListField(required=False, allow_empty=True)
     cards = serializers.ListField(required=False, allow_empty=True)
+    removed_shipment_units = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        allow_empty=True,
+    )
 
     def validate(self, attrs):
         reason = str(attrs.get("amend_reason") or attrs.get("reason") or "").strip()
@@ -1624,6 +1629,7 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
     process_card_no = serializers.CharField(source="process_card.card_no", read_only=True)
     active_process_card_no = serializers.SerializerMethodField()
     binding_pending = serializers.SerializerMethodField()
+    reshipment = serializers.SerializerMethodField()
     responsible_inspectors = serializers.SerializerMethodField()
     inspector_ids = serializers.PrimaryKeyRelatedField(
         source="inspectors",
@@ -1653,7 +1659,7 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
     )
     class Meta:
         model = QualityReworkCase
-        fields = ["id", "case_no", "origin", "process_card_id", "process_card_no", "active_process_card_no", "binding_pending", "shipment_line_id", "shipment_batch_id", "shipment_unit_no", "source", "return_round", "return_label", "is_current_return", "opened_on", "date_is_approximate", "backfill_reason", "reason_category", "reason_category_display", "primary_reason_id", "primary_reason_detail", "secondary_reason_ids", "secondary_reason_details", "reason", "responsible_inspector_id", "responsible_inspectors", "inspector_ids", "affected_quantity", "affected_weight_kg", "status", "status_display", "closed_on", "notes", "attempt_count", "attempts", "created_by", "created_at", "updated_at"]
+        fields = ["id", "case_no", "origin", "process_card_id", "process_card_no", "active_process_card_no", "binding_pending", "shipment_line_id", "shipment_batch_id", "shipment_unit_no", "source", "reshipment", "return_round", "return_label", "is_current_return", "opened_on", "date_is_approximate", "backfill_reason", "reason_category", "reason_category_display", "primary_reason_id", "primary_reason_detail", "secondary_reason_ids", "secondary_reason_details", "reason", "responsible_inspector_id", "responsible_inspectors", "inspector_ids", "affected_quantity", "affected_weight_kg", "status", "status_display", "closed_on", "notes", "attempt_count", "attempts", "created_by", "created_at", "updated_at"]
         read_only_fields = ["case_no", "source", "return_round", "is_current_return", "attempt_count", "attempts", "created_by", "created_at", "updated_at"]
         # The conditional database uniqueness rule applies only to new
         # whole-batch customer returns.  DRF's generated validator incorrectly
@@ -1863,6 +1869,14 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
     def get_binding_pending(self, obj) -> bool:
         return obj.origin == QualityReworkCase.Origin.CUSTOMER_RETURN and not obj.process_card_id
 
+    def get_reshipment(self, obj) -> dict | None:
+        if not obj.reshipment_batch_id:
+            return None
+        return QualityShipmentBatchSerializer(
+            obj.reshipment_batch,
+            context=self.context,
+        ).data
+
     def get_responsible_inspectors(self, obj) -> list[dict]:
         values = getattr(obj, "_prefetched_objects_cache", {}).get("inspectors", [])
         return QualityEmployeeSerializer(values, many=True, context=self.context).data
@@ -1940,6 +1954,18 @@ class QualityReworkAttemptSerializer(ValidatedModelSerializer):
             ):
                 raise serializers.ValidationError(
                     {"case_id": "已取消或已报废的退货返工记录不能新增轮次。"}
+                )
+            if (
+                locked_case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
+                and locked_case.process_card_id is not None
+            ):
+                raise serializers.ValidationError(
+                    {
+                        "case_id": (
+                            "扫描流程卡登记的退货不允许手工新增下一轮；"
+                            "请在再次退货时重新扫描流程卡，系统会自动建立新一轮。"
+                        )
+                    }
                 )
             validated_data["case"] = locked_case
             # Each R1/R2/R3 round processes the same physical batch.  Freeze

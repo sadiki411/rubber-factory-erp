@@ -14,6 +14,7 @@ from .models import (
     ProductionRecordAudit,
     ProductionSettlementRevision,
     ProductionStation,
+    ProductionRunOrder,
 )
 
 
@@ -418,8 +419,31 @@ def resume_production_run(
         or (selected_mold.default_cavities if selected_mold and selected_mold.default_cavities else 0)
         or run.cavities
     )
-    completed_quantity = _order_qualified_quantity(run)
-    remaining_pieces = max(int(run.order_quantity) - completed_quantity, 0)
+    source_links = list(
+        run.order_links.select_related("order").order_by("sequence", "id")
+    )
+    if source_links:
+        original_distribution = {
+            link.pk: allocated for link, allocated in run.order_distribution()
+        }
+        remaining_targets = [
+            (
+                link,
+                max(
+                    int(link.planned_quantity)
+                    - int(original_distribution.get(link.pk, 0)),
+                    0,
+                ),
+            )
+            for link in source_links
+        ]
+        completed_quantity = sum(original_distribution.values())
+        remaining_pieces = sum(value for _link, value in remaining_targets)
+    else:
+        original_distribution = {}
+        remaining_targets = []
+        completed_quantity = _order_qualified_quantity(run)
+        remaining_pieces = max(int(run.order_quantity) - completed_quantity, 0)
     suggested_target = max(
         (remaining_pieces + selected_cavities - 1) // selected_cavities,
         1,
@@ -458,6 +482,19 @@ def resume_production_run(
         created_by=user,
     )
     resumed.save()
+    positive_targets = [item for item in remaining_targets if item[1] > 0]
+    if source_links and not positive_targets:
+        positive_targets = [(source_links[-1], 1)]
+    for link, remaining_target in positive_targets:
+        if remaining_target < 1:
+            continue
+        ProductionRunOrder.objects.create(
+            run=resumed,
+            order=link.order,
+            planned_quantity=remaining_target,
+            due_date_snapshot=link.due_date_snapshot,
+            sequence=link.sequence,
+        )
     if selected_mold and save_cavities_as_mold_default:
         MoldAsset.objects.filter(pk=selected_mold.pk).update(
             default_cavities=selected_cavities, updated_at=timezone.now()

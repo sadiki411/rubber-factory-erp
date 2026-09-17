@@ -936,6 +936,34 @@ class BusinessImportTests(TestCase):
             2600,
         )
 
+    def test_factory_reimport_updates_source_cutting_data_but_preserves_actual_values(self):
+        initial = self.preview(
+            "factory-cutting-initial.xlsx",
+            factory_workbook(material_length=275, issued_on=date(2026, 8, 3)),
+        )
+        self.commit(initial)
+        product = ProductSpecification.objects.get()
+        product.actual_material_length = "人工实测 281mm"
+        product.actual_cut_weight = "人工实测 10.2g"
+        product.save(
+            update_fields=[
+                "actual_material_length",
+                "actual_cut_weight",
+                "updated_at",
+            ]
+        )
+
+        newer = self.preview(
+            "factory-cutting-newer.xlsx",
+            factory_workbook(material_length=300, issued_on=date(2026, 8, 5)),
+        )
+        self.commit(newer)
+
+        product.refresh_from_db()
+        self.assertEqual(product.material_length, "300")
+        self.assertEqual(product.actual_material_length, "人工实测 281mm")
+        self.assertEqual(product.actual_cut_weight, "人工实测 10.2g")
+
     def test_older_factory_source_skips_order_product_and_all_criteria_as_a_group(self):
         newer = self.preview(
             "factory-newer-process.xlsx",

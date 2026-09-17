@@ -1806,6 +1806,14 @@ class QualityReworkCase(TimeStampedModel):
         null=True,
         blank=True,
     )
+    reshipment_batch = models.OneToOneField(
+        QualityShipmentBatch,
+        verbose_name="本轮重新出货批次",
+        related_name="source_rework_case",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
     shipment_unit_no = models.PositiveIntegerField(
         "physical shipment unit number", null=True, blank=True
     )

@@ -196,6 +196,8 @@ export interface ProductSpecification {
   material?: string
   material_length?: string
   cut_weight?: string
+  actual_material_length?: string
+  actual_cut_weight?: string
   strip_count?: string
   primary_curing?: string
   secondary_curing?: string
@@ -488,6 +490,16 @@ export interface ProductionRun {
   station_id?: number | null
   order?: Order | null
   order_id?: number | null
+  order_allocations?: Array<{
+    id: number
+    order_id: number
+    order_no: string
+    item_no?: string
+    due_date?: string | null
+    planned_quantity: number
+    allocated_quantity: number
+    remaining_quantity: number
+  }>
   product_specification?: ProductSpecification | null
   product_specification_id?: number | null
   order_no: string
@@ -886,6 +898,8 @@ export interface QualityProcessCard {
 }
 
 export interface QualityShipmentBatchLineInput {
+  /** Existing line identity used only by confirmed-shipment corrections. */
+  line_id?: string | number
   process_card_id?: string | number
   /** Printed flow-card number.  Used by confirmed-shipment corrections when
    * the physical card was scanned incorrectly and must be replaced. */
@@ -948,6 +962,8 @@ export interface QualityShipmentBatchInput {
   notes?: string
   /** Required by the confirmed-batch amendment action; ignored for creates. */
   amend_reason?: string
+  /** Original physical package numbers deleted by this correction. */
+  removed_shipment_units?: number[]
   confirm_warnings?: boolean
   /** Optional card-to-physical-batch links; unscanned repeated batches remain valid. */
   process_card_bindings?: Array<{

@@ -930,7 +930,7 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(onSaved).toHaveBeenCalledTimes(1)
   }, 40_000)
 
-  it('prefills a confirmed shipment and sends an explicit empty binding list when all scanned cards are cleared', async () => {
+  it('prefills a confirmed shipment and deletes one scanned package with its shipment facts', async () => {
     const user = userEvent.setup()
     const confirmed: QualityShipmentBatch = {
       id: 99,
@@ -966,7 +966,12 @@ describe('QualityWeightShipmentDrawer', () => {
         net_weight_kg: 5,
       }],
     }
-    apiMocks.amendShipmentBatch.mockResolvedValue({ ...confirmed, process_card_bindings: [] })
+    apiMocks.amendShipmentBatch.mockResolvedValue({
+      ...confirmed,
+      product_batch_count: 1,
+      total_net_weight_kg: 2.5,
+      process_card_bindings: [confirmed.process_card_bindings![0]],
+    })
     const onSaved = vi.fn().mockResolvedValue(undefined)
     const onClose = vi.fn()
     renderDrawer(undefined, {
@@ -981,17 +986,30 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(screen.getByLabelText(/出货单号/)).toHaveValue(confirmed.shipment_no)
     expect(screen.getByDisplayValue('CARD-AMEND-201')).toBeInTheDocument()
     expect(screen.getByDisplayValue('CARD-AMEND-202')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '清空全部卡号' }))
-    await user.click(await screen.findByRole('button', { name: '确认清空' }))
-    expect(await screen.findByText('本批暂无流程卡绑定')).toBeInTheDocument()
-    await user.type(screen.getByLabelText('纠正原因'), '扫描卡号录入错误，解除全部绑定')
+    await user.click(screen.getAllByRole('button', { name: '删除本条出货' })[1])
+    await user.click(await screen.findByRole('button', { name: '删除本条' }))
+    expect(screen.getByDisplayValue('CARD-AMEND-201')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('CARD-AMEND-202')).not.toBeInTheDocument()
+    await user.type(screen.getByLabelText('纠正原因'), '第二包重复扫描，删除对应出货')
     await user.click(screen.getByRole('button', { name: '保存纠正' }))
 
     await waitFor(() => expect(apiMocks.amendShipmentBatch).toHaveBeenCalledTimes(1))
     expect(apiMocks.amendShipmentBatch).toHaveBeenCalledWith(99, expect.objectContaining({
       shipment_no: confirmed.shipment_no,
-      amend_reason: '扫描卡号录入错误，解除全部绑定',
-      process_card_bindings: [],
+      amend_reason: '第二包重复扫描，删除对应出货',
+      product_batch_count: 1,
+      removed_shipment_units: [2],
+      process_card_bindings: [{
+        card_no: 'CARD-AMEND-201',
+        shipment_unit_no: 1,
+        order_id: order.id,
+      }],
+      lines: [expect.objectContaining({
+        line_id: '991',
+        product_batch_count: 1,
+        piece_quantity: 100,
+        net_weight_kg: 2.5,
+      })],
     }))
     expect(apiMocks.checkShipmentNo).toHaveBeenCalledWith(confirmed.shipment_no, confirmed.id)
     expect(onSaved).toHaveBeenCalledTimes(1)

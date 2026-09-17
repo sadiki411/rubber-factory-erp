@@ -1,11 +1,12 @@
 import copy
 import math
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from molds.models import MoldAsset, RackSlot
@@ -18,6 +19,7 @@ from .models import (
     ProductionEmployee,
     ProductionRecordAudit,
     ProductionRun,
+    ProductionRunOrder,
     ProductionSettlementRevision,
     ProductionStation,
     normalize_operator,
@@ -180,6 +182,22 @@ class ProductionDailyLogSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class ProductionRunOrderInputSerializer(serializers.Serializer):
+    order_id = serializers.IntegerField(min_value=1)
+    planned_quantity = serializers.IntegerField(min_value=1)
+
+
+class ProductionRunOrderAllocationSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    order_id = serializers.IntegerField()
+    order_no = serializers.CharField()
+    item_no = serializers.CharField(allow_blank=True)
+    due_date = serializers.DateField(allow_null=True)
+    planned_quantity = serializers.IntegerField()
+    allocated_quantity = serializers.IntegerField()
+    remaining_quantity = serializers.IntegerField()
+
+
 class ProductionRunSerializer(serializers.ModelSerializer):
     station = ProductionStationSerializer(read_only=True)
     station_id = serializers.PrimaryKeyRelatedField(
@@ -244,6 +262,13 @@ class ProductionRunSerializer(serializers.ModelSerializer):
     save_cavities_as_mold_default = serializers.BooleanField(
         write_only=True, required=False, default=False
     )
+    selected_orders = ProductionRunOrderInputSerializer(
+        many=True, write_only=True, required=False, allow_empty=False
+    )
+    order_change_reason = serializers.CharField(
+        write_only=True, required=False, allow_blank=True, max_length=1000
+    )
+    order_allocations = serializers.SerializerMethodField()
 
     class Meta:
         model = ProductionRun
@@ -315,6 +340,9 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "order_overproduction_quantity",
             "order_production_completed",
             "save_cavities_as_mold_default",
+            "selected_orders",
+            "order_change_reason",
+            "order_allocations",
             "revenue",
             "total_cost",
             "profit",
@@ -361,6 +389,10 @@ class ProductionRunSerializer(serializers.ModelSerializer):
         cache_name = "_serialized_order_production_total"
         if hasattr(obj, cache_name):
             return getattr(obj, cache_name)
+        if obj.order_links.exists():
+            value = sum(allocated for _link, allocated in obj.order_distribution())
+            setattr(obj, cache_name, value)
+            return value
         siblings = (
             ProductionRun.objects.filter(order_id=obj.order_id)
             if obj.order_id
@@ -382,6 +414,42 @@ class ProductionRunSerializer(serializers.ModelSerializer):
     def get_order_production_completed(self, obj) -> bool:
         return self._order_production_total(obj) >= obj.order_quantity
 
+    @extend_schema_field(ProductionRunOrderAllocationSerializer(many=True))
+    def get_order_allocations(self, obj):
+        allocated_by_link = {
+            link.pk: allocated for link, allocated in obj.order_distribution()
+        }
+        links = list(obj.order_links.all())
+        links.sort(
+            key=lambda link: (
+                link.due_date_snapshot is None,
+                link.due_date_snapshot.isoformat() if link.due_date_snapshot else "",
+                link.sequence,
+                link.pk,
+            )
+        )
+        return [
+            {
+                "id": link.pk,
+                "order_id": link.order_id,
+                "order_no": link.order.order_no,
+                "item_no": link.order.item_no,
+                "due_date": (
+                    link.due_date_snapshot.isoformat()
+                    if link.due_date_snapshot
+                    else None
+                ),
+                "planned_quantity": link.planned_quantity,
+                "allocated_quantity": allocated_by_link.get(link.pk, 0),
+                "remaining_quantity": max(
+                    int(link.planned_quantity)
+                    - int(allocated_by_link.get(link.pk, 0)),
+                    0,
+                ),
+            }
+            for link in links
+        ]
+
     def validate_estimated_defect_rate(self, value):
         if value < 0 or value > 100:
             raise serializers.ValidationError("预估不良率必须在0至100之间。")
@@ -389,6 +457,101 @@ class ProductionRunSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         instance = self.instance
+
+        selected_orders = attrs.get("selected_orders")
+        if selected_orders is not None:
+            order_ids = [item["order_id"] for item in selected_orders]
+            if len(order_ids) != len(set(order_ids)):
+                raise serializers.ValidationError(
+                    {"selected_orders": "同一订单不能在一个生产任务中重复选择。"}
+                )
+            orders = {
+                order.pk: order
+                for order in QualityOrder.objects.filter(pk__in=order_ids).select_related(
+                    "product_specification"
+                )
+            }
+            missing = [order_id for order_id in order_ids if order_id not in orders]
+            if missing:
+                raise serializers.ValidationError(
+                    {"selected_orders": f"订单不存在：{', '.join(map(str, missing))}"}
+                )
+            unavailable = [
+                orders[order_id]
+                for order_id in order_ids
+                if orders[order_id].status != QualityOrder.Status.OPEN
+            ]
+            if unavailable:
+                labels = "、".join(
+                    f"{order.order_no}/{order.item_no or '-'}" for order in unavailable
+                )
+                raise serializers.ValidationError(
+                    {"selected_orders": f"已完成或已取消订单不可选择：{labels}"}
+                )
+
+            first = orders[order_ids[0]]
+            normalized_specification = " ".join(
+                str(first.specification or "").split()
+            ).casefold()
+            normalized_material = " ".join(
+                str(first.material or "").split()
+            ).casefold()
+            mismatches = []
+            for order_id in order_ids[1:]:
+                order = orders[order_id]
+                if (
+                    " ".join(str(order.specification or "").split()).casefold()
+                    != normalized_specification
+                    or " ".join(str(order.material or "").split()).casefold()
+                    != normalized_material
+                ):
+                    mismatches.append(f"{order.order_no}/{order.item_no or '-'}")
+            if mismatches:
+                raise serializers.ValidationError(
+                    {
+                        "selected_orders": (
+                            "只能合并规格和材质完全相同的订单；不一致："
+                            + "、".join(mismatches)
+                        )
+                    }
+                )
+
+            ordered = sorted(
+                selected_orders,
+                key=lambda item: (
+                    orders[item["order_id"]].due_date is None,
+                    orders[item["order_id"]].due_date
+                    or date.max,
+                    order_ids.index(item["order_id"]),
+                ),
+            )
+            # Persist the same due-date order used for production allocation.
+            # This also prevents an edit form from treating harmless display
+            # reordering as an order-link change that requires a reason.
+            attrs["selected_orders"] = ordered
+            primary = orders[ordered[0]["order_id"]]
+            attrs["order"] = primary
+            attrs["order_no"] = primary.order_no
+            attrs["specification"] = first.specification
+            attrs["material"] = first.material
+            attrs["product_specification"] = first.product_specification
+            attrs["order_quantity"] = sum(
+                int(item["planned_quantity"]) for item in selected_orders
+            )
+
+            if instance:
+                before = [
+                    (link.order_id, link.planned_quantity)
+                    for link in instance.order_links.order_by("sequence", "id")
+                ]
+                after = [
+                    (item["order_id"], item["planned_quantity"])
+                    for item in ordered
+                ]
+                if before != after and not str(attrs.get("order_change_reason") or "").strip():
+                    raise serializers.ValidationError(
+                        {"order_change_reason": "修改生产任务关联订单时必须填写修改原因。"}
+                    )
 
         if instance:
             requested_status = attrs.get("status", instance.status)
@@ -443,7 +606,11 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                     )
                 requested_order = attrs.get("order", instance.order)
                 requested_order_id = requested_order.pk if requested_order else None
-                if "order" in attrs and requested_order_id != instance.order_id:
+                if (
+                    selected_orders is None
+                    and "order" in attrs
+                    and requested_order_id != instance.order_id
+                ):
                     raise serializers.ValidationError(
                         {"order_id": "订单开始生产后不能更换关联订单明细。"}
                     )
@@ -454,7 +621,8 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                     requested_specification.pk if requested_specification else None
                 )
                 if (
-                    "product_specification" in attrs
+                    selected_orders is None
+                    and "product_specification" in attrs
                     and requested_specification_id != instance.product_specification_id
                 ):
                     raise serializers.ValidationError(
@@ -727,6 +895,8 @@ class ProductionRunSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         save_mold_default = validated_data.pop("save_cavities_as_mold_default", False)
+        selected_orders = validated_data.pop("selected_orders", None)
+        validated_data.pop("order_change_reason", None)
         instance = ProductionRun(**validated_data)
         instance._preserve_expected_change = self._has_explicit_expected_override()
         try:
@@ -751,6 +921,7 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                         locked_mold.save(update_fields=["default_cavities", "updated_at"])
                 instance.full_clean()
                 instance.save()
+                self._replace_order_links(instance, selected_orders)
         except DjangoValidationError as exc:
             raise serializers.ValidationError(exc.message_dict) from exc
         except IntegrityError as exc:
@@ -761,9 +932,14 @@ class ProductionRunSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         save_mold_default = validated_data.pop("save_cavities_as_mold_default", False)
+        selected_orders = validated_data.pop("selected_orders", None)
+        order_change_reason = str(
+            validated_data.pop("order_change_reason", "") or ""
+        ).strip()
         try:
             with transaction.atomic():
                 instance = ProductionRun.objects.select_for_update().get(pk=instance.pk)
+                before_orders = self._order_link_snapshot(instance)
                 original_mold_id = instance.mold_id
                 invalidating_fields = (
                     "cavities",
@@ -824,6 +1000,19 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                         )
                 instance.full_clean()
                 instance.save()
+                if selected_orders is not None:
+                    self._replace_order_links(instance, selected_orders)
+                    after_orders = self._order_link_snapshot(instance)
+                    if before_orders != after_orders:
+                        request = self.context.get("request")
+                        ProductionRecordAudit.objects.create(
+                            run=instance,
+                            action=ProductionRecordAudit.Action.UPDATED,
+                            before={"selected_orders": before_orders},
+                            after={"selected_orders": after_orders},
+                            reason=order_change_reason,
+                            changed_by=request.user,
+                        )
         except DjangoValidationError as exc:
             raise serializers.ValidationError(exc.message_dict) from exc
         except IntegrityError as exc:
@@ -831,6 +1020,53 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                 {"detail": "生产记录与现有机台、模具或订单发生冲突，请刷新后重试。"}
             ) from exc
         return instance
+
+    @staticmethod
+    def _order_link_snapshot(instance):
+        return [
+            {
+                "order_id": link.order_id,
+                "order_no": link.order.order_no,
+                "item_no": link.order.item_no,
+                "planned_quantity": link.planned_quantity,
+                "due_date": (
+                    link.due_date_snapshot.isoformat()
+                    if link.due_date_snapshot
+                    else None
+                ),
+            }
+            for link in instance.order_links.select_related("order").order_by(
+                "sequence", "id"
+            )
+        ]
+
+    @staticmethod
+    def _replace_order_links(instance, selected_orders):
+        if selected_orders is None:
+            if instance.order_id and not instance.order_links.exists():
+                ProductionRunOrder.objects.create(
+                    run=instance,
+                    order=instance.order,
+                    planned_quantity=instance.order_quantity,
+                    due_date_snapshot=instance.order.due_date,
+                    sequence=1,
+                )
+            return
+        order_ids = [item["order_id"] for item in selected_orders]
+        orders = {
+            order.pk: order
+            for order in QualityOrder.objects.filter(pk__in=order_ids)
+        }
+        instance.order_links.all().delete()
+        for sequence, item in enumerate(selected_orders, start=1):
+            order = orders[item["order_id"]]
+            ProductionRunOrder.objects.create(
+                run=instance,
+                order=order,
+                planned_quantity=item["planned_quantity"],
+                due_date_snapshot=order.due_date,
+                sequence=sequence,
+            )
 
 
 class StartProductionRunSerializer(serializers.Serializer):

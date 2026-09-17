@@ -98,6 +98,7 @@ def _run_queryset():
     ).prefetch_related(
         "daily_logs__operator_employee",
         "daily_logs__assistant_operators",
+        "order_links__order",
     )
 
 
@@ -153,6 +154,9 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
                 | Q(order__order_no__icontains=keyword)
                 | Q(order__item_no__icontains=keyword)
                 | Q(order__product_name__icontains=keyword)
+                | Q(order_links__order__order_no__icontains=keyword)
+                | Q(order_links__order__item_no__icontains=keyword)
+                | Q(order_links__order__product_name__icontains=keyword)
                 | Q(product_specification__customer_product_no__icontains=keyword)
                 | Q(product_specification__product_name__icontains=keyword)
             )
@@ -192,9 +196,14 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
         order = str(params.get("order", params.get("order_id", ""))).strip()
         if order:
             if order.isdigit():
-                queryset = queryset.filter(order_id=int(order))
+                queryset = queryset.filter(
+                    Q(order_id=int(order)) | Q(order_links__order_id=int(order))
+                ).distinct()
             else:
-                queryset = queryset.filter(order__order_no__iexact=order)
+                queryset = queryset.filter(
+                    Q(order__order_no__iexact=order)
+                    | Q(order_links__order__order_no__iexact=order)
+                ).distinct()
 
         product_specification = str(
             params.get(
@@ -752,9 +761,24 @@ class ProductionOrderProgressView(APIView):
         from quality.models import QualityOrder
 
         order = get_object_or_404(QualityOrder, pk=int(raw_order_id))
-        runs = list(_run_queryset().filter(order=order).order_by("segment_no", "id"))
+        runs = list(
+            _run_queryset()
+            .filter(Q(order=order) | Q(order_links__order=order))
+            .distinct()
+            .order_by("segment_no", "id")
+        )
         runs = [run for run in runs if run.status != ProductionRun.Status.CANCELLED]
-        production_quantity = sum(run.qualified_production_quantity for run in runs)
+        production_quantity = 0
+        for run in runs:
+            linked = [
+                allocated
+                for link, allocated in run.order_distribution()
+                if link.order_id == order.pk
+            ]
+            if linked:
+                production_quantity += sum(linked)
+            elif run.order_id == order.pk and not run.order_links.exists():
+                production_quantity += run.qualified_production_quantity
         theoretical_quantity = sum(run.theoretical_quantity for run in runs)
         defective_quantity = sum(run.recorded_defective_quantity for run in runs)
         return Response(
@@ -791,6 +815,7 @@ class BoardRunSerializer(serializers.ModelSerializer):
     good_quantity = serializers.IntegerField(read_only=True)
     progress_percent = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     remaining_mold_count = serializers.IntegerField(read_only=True)
+    order_allocations = serializers.SerializerMethodField()
 
     class Meta:
         model = ProductionRun
@@ -819,7 +844,14 @@ class BoardRunSerializer(serializers.ModelSerializer):
             "expected_change_at",
             "material_changed_at",
             "estimated_hours",
+            "order_allocations",
         ]
+
+    def get_order_allocations(self, obj):
+        return ProductionRunSerializer(
+            obj,
+            context=self.context,
+        ).get_order_allocations(obj)
 
 
 class ProductionBoardView(APIView):

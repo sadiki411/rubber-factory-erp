@@ -111,7 +111,12 @@ def _business_order_queryset():
             "product_specification",
             "product_specification__mold_model",
             "created_by",
-        ).prefetch_related("production_runs__daily_logs")
+        ).prefetch_related(
+            "production_runs__daily_logs",
+            "production_runs__order_links__order",
+            "production_run_links__run__daily_logs",
+            "production_run_links__run__order_links__order",
+        )
     )
     # Keep the database-side rank aligned with
     # BusinessOrderSerializer.get_process_card_status.  The annotation makes

@@ -92,10 +92,12 @@ export function ProductSpecificationDrawer({ open, specification, onClose }: Pro
         </Row>
 
         <div className="business-form-section">上机参数</div>
-        <Alert className="business-form-hint" type="info" showIcon title="工艺参数按原始文本保存，可填写单位、温度、时间范围或备注，不会被强制转换成数字。" />
+        <Alert className="business-form-hint" type="info" showIcon title="原始料长和切料重可随订单资料导入更新；实际切料数据只允许人工维护，后续导入不会覆盖。" />
         <Row gutter={14}>
           <Col xs={24} sm={12}><Form.Item name="material_length" label="胶料长度 / 尺寸"><Input placeholder="保留原表写法" /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="cut_weight" label="裁料重量"><Input placeholder="例如 10g、0.010kg" /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="actual_material_length" label="实际切料长" extra="只允许在这里手工修改，导入订单或产品规格时不会覆盖。"><Input placeholder="例如 275mm" /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="actual_cut_weight" label="实际切料重" extra="只允许在这里手工修改，导入订单或产品规格时不会覆盖。"><Input placeholder="例如 10.2g" /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="strip_count" label="条数 / 每批条数"><Input /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="primary_curing" label="一次硫化参数"><Input placeholder="温度、时间、压力等原始内容" /></Form.Item></Col>
         </Row>

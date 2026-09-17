@@ -50,7 +50,8 @@ export function QualityReworkCaseMobileList({ items, loading, emptyText = '暂�
     locale={{ emptyText: <Empty description={emptyText} /> }}
     renderItem={(item) => {
       const source = item.source
-      const canAddAttempt = item.return_round == null && item.origin === 'CUSTOMER_RETURN' && !['CANCELLED', 'SCRAPPED'].includes(item.status)
+      const scannedReturn = Boolean(item.process_card_id || item.process_card_no || item.active_process_card_no || item.process_card?.id)
+      const canAddAttempt = !scannedReturn && !['CANCELLED', 'SCRAPPED'].includes(item.status)
       const returnRound = item.return_round || item.attempt_count || item.attempts?.length || 1
       const cardNo = item.active_process_card_no || item.process_card_no || item.process_card?.card_no || source?.lines?.find((line) => line.card_no)?.card_no
       return <List.Item>
@@ -90,7 +91,7 @@ export function QualityReworkCaseMobileList({ items, loading, emptyText = '暂�
 
           <Space className="quality-rework-mobile-actions">
             <Button block icon={<EditOutlined />} onClick={(event) => { event.stopPropagation(); onOpen(item) }}>查看 / 修改</Button>
-            {canAddAttempt && onAddAttempt && <Button block type="primary" icon={<PlusOutlined />} onClick={(event) => { event.stopPropagation(); onAddAttempt(item) }}>登记下一轮</Button>}
+            {canAddAttempt && onAddAttempt && <Button block type="primary" icon={<PlusOutlined />} onClick={(event) => { event.stopPropagation(); onAddAttempt(item) }}>手工登记下一轮</Button>}
           </Space>
         </Card>
       </List.Item>

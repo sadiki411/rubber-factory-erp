@@ -299,12 +299,15 @@ export function QualityReturnReworkAttemptDrawer({ open, item, employees, onClos
   </Drawer>
 }
 
-export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttempt, onSaved }: { open: boolean; item?: QualityReworkCase; onClose: () => void; onAddAttempt: (item: QualityReworkCase) => void; onSaved: (saved: QualityReworkCase) => void | Promise<void> }) {
+export function QualityReworkCaseDetailDrawer({ open, item, employees = [], onClose, onAddAttempt, onSaved }: { open: boolean; item?: QualityReworkCase; employees?: QualityEmployee[]; onClose: () => void; onAddAttempt: (item: QualityReworkCase) => void; onSaved: (saved: QualityReworkCase) => void | Promise<void> }) {
   const [form] = Form.useForm<Record<string, unknown>>()
+  const [reshipInspectorForm] = Form.useForm<Record<string, unknown>>()
   const [localItem, setLocalItem] = useState<QualityReworkCase>()
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const [editingReshipInspectors, setEditingReshipInspectors] = useState(false)
+  const [savingReshipInspectors, setSavingReshipInspectors] = useState(false)
   const { message } = App.useApp()
   const currentItem = localItem?.id === item?.id ? localItem : item
   const source = currentItem?.source
@@ -321,6 +324,7 @@ export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttemp
   const historical = Boolean(openedOn?.isValid() && openedOn.startOf('day').isBefore(dayjs().startOf('day')))
   const active = Boolean(currentItem && !['CANCELLED', 'SCRAPPED'].includes(currentItem.status))
   const editable = Boolean(currentItem && currentItem.status !== 'CANCELLED')
+  const reshipment = currentItem?.reshipment
 
   const fillEditForm = (record?: QualityReworkCase) => {
     form.resetFields()
@@ -336,6 +340,34 @@ export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttemp
   const startEditing = () => {
     fillEditForm(currentItem)
     setEditing(true)
+  }
+
+  const startEditingReshipInspectors = () => {
+    const ids = (reshipment?.inspectors || []).map((employee) => employee.id)
+    if (!ids.length && reshipment?.inspector?.id) ids.push(reshipment.inspector.id)
+    reshipInspectorForm.setFieldsValue({ inspector_ids: ids })
+    setEditingReshipInspectors(true)
+  }
+
+  const saveReshipInspectors = async () => {
+    if (!currentItem || !reshipment?.id || savingReshipInspectors) return
+    const values = await reshipInspectorForm.validateFields()
+    setSavingReshipInspectors(true)
+    try {
+      const updatedBatch = await qualityWorkflowApi.assignShipmentBatchInspectors(
+        reshipment.id,
+        ((values.inspector_ids as Array<number | string>) || []).map(Number),
+      )
+      const updated = { ...currentItem, reshipment: updatedBatch }
+      setLocalItem(updated)
+      setEditingReshipInspectors(false)
+      message.success('本轮重新出货品检员已保存')
+      void Promise.resolve(onSaved(updated)).catch(() => message.warning('品检员已保存，但页面刷新失败，请稍后手动刷新。'))
+    } catch (error) {
+      message.error((error as Error).message || '保存重新出货品检员失败')
+    } finally {
+      setSavingReshipInspectors(false)
+    }
   }
 
   const saveEdits = async () => {
@@ -385,6 +417,7 @@ export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttemp
 
   const closeDrawer = () => {
     setEditing(false)
+    setEditingReshipInspectors(false)
     setLocalItem(undefined)
     form.resetFields()
     onClose()
@@ -396,7 +429,7 @@ export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttemp
       {currentItem?.origin === 'CUSTOMER_RETURN' && active && <Popconfirm title="确认取消这条误登记吗？" description="记录会保留审计历史，但原物理批号将释放并可重新登记。" okText="确认取消" cancelText="返回" onConfirm={() => void cancelCase()}><Button danger loading={cancelling}>取消误登记</Button></Popconfirm>}
       <Button onClick={closeDrawer}>关闭</Button>
       {currentItem && editable && <Button icon={<EditOutlined />} onClick={startEditing}>修改退货信息</Button>}
-      {currentItem?.return_round == null && currentItem?.origin === 'CUSTOMER_RETURN' && active && <Button type="primary" onClick={() => { closeDrawer(); onAddAttempt(currentItem) }}>登记下一轮返工</Button>}
+      {processCardId == null && currentItem?.origin === 'CUSTOMER_RETURN' && active && <Button type="primary" onClick={() => { closeDrawer(); onAddAttempt(currentItem) }}>手工登记下一轮返工</Button>}
     </Space>
 
   return <Drawer open={open} onClose={closeDrawer} width={620} className="quality-return-rework-drawer" afterOpenChange={(visible) => { if (visible) { setLocalItem(undefined); setEditing(false) } }} title={currentItem ? `退货返工记录 · ${currentItem.case_no}` : '退货返工记录'} footer={footer}>
@@ -438,6 +471,26 @@ export function QualityReworkCaseDetailDrawer({ open, item, onClose, onAddAttemp
           <Descriptions.Item label="退货原因">{currentItem.reason || '未填写'}</Descriptions.Item>
           <Descriptions.Item label="备注">{currentItem.notes || '-'}</Descriptions.Item>
         </Descriptions>
+        {reshipment ? <Card
+          size="small"
+          className="quality-return-reship-inspectors"
+          title={`本轮重新出货 · ${reshipment.shipment_no}`}
+          extra={!editingReshipInspectors && <Button type="link" onClick={startEditingReshipInspectors}>{(reshipment.inspectors || []).length || reshipment.inspector ? '修改重新出货品检员' : '补录重新出货品检员'}</Button>}
+        >
+          {editingReshipInspectors ? <Form form={reshipInspectorForm} layout="vertical">
+            <Form.Item name="inspector_ids" label="本轮重新出货品检员（可多选）"><QualityEmployeeSelect employees={employees} multiple placeholder="选择或直接新增品检员" /></Form.Item>
+            <Space><Button onClick={() => setEditingReshipInspectors(false)}>取消</Button><Button type="primary" loading={savingReshipInspectors} onClick={() => void saveReshipInspectors()}>保存品检员</Button></Space>
+          </Form> : <Descriptions column={1} size="small">
+            <Descriptions.Item label="出货日期">{formatQualityDate(reshipment.shipment_date)}</Descriptions.Item>
+            <Descriptions.Item label="品检员">{sourceInspectors(reshipment)}</Descriptions.Item>
+          </Descriptions>}
+        </Card> : <Alert
+          style={{ marginTop: 16 }}
+          type="warning"
+          showIcon
+          message="正在返工，尚未重新出货"
+          description="重新出货完成后，这里会自动出现本轮出货记录和“补录重新出货品检员”入口。"
+        />}
         {processCardId != null && <><Typography.Title level={5} style={{ marginTop: 20 }}>同一流程卡完整退货时间线</Typography.Title>
           {cardTimelineQuery.isLoading ? <Typography.Text type="secondary">正在读取第1次至当前的全部记录…</Typography.Text> : cardTimeline.length ? <Timeline items={cardTimeline.map((record, index) => ({
             color: record.status === 'RESHIPPED' || record.status === 'COMPLETED' ? 'green' : record.status === 'SCRAPPED' ? 'red' : 'orange',

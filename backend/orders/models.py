@@ -70,6 +70,20 @@ class ProductSpecification(TimeStampedModel):
     material = models.CharField("材质", max_length=100, blank=True, default="")
     material_length = models.CharField("料长", max_length=100, blank=True, default="")
     cut_weight = models.CharField("切料重", max_length=100, blank=True, default="")
+    actual_material_length = models.CharField(
+        "实际切料长",
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="仅允许在ERP页面手工维护，业务文件导入不得覆盖。",
+    )
+    actual_cut_weight = models.CharField(
+        "实际切料重",
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="仅允许在ERP页面手工维护，业务文件导入不得覆盖。",
+    )
     strip_count = models.CharField("条数", max_length=100, blank=True, default="")
     primary_curing = models.CharField(
         "一次加硫条件", max_length=300, blank=True, default=""
@@ -130,6 +144,8 @@ class ProductSpecification(TimeStampedModel):
             "material",
             "material_length",
             "cut_weight",
+            "actual_material_length",
+            "actual_cut_weight",
             "strip_count",
             "primary_curing",
             "secondary_curing",

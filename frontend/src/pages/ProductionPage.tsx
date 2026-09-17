@@ -177,7 +177,7 @@ export function ProductionPage() {
       <PageTitle
         title="前端生产管理"
         description="按当前启用机台展示实时生产、换模提醒和待上机计划；可跳过订单直接试模，也可原子完成生产并下机归位。"
-        extra={<Space wrap><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>补录 / 导入手工账</Button><Button icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'PLANNED' })}>新增待上机计划</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'RUNNING' })}>登记已上机生产</Button></Space>}
+        extra={<Space wrap><Button type="primary" icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'PLANNED' })}>网页手工新增生产任务</Button><Button icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'RUNNING' })}>直接登记已上机任务</Button><Button type="text" icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>历史生产 Excel 补录</Button></Space>}
       />
 
       {boardQuery.isError && <Alert type="error" showIcon title="实时机台看板读取失败" description={(boardQuery.error as Error).message} />}

@@ -8,6 +8,8 @@ from quality.models import (
     ProcessCard,
     ProcessCardUnitBinding,
     QualityOrder,
+    QualityReworkCase,
+    QualityReworkAttempt,
     QualityShipmentBatch,
     QualityShipmentBatchRevision,
     QualityShipmentLine,
@@ -306,7 +308,7 @@ class ConfirmedShipmentCorrectionApiTests(QualityTestMixin, TestCase):
         )
         self.assertFalse(batch.revisions.exists())
 
-    def test_downstream_return_blocks_amend_and_confirmed_void(self):
+    def test_downstream_return_is_recalculated_by_amend_but_still_blocks_void(self):
         batch = self.create_confirmed_repeat()
         returned = self.client.post(
             "/api/quality/rework-cases/",
@@ -320,10 +322,47 @@ class ConfirmedShipmentCorrectionApiTests(QualityTestMixin, TestCase):
             format="json",
         )
         self.assertEqual(returned.status_code, 201, returned.content)
+        attempt = QualityReworkAttempt.objects.create(
+            case_id=returned.json()["id"],
+            rework_employee=self.reworker,
+            input_quantity=1_000,
+            reworked_quantity=1_000,
+            recovered_quantity=900,
+            scrap_quantity=50,
+            input_weight_kg=Decimal("10.000"),
+            reworked_weight_kg=Decimal("10.000"),
+            recovered_weight_kg=Decimal("9.000"),
+            scrap_weight_kg=Decimal("0.500"),
+            created_by=self.user,
+        )
 
-        amended = self.amend(batch, notes="不应成功")
-        self.assertEqual(amended.status_code, 400, amended.content)
-        self.assertIn("下游关联", str(amended.json()))
+        amended = self.amend(
+            batch,
+            notes="修正后同步退货",
+            unit_weight_g="10.00000",
+            single_batch_net_weight_kg="8.000",
+            process_card_shipment_quantity=800,
+            product_batch_count=1,
+            lines=[{"order_id": self.order.pk}],
+        )
+        self.assertEqual(amended.status_code, 200, amended.content)
+        case = batch.rework_cases.get()
+        case.refresh_from_db()
+        self.assertEqual(case.affected_quantity, 800)
+        self.assertEqual(case.affected_weight_kg, Decimal("8.000"))
+        self.assertEqual(case.shipment_allocations.count(), 1)
+        allocation = case.shipment_allocations.get()
+        self.assertEqual(allocation.piece_quantity, 800)
+        self.assertEqual(allocation.net_weight_kg, Decimal("8.000"))
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.input_quantity, 800)
+        self.assertEqual(attempt.reworked_quantity, 800)
+        self.assertEqual(attempt.recovered_quantity, 720)
+        self.assertEqual(attempt.scrap_quantity, 40)
+        self.assertEqual(attempt.input_weight_kg, Decimal("8.000"))
+        self.assertEqual(attempt.reworked_weight_kg, Decimal("8.000"))
+        self.assertEqual(attempt.recovered_weight_kg, Decimal("7.200"))
+        self.assertEqual(attempt.scrap_weight_kg, Decimal("0.400"))
         voided = self.client.post(
             f"{self.endpoint}{batch.pk}/void-confirmed/",
             {"void_reason": "不应成功"},
@@ -332,6 +371,145 @@ class ConfirmedShipmentCorrectionApiTests(QualityTestMixin, TestCase):
         self.assertEqual(voided.status_code, 400, voided.content)
         batch.refresh_from_db()
         self.assertEqual(batch.status, QualityShipmentBatch.Status.CONFIRMED)
+
+    def test_amend_deletes_one_scanned_physical_shipment_and_recalculates_totals(self):
+        self.order.order_quantity = 5_000
+        self.order.save(update_fields=["order_quantity", "updated_at"])
+        batch = self.create_confirmed_repeat(
+            shipment_no="QS-AMEND-DELETE-ONE",
+            batch_count=2,
+            bindings=[
+                {"card_no": "CARD-DELETE-KEEP", "shipment_unit_no": 1},
+                {"card_no": "CARD-DELETE-REMOVE", "shipment_unit_no": 2},
+            ],
+        )
+        line = batch.lines.get()
+
+        response = self.amend(
+            batch,
+            single_batch_net_weight_kg="10.000",
+            process_card_shipment_quantity=1_000,
+            product_batch_count=1,
+            lines=[
+                {
+                    "line_id": line.pk,
+                    "order_id": self.order.pk,
+                    "unit_weight_g_snapshot": "10.00000",
+                    "single_batch_net_weight_kg": "10.000",
+                    "process_card_shipment_quantity": 1_000,
+                    "product_batch_count": 1,
+                }
+            ],
+            process_card_bindings=[
+                {"card_no": "CARD-DELETE-KEEP", "shipment_unit_no": 1}
+            ],
+            removed_shipment_units=[2],
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        batch.refresh_from_db()
+        self.assertEqual(batch.lines.count(), 1)
+        self.assertEqual(batch.shipped_quantity, 1_000)
+        self.assertEqual(batch.net_weight_kg, Decimal("10.000"))
+        self.assertEqual(
+            list(
+                batch.process_card_bindings.values_list(
+                    "process_card__card_no", "shipment_unit_no"
+                )
+            ),
+            [("CARD-DELETE-KEEP", 1)],
+        )
+        self.assertEqual(
+            ProcessCard.objects.get(card_no="CARD-DELETE-REMOVE").status,
+            ProcessCard.Status.OPEN,
+        )
+        revision = batch.revisions.get()
+        self.assertEqual(len(revision.before_snapshot["process_card_bindings"]), 2)
+        self.assertEqual(len(revision.after_snapshot["process_card_bindings"]), 1)
+
+    def test_amend_uses_line_identity_when_an_earlier_line_is_deleted(self):
+        self.order.order_quantity = 5_000
+        self.order.save(update_fields=["order_quantity", "updated_at"])
+        cards = [
+            ProcessCard.objects.create(
+                card_no=f"CARD-LINE-IDENTITY-{index}",
+                qr_text=f"CARD-LINE-IDENTITY-{index}",
+                order=self.order,
+                quantity=100,
+                unit_weight_g=Decimal("10.00000"),
+                created_by=self.user,
+            )
+            for index in (1, 2)
+        ]
+        draft = self.client.post(
+            self.endpoint,
+            {
+                "shipment_no": "QS-AMEND-LINE-IDENTITY",
+                "shipment_date": timezone.localdate().isoformat(),
+                "order_id": self.order.pk,
+                "lines": [
+                    {
+                        "process_card_id": card.pk,
+                        "order_id": self.order.pk,
+                        "net_weight_kg": "1.000",
+                        "piece_quantity": 100,
+                    }
+                    for card in cards
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(draft.status_code, 201, draft.content)
+        confirmed = self.client.post(
+            f"{self.endpoint}{draft.json()['id']}/confirm/",
+            {},
+            format="json",
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        batch = QualityShipmentBatch.objects.get(pk=draft.json()["id"])
+        original_lines = list(batch.lines.order_by("id"))
+        returned = self.client.post(
+            "/api/quality/rework-cases/",
+            {
+                "origin": "CUSTOMER_RETURN",
+                "shipment_line_id": original_lines[1].pk,
+                "affected_quantity": 40,
+                "affected_weight_kg": "0.400",
+                "reason_category": "APPEARANCE",
+                "reason": "第二张流程卡部分退货",
+            },
+            format="json",
+        )
+        self.assertEqual(returned.status_code, 201, returned.content)
+        original_case = QualityReworkCase.objects.get(pk=returned.json()["id"])
+        self.assertIsNone(original_case.shipment_unit_no)
+        self.assertEqual(original_case.shipment_line_id, original_lines[1].pk)
+
+        response = self.amend(
+            batch,
+            lines=[
+                {
+                    "line_id": original_lines[1].pk,
+                    "process_card_id": cards[1].pk,
+                    "order_id": self.order.pk,
+                    "net_weight_kg": "1.000",
+                    "piece_quantity": 100,
+                }
+            ],
+            process_card_bindings=[
+                {"card_no": cards[1].card_no, "shipment_unit_no": 1}
+            ],
+            removed_shipment_units=[1],
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        case = QualityReworkCase.objects.get(pk=returned.json()["id"])
+        remaining_line = batch.lines.get()
+        self.assertEqual(case.shipment_line_id, remaining_line.pk)
+        self.assertNotEqual(case.status, QualityReworkCase.Status.CANCELLED)
+        self.assertEqual(case.affected_quantity, 40)
+        self.assertEqual(case.affected_weight_kg, Decimal("0.400"))
+        self.assertEqual(case.shipment_allocations.get().shipment_line_id, remaining_line.pk)
 
     def test_void_confirmed_restores_order_and_card_balance_and_is_idempotent(self):
         self.order.order_quantity = 1_000

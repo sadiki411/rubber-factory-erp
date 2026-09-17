@@ -879,3 +879,33 @@ button, input, textarea, select { font: inherit; }
   .quick-links { grid-template-columns: 1fr; }
   .result-card-top { flex-direction: column; }
 }
+.production-order-allocation-card {
+  margin-bottom: 16px;
+}
+
+.production-order-allocation-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.production-order-allocation-row > div:first-child {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+
+@media (max-width: 767px) {
+  .production-order-allocation-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .production-order-allocation-row .ant-input-number-group-wrapper {
+    width: 100%;
+  }
+}

@@ -134,6 +134,8 @@ class ProductSpecificationSerializer(AuditedModelSerializer):
             "material",
             "material_length",
             "cut_weight",
+            "actual_material_length",
+            "actual_cut_weight",
             "strip_count",
             "primary_curing",
             "secondary_curing",
@@ -464,13 +466,30 @@ class BusinessOrderSerializer(AuditedModelSerializer):
         cache = self.context.setdefault("_order_production_totals", {})
         if obj.pk in cache:
             return cache[obj.pk]
-        runs = [
-            run
-            for run in obj.production_runs.all()
-            if run.status != run.Status.CANCELLED
+        linked_rows = [
+            link
+            for link in obj.production_run_links.all()
+            if link.run.status != link.run.Status.CANCELLED
         ]
-        quantity = sum(int(run.qualified_production_quantity or 0) for run in runs)
-        cache[obj.pk] = (quantity, len(runs))
+        run_ids = {link.run_id for link in linked_rows}
+        quantity = 0
+        for link in linked_rows:
+            distribution = dict(
+                (item.pk, allocated)
+                for item, allocated in link.run.order_distribution()
+            )
+            quantity += int(distribution.get(link.pk, 0))
+
+        # Backward compatibility for a legacy row that has not yet received a
+        # ProductionRunOrder link (for example during a rolling deployment).
+        for run in obj.production_runs.all():
+            if run.status == run.Status.CANCELLED or run.pk in run_ids:
+                continue
+            if run.order_links.exists():
+                continue
+            quantity += int(run.qualified_production_quantity or 0)
+            run_ids.add(run.pk)
+        cache[obj.pk] = (quantity, len(run_ids))
         return cache[obj.pk]
 
     def get_produced_quantity(self, obj) -> int:

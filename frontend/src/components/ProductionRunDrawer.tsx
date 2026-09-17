@@ -1,8 +1,8 @@
 import { CalculatorOutlined, ClockCircleOutlined } from '@ant-design/icons'
-import { Alert, App, Button, Col, DatePicker, Drawer, Form, Input, InputNumber, Row, Select, Space } from 'antd'
+import { Alert, App, Button, Card, Checkbox, Col, DatePicker, Drawer, Form, Input, InputNumber, Row, Select, Space, Tag, Typography } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { moldApi, orderApi, productionApi, productSpecificationApi, toList } from '../api/client'
 import { productionStationGroupLabel, productionStationNumber, requiresProductionUnloadTime } from '../production'
 import type { ProductSpecification, ProductionMold, ProductionRun, ProductionRunStatus, ProductionStation } from '../types'
@@ -55,6 +55,11 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
   const selectedStationId = Form.useWatch<number>('station_id', form)
   const selectedProductSpecificationId = Form.useWatch<number>('product_specification_id', form)
   const selectedLoadedAt = Form.useWatch('loaded_at', form)
+  const watchedSelectedOrderIds = Form.useWatch<number[]>('order_ids', form)
+  const selectedOrderIds = useMemo(() => watchedSelectedOrderIds || [], [watchedSelectedOrderIds])
+  const trialTask = Form.useWatch<boolean>('is_trial_task', form) || false
+  const watchedOrderTargets = Form.useWatch<Record<number, number>>('order_targets', { form, preserve: true })
+  const orderTargets = watchedOrderTargets || {}
   const { message } = App.useApp()
   const queryClient = useQueryClient()
   const stationsQuery = useQuery({
@@ -81,12 +86,19 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
   useEffect(() => {
     if (!open) return
     if (run) {
+      const allocations = run.order_allocations?.length
+        ? run.order_allocations
+        : run.order_id
+          ? [{ order_id: run.order_id, planned_quantity: run.order_quantity }]
+          : []
       form.resetFields()
       form.setFieldsValue({
         ...run,
         station_id: run.station?.id,
         mold_id: run.mold?.id,
-        order_id: run.order_id || run.order?.id,
+        order_ids: allocations.map((item) => item.order_id),
+        order_targets: Object.fromEntries(allocations.map((item) => [item.order_id, item.planned_quantity])),
+        is_trial_task: allocations.length === 0 && !run.order_id,
         product_specification_id: run.product_specification_id || run.product_specification?.id,
         loaded_at: run.loaded_at ? dayjs(run.loaded_at) : undefined,
         expected_change_at: run.expected_change_at ? dayjs(run.expected_change_at) : undefined,
@@ -108,6 +120,8 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
         loaded_at: planned ? undefined : loadedAt,
         expected_change_at: planned ? undefined : loadedAt.add(8, 'hour'),
         status: initialStatus,
+        order_targets: {},
+        is_trial_task: false,
       })
     }
   }, [form, initialStatus, mountedMold?.id, mountedMold?.model_code, mountedMold?.product_name, open, run, station?.id])
@@ -134,11 +148,11 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
     const cavities = plainInteger(specification.effective_cavities) ?? plainInteger(specification.total_cavities)
     const strips = plainInteger(specification.strip_count)
     const seconds = curingSeconds(specification.primary_curing)
-    const stripWeight = weightKg(specification.cut_weight)
+    const stripWeight = weightKg(specification.actual_cut_weight || specification.cut_weight)
     form.setFieldsValue({
       specification: specification.specification || specification.product_name || form.getFieldValue('specification'),
       material: specification.material || form.getFieldValue('material'),
-      compound_size: specification.material_length || form.getFieldValue('compound_size'),
+      compound_size: specification.actual_material_length || specification.material_length || form.getFieldValue('compound_size'),
       ...(cavities !== undefined ? { cavities } : {}),
       ...(strips !== undefined ? { strips_per_batch: strips } : {}),
       ...(seconds !== undefined ? { curing_seconds: seconds } : {}),
@@ -146,20 +160,47 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
     })
   }
 
-  const selectOrder = (orderId?: number) => {
-    const order = ordersQuery.data?.find((item) => item.id === orderId)
-    if (!order) return
+  const updateCombinedOrderFields = (orderIds: number[], targets: Record<number, number>) => {
+    const selected = orderIds
+      .map((id) => ordersQuery.data?.find((item) => item.id === id))
+      .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    if (!selected.length) {
+      form.setFieldsValue({ order_no: undefined, order_quantity: undefined })
+      return
+    }
+    const order = [...selected].sort((left, right) => {
+      if (!left.due_date) return 1
+      if (!right.due_date) return -1
+      return left.due_date.localeCompare(right.due_date)
+    })[0]
     const linkedSpecification = order.product_specification
       || productSpecificationsQuery.data?.find((item) => item.id === order.product_specification_id)
     applyProductSpecification(linkedSpecification)
+    const total = selected.reduce((sum, item) => sum + Math.max(1, targets[item.id] || item.production_remaining_quantity || item.order_quantity), 0)
     form.setFieldsValue({
       order_no: order.order_no,
-      order_quantity: order.order_quantity,
+      order_quantity: total,
       specification: order.specification || linkedSpecification?.specification || linkedSpecification?.product_name,
       material: order.material || linkedSpecification?.material,
       product_specification_id: linkedSpecification?.id || order.product_specification_id,
       ...(plainNumber(order.forming_hours) !== undefined ? { estimated_hours: plainNumber(order.forming_hours) } : {}),
     })
+    recalculate({ order_quantity: total }, { ...form.getFieldsValue(), order_quantity: total })
+  }
+
+  const selectOrders = (orderIds: number[]) => {
+    const nextTargets = { ...orderTargets }
+    orderIds.forEach((id) => {
+      if (nextTargets[id]) return
+      const order = ordersQuery.data?.find((item) => item.id === id)
+      if (!order) return
+      nextTargets[id] = Math.max(1, Number(order.production_remaining_quantity || order.order_quantity || 1))
+    })
+    Object.keys(nextTargets).forEach((id) => {
+      if (!orderIds.includes(Number(id))) delete nextTargets[Number(id)]
+    })
+    form.setFieldValue('order_targets', nextTargets)
+    updateCombinedOrderFields(orderIds, nextTargets)
   }
 
   const selectProductSpecification = (id?: number) => {
@@ -169,6 +210,21 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
   const selectedStation = stationsQuery.data?.find((item) => item.id === selectedStationId)
   const selectedProductSpecification = productSpecificationsQuery.data?.find((item) => item.id === selectedProductSpecificationId)
     || (run && run.product_specification?.id === selectedProductSpecificationId ? run.product_specification : undefined)
+  const firstSelectedOrder = ordersQuery.data?.find((item) => item.id === selectedOrderIds[0])
+  const compatibleOrders = useMemo(() => {
+    const currentIds = new Set(selectedOrderIds)
+    return (ordersQuery.data || []).filter((item) => {
+      if (currentIds.has(item.id)) return true
+      if (item.status !== 'OPEN') return false
+      if (!firstSelectedOrder) return true
+      return item.specification.trim().toLocaleLowerCase() === firstSelectedOrder.specification.trim().toLocaleLowerCase()
+        && item.material.trim().toLocaleLowerCase() === firstSelectedOrder.material.trim().toLocaleLowerCase()
+    })
+  }, [firstSelectedOrder, ordersQuery.data, selectedOrderIds])
+  const selectedOrders = selectedOrderIds
+    .map((id) => ordersQuery.data?.find((item) => item.id === id))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .sort((left, right) => (left.due_date || '9999-12-31').localeCompare(right.due_date || '9999-12-31'))
   const linksLocked = !!run && run.status !== 'PLANNED'
   const selectableMolds = (moldsQuery.data || []).filter((mold) => {
     if (selectedStatus === 'RUNNING') {
@@ -208,14 +264,25 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
 
   const submit = async () => {
     const values = await form.validateFields()
+    const apiValues = { ...values }
+    delete apiValues.order_targets
+    delete apiValues.order_ids
+    delete apiValues.is_trial_task
     const payload = {
-      ...values,
+      ...apiValues,
       loaded_at: values.loaded_at ? values.loaded_at.toISOString() : null,
       expected_change_at: values.expected_change_at ? values.expected_change_at.toISOString() : null,
       material_changed_at: values.material_changed_at ? values.material_changed_at.toISOString() : null,
       unloaded_at: values.unloaded_at ? values.unloaded_at.toISOString() : null,
       mold_id: values.mold_id || null,
       order_id: values.order_id || null,
+      selected_orders: selectedOrderIds.length
+        ? selectedOrderIds.map((orderId) => ({
+          order_id: orderId,
+          planned_quantity: Math.max(1, orderTargets[orderId] || 1),
+        }))
+        : undefined,
+      order_change_reason: values.order_change_reason,
       product_specification_id: values.product_specification_id || null,
     }
     mutation.mutate(payload)
@@ -312,18 +379,35 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
         </Row>
 
         <div className="production-form-section">订单与产品规格</div>
+        <Alert
+          className="business-form-hint"
+          type="info"
+          showIcon
+          title="可一次选择多个相同规格、相同材质的订单"
+          description="系统按交期从近到远分配合计产量，并自动汇总本次计划数量和总模数；订单最终是否完成仍由你在订单管理中手工确认。"
+        />
+        <Form.Item name="is_trial_task" valuePropName="checked">
+          <Checkbox onChange={(event) => {
+            if (event.target.checked) {
+              form.setFieldsValue({ order_ids: [], order_targets: {}, order_no: '', order_quantity: undefined })
+            }
+          }}>无订单试模 / 临时生产任务</Checkbox>
+        </Form.Item>
         <Row gutter={14}>
-          <Col xs={24} sm={12}>
-            <Form.Item name="order_id" label="关联订单（可选）" extra={linksLocked ? '订单开始生产后关联不可更换。' : '选择后带入订单编号、数量、规格、材质及成型工时，仍可按本次生产调整。'}>
+          <Col xs={24}>
+            <Form.Item name="order_ids" label="本次合并生产的订单" rules={trialTask ? undefined : [{ required: true, message: '请至少选择一个订单' }]} extra={trialTask ? '当前为无订单试模/临时任务，可直接填写临时任务号、规格和材质。' : '选择第一张订单后，只显示规格和材质相同的进行中订单；已完成、已取消订单不会出现在候选列表。'}>
               <Select
-                allowClear
+                mode="multiple"
+                disabled={trialTask}
                 showSearch
                 optionFilterProp="label"
-                disabled={linksLocked}
                 loading={ordersQuery.isLoading}
-                onChange={selectOrder}
-                placeholder="无订单试模可留空"
-                options={(ordersQuery.data || []).map((item) => ({ value: item.id, label: [item.order_no, item.item_no, item.product_name, item.specification].filter(Boolean).join(' · ') }))}
+                onChange={selectOrders}
+                placeholder="先选一个订单，再继续勾选同规格、同材质订单"
+                options={compatibleOrders.map((item) => ({
+                  value: item.id,
+                  label: [item.order_no, item.item_no, item.due_date ? `交期 ${item.due_date}` : '未填交期', item.specification, item.material].filter(Boolean).join(' · '),
+                }))}
               />
             </Form.Item>
           </Col>
@@ -342,22 +426,45 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
             </Form.Item>
           </Col>
         </Row>
+        {selectedOrders.length > 0 && <Card size="small" title={`合并生产清单 · 共 ${selectedOrders.length} 个订单`} className="production-order-allocation-card">
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            {selectedOrders.map((order, index) => <div key={order.id} className="production-order-allocation-row">
+              <div>
+                <Space wrap><Tag color="blue">交期顺序 {index + 1}</Tag><strong>{order.order_no}{order.item_no ? ` / ${order.item_no}` : ''}</strong></Space>
+                <Typography.Text type="secondary">交期 {order.due_date || '未填写'} · 原订单 {order.order_quantity} 件 · 当前剩余 {order.production_remaining_quantity ?? order.order_quantity} 件</Typography.Text>
+              </div>
+              <InputNumber
+                min={1}
+                precision={0}
+                value={orderTargets[order.id]}
+                addonBefore="本次生产"
+                addonAfter="件"
+                onChange={(value) => {
+                  const next = { ...orderTargets, [order.id]: Math.max(1, Number(value || 1)) }
+                  form.setFieldValue('order_targets', next)
+                  updateCombinedOrderFields(selectedOrderIds, next)
+                }}
+              />
+            </div>)}
+          </Space>
+        </Card>}
         {selectedProductSpecification && (
           <Alert
             className="production-specification-reference"
             type="info"
             showIcon
             title={`工艺参考 · ${selectedProductSpecification.product_name}`}
-            description={<div className="production-specification-reference-grid"><span>胶料尺寸：{selectedProductSpecification.material_length || '-'}</span><span>裁重：{selectedProductSpecification.cut_weight || '-'}</span><span>条数：{selectedProductSpecification.strip_count || '-'}</span><span>一次硫化：{selectedProductSpecification.primary_curing || '-'}</span><span>二烤：{selectedProductSpecification.secondary_curing || '-'}</span><span>孔数：{selectedProductSpecification.effective_cavities || '-'} / {selectedProductSpecification.total_cavities || '-'}</span><span>模具型号：{selectedProductSpecification.mold_model?.code || selectedProductSpecification.mold_no || '-'}</span></div>}
+            description={<div className="production-specification-reference-grid"><span>实际切料长：{selectedProductSpecification.actual_material_length || selectedProductSpecification.material_length || '-'}</span><span>实际切料重：{selectedProductSpecification.actual_cut_weight || selectedProductSpecification.cut_weight || '-'}</span><span>条数：{selectedProductSpecification.strip_count || '-'}</span><span>一次硫化：{selectedProductSpecification.primary_curing || '-'}</span><span>二烤：{selectedProductSpecification.secondary_curing || '-'}</span><span>孔数：{selectedProductSpecification.effective_cavities || '-'} / {selectedProductSpecification.total_cavities || '-'}</span><span>模具型号：{selectedProductSpecification.mold_model?.code || selectedProductSpecification.mold_no || '-'}</span></div>}
           />
         )}
 
         <Row gutter={14}>
-          <Col xs={24} sm={12}><Form.Item name="order_no" label="订单编号" rules={[{ required: true, message: '请输入订单编号' }]}><Input placeholder="例如 ORD-2026-001" /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="order_no" label={trialTask ? '临时任务号' : '交期最早订单号（自动）'} rules={[{ required: true, message: trialTask ? '请输入临时任务号' : '请先选择订单' }]}><Input disabled={!trialTask} placeholder={trialTask ? '例如 试模-20260917-01' : undefined} /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="operator" label="默认作业员（可选）"><Input placeholder="录入日报时可自动带出，仍可修改" /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="specification" label="规格" rules={[{ required: true, message: '请输入产品规格' }]}><Input /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="material" label="材质 / 胶料配方" rules={[{ required: true, message: '请输入材质' }]}><Input placeholder="例如 配方A" /></Form.Item></Col>
         </Row>
+        {run && <Form.Item name="order_change_reason" label="关联订单修改原因" extra="只在增加、移除订单或调整本次生产数量时必填；系统会永久保留修改前后内容。"><Input.TextArea rows={2} maxLength={1000} showCount /></Form.Item>}
 
         <Form.Item
           name="mold_id"
@@ -380,7 +487,7 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
 
         <div className="production-form-section"><CalculatorOutlined /> 产量与工时计划</div>
         <Row gutter={14}>
-          <Col xs={12} sm={8}><Form.Item name="order_quantity" label="订单数量" rules={[{ required: true, message: '请输入订单数量' }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={12} sm={8}><Form.Item name="order_quantity" label="本次合计生产数量" rules={[{ required: true, message: trialTask ? '请输入计划生产数量' : '请先选择订单' }]}><InputNumber min={1} precision={0} disabled={!trialTask} style={{ width: '100%' }} /></Form.Item></Col>
           <Col xs={12} sm={8}><Form.Item name="cavities" label="模具孔数" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
           <Col xs={12} sm={8}><Form.Item name="estimated_defect_rate" label="预估不良率(%)"><InputNumber min={0} max={100} precision={2} style={{ width: '100%' }} /></Form.Item></Col>
           <Col xs={12} sm={8}><Form.Item name="planned_mold_count" label="计划生产模数" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>

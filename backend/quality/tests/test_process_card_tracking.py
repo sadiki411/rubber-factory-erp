@@ -163,6 +163,13 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
         )
         first_case = QualityReworkCase.objects.get(pk=first.json()["id"])
         self.assertEqual(first_case.status, QualityReworkCase.Status.RESHIPPED)
+        detail = self.client.get(f"{self.return_endpoint}{first_case.pk}/")
+        self.assertEqual(detail.status_code, 200, detail.content)
+        self.assertEqual(detail.json()["reshipment"]["id"], reship.json()["id"])
+        self.assertEqual(
+            detail.json()["reshipment"]["inspectors"][0]["id"],
+            self.inspector.pk,
+        )
 
         second = self.scan_return("CARD-RESHIP")
         self.assertEqual(second.status_code, 201, second.content)
@@ -174,6 +181,30 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
         self.assertEqual(totals["gross_shipped_quantity"], 2_000)
         self.assertEqual(totals["returned_quantity"], 2_000)
         self.assertEqual(totals["effective_delivered_quantity"], 0)
+
+    def test_scanned_return_rejects_manual_attempt_and_requires_next_scan(self):
+        batch = self.create_confirmed_repeat(count=1)
+        self.assertEqual(
+            self.bind(
+                batch,
+                [{"shipment_unit_no": 1, "card_no": "CARD-NO-MANUAL-ROUND"}],
+            ).status_code,
+            200,
+        )
+        returned = self.scan_return("CARD-NO-MANUAL-ROUND")
+        self.assertEqual(returned.status_code, 201, returned.content)
+
+        response = self.client.post(
+            "/api/quality/rework-attempts/",
+            {
+                "case_id": returned.json()["id"],
+                "attempt_date": timezone.localdate().isoformat(),
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("再次退货时重新扫描流程卡", str(response.json()))
 
     def test_shipment_return_and_reship_keep_order_status_in_sync(self):
         batch = self.create_confirmed_repeat(count=1, order_quantity=1_000)

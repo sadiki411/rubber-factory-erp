@@ -7,7 +7,12 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from analytics.models import ManualFinancialEntry, ManualPerformanceEntry
-from production.models import ProductionDailyLog, ProductionRun, ProductionStation
+from production.models import (
+    ProductionDailyLog,
+    ProductionRun,
+    ProductionRunOrder,
+    ProductionStation,
+)
 from production.services import seed_default_stations
 from quality.models import (
     QualityEmployee,
@@ -311,6 +316,90 @@ class AnalyticsApiTests(TestCase):
             {item["order_id"] for item in rows},
             {self.order.pk, second_order.pk},
         )
+
+    def test_combined_production_is_split_across_selected_orders(self):
+        day = timezone.localdate() - timedelta(days=1)
+        second_order = QualityOrder.objects.create(
+            order_no="ORD-ANALYTICS-002",
+            product_name=self.order.product_name,
+            specification=self.order.specification,
+            material=self.order.material,
+            order_quantity=500,
+            order_date=day,
+            due_date=day + timedelta(days=2),
+            created_by=self.user,
+        )
+        loaded_at = timezone.make_aware(
+            datetime.combine(day, datetime.min.time()),
+            timezone.get_current_timezone(),
+        ) + timedelta(hours=8)
+        run = ProductionRun.objects.create(
+            station=self.stations[0],
+            order=self.order,
+            order_no=self.order.order_no,
+            specification=self.order.specification,
+            material=self.order.material,
+            order_quantity=50,
+            cavities=2,
+            planned_mold_count=25,
+            curing_seconds=360,
+            estimated_hours=1,
+            loaded_at=loaded_at,
+            unloaded_at=loaded_at + timedelta(hours=2),
+            status=ProductionRun.Status.COMPLETED,
+            operator="张生产",
+            unit_price=Decimal("10"),
+            material_unit_price=Decimal("5"),
+            created_by=self.user,
+        )
+        ProductionRunOrder.objects.create(
+            run=run,
+            order=self.order,
+            planned_quantity=20,
+            sequence=1,
+        )
+        ProductionRunOrder.objects.create(
+            run=run,
+            order=second_order,
+            planned_quantity=30,
+            sequence=2,
+        )
+        ProductionDailyLog.objects.create(
+            run=run,
+            production_date=day,
+            operator="张生产",
+            produced_mold_count=10,
+        )
+        run.actual_good_quantity = 18
+        run.actual_defective_quantity = 2
+        run.total_material_kg = Decimal("2")
+        run.labor_cost = Decimal("10")
+        run.energy_cost = Decimal("5")
+        run.other_cost = Decimal("5")
+        run.settled_at = loaded_at + timedelta(hours=3)
+        run.settled_by = self.user
+        run.save()
+
+        response = self.client.get(
+            "/api/analytics/dashboard/",
+            {"date_from": day.isoformat(), "date_to": day.isoformat()},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        rows = {
+            row["order_id"]: row
+            for row in response.json()["order_performance"]
+            if row["order_id"] in {self.order.pk, second_order.pk}
+        }
+
+        self.assertEqual(set(rows), {self.order.pk, second_order.pk})
+        self.assertEqual(rows[self.order.pk]["produced_mold_count"], 4)
+        self.assertEqual(rows[second_order.pk]["produced_mold_count"], 6)
+        self.assertEqual(rows[self.order.pk]["theoretical_output_quantity"], 8)
+        self.assertEqual(rows[second_order.pk]["theoretical_output_quantity"], 12)
+        self.assertEqual(rows[self.order.pk]["revenue"], "72.00")
+        self.assertEqual(rows[second_order.pk]["revenue"], "108.00")
+        self.assertEqual(rows[self.order.pk]["profit"], "60.00")
+        self.assertEqual(rows[second_order.pk]["profit"], "90.00")
 
     def test_dashboard_includes_direct_weighted_order_shipments(self):
         day = timezone.localdate()

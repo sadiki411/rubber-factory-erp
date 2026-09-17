@@ -153,10 +153,11 @@ def with_order_activity(queryset):
         .values("latest")[:1]
     )
     run_latest = (
-        ProductionRun.objects.filter(order_id=OuterRef("pk"))
-        .values("order_id")
-        .annotate(latest=Max("updated_at"))
-        .values("latest")[:1]
+        ProductionRun.objects.filter(
+            Q(order_id=OuterRef("pk")) | Q(order_links__order_id=OuterRef("pk"))
+        )
+        .order_by("-updated_at")
+        .values("updated_at")[:1]
     )
     shipment_latest = (
         QualityShipment.objects.filter(order_id=OuterRef("pk"))
