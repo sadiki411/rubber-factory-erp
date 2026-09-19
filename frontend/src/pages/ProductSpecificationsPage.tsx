@@ -1,5 +1,5 @@
 import { EditOutlined, FileExcelOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Empty, Grid, Input, List, Select, Space, Table, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Empty, Grid, Image, Input, List, Select, Space, Table, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
@@ -52,6 +52,7 @@ export function ProductSpecificationsPage() {
   }
 
   const columns: TableColumnsType<ProductSpecification> = [
+    { title: '照片', key: 'image', width: 76, fixed: 'left', render: (_, row) => row.image ? <Image src={row.image} alt={`${productSpecificationTitle(row)}产品照片`} width={48} height={48} style={{ objectFit: 'cover', borderRadius: 6 }} preview /> : <Typography.Text type="secondary">无</Typography.Text> },
     { title: '产品名称', dataIndex: 'product_name', fixed: 'left', width: 190, render: (_, row) => <Button type="link" className="table-primary-link" onClick={() => openForm(row)}>{productSpecificationTitle(row)}</Button> },
     { title: '客户产品编号', dataIndex: 'customer_product_no', fixed: 'left', width: 155, render: exactText },
     { title: '规格', dataIndex: 'specification', width: 180, render: exactText },
@@ -91,7 +92,7 @@ export function ProductSpecificationsPage() {
           renderItem={(record) => (
             <List.Item>
               <Card className="mobile-record-card business-mobile-card" role="button" tabIndex={0} onClick={() => openForm(record)}>
-                <div className="record-card-heading"><Typography.Title level={4}>{productSpecificationTitle(record)}</Typography.Title><Tag color={record.is_active ? 'success' : 'default'}>{record.is_active ? '启用' : '停用'}</Tag></div>
+                <div className="record-card-heading">{record.image ? <Image src={record.image} alt={`${productSpecificationTitle(record)}产品照片`} width={56} height={56} style={{ objectFit: 'cover', borderRadius: 6 }} preview /> : <div className="product-specification-no-image">暂无照片</div>}<div><Typography.Title level={4}>{productSpecificationTitle(record)}</Typography.Title><Tag color={record.is_active ? 'success' : 'default'}>{record.is_active ? '启用' : '停用'}</Tag></div></div>
                 <Typography.Text>{exactText(record.customer_product_no)} · {exactText(record.specification)}</Typography.Text>
                 <Typography.Text type="secondary">材质 {exactText(record.material)} · 模具型号 {moldModelText(record)}</Typography.Text>
                 <div className="business-mobile-grid">
@@ -108,7 +109,7 @@ export function ProductSpecificationsPage() {
         />
       ) : (
         <Card className="data-card" styles={{ body: { padding: 0 } }}>
-          <Table rowKey="id" loading={specificationsQuery.isLoading} dataSource={specificationsQuery.data || []} columns={columns} scroll={{ x: 1765 }} pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }} />
+          <Table rowKey="id" loading={specificationsQuery.isLoading} dataSource={specificationsQuery.data || []} columns={columns} scroll={{ x: 1840 }} pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }} />
         </Card>
       )}
 

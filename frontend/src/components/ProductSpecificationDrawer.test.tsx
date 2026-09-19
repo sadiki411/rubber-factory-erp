@@ -58,6 +58,22 @@ describe('ProductSpecificationDrawer', () => {
     }))
   }, 15_000)
 
+  it('uploads an optional product photo as multipart data', async () => {
+    apiMocks.create.mockResolvedValue({ id: 1, product_name: '照片产品', is_active: true })
+    const user = userEvent.setup()
+    renderDrawer()
+
+    await user.type(screen.getByLabelText(/产品名称/), '照片产品')
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    await user.upload(input, new File(['photo'], 'product.png', { type: 'image/png' }))
+    await user.click(screen.getByRole('button', { name: /保\s*存/ }))
+
+    await waitFor(() => expect(apiMocks.create).toHaveBeenCalledTimes(1))
+    const body = apiMocks.create.mock.calls[0][0] as FormData
+    expect(body).toBeInstanceOf(FormData)
+    expect(body.get('image')).toBeInstanceOf(File)
+  }, 15_000)
+
   it('can clear an existing mold-model association', async () => {
     const user = userEvent.setup()
     const existing = {

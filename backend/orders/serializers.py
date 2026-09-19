@@ -109,6 +109,8 @@ class ProductSpecificationSerializer(AuditedModelSerializer):
     latest_unit_weight_g = serializers.SerializerMethodField()
     latest_unit_weight_measured_on = serializers.SerializerMethodField()
     unit_weight_history_count = serializers.SerializerMethodField()
+    image = serializers.ImageField(source="main_image", required=False, allow_null=True)
+    remove_image = serializers.BooleanField(write_only=True, required=False, default=False)
     mold_model = MoldModelSummarySerializer(read_only=True)
     mold_model_id = serializers.PrimaryKeyRelatedField(
         source="mold_model",
@@ -136,6 +138,8 @@ class ProductSpecificationSerializer(AuditedModelSerializer):
             "cut_weight",
             "actual_material_length",
             "actual_cut_weight",
+            "image",
+            "remove_image",
             "strip_count",
             "primary_curing",
             "secondary_curing",
@@ -173,6 +177,33 @@ class ProductSpecificationSerializer(AuditedModelSerializer):
             "updated_at",
         ]
 
+    def validate(self, attrs):
+        if attrs.get("remove_image") and "main_image" in attrs:
+            raise serializers.ValidationError(
+                {"remove_image": "移除产品照片和上传新照片不能同时操作。"}
+            )
+        if not self.instance and attrs.get("remove_image"):
+            raise serializers.ValidationError({"remove_image": "新建产品规格无需移除照片。"})
+        return attrs
+
+    def create(self, validated_data):
+        validated_data.pop("remove_image", False)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        remove_image = validated_data.pop("remove_image", False)
+        if remove_image:
+            validated_data["main_image"] = None
+        old_image_name = instance.main_image.name if instance.main_image else ""
+        old_image_storage = instance.main_image.storage if old_image_name else None
+        updated = super().update(instance, validated_data)
+        new_image_name = updated.main_image.name if updated.main_image else ""
+        if old_image_name and old_image_name != new_image_name:
+            transaction.on_commit(
+                lambda name=old_image_name, storage=old_image_storage: storage.delete(name)
+            )
+        return updated
+
     def get_latest_unit_weight_g(self, obj) -> str | None:
         weight = _latest_product_unit_weight(obj)
         return str(weight.unit_weight_g) if weight else None
@@ -190,6 +221,7 @@ class ProductSpecificationSerializer(AuditedModelSerializer):
 class ProductSpecificationSummarySerializer(serializers.ModelSerializer):
     latest_unit_weight_g = serializers.SerializerMethodField()
     latest_unit_weight_measured_on = serializers.SerializerMethodField()
+    image = serializers.ImageField(source="main_image", read_only=True, allow_null=True)
     mold_model = MoldModelSummarySerializer(read_only=True)
     mold_model_id = serializers.IntegerField(read_only=True)
 
@@ -203,6 +235,7 @@ class ProductSpecificationSummarySerializer(serializers.ModelSerializer):
             "material",
             "mold_model",
             "mold_model_id",
+            "image",
             "mold_no",
             "mold_size",
             "is_active",

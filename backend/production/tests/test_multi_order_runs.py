@@ -105,6 +105,19 @@ class MultiOrderProductionRunApiTests(ProductionTestMixin, TestCase):
         )
         self.assertEqual(len(board_run["order_allocations"]), 2)
 
+    def test_hand_ledger_accepts_the_same_combined_order_payload(self):
+        payload = self.payload()
+        payload.update({"is_ledger_only": True, "station_id": None})
+        response = self.client.post(self.endpoint, payload, format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        run = ProductionRun.objects.get(pk=response.json()["id"])
+        self.assertTrue(run.is_ledger_only)
+        self.assertEqual(run.order_id, self.early.pk)
+        self.assertEqual(
+            [item["order_id"] for item in response.json()["order_allocations"]],
+            [self.early.pk, self.late.pk],
+        )
+
     def test_rejects_different_material_or_closed_order(self):
         mismatch = self.create_order(
             "COMBINED-MISMATCH",

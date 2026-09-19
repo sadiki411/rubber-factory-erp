@@ -319,11 +319,11 @@ export const productSpecificationApi = {
   list: (filters: ProductSpecificationFilters = {}) =>
     apiFetch<ApiList<ProductSpecification> | ProductSpecification[]>(`/api/orders/product-specifications/${queryString(filters)}`),
   detail: (id: number | string) => apiFetch<ProductSpecification>(`/api/orders/product-specifications/${id}/`),
-  create: (body: Partial<ProductSpecification>) => apiFetch<ProductSpecification>('/api/orders/product-specifications/', {
-    method: 'POST', body: JSON.stringify(body),
+  create: (body: Partial<ProductSpecification> | FormData) => apiFetch<ProductSpecification>('/api/orders/product-specifications/', {
+    method: 'POST', body: body instanceof FormData ? body : JSON.stringify(body),
   }),
-  update: (id: number, body: Partial<ProductSpecification>) => apiFetch<ProductSpecification>(`/api/orders/product-specifications/${id}/`, {
-    method: 'PATCH', body: JSON.stringify(body),
+  update: (id: number, body: Partial<ProductSpecification> | FormData) => apiFetch<ProductSpecification>(`/api/orders/product-specifications/${id}/`, {
+    method: 'PATCH', body: body instanceof FormData ? body : JSON.stringify(body),
   }),
 }
 

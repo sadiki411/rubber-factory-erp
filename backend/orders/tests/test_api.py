@@ -1,8 +1,12 @@
+import base64
+import os
+import tempfile
 from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework.test import APITestCase
@@ -80,6 +84,57 @@ class BusinessApiTests(APITestCase):
             revision.delete()
         deleted = self.client.delete(f"/api/orders/product-specifications/{product_id}/")
         self.assertEqual(deleted.status_code, 405)
+
+    def test_product_specification_photo_can_be_replaced_and_cleared(self):
+        image_bytes = base64.b64decode(
+            "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+        )
+        with tempfile.TemporaryDirectory() as media_root, self.settings(MEDIA_ROOT=media_root):
+            created = self.client.post(
+                "/api/orders/product-specifications/",
+                {
+                    "product_name": "照片产品",
+                    "specification": "PHOTO-SPEC-001",
+                    "material": "NBR",
+                    "image": SimpleUploadedFile(
+                        "product.gif", image_bytes, content_type="image/gif"
+                    ),
+                },
+                format="multipart",
+            )
+            self.assertEqual(created.status_code, 201, created.content)
+            product = ProductSpecification.objects.get(pk=created.json()["id"])
+            first_path = product.main_image.path
+            self.assertTrue(os.path.exists(first_path))
+            self.assertTrue(created.json()["image"])
+
+            with self.captureOnCommitCallbacks(execute=True):
+                replaced = self.client.patch(
+                    f"/api/orders/product-specifications/{product.pk}/",
+                    {
+                        "image": SimpleUploadedFile(
+                            "replacement.gif", image_bytes, content_type="image/gif"
+                        )
+                    },
+                    format="multipart",
+                )
+            self.assertEqual(replaced.status_code, 200, replaced.content)
+            product.refresh_from_db()
+            second_path = product.main_image.path
+            self.assertNotEqual(first_path, second_path)
+            self.assertFalse(os.path.exists(first_path))
+            self.assertTrue(os.path.exists(second_path))
+
+            with self.captureOnCommitCallbacks(execute=True):
+                cleared = self.client.patch(
+                    f"/api/orders/product-specifications/{product.pk}/",
+                    {"remove_image": "true"},
+                    format="multipart",
+                )
+            self.assertEqual(cleared.status_code, 200, cleared.content)
+            product.refresh_from_db()
+            self.assertFalse(product.main_image)
+            self.assertFalse(os.path.exists(second_path))
 
     def test_product_specification_keeps_current_inactive_mold_but_rejects_new_inactive_link(self):
         current = MoldModel.objects.create(

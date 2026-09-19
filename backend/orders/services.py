@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import transaction
 from django.db.models import DateTimeField, DecimalField, F, Max, OuterRef, Q, Subquery, Sum, Value
+from django.db.models.fields.files import FieldFile
 from django.db.models.functions import Coalesce, Greatest
 from django.forms.models import model_to_dict
 
@@ -24,6 +25,9 @@ def json_safe(value):
 
 def model_snapshot(instance):
     snapshot = model_to_dict(instance)
+    for field_name, value in snapshot.items():
+        if isinstance(value, FieldFile):
+            snapshot[field_name] = value.name
     snapshot["id"] = instance.pk
     if hasattr(instance, "created_at"):
         snapshot["created_at"] = instance.created_at

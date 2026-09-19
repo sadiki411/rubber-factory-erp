@@ -1,6 +1,8 @@
-import { Alert, App, Button, Col, Drawer, Form, Input, Row, Select, Space, Switch, Typography } from 'antd'
+import { Alert, App, Button, Col, Drawer, Form, Input, Row, Select, Space, Switch, Typography, Upload } from 'antd'
+import { PlusOutlined } from '@ant-design/icons'
+import type { UploadFile } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { masterApi, productSpecificationApi, toList } from '../api/client'
 import type { MoldModel, ProductSpecification } from '../types'
 
@@ -14,8 +16,10 @@ const moldModelApi = masterApi<MoldModel>('mold-models')
 
 export function ProductSpecificationDrawer({ open, specification, onClose }: Props) {
   const [form] = Form.useForm<Record<string, unknown>>()
+  const [files, setFiles] = useState<UploadFile[]>([])
   const queryClient = useQueryClient()
   const { message } = App.useApp()
+  const existingImage = specification?.image || null
   const moldModelsQuery = useQuery({
     queryKey: ['mold-models', 'product-specification-options'],
     queryFn: async () => toList(await moldModelApi.list()),
@@ -29,14 +33,34 @@ export function ProductSpecificationDrawer({ open, specification, onClose }: Pro
       ...specification,
       mold_model_id: specification.mold_model_id ?? specification.mold_model?.id,
     } : { is_active: true })
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setFiles(specification?.image ? [{ uid: '-1', name: '产品照片', status: 'done', url: specification.image }] : [])
   }, [form, open, specification])
 
   const mutation = useMutation({
-    mutationFn: (values: Record<string, unknown>) => {
-      const body = {
-        ...values,
-        mold_model_id: typeof values.mold_model_id === 'number' ? values.mold_model_id : null,
-      } as Partial<ProductSpecification>
+    mutationFn: async (values: Record<string, unknown>) => {
+      const original = files[0]?.originFileObj
+      const removingImage = Boolean(specification && existingImage && files.length === 0)
+      if (!original && !removingImage) {
+        const body = {
+          ...values,
+          mold_model_id: typeof values.mold_model_id === 'number' ? values.mold_model_id : null,
+        } as Partial<ProductSpecification>
+        return specification
+          ? productSpecificationApi.update(specification.id, body)
+          : productSpecificationApi.create(body)
+      }
+      const body = new FormData()
+      Object.entries(values).forEach(([key, value]) => {
+        if (value === undefined) return
+        if (value === null) {
+          if (key === 'mold_model_id') body.append(key, '')
+          return
+        }
+        body.append(key, typeof value === 'boolean' ? String(value) : String(value))
+      })
+      if (original) body.append('image', original)
+      if (removingImage) body.append('remove_image', 'true')
       return specification
         ? productSpecificationApi.update(specification.id, body)
         : productSpecificationApi.create(body)
@@ -90,6 +114,18 @@ export function ProductSpecificationDrawer({ open, specification, onClose }: Pro
           <Col xs={24} sm={12}><Form.Item name="specification" label="规格"><Input /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="material" label="材质 / 胶料"><Input /></Form.Item></Col>
         </Row>
+        <Form.Item label="产品照片" extra="可选，支持 JPG、PNG、WEBP；用于记录产品外观，导入订单资料不会覆盖。">
+          <Upload
+            listType="picture-card"
+            fileList={files}
+            beforeUpload={() => false}
+            accept="image/png,image/jpeg,image/webp"
+            maxCount={1}
+            onChange={({ fileList }) => setFiles(fileList)}
+          >
+            {files.length < 1 && <div><PlusOutlined /><div style={{ marginTop: 8 }}>选择照片</div></div>}
+          </Upload>
+        </Form.Item>
 
         <div className="business-form-section">上机参数</div>
         <Alert className="business-form-hint" type="info" showIcon title="原始料长和切料重可随订单资料导入更新；实际切料数据只允许人工维护，后续导入不会覆盖。" />

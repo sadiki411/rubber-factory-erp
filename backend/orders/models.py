@@ -15,6 +15,12 @@ def business_import_path(instance, filename):
     return f"business-imports/{instance.id}/{uuid.uuid4().hex}{extension}"
 
 
+def product_specification_image_path(instance, filename):
+    extension = Path(filename).suffix.lower() or ".bin"
+    identity = instance.pk or uuid.uuid4().hex
+    return f"product-specifications/{identity}/{uuid.uuid4().hex}{extension}"
+
+
 class BusinessImportBatch(models.Model):
     class SourceType(models.TextChoices):
         UNKNOWN = "UNKNOWN", "无法识别"
@@ -83,6 +89,12 @@ class ProductSpecification(TimeStampedModel):
         blank=True,
         default="",
         help_text="仅允许在ERP页面手工维护，业务文件导入不得覆盖。",
+    )
+    main_image = models.ImageField(
+        "产品照片",
+        upload_to=product_specification_image_path,
+        blank=True,
+        help_text="产品规格资料的可选外观照片。",
     )
     strip_count = models.CharField("条数", max_length=100, blank=True, default="")
     primary_curing = models.CharField(

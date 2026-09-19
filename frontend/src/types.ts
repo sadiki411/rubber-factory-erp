@@ -198,6 +198,7 @@ export interface ProductSpecification {
   cut_weight?: string
   actual_material_length?: string
   actual_cut_weight?: string
+  image?: string | null
   strip_count?: string
   primary_curing?: string
   secondary_curing?: string
