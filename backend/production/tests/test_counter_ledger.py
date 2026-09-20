@@ -6,7 +6,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from openpyxl import load_workbook
 
-from quality.models import QualityOrder
+from quality.models import QualityEmployee, QualityOrder
 from molds.models import MoldAsset, MoldModel, RackSlot
 from molds.services import seed_default_racks
 from production.models import ProductionStation
@@ -55,6 +55,48 @@ class ProductionCounterLedgerApiTests(ProductionTestMixin, TestCase):
         return self.client.post(
             f"/api/production/runs/{run_id}/counter-logs/", payload, format="json"
         )
+
+    def test_production_employee_endpoint_uses_shared_employee_archive(self):
+        existing = QualityEmployee.objects.create(
+            employee_no="EMP-QUALITY-001",
+            name="一人多岗",
+            role=QualityEmployee.Role.INSPECTOR,
+        )
+        response = self.client.post(
+            "/api/production/employees/",
+            {"name": existing.name},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["id"], existing.pk)
+        existing.refresh_from_db()
+        self.assertTrue(existing.production_enabled)
+        self.assertEqual(response.json()["employee_no"], existing.employee_no)
+
+        created = self.client.post(
+            "/api/production/employees/", {"name": "新生产员工"}, format="json"
+        )
+        self.assertEqual(created.status_code, 201, created.content)
+        self.assertEqual(created.json()["role"], QualityEmployee.Role.PRODUCTION)
+        self.assertTrue(created.json()["production_enabled"])
+        self.assertTrue(created.json()["employee_no"])
+
+    def test_counter_log_links_shared_employee_id_and_keeps_name_snapshot(self):
+        employee = QualityEmployee.objects.create(
+            employee_no="EMP-PROD-001",
+            name="机台员工",
+            role=QualityEmployee.Role.PRODUCTION,
+            production_enabled=True,
+        )
+        run = self.create_task()
+        response = self.add_counter(
+            run["id"], 100, operator_employee_id=employee.pk
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["operator_employee"]["id"], employee.pk)
+        log = ProductionDailyLog.objects.get(pk=response.json()["id"])
+        self.assertEqual(log.employee_id, employee.pk)
+        self.assertEqual(log.operator, employee.name)
 
     def test_minimal_task_uses_unique_order_and_defect_rate_formula(self):
         payload = self.create_task()

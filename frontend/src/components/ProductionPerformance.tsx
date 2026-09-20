@@ -27,7 +27,7 @@ export function ProductionPerformance({ mobile }: Props) {
   const rows = query.data?.operators || []
   const totals = query.data?.totals
   const columns: TableColumnsType<ProductionMonthlyPerformanceOperator> = [
-    { title: '作业员', dataIndex: 'operator', fixed: 'left', width: 130, render: (value) => <strong>{value || '-'}</strong> },
+    { title: '作业员', dataIndex: 'operator', fixed: 'left', width: 180, render: (value, row) => <span><strong>{value || '-'}</strong>{row.employee_no && <><br /><Typography.Text type="secondary">{row.employee_no}</Typography.Text></>}</span> },
     { title: '总模数', dataIndex: 'total_mold_count', width: 110, render: (value) => numberText(value, 0) },
     { title: '生产天数', dataIndex: 'production_days', width: 105, render: (value) => `${numberText(value, 0)} 天` },
     { title: '参与订单数', dataIndex: 'participated_run_count', width: 115, render: (value) => numberText(value, 0) },
@@ -56,7 +56,7 @@ export function ProductionPerformance({ mobile }: Props) {
       {query.isLoading ? <Card><Skeleton active /></Card> : mobile ? (
         <div className="production-performance-mobile-list">
           {rows.length ? rows.map((row) => (
-            <Card key={row.operator} className="production-performance-mobile-card">
+            <Card key={row.employee_id || row.employee_no || row.operator} className="production-performance-mobile-card">
               <div className="record-card-heading"><Typography.Title level={4}>{row.operator}</Typography.Title><strong>{numberText(row.total_mold_count, 0)} 模</strong></div>
               <div className="production-performance-mobile-grid">
                 <span>生产天数<b>{numberText(row.production_days, 0)} 天</b></span>
@@ -69,7 +69,7 @@ export function ProductionPerformance({ mobile }: Props) {
         </div>
       ) : (
         <Card className="data-card" styles={{ body: { padding: 0 } }}>
-          <Table rowKey="operator" dataSource={rows} columns={columns} pagination={false} scroll={{ x: 700 }} locale={{ emptyText: `${month.format('YYYY年M月')}暂无绩效记录` }} />
+          <Table rowKey={(row) => row.employee_id || row.employee_no || row.operator} dataSource={rows} columns={columns} pagination={false} scroll={{ x: 700 }} locale={{ emptyText: `${month.format('YYYY年M月')}暂无绩效记录` }} />
         </Card>
       )}
     </section>

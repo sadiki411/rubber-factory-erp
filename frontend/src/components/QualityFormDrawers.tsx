@@ -182,8 +182,10 @@ export function QualityEmployeeDrawer({ open, employee, onClose }: EmployeeDrawe
       <Form form={form} layout="vertical" requiredMark="optional">
         <Form.Item name="employee_no" label="员工工号（选填）" extra={employee ? '已有员工的工号不能清空；可以修改为其他唯一编号。' : '不填写时由系统自动生成，保存后仍可编辑。'}><Input placeholder="可留空自动生成" /></Form.Item>
         <Form.Item name="name" label="姓名" rules={[{ required: true, whitespace: true, message: '请输入员工姓名' }]}><Input /></Form.Item>
+        <Form.Item name="phone" label="手机号/联系电话"><Input placeholder="选填" /></Form.Item>
         <Form.Item name="team" label="班组"><Input placeholder="例如 品检一组" /></Form.Item>
-        <Form.Item name="role" label="岗位角色" rules={[{ required: true }]}><Select options={[{ value: 'INSPECTOR', label: '品检员' }, { value: 'REWORKER', label: '返工员' }, { value: 'BOTH', label: '品检兼返工' }]} /></Form.Item>
+        <Form.Item name="role" label="品检/返工岗位" rules={[{ required: true }]}><Select options={[{ value: 'PRODUCTION', label: '仅前端生产' }, { value: 'INSPECTOR', label: '品检员' }, { value: 'REWORKER', label: '返工员' }, { value: 'BOTH', label: '品检兼返工' }]} /></Form.Item>
+        <Form.Item name="production_enabled" label="前端生产岗位" valuePropName="checked" extra="一个人可以同时拥有生产、品检或返工岗位；勾选后会出现在生产手工账员工选择中。"><Switch checkedChildren="可参与生产" unCheckedChildren="不参与生产" /></Form.Item>
         <Form.Item name="is_active" label="状态" valuePropName="checked"><Switch checkedChildren="启用" unCheckedChildren="停用" /></Form.Item>
         <Form.Item name="notes" label="备注"><Input.TextArea rows={3} maxLength={500} showCount /></Form.Item>
       </Form>

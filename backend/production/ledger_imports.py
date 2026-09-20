@@ -21,7 +21,7 @@ from .models import (
     ProductionStation,
     normalize_production_station_code,
 )
-from .services import create_counter_log
+from .services import create_counter_log, resolve_or_create_production_employee
 
 
 TASK_HEADERS = [
@@ -377,11 +377,11 @@ def commit_ledger_batch(batch, user, *, confirm_warnings=False):
             if record["reset_before"]:
                 run.counter_segment += 1
                 run.save(update_fields=["counter_segment", "updated_at"])
-            from .models import ProductionEmployee
             assistants = []
             for assistant_name in record["assistants"]:
-                employee = ProductionEmployee.objects.filter(name__iexact=assistant_name).first()
-                assistants.append(employee or ProductionEmployee.objects.create(name=assistant_name))
+                employee = resolve_or_create_production_employee(assistant_name)
+                assistants.append(employee)
+            operator_employee = resolve_or_create_production_employee(record["operator"])
             from datetime import date
             create_counter_log(
                 run,
@@ -389,12 +389,13 @@ def commit_ledger_batch(batch, user, *, confirm_warnings=False):
                 {
                     "production_date": date.fromisoformat(record["production_date"]) if record["production_date"] else None,
                     "shift": record["shift"],
-                    "operator": record["operator"],
+                    "operator": operator_employee.name,
+                    "employee": operator_employee,
                     "cumulative_mold_count": record["cumulative_mold_count"],
                     "cavities_snapshot": task["cavities"],
                     "defective_quantity": record["defective_quantity"],
                     "notes": record["notes"],
-                    "assistant_operators": assistants,
+                    "assistant_employees": assistants,
                 },
             )
         created.append(run.pk)

@@ -427,8 +427,10 @@ def _employee_key(employee=None, staff_name=""):
     return f"name:{' '.join(str(staff_name or '').split()).casefold()}"
 
 
-def _operator_row(operator):
+def _operator_row(operator, employee=None):
     return {
+        "employee_id": employee.pk if employee else None,
+        "employee_no": employee.employee_no if employee else "",
         "operator": operator,
         "automatic_mold_count": 0,
         "manual_mold_count": 0,
@@ -550,7 +552,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         production_date__gte=date_from,
         production_date__lte=date_to,
     ).select_related(
-        "run__station__machine", "run__mold__mold_model", "run__order"
+        "run__station__machine", "run__mold__mold_model", "run__order", "employee"
     ).prefetch_related("run__order_links__order")
     logs_qs = _filter_production(
         logs_qs, group=group, machine_id=machine_id, prefix="run__"
@@ -738,8 +740,9 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         day["theoretical_output_quantity"] += output
         day["automatic_equivalent_hours"] += equivalent_hours
 
-        operator_name = " ".join(str(log.operator or "未指定").split()) or "未指定"
-        operator = operators.setdefault(operator_name.casefold(), _operator_row(operator_name))
+        operator_name = log.employee.name if log.employee_id else (" ".join(str(log.operator or "未指定").split()) or "未指定")
+        operator_key = _employee_key(log.employee, operator_name)
+        operator = operators.setdefault(operator_key, _operator_row(operator_name, log.employee))
         operator["automatic_mold_count"] += molds
         operator["total_mold_count"] += molds
         operator["theoretical_output_quantity"] += output

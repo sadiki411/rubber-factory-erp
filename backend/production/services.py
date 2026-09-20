@@ -10,12 +10,58 @@ from .models import (
     PRODUCTION_STATION_LAYOUT,
     ProductionRun,
     ProductionDailyLog,
-    ProductionEmployee,
     ProductionRecordAudit,
     ProductionSettlementRevision,
     ProductionStation,
     ProductionRunOrder,
 )
+from quality.models import QualityEmployee
+
+
+def _normalized_employee_name(value):
+    return " ".join(str(value or "").split()).casefold()
+
+
+def resolve_or_create_production_employee(name):
+    """Resolve a production name to the shared employee master.
+
+    A unique existing name is safe to reuse.  Duplicate names are deliberately
+    rejected so a fast shop-floor entry can never silently credit the wrong
+    person.  New names receive a generated employee number and the production
+    role automatically.
+    """
+
+    normalized = _normalized_employee_name(name)
+    if not normalized:
+        raise ValidationError({"name": "员工姓名不能为空。"})
+    matches = [
+        employee
+        for employee in QualityEmployee.objects.all().order_by("id")
+        if _normalized_employee_name(employee.name) == normalized
+    ]
+    production_matches = [item for item in matches if item.production_enabled]
+    if len(production_matches) == 1:
+        employee = production_matches[0]
+        if not employee.is_active:
+            raise ValidationError({"name": f"员工“{employee.name}”已停用，请先启用。"})
+        return employee
+    if len(matches) > 1:
+        raise ValidationError(
+            {"name": f"存在多名同名员工“{name}”，请在员工档案中按工号启用正确的生产人员。"}
+        )
+    if matches:
+        employee = matches[0]
+        if not employee.is_active:
+            raise ValidationError({"name": f"员工“{employee.name}”已停用，请先启用。"})
+        employee.production_enabled = True
+        employee.save(update_fields={"production_enabled", "updated_at"})
+        return employee
+    return QualityEmployee.objects.create(
+        name=" ".join(str(name).split()),
+        role=QualityEmployee.Role.PRODUCTION,
+        production_enabled=True,
+        quick_resolve_key=QualityEmployee.normalize_quick_resolve_key(name),
+    )
 
 
 def _log_snapshot(log):
@@ -97,17 +143,16 @@ def create_counter_log(run, user, validated_data):
         raise ValidationError("该生产段已经下机，请先恢复为新的生产段。")
 
     data = dict(validated_data)
-    assistants = data.pop("assistant_operators", [])
+    assistants = data.pop("assistant_employees", [])
     data.pop("_confirmed_duplicate", None)
-    employee = data.get("operator_employee")
+    employee = data.get("employee")
     if employee is None:
         name = str(data.get("operator") or "").strip()
         if name:
-            employee = ProductionEmployee.objects.filter(name__iexact=name).first()
-            if employee is None:
-                employee = ProductionEmployee.objects.create(name=name)
-            data["operator_employee"] = employee
-            data["operator"] = employee.name
+            employee = resolve_or_create_production_employee(name)
+            data["employee"] = employee
+    if employee:
+        data["operator"] = employee.name
 
     previous = (
         ProductionDailyLog.objects.select_for_update()
@@ -152,7 +197,7 @@ def create_counter_log(run, user, validated_data):
     log._allow_planned_counter = True
     log.save()
     if assistants:
-        log.assistant_operators.set(assistants)
+        log.assistant_employees.set(assistants)
     invalidate_settlement(run, user)
     _record_audit(
         run,
@@ -173,18 +218,18 @@ def update_counter_log(log, user, validated_data):
     before = _log_snapshot(log)
     data = dict(validated_data)
     assistants_marker = object()
-    assistants = data.pop("assistant_operators", assistants_marker)
+    assistants = data.pop("assistant_employees", assistants_marker)
     data.pop("_confirmed_duplicate", None)
     for field, value in data.items():
         setattr(log, field, value)
-    if log.operator_employee_id:
-        log.operator = log.operator_employee.name
+    if log.employee_id:
+        log.operator = log.employee.name
     log._allow_planned_counter = True
     log.full_clean(exclude=["produced_mold_count"])
     ProductionDailyLog.objects.filter(pk=log.pk).update(
         production_date=log.production_date,
         operator=log.operator,
-        operator_employee=log.operator_employee,
+        employee=log.employee,
         shift=log.shift,
         cumulative_mold_count=log.cumulative_mold_count,
         cavities_snapshot=log.cavities_snapshot,
@@ -193,7 +238,7 @@ def update_counter_log(log, user, validated_data):
         updated_at=timezone.now(),
     )
     if assistants is not assistants_marker:
-        log.assistant_operators.set(assistants)
+        log.assistant_employees.set(assistants)
     _recalculate_counter_segment(run, log.counter_segment)
     invalidate_settlement(run, user)
     log.refresh_from_db()

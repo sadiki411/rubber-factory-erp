@@ -15,6 +15,7 @@ from .views import (
     ProductionOrderProgressView,
     ProductionRunViewSet,
     ProductionEmployeeViewSet,
+    ProductionEmployeeIdentityMatchViewSet,
     ProductionStationViewSet,
     ProductionSummaryView,
 )
@@ -24,6 +25,7 @@ router = DefaultRouter()
 router.register("stations", ProductionStationViewSet, basename="production-station")
 router.register("runs", ProductionRunViewSet, basename="production-run")
 router.register("employees", ProductionEmployeeViewSet, basename="production-employee")
+router.register("employee-identity-matches", ProductionEmployeeIdentityMatchViewSet, basename="production-employee-identity-match")
 
 
 urlpatterns = [

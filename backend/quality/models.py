@@ -14,14 +14,17 @@ from molds.models import TimeStampedModel
 
 class QualityEmployee(TimeStampedModel):
     class Role(models.TextChoices):
+        PRODUCTION = "PRODUCTION", "前端生产"
         INSPECTOR = "INSPECTOR", "品检员"
         REWORKER = "REWORKER", "返工员"
         BOTH = "BOTH", "品检兼返工"
 
     employee_no = models.CharField("员工编号", max_length=50, unique=True)
     name = models.CharField("姓名", max_length=100)
+    phone = models.CharField("手机号/联系电话", max_length=50, blank=True)
     team = models.CharField("班组", max_length=100, blank=True)
     role = models.CharField("岗位", max_length=20, choices=Role.choices)
+    production_enabled = models.BooleanField("可参与前端生产", default=False)
     is_active = models.BooleanField("在职/启用", default=True)
     notes = models.TextField("备注", blank=True)
     # Only employees claimed or created through ``quick-resolve`` receive a
@@ -61,7 +64,10 @@ class QualityEmployee(TimeStampedModel):
     def clean(self):
         self.employee_no = str(self.employee_no or "").strip().upper()
         self.name = str(self.name or "").strip()
+        self.phone = str(self.phone or "").strip()
         self.team = str(self.team or "").strip()
+        if self.role == self.Role.PRODUCTION:
+            self.production_enabled = True
         if not self.employee_no:
             raise ValidationError({"employee_no": "员工编号不能为空。"})
         if not self.name:
@@ -72,6 +78,8 @@ class QualityEmployee(TimeStampedModel):
         if self._state.adding and not str(self.employee_no or "").strip():
             self.employee_no = self.generate_employee_no()
         update_fields = kwargs.get("update_fields")
+        if self.role == self.Role.PRODUCTION and update_fields is not None:
+            kwargs["update_fields"] = set(update_fields) | {"production_enabled"}
         name_is_being_saved = update_fields is None or "name" in update_fields
         if not self._state.adding and name_is_being_saved:
             previous_name = type(self).objects.filter(pk=self.pk).values_list(

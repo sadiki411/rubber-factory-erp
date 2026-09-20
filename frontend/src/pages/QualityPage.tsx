@@ -12,11 +12,11 @@ import {
 } from '@ant-design/icons'
 import { Alert, App, Button, Card, Col, DatePicker, Empty, Grid, Input, Progress, Row, Select, Skeleton, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { orderApi, qualityApi, qualityWorkflowApi, toList } from '../api/client'
+import { orderApi, productionApi, qualityApi, qualityWorkflowApi, toList } from '../api/client'
 import {
   QualityEmployeeDrawer,
   QualityShipmentDrawer,
@@ -73,6 +73,7 @@ const REASON_META: Record<string, string> = {
 }
 
 const ROLE_META: Record<QualityEmployeeRole, { text: string; color: string }> = {
+  PRODUCTION: { text: '前端生产', color: 'green' },
   INSPECTOR: { text: '品检员', color: 'blue' },
   REWORKER: { text: '返工员', color: 'orange' },
   BOTH: { text: '品检兼返工', color: 'purple' },
@@ -177,6 +178,23 @@ export function QualityPage() {
   const employeesQuery = useQuery({
     queryKey: ['quality', 'employees'],
     queryFn: async () => toList(await qualityApi.listEmployees({ page_size: 1000 })),
+  })
+  const pendingIdentityQuery = useQuery({
+    queryKey: ['production', 'employee-identity-matches', 'PENDING'],
+    queryFn: () => productionApi.listEmployeeIdentityMatches({ status: 'PENDING' }),
+  })
+  const resolveIdentityMutation = useMutation({
+    mutationFn: ({ matchId, employeeId }: { matchId: number; employeeId?: number | null }) => productionApi.resolveEmployeeIdentityMatch(matchId, employeeId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['production', 'employee-identity-matches'] }),
+        queryClient.invalidateQueries({ queryKey: ['production', 'employees'] }),
+        queryClient.invalidateQueries({ queryKey: ['quality', 'employees'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+      ])
+      message.success('历史员工身份已确认，生产记录已统一归档')
+    },
+    onError: (error: Error) => message.error(error.message),
   })
   const ordersQuery = useQuery({
     queryKey: ['orders', 'quality-options'],
@@ -491,7 +509,7 @@ export function QualityPage() {
     { title: '工号', dataIndex: 'employee_no', fixed: 'left', width: 130, render: (value) => <strong>{value}</strong> },
     { title: '姓名', dataIndex: 'name', width: 130 },
     { title: '班组', dataIndex: 'team', width: 150, render: (value) => value || '-' },
-    { title: '岗位角色', dataIndex: 'role', width: 140, render: (value: QualityEmployeeRole, row) => <Tag color={ROLE_META[value]?.color}>{row.role_display || ROLE_META[value]?.text || value}</Tag> },
+    { title: '岗位角色', dataIndex: 'role', width: 190, render: (value: QualityEmployeeRole, row) => <Space size={4} wrap>{row.production_enabled && value !== 'PRODUCTION' && <Tag color="green">前端生产</Tag>}<Tag color={ROLE_META[value]?.color}>{row.role_display || ROLE_META[value]?.text || value}</Tag></Space> },
     { title: '状态', dataIndex: 'is_active', width: 100, render: (value) => <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag> },
     { title: '备注', dataIndex: 'notes', ellipsis: true, render: (value) => value || '-' },
     { title: '操作', key: 'action', fixed: 'right', width: 76, render: (_, row) => <Button type="link" icon={<EditOutlined />} onClick={() => setEmployeeForm({ employee: row })}>编辑</Button> },
@@ -565,7 +583,8 @@ export function QualityPage() {
       key: 'employees',
       label: '员工档案',
       children: <div className="quality-tab-content">
-        <div className="section-heading"><div><Typography.Title level={3}>品检与返工员工档案</Typography.Title><Typography.Text type="secondary">使用唯一工号维护员工，确保跨月份绩效汇总稳定。</Typography.Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => setEmployeeForm({})}>新增员工</Button></div>
+        <div className="section-heading"><div><Typography.Title level={3}>统一员工档案</Typography.Title><Typography.Text type="secondary">使用唯一工号维护生产、品检和返工岗位；同一员工可以同时拥有多个岗位。</Typography.Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => setEmployeeForm({})}>新增员工</Button></div>
+        {!!pendingIdentityQuery.data?.length && <Card size="small" style={{ marginBottom: 16 }} title={<span><WarningOutlined /> 历史生产姓名待确认</span>}><Typography.Paragraph type="secondary">系统没有猜测同名员工。请按工号确认；如果确实是不同的人，可保留为独立员工。</Typography.Paragraph><Table rowKey="id" size="small" pagination={false} dataSource={pendingIdentityQuery.data} columns={[{ title: '历史姓名', dataIndex: 'source_name' }, { title: '临时档案', render: (_, row) => `${row.temporary_employee.employee_no} · ${row.temporary_employee.name}` }, { title: '可能匹配', render: (_, row) => <Space wrap>{row.candidates.map((candidate) => <Button key={candidate.id} type="link" loading={resolveIdentityMutation.isPending} onClick={() => resolveIdentityMutation.mutate({ matchId: row.id, employeeId: candidate.id })}>{candidate.employee_no} · {candidate.name}</Button>)}<Button type="link" loading={resolveIdentityMutation.isPending} onClick={() => resolveIdentityMutation.mutate({ matchId: row.id, employeeId: row.temporary_employee.id })}>保留为独立员工</Button></Space> }]} /> </Card>}
         {tableCard(filteredEmployees, employeeColumns, employeesQuery.isLoading, 'id', 850, '暂无员工档案')}
       </div>,
     },

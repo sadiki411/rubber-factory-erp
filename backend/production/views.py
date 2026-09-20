@@ -23,6 +23,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from molds.models import MoldAsset
+from quality.models import QualityEmployee
 
 from .imports import (
     commit_production_batch,
@@ -38,7 +39,7 @@ from .ledger_imports import (
 from .ocr import preview_production_photos
 from .models import (
     ProductionDailyLog,
-    ProductionEmployee,
+    ProductionEmployeeIdentityMatch,
     ProductionImportBatch,
     ProductionRecordAudit,
     ProductionRun,
@@ -55,6 +56,7 @@ from .serializers import (
     ProductionCounterLogSerializer,
     ProductionDailyLogSerializer,
     ProductionEmployeeSerializer,
+    ProductionEmployeeIdentityMatchSerializer,
     ProductionMoldSerializer,
     ProductionRunSerializer,
     ProductionRecordAuditSerializer,
@@ -97,7 +99,9 @@ def _run_queryset():
         "settled_by",
     ).prefetch_related(
         "daily_logs__operator_employee",
+        "daily_logs__employee",
         "daily_logs__assistant_operators",
+        "daily_logs__assistant_employees",
         "order_links__order",
     )
 
@@ -123,7 +127,7 @@ class ProductionEmployeeViewSet(viewsets.ModelViewSet):
     http_method_names = ["get", "post", "patch", "head", "options"]
 
     def get_queryset(self):
-        queryset = ProductionEmployee.objects.all()
+        queryset = QualityEmployee.objects.filter(production_enabled=True)
         active = str(self.request.query_params.get("active", "true")).lower()
         if active in {"1", "true", "yes"}:
             queryset = queryset.filter(is_active=True)
@@ -131,6 +135,60 @@ class ProductionEmployeeViewSet(viewsets.ModelViewSet):
         if keyword:
             queryset = queryset.filter(name__icontains=keyword)
         return queryset
+
+
+class ProductionEmployeeIdentityMatchViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = ProductionEmployeeIdentityMatchSerializer
+    pagination_class = None
+    queryset = ProductionEmployeeIdentityMatch.objects.select_related(
+        "temporary_employee", "resolved_employee", "resolved_by"
+    ).prefetch_related("candidates")
+
+    def get_queryset(self):
+        queryset = self.queryset
+        status_value = str(self.request.query_params.get("status", "PENDING")).strip().upper()
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        return queryset
+
+    @action(detail=True, methods=["post"], url_path="resolve")
+    @transaction.atomic
+    def resolve(self, request, pk=None):
+        match = get_object_or_404(
+            ProductionEmployeeIdentityMatch.objects.select_for_update(), pk=pk
+        )
+        if match.status == ProductionEmployeeIdentityMatch.Status.RESOLVED:
+            return Response(self.get_serializer(match).data)
+        employee_id = request.data.get("employee_id")
+        if str(employee_id or "").strip().lower() in {"", "none", "null"}:
+            target = match.temporary_employee
+        else:
+            try:
+                target = QualityEmployee.objects.get(pk=int(employee_id))
+            except (TypeError, ValueError, QualityEmployee.DoesNotExist) as exc:
+                raise DRFValidationError({"employee_id": "请选择有效的员工档案。"}) from exc
+            if not target.is_active:
+                raise DRFValidationError({"employee_id": "停用员工不能作为生产人员。"})
+            target.production_enabled = True
+            target.save(update_fields={"production_enabled", "updated_at"})
+
+        source = match.temporary_employee
+        ProductionDailyLog.objects.filter(employee=source).update(employee=target)
+        for log in ProductionDailyLog.objects.filter(assistant_employees=source).distinct():
+            assistants = list(log.assistant_employees.exclude(pk=source.pk))
+            if target.pk not in {item.pk for item in assistants}:
+                assistants.append(target)
+            log.assistant_employees.set(assistants)
+        match.status = ProductionEmployeeIdentityMatch.Status.RESOLVED
+        match.resolved_employee = target
+        match.resolved_at = timezone.now()
+        match.resolved_by = request.user if request.user.is_authenticated else None
+        match.save(update_fields=["status", "resolved_employee", "resolved_at", "resolved_by", "updated_at"])
+        if source.pk != target.pk:
+            source.production_enabled = False
+            source.is_active = False
+            source.save(update_fields={"production_enabled", "is_active", "updated_at"})
+        return Response(self.get_serializer(match).data)
 
 
 class ProductionRunViewSet(viewsets.ModelViewSet):
@@ -1207,11 +1265,11 @@ class ProductionMonthlyPerformanceView(APIView):
             production_date__gte=month_start,
             production_date__lt=next_month,
             is_cancelled=False,
-        )
+        ).select_related("employee")
         if group:
             logs = logs.filter(run__station__group=group)
         grouped = (
-            logs.values("operator")
+            logs.values("employee_id", "employee__employee_no", "employee__name", "operator")
             .annotate(
                 total_mold_count=Coalesce(Sum("produced_mold_count"), 0),
                 production_days=Count("production_date", distinct=True),
@@ -1224,7 +1282,7 @@ class ProductionMonthlyPerformanceView(APIView):
                     0,
                 ),
             )
-            .order_by("-total_mold_count", "operator")
+            .order_by("-total_mold_count", "employee__employee_no", "operator")
         )
         operators = []
         total_production_seconds = 0
@@ -1242,7 +1300,9 @@ class ProductionMonthlyPerformanceView(APIView):
             )
             operators.append(
                 {
-                    "operator": item["operator"],
+                    "employee_id": item["employee_id"],
+                    "employee_no": item["employee__employee_no"] or "",
+                    "operator": item["employee__name"] or item["operator"],
                     "total_mold_count": total_mold_count,
                     "production_days": production_days,
                     "participated_run_count": int(item["participated_run_count"] or 0),

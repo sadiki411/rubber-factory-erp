@@ -130,11 +130,11 @@ class ProductionStation(TimeStampedModel):
 
 
 class ProductionEmployee(TimeStampedModel):
-    """Small, production-local employee directory used by fast shop-floor entry.
+    """Legacy production-local directory retained for migration compatibility.
 
-    The historical ledger stored an operator snapshot as text.  Keeping this
-    directory in the production app lets old rows remain readable while new
-    rows can be selected quickly and still preserve the name used at the time.
+    New production records use the shared ``quality.QualityEmployee`` master
+    through ``ProductionDailyLog.employee``.  This table deliberately remains
+    in place so old foreign keys and rollback migrations stay readable.
     """
 
     name = models.CharField("姓名", max_length=100)
@@ -158,6 +158,57 @@ class ProductionEmployee(TimeStampedModel):
 
     def __str__(self):
         return self.name
+
+
+class ProductionEmployeeIdentityMatch(TimeStampedModel):
+    """A historical production name that could not be merged without guessing."""
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "待确认"
+        RESOLVED = "RESOLVED", "已确认"
+
+    source_employee_id = models.PositiveIntegerField(
+        "原生产员工ID", null=True, blank=True
+    )
+    source_name = models.CharField("原生产姓名", max_length=100)
+    temporary_employee = models.ForeignKey(
+        "quality.QualityEmployee",
+        verbose_name="迁移后临时员工档案",
+        related_name="production_identity_matches",
+        on_delete=models.PROTECT,
+    )
+    candidates = models.ManyToManyField(
+        "quality.QualityEmployee",
+        verbose_name="可能匹配的员工",
+        related_name="production_identity_candidates",
+        blank=True,
+    )
+    status = models.CharField(
+        "状态", max_length=20, choices=Status.choices, default=Status.PENDING
+    )
+    resolved_employee = models.ForeignKey(
+        "quality.QualityEmployee",
+        verbose_name="确认后的员工",
+        related_name="resolved_production_identities",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+    resolved_at = models.DateTimeField("确认时间", null=True, blank=True)
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        verbose_name="确认人",
+        related_name="resolved_production_employee_identities",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        ordering = ["status", "source_name", "id"]
+
+    def __str__(self):
+        return f"{self.source_name} - {self.get_status_display()}"
 
 
 class ProductionRun(TimeStampedModel):
@@ -831,9 +882,23 @@ class ProductionDailyLog(TimeStampedModel):
         null=True,
         blank=True,
     )
+    employee = models.ForeignKey(
+        "quality.QualityEmployee",
+        verbose_name="统一员工档案（主要作业员）",
+        related_name="production_logs",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
     assistant_operators = models.ManyToManyField(
         ProductionEmployee,
         verbose_name="协助人员",
+        related_name="assisted_production_logs",
+        blank=True,
+    )
+    assistant_employees = models.ManyToManyField(
+        "quality.QualityEmployee",
+        verbose_name="统一员工档案（协助人员）",
         related_name="assisted_production_logs",
         blank=True,
     )
@@ -945,7 +1010,9 @@ class ProductionDailyLog(TimeStampedModel):
 
     def save(self, *args, **kwargs):
         self.operator = normalize_operator(self.operator)
-        if self.operator_employee_id:
+        if self.employee_id:
+            self.operator = self.employee.name
+        elif self.operator_employee_id:
             self.operator = self.operator_employee.name
         if not self.pk and self.run_id:
             self.curing_seconds_snapshot = self.run.curing_seconds
@@ -979,7 +1046,7 @@ class ProductionDailyLog(TimeStampedModel):
 
     @property
     def operator_pending(self):
-        return not bool(self.operator_employee_id or normalize_operator(self.operator))
+        return not bool(self.employee_id)
 
     def __str__(self):
         date_text = self.production_date.isoformat() if self.production_date else "日期未记录"

@@ -19,6 +19,7 @@ import type {
   ProductionBoard,
   ProductionDailyLog,
   ProductionEmployee,
+  ProductionEmployeeIdentityMatch,
   ProductionImportPreview,
   ProductionMonthlyPerformance,
   ProductionRecordAudit,
@@ -441,6 +442,13 @@ export const productionApi = {
     apiFetch<ProductionEmployee>('/api/production/employees/', { method: 'POST', body: JSON.stringify(body) }),
   updateEmployee: (id: number, body: Partial<ProductionEmployee>) =>
     apiFetch<ProductionEmployee>(`/api/production/employees/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
+  listEmployeeIdentityMatches: (filters: { status?: 'PENDING' | 'RESOLVED' } = {}) =>
+    apiFetch<ProductionEmployeeIdentityMatch[]>(`/api/production/employee-identity-matches/${queryString(filters)}`),
+  resolveEmployeeIdentityMatch: (id: number, employeeId?: number | null) =>
+    apiFetch<ProductionEmployeeIdentityMatch>(`/api/production/employee-identity-matches/${id}/resolve/`, {
+      method: 'POST',
+      body: JSON.stringify({ employee_id: employeeId ?? null }),
+    }),
   addCounterLog: (runId: number, body: Record<string, unknown>) =>
     apiFetch<ProductionDailyLog>(`/api/production/runs/${runId}/counter-logs/`, { method: 'POST', body: JSON.stringify(body) }),
   updateCounterLog: (runId: number, logId: number, body: Record<string, unknown>) =>

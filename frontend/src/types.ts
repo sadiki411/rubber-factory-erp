@@ -448,9 +448,30 @@ export interface ProductionDailyLog {
 
 export interface ProductionEmployee {
   id: number
+  employee_no: string
   name: string
+  phone?: string
+  team?: string
+  role?: QualityEmployeeRole
+  role_display?: string
+  production_enabled?: boolean
+  identity_pending?: boolean
   is_active: boolean
   notes?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface ProductionEmployeeIdentityMatch {
+  id: number
+  source_employee_id?: number | null
+  source_name: string
+  temporary_employee: ProductionEmployee
+  candidates: ProductionEmployee[]
+  status: 'PENDING' | 'RESOLVED'
+  resolved_employee?: ProductionEmployee | null
+  resolved_at?: string | null
+  resolved_by_name?: string | null
   created_at?: string
   updated_at?: string
 }
@@ -629,6 +650,8 @@ export interface ProductionSummary {
 }
 
 export interface ProductionMonthlyPerformanceOperator {
+  employee_id?: number | null
+  employee_no?: string
   operator: string
   total_mold_count: number
   production_days: number
@@ -716,7 +739,7 @@ export interface ProductionImportPreview {
   issues: ProductionImportIssue[]
 }
 
-export type QualityEmployeeRole = 'INSPECTOR' | 'REWORKER' | 'BOTH'
+export type QualityEmployeeRole = 'PRODUCTION' | 'INSPECTOR' | 'REWORKER' | 'BOTH'
 export type QualityOrderStatus = OrderStatus
 export type ReturnReworkStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED'
 export type ReturnReasonCategory = 'APPEARANCE' | 'STICKING' | 'DIMENSION' | 'MATERIAL' | 'MIXED' | 'PACKAGING' | 'OTHER'
@@ -725,9 +748,11 @@ export interface QualityEmployee {
   id: number
   employee_no: string
   name: string
+  phone?: string
   team?: string
   role: QualityEmployeeRole
   role_display?: string
+  production_enabled?: boolean
   is_active: boolean
   notes?: string
 }
@@ -1441,6 +1466,8 @@ export interface AnalyticsDailyTrend extends AnalyticsQualityMetrics, AnalyticsF
 }
 
 export interface AnalyticsOperatorPerformance {
+  employee_id?: number | null
+  employee_no?: string
   operator: string
   automatic_mold_count: number
   manual_mold_count: number

@@ -12,11 +12,11 @@ from rest_framework import serializers
 from molds.models import MoldAsset, RackSlot
 from molds.serializers import MachineSerializer
 from orders.models import ProductSpecification
-from quality.models import QualityOrder
+from quality.models import QualityEmployee, QualityOrder
 
 from .models import (
     ProductionDailyLog,
-    ProductionEmployee,
+    ProductionEmployeeIdentityMatch,
     ProductionRecordAudit,
     ProductionRun,
     ProductionRunOrder,
@@ -24,7 +24,7 @@ from .models import (
     ProductionStation,
     normalize_operator,
 )
-from .services import invalidate_settlement
+from .services import invalidate_settlement, resolve_or_create_production_employee
 
 
 class ProductionStationSerializer(serializers.ModelSerializer):
@@ -61,17 +61,126 @@ class ProductionMoldSerializer(serializers.ModelSerializer):
 
 
 class ProductionEmployeeSerializer(serializers.ModelSerializer):
+    employee_no = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=50,
+        help_text="可留空，由系统自动生成唯一员工编号。",
+    )
+    role_display = serializers.CharField(source="get_role_display", read_only=True)
+    role = serializers.ChoiceField(
+        choices=QualityEmployee.Role.choices,
+        required=False,
+        default=QualityEmployee.Role.PRODUCTION,
+    )
+    identity_pending = serializers.SerializerMethodField()
+
     class Meta:
-        model = ProductionEmployee
-        fields = ["id", "name", "is_active", "notes", "created_at", "updated_at"]
+        model = QualityEmployee
+        fields = [
+            "id",
+            "employee_no",
+            "name",
+            "phone",
+            "team",
+            "role",
+            "role_display",
+            "production_enabled",
+            "identity_pending",
+            "is_active",
+            "notes",
+            "created_at",
+            "updated_at",
+        ]
         read_only_fields = ["created_at", "updated_at"]
+
+    @staticmethod
+    def get_identity_pending(obj) -> bool:
+        return obj.production_identity_matches.filter(
+            status=ProductionEmployeeIdentityMatch.Status.PENDING
+        ).exists()
+
+    def create(self, validated_data):
+        employee_no = str(validated_data.get("employee_no") or "").strip()
+        name = str(validated_data.get("name") or "").strip()
+        if not employee_no:
+            try:
+                return resolve_or_create_production_employee(name)
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError(
+                    exc.message_dict if hasattr(exc, "message_dict") else {"name": exc.messages}
+                ) from exc
+        validated_data["production_enabled"] = True
+        validated_data.setdefault("role", QualityEmployee.Role.PRODUCTION)
+        employee = QualityEmployee(**validated_data)
+        try:
+            employee.save()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(
+                exc.message_dict if hasattr(exc, "message_dict") else {"detail": exc.messages}
+            ) from exc
+        except IntegrityError as exc:
+            raise serializers.ValidationError({"employee_no": "员工工号已存在。"}) from exc
+        return employee
+
+    def update(self, instance, validated_data):
+        instance.refresh_from_db()
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        if instance.role == QualityEmployee.Role.PRODUCTION:
+            instance.production_enabled = True
+        try:
+            instance.save()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(
+                exc.message_dict if hasattr(exc, "message_dict") else {"detail": exc.messages}
+            ) from exc
+        except IntegrityError as exc:
+            raise serializers.ValidationError({"detail": "员工档案与现有记录冲突。"}) from exc
+        return instance
+
+
+class ProductionEmployeeIdentityMatchSerializer(serializers.ModelSerializer):
+    temporary_employee = ProductionEmployeeSerializer(read_only=True)
+    candidates = ProductionEmployeeSerializer(many=True, read_only=True)
+    resolved_employee = ProductionEmployeeSerializer(read_only=True)
+    resolved_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductionEmployeeIdentityMatch
+        fields = [
+            "id",
+            "source_employee_id",
+            "source_name",
+            "temporary_employee",
+            "candidates",
+            "status",
+            "resolved_employee",
+            "resolved_at",
+            "resolved_by_name",
+            "created_at",
+            "updated_at",
+        ]
+
+    @staticmethod
+    def get_resolved_by_name(obj) -> str | None:
+        if not obj.resolved_by:
+            return None
+        return obj.resolved_by.get_full_name() or obj.resolved_by.get_username()
 
 
 class ProductionDailyLogSerializer(serializers.ModelSerializer):
     date = serializers.DateField(source="production_date", allow_null=True, required=False)
     theoretical_quantity = serializers.IntegerField(read_only=True)
     qualified_quantity = serializers.IntegerField(read_only=True)
-    assistant_operators = ProductionEmployeeSerializer(many=True, read_only=True)
+    operator_employee_id = serializers.IntegerField(source="employee_id", read_only=True)
+    assistant_operator_ids = serializers.PrimaryKeyRelatedField(
+        source="assistant_employees", many=True, read_only=True
+    )
+    operator_employee = ProductionEmployeeSerializer(source="employee", read_only=True)
+    assistant_operators = ProductionEmployeeSerializer(
+        source="assistant_employees", many=True, read_only=True
+    )
 
     class Meta:
         model = ProductionDailyLog
@@ -80,7 +189,9 @@ class ProductionDailyLogSerializer(serializers.ModelSerializer):
             "date",
             "operator",
             "operator_employee",
+            "operator_employee_id",
             "assistant_operators",
+            "assistant_operator_ids",
             "shift",
             "sequence_no",
             "counter_segment",
@@ -97,6 +208,8 @@ class ProductionDailyLogSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "operator_employee",
+            "operator_employee_id",
+            "assistant_operator_ids",
             "sequence_no",
             "counter_segment",
             "cumulative_mold_count",
@@ -1082,14 +1195,18 @@ class ProductionCounterLogSerializer(serializers.ModelSerializer):
         source="production_date", required=False, allow_null=True
     )
     operator_employee_id = serializers.PrimaryKeyRelatedField(
-        source="operator_employee",
-        queryset=ProductionEmployee.objects.filter(is_active=True),
+        source="employee",
+        queryset=QualityEmployee.objects.filter(
+            is_active=True, production_enabled=True
+        ),
         required=False,
         allow_null=True,
     )
     assistant_operator_ids = serializers.PrimaryKeyRelatedField(
-        source="assistant_operators",
-        queryset=ProductionEmployee.objects.filter(is_active=True),
+        source="assistant_employees",
+        queryset=QualityEmployee.objects.filter(
+            is_active=True, production_enabled=True
+        ),
         many=True,
         required=False,
     )
@@ -1104,7 +1221,10 @@ class ProductionCounterLogSerializer(serializers.ModelSerializer):
     theoretical_quantity = serializers.IntegerField(read_only=True)
     qualified_quantity = serializers.IntegerField(read_only=True)
     operator_pending = serializers.BooleanField(read_only=True)
-    assistant_operators = ProductionEmployeeSerializer(many=True, read_only=True)
+    operator_employee = ProductionEmployeeSerializer(source="employee", read_only=True)
+    assistant_operators = ProductionEmployeeSerializer(
+        source="assistant_employees", many=True, read_only=True
+    )
 
     class Meta:
         model = ProductionDailyLog
@@ -1115,6 +1235,7 @@ class ProductionCounterLogSerializer(serializers.ModelSerializer):
             "operator_employee_id",
             "assistant_operator_ids",
             "assistant_operators",
+            "operator_employee",
             "shift",
             "sequence_no",
             "counter_segment",
@@ -1160,13 +1281,22 @@ class ProductionCounterLogSerializer(serializers.ModelSerializer):
         if self.instance is None and "shift" not in attrs:
             attrs["shift"] = self.suggested_shift()
         employee = attrs.get(
-            "operator_employee",
-            getattr(self.instance, "operator_employee", None),
+            "employee",
+            getattr(self.instance, "employee", None),
         )
         operator = normalize_operator(
             attrs.get("operator", getattr(self.instance, "operator", ""))
         )
         if employee:
+            operator = employee.name
+        if employee is None and operator:
+            try:
+                employee = resolve_or_create_production_employee(operator)
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError(
+                    exc.message_dict if hasattr(exc, "message_dict") else {"operator": exc.messages}
+                ) from exc
+            attrs["employee"] = employee
             operator = employee.name
         attrs["operator"] = operator
         if "cavities_snapshot" not in attrs:

@@ -2860,6 +2860,10 @@ class QualityEmployeeViewSet(NoDeleteModelViewSet):
                     quick_resolve_key=resolve_key,
                     role=Case(
                         When(
+                            role=QualityEmployee.Role.PRODUCTION,
+                            then=Value(purpose),
+                        ),
+                        When(
                             role__in=(purpose, QualityEmployee.Role.BOTH),
                             then=F("role"),
                         ),

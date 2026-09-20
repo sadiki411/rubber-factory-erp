@@ -77,9 +77,11 @@ class QualityEmployeeSerializer(ValidatedModelSerializer):
             "id",
             "employee_no",
             "name",
+            "phone",
             "team",
             "role",
             "role_display",
+            "production_enabled",
             "is_active",
             "notes",
             "created_at",
@@ -92,6 +94,13 @@ class QualityEmployeeSerializer(ValidatedModelSerializer):
         if self.instance is not None and not normalized:
             raise serializers.ValidationError("已建员工的编号不能为空；如不再使用请将员工停用。")
         return normalized
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        role = attrs.get("role", getattr(self.instance, "role", None))
+        if role == QualityEmployee.Role.PRODUCTION:
+            attrs["production_enabled"] = True
+        return attrs
 
     def update(self, instance, validated_data):
         # Refresh before applying the submitted fields, then persist only those

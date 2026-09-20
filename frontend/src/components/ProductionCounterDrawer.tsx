@@ -151,15 +151,15 @@ export function ProductionCounterDrawer({ open, run, log, initialValues, keepOpe
           <Col xs={24} sm={12}><Form.Item name="shift" label="班次"><Select allowClear options={[{ value: 'DAY', label: '白班 08:00–20:00' }, { value: 'NIGHT', label: '夜班 20:00–次日08:00' }]} /></Form.Item></Col>
         </Row>
         <Row gutter={12}>
-          <Col xs={24} sm={12}><Form.Item name="operator_employee_id" label="主要作业员（可后补）"><Select allowClear showSearch optionFilterProp="label" loading={employeesQuery.isLoading} placeholder="暂时不清楚可留空" options={(employeesQuery.data || []).map((item) => ({ value: item.id, label: item.name }))} /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="assistant_operator_ids" label="协助人员（选填）"><Select mode="multiple" allowClear showSearch optionFilterProp="label" placeholder="一般不填" options={(employeesQuery.data || []).map((item) => ({ value: item.id, label: item.name }))} /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="operator_employee_id" label="主要作业员" rules={[{ required: true, message: '请选择主要作业员；没有时请先新增并选中' }]}><Select allowClear showSearch optionFilterProp="label" loading={employeesQuery.isLoading} placeholder="选择员工或在下方新增" options={(employeesQuery.data || []).map((item) => ({ value: item.id, label: `${item.name} · ${item.employee_no}` }))} /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="assistant_operator_ids" label="协助人员（选填）"><Select mode="multiple" allowClear showSearch optionFilterProp="label" placeholder="一般不填" options={(employeesQuery.data || []).map((item) => ({ value: item.id, label: `${item.name} · ${item.employee_no}` }))} /></Form.Item></Col>
         </Row>
         <div className="production-quick-employee"><Input value={newEmployeeName} onChange={(event) => setNewEmployeeName(event.target.value)} placeholder="人员名单没有时快速新增" /><Button icon={<PlusOutlined />} loading={createEmployee.isPending} disabled={!newEmployeeName.trim()} onClick={() => createEmployee.mutate(newEmployeeName.trim())}>新增并选中</Button></div>
         <Row gutter={12}>
           <Col xs={12}><Form.Item name="cavities_snapshot" label="本次有效孔数"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
           <Col xs={12}><Form.Item name="defective_quantity" label="不良数量（选填）"><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
         </Row>
-        <Form.Item name="operator" label="人员姓名临时手填（选填）"><Input placeholder="不在人员名单且不想新增时使用" /></Form.Item>
+        <Form.Item name="operator" label="历史姓名快照（系统自动保存）"><Input disabled placeholder="新记录以员工档案为准" /></Form.Item>
         <Form.Item name="notes" label="备注"><Input.TextArea rows={3} /></Form.Item>
       </Form>
     </Drawer>
