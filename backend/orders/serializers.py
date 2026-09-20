@@ -109,6 +109,9 @@ class ProductSpecificationSerializer(AuditedModelSerializer):
     latest_unit_weight_g = serializers.SerializerMethodField()
     latest_unit_weight_measured_on = serializers.SerializerMethodField()
     unit_weight_history_count = serializers.SerializerMethodField()
+    forming_material_weight_g = serializers.DecimalField(
+        max_digits=14, decimal_places=2, read_only=True, allow_null=True
+    )
     image = serializers.ImageField(source="main_image", required=False, allow_null=True)
     remove_image = serializers.BooleanField(write_only=True, required=False, default=False)
     mold_model = MoldModelSummarySerializer(read_only=True)
@@ -138,6 +141,11 @@ class ProductSpecificationSerializer(AuditedModelSerializer):
             "cut_weight",
             "actual_material_length",
             "actual_cut_weight",
+            "large_strip_weight_g",
+            "large_strip_count",
+            "small_strip_weight_g",
+            "small_strip_count",
+            "forming_material_weight_g",
             "image",
             "remove_image",
             "strip_count",
@@ -221,6 +229,9 @@ class ProductSpecificationSerializer(AuditedModelSerializer):
 class ProductSpecificationSummarySerializer(serializers.ModelSerializer):
     latest_unit_weight_g = serializers.SerializerMethodField()
     latest_unit_weight_measured_on = serializers.SerializerMethodField()
+    forming_material_weight_g = serializers.DecimalField(
+        max_digits=14, decimal_places=2, read_only=True, allow_null=True
+    )
     image = serializers.ImageField(source="main_image", read_only=True, allow_null=True)
     mold_model = MoldModelSummarySerializer(read_only=True)
     mold_model_id = serializers.IntegerField(read_only=True)
@@ -236,6 +247,13 @@ class ProductSpecificationSummarySerializer(serializers.ModelSerializer):
             "mold_model",
             "mold_model_id",
             "image",
+            "actual_material_length",
+            "actual_cut_weight",
+            "large_strip_weight_g",
+            "large_strip_count",
+            "small_strip_weight_g",
+            "small_strip_count",
+            "forming_material_weight_g",
             "mold_no",
             "mold_size",
             "is_active",

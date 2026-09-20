@@ -20,6 +20,7 @@ import type {
   ProductionDailyLog,
   ProductionEmployee,
   ProductionEmployeeIdentityMatch,
+  ProductionFinalYield,
   ProductionImportPreview,
   ProductionMonthlyPerformance,
   ProductionRecordAudit,
@@ -459,6 +460,9 @@ export const productionApi = {
     apiFetch<ProductionRun>(`/api/production/runs/${runId}/reset-counter/`, { method: 'POST', body: JSON.stringify({ note }) }),
   completeLedger: (runId: number, body: { note?: string; confirm_below_target?: boolean } = {}) =>
     apiFetch<ProductionRun>(`/api/production/runs/${runId}/complete-ledger/`, { method: 'POST', body: JSON.stringify(body) }),
+  finalYield: (runId: number) => apiFetch<ProductionFinalYield>(`/api/production/runs/${runId}/final-yield/`),
+  saveFinalYield: (runId: number, body: { remaining_quantity: number; notes?: string }) =>
+    apiFetch<ProductionFinalYield>(`/api/production/runs/${runId}/final-yield/`, { method: 'POST', body: JSON.stringify(body) }),
   pauseRun: (runId: number, body: Record<string, unknown>) =>
     apiFetch<ProductionRun>(`/api/production/runs/${runId}/pause/`, { method: 'POST', body: JSON.stringify(body) }),
   resumeRun: (runId: number, body: Record<string, unknown> = {}) =>

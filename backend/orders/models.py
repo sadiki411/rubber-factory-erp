@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 from pathlib import Path
 
 from django.conf import settings
@@ -89,6 +90,41 @@ class ProductSpecification(TimeStampedModel):
         blank=True,
         default="",
         help_text="仅允许在ERP页面手工维护，业务文件导入不得覆盖。",
+    )
+    # These four fields describe the pre-forming material layout only.  They
+    # are deliberately separate from finished-product weight and inventory:
+    # one mold may use one large strip, or a large strip plus a small refill
+    # strip.  The values are maintained manually and are never overwritten by
+    # order imports.
+    large_strip_weight_g = models.DecimalField(
+        "大条条重(g)",
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0"))],
+        help_text="成型前排料记录，不代表成品重量。",
+    )
+    large_strip_count = models.PositiveIntegerField(
+        "大条数量",
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1)],
+    )
+    small_strip_weight_g = models.DecimalField(
+        "小条条重(g)",
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0"))],
+        help_text="成型前补料记录，不代表成品重量。",
+    )
+    small_strip_count = models.PositiveIntegerField(
+        "小条数量",
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1)],
     )
     main_image = models.ImageField(
         "产品照片",
@@ -182,6 +218,28 @@ class ProductSpecification(TimeStampedModel):
             self.mold_model.code if self.mold_model_id else self.mold_no,
         )
 
+        errors = {}
+        for weight_field, count_field, label in (
+            ("large_strip_weight_g", "large_strip_count", "大条"),
+            ("small_strip_weight_g", "small_strip_count", "小条"),
+        ):
+            weight = getattr(self, weight_field)
+            count = getattr(self, count_field)
+            if (weight is None) != (count is None):
+                errors[count_field if weight is not None else weight_field] = (
+                    f"{label}重量和{label}数量必须同时填写或同时留空。"
+                )
+            if weight is not None and weight < 0:
+                errors[weight_field] = f"{label}重量不能小于0。"
+            if count is not None and count < 1:
+                errors[count_field] = f"{label}数量必须大于0。"
+        if self.small_strip_weight_g is not None and self.large_strip_weight_g is None:
+            errors["small_strip_weight_g"] = "填写小条前必须先填写大条。"
+        if self.small_strip_count is not None and self.large_strip_count is None:
+            errors["small_strip_count"] = "填写小条前必须先填写大条数量。"
+        if errors:
+            raise ValidationError(errors)
+
     def save(self, *args, **kwargs):
         self.full_clean()
         return super().save(*args, **kwargs)
@@ -191,6 +249,17 @@ class ProductSpecification(TimeStampedModel):
 
     def __str__(self):
         return self.customer_product_no or self.specification or self.product_name
+
+    @property
+    def forming_material_weight_g(self):
+        """Total pre-forming material weight for one mold, when complete."""
+
+        total = Decimal("0")
+        if self.large_strip_weight_g is not None and self.large_strip_count is not None:
+            total += self.large_strip_weight_g * self.large_strip_count
+        if self.small_strip_weight_g is not None and self.small_strip_count is not None:
+            total += self.small_strip_weight_g * self.small_strip_count
+        return total if total else None
 
 
 def normalize_product_key(*values):

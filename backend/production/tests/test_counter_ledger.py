@@ -6,7 +6,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from openpyxl import load_workbook
 
-from quality.models import QualityEmployee, QualityOrder
+from quality.models import QualityEmployee, QualityOrder, QualityShipment
 from molds.models import MoldAsset, MoldModel, RackSlot
 from molds.services import seed_default_racks
 from production.models import ProductionStation
@@ -116,6 +116,68 @@ class ProductionCounterLedgerApiTests(ProductionTestMixin, TestCase):
             estimated_defect_rate="0",
         )
         self.assertEqual(payload["planned_mold_count"], 109)
+
+    def test_explicit_strip_rows_are_grams_and_compute_one_mold_input_weight(self):
+        payload = self.create_task(
+            large_strip_weight_g="21.00",
+            large_strip_count=5,
+            small_strip_weight_g="11.00",
+            small_strip_count=2,
+        )
+        self.assertEqual(payload["large_strip_weight_g"], "21.00")
+        self.assertEqual(payload["small_strip_weight_g"], "11.00")
+        self.assertEqual(payload["forming_material_weight_g"], "127.00")
+
+        invalid = self.client.post(
+            "/api/production/runs/",
+            {
+                "order_id": self.order.pk,
+                "cavities": 10,
+                "planned_mold_count": 100,
+                "large_strip_weight_g": "21.00",
+            },
+            format="json",
+        )
+        self.assertEqual(invalid.status_code, 400, invalid.content)
+        self.assertIn("large_strip_count", invalid.json())
+
+    def test_final_yield_uses_effective_shipments_plus_manual_remaining(self):
+        run = self.create_task(planned_mold_count=100)
+        self.add_counter(run["id"], 100)
+        completed = self.client.post(
+            f"/api/production/runs/{run['id']}/complete-ledger/",
+            {},
+            format="json",
+        )
+        self.assertEqual(completed.status_code, 200, completed.content)
+        inspector = QualityEmployee.objects.create(
+            employee_no="YIELD-INSPECTOR-001",
+            name="最终良率品检",
+            role=QualityEmployee.Role.INSPECTOR,
+        )
+        QualityShipment.objects.create(
+            shipment_no="YIELD-SHIPMENT-001",
+            shipment_date=timezone.localdate(),
+            order=self.order,
+            inspector=inspector,
+            inspection_quantity=900,
+            qualified_quantity=900,
+            defective_quantity=0,
+            shipped_quantity=900,
+            created_by=self.user,
+        )
+        preview = self.client.get(f"/api/production/runs/{run['id']}/final-yield/")
+        self.assertEqual(preview.status_code, 200, preview.content)
+        self.assertEqual(preview.json()["production_quantity"], 1000)
+        self.assertEqual(preview.json()["effective_shipped_quantity"], 900)
+        saved = self.client.post(
+            f"/api/production/runs/{run['id']}/final-yield/",
+            {"remaining_quantity": 50, "notes": "现场清点"},
+            format="json",
+        )
+        self.assertEqual(saved.status_code, 200, saved.content)
+        self.assertEqual(saved.json()["yield_percent"], "95.00")
+        self.assertEqual(saved.json()["remaining_quantity"], 50)
 
     def test_counter_allows_pending_operator_and_date_defaults_or_is_null(self):
         run = self.create_task()

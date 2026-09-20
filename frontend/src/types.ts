@@ -198,6 +198,11 @@ export interface ProductSpecification {
   cut_weight?: string
   actual_material_length?: string
   actual_cut_weight?: string
+  large_strip_weight_g?: number | string | null
+  large_strip_count?: number | null
+  small_strip_weight_g?: number | string | null
+  small_strip_count?: number | null
+  forming_material_weight_g?: number | string | null
   image?: string | null
   strip_count?: string
   primary_curing?: string
@@ -522,6 +527,7 @@ export interface ProductionRun {
     allocated_quantity: number
     remaining_quantity: number
   }>
+  final_yield?: ProductionFinalYield | null
   product_specification?: ProductSpecification | null
   product_specification_id?: number | null
   order_no: string
@@ -536,6 +542,10 @@ export interface ProductionRun {
   estimated_defect_quantity?: number
   planned_mold_count: number
   compound_size?: string
+  large_strip_weight_g?: number | string | null
+  large_strip_count?: number | null
+  small_strip_weight_g?: number | string | null
+  small_strip_count?: number | null
   strip_weight_kg?: number | string | null
   strips_per_batch?: number | null
   curing_seconds?: number | string
@@ -565,6 +575,7 @@ export interface ProductionRun {
   good_quantity?: number | null
   defective_quantity?: number | null
   material_kg?: number | string | null
+  forming_material_weight_g?: number | string | null
   actual_hours?: number | string | null
   progress_percent?: number | string
   remaining_mold_count?: number
@@ -592,6 +603,21 @@ export interface ProductionRun {
   created_by_name?: string
   created_at?: string
   updated_at?: string
+}
+
+export interface ProductionFinalYield {
+  id?: number | null
+  run_id: number
+  source_order_ids: number[]
+  production_quantity: number
+  effective_shipped_quantity: number
+  remaining_quantity: number
+  yield_percent?: number | string | null
+  notes?: string
+  confirmed_by_name?: string | null
+  confirmed_at?: string | null
+  created_at?: string | null
+  updated_at?: string | null
 }
 
 export interface ProductionBoardRun {

@@ -287,6 +287,38 @@ class ProductionRun(TimeStampedModel):
         "计划生产模数", validators=[MinValueValidator(1)]
     )
     compound_size = models.CharField("胶料尺寸", max_length=100, blank=True)
+    large_strip_weight_g = models.DecimalField(
+        "大条条重(g)",
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0"))],
+        help_text="成型前排料记录，不代表成品重量或库存重量。",
+    )
+    large_strip_count = models.PositiveIntegerField(
+        "大条数量",
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1)],
+    )
+    small_strip_weight_g = models.DecimalField(
+        "小条条重(g)",
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0"))],
+        help_text="成型前补料记录，不代表成品重量或库存重量。",
+    )
+    small_strip_count = models.PositiveIntegerField(
+        "小条数量",
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1)],
+    )
+    # Kept for backward compatibility with existing imports and historical
+    # rows. New UI writes the explicit gram fields above.
     strip_weight_kg = models.DecimalField(
         "条重(kg)",
         max_digits=10,
@@ -502,6 +534,24 @@ class ProductionRun(TimeStampedModel):
             errors["planned_mold_count"] = "计划生产模数必须大于0。"
         if not ZERO <= _decimal(self.estimated_defect_rate) <= Decimal("100"):
             errors["estimated_defect_rate"] = "预估不良率必须在0至100之间。"
+        for weight_field, count_field, label in (
+            ("large_strip_weight_g", "large_strip_count", "大条"),
+            ("small_strip_weight_g", "small_strip_count", "小条"),
+        ):
+            weight = getattr(self, weight_field)
+            count = getattr(self, count_field)
+            if (weight is None) != (count is None):
+                errors[count_field if weight is not None else weight_field] = (
+                    f"{label}重量和{label}数量必须同时填写或同时留空。"
+                )
+            if weight is not None and weight < 0:
+                errors[weight_field] = f"{label}重量不能小于0。"
+            if count is not None and count < 1:
+                errors[count_field] = f"{label}数量必须大于0。"
+        if self.small_strip_weight_g is not None and self.large_strip_weight_g is None:
+            errors["small_strip_weight_g"] = "填写小条前必须先填写大条。"
+        if self.small_strip_count is not None and self.large_strip_count is None:
+            errors["small_strip_count"] = "填写小条前必须先填写大条数量。"
         if self.status == self.Status.PLANNED:
             if self.loaded_at:
                 errors["loaded_at"] = "待上机订单不能填写上模时间。"
@@ -694,6 +744,23 @@ class ProductionRun(TimeStampedModel):
         return _quantize(self.total_material_kg, Decimal("0.001"))
 
     @property
+    def forming_material_weight_g(self):
+        """Pre-forming material weight represented by the explicit strip rows."""
+
+        total = Decimal("0")
+        if self.large_strip_weight_g is not None and self.large_strip_count is not None:
+            total += self.large_strip_weight_g * self.large_strip_count
+        if self.small_strip_weight_g is not None and self.small_strip_count is not None:
+            total += self.small_strip_weight_g * self.small_strip_count
+        if total:
+            return _quantize(total)
+        # Old rows only had a single kg field; expose it as a converted
+        # per-batch reference without treating it as finished-product weight.
+        if self.strip_weight_kg is not None and self.strips_per_batch:
+            return _quantize(self.strip_weight_kg * Decimal("1000") * self.strips_per_batch)
+        return None
+
+    @property
     def is_settled(self):
         return self.settled_at is not None
 
@@ -857,6 +924,72 @@ class ProductionRunOrder(TimeStampedModel):
     def save(self, *args, **kwargs):
         if self.order_id and self.due_date_snapshot is None:
             self.due_date_snapshot = self.order.due_date
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+
+class ProductionYieldRecord(TimeStampedModel):
+    """One manual final-yield confirmation for a completed production task.
+
+    The record intentionally snapshots the effective shipped quantity and the
+    machine-based production quantity at confirmation time.  This keeps a
+    historical calculation stable when a later shipment correction occurs,
+    while leaving inventory as a separate future module.
+    """
+
+    run = models.OneToOneField(
+        ProductionRun,
+        verbose_name="生产任务",
+        related_name="final_yield_record",
+        on_delete=models.PROTECT,
+    )
+    source_order_ids = models.JSONField("计算订单ID", default=list, blank=True)
+    production_quantity = models.PositiveIntegerField("实际生产件数")
+    effective_shipped_quantity = models.PositiveIntegerField("有效出货数量")
+    remaining_quantity = models.PositiveIntegerField("人工确认剩余数量", default=0)
+    yield_percent = models.DecimalField(
+        "最终良率(%)",
+        max_digits=8,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    notes = models.TextField("说明", blank=True)
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        verbose_name="确认人",
+        related_name="confirmed_production_yields",
+        on_delete=models.PROTECT,
+    )
+    confirmed_at = models.DateTimeField("确认时间", auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-confirmed_at", "-id"]
+
+    def clean(self):
+        errors = {}
+        if self.production_quantity < 1:
+            errors["production_quantity"] = "实际生产件数必须大于0。"
+        if self.effective_shipped_quantity < 0:
+            errors["effective_shipped_quantity"] = "有效出货数量不能小于0。"
+        if self.remaining_quantity < 0:
+            errors["remaining_quantity"] = "人工确认剩余数量不能小于0。"
+        numerator = int(self.effective_shipped_quantity or 0) + int(
+            self.remaining_quantity or 0
+        )
+        if self.production_quantity:
+            self.yield_percent = (
+                Decimal(numerator)
+                * Decimal("100")
+                / Decimal(self.production_quantity)
+            ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        else:
+            self.yield_percent = None
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
         self.full_clean()
         return super().save(*args, **kwargs)
 

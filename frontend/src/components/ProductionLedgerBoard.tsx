@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { productionApi, toList } from '../api/client'
 import type { ProductionDailyLog, ProductionRun } from '../types'
 import { ProductionCounterDrawer } from './ProductionCounterDrawer'
+import { ProductionFinalYieldDrawer } from './ProductionFinalYieldDrawer'
 import { ProductionLedgerTaskDrawer } from './ProductionLedgerTaskDrawer'
 
 function taskStatus(run: ProductionRun) {
@@ -26,6 +27,7 @@ export function ProductionLedgerBoard() {
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false)
   const [editingTask, setEditingTask] = useState<ProductionRun>()
   const [counterTarget, setCounterTarget] = useState<{ run: ProductionRun; log?: ProductionDailyLog }>()
+  const [finalYieldTarget, setFinalYieldTarget] = useState<ProductionRun>()
   const [showFinished, setShowFinished] = useState(false)
   const [expandedLogTaskIds, setExpandedLogTaskIds] = useState<Set<number>>(() => new Set())
 
@@ -147,6 +149,7 @@ export function ProductionLedgerBoard() {
                 <Button type="primary" block size="large" disabled={['COMPLETED', 'CANCELLED', 'PAUSED_UNLOADED'].includes(run.status)} onClick={() => setCounterTarget({ run })}>交接录入累计模数</Button>
                 <Space className="production-ledger-secondary-actions" wrap>
                   <Button icon={<EditOutlined />} onClick={() => { setEditingTask(run); setTaskDrawerOpen(true) }}>编辑任务</Button>
+                  {run.status === 'COMPLETED' && <Button onClick={() => setFinalYieldTarget(run)}>{run.final_yield ? '修改最终良率' : '确认最终良率'}</Button>}
                   {!['COMPLETED', 'CANCELLED'].includes(run.status) && <><Popconfirm title="确认机台计数已清零？" description="下一次累计读数将从0开始计算，历史记录不会删除。" okText="已清零" cancelText="取消" onConfirm={() => resetMutation.mutate(run)}><Button icon={<ReloadOutlined />}>计数已清零</Button></Popconfirm><Button icon={<CheckCircleOutlined />} onClick={() => completeTask(run)}>结束当前任务</Button></>}
                 </Space>
                 <div className="production-ledger-log-list">
@@ -168,6 +171,7 @@ export function ProductionLedgerBoard() {
       )}
       <ProductionLedgerTaskDrawer open={taskDrawerOpen} run={editingTask} onClose={() => setTaskDrawerOpen(false)} />
       <ProductionCounterDrawer open={Boolean(counterTarget)} run={counterTarget?.run} log={counterTarget?.log} onClose={() => setCounterTarget(undefined)} />
+      <ProductionFinalYieldDrawer open={Boolean(finalYieldTarget)} run={finalYieldTarget} onClose={() => setFinalYieldTarget(undefined)} />
     </section>
   )
 }

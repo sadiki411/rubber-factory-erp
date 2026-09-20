@@ -118,6 +118,8 @@ export function ProductionLedgerTaskDrawer({ open, run, initialDraft, onClose, o
       : draftOrder ? { [draftOrder.id]: Math.max(1, Number(draftOrder.production_remaining_quantity || draftOrder.order_quantity || 1)) } : {}
     form.setFieldsValue(run ? {
       ...run,
+      large_strip_weight_g: run.large_strip_weight_g ?? (run.strip_weight_kg != null ? Number(run.strip_weight_kg) * 1000 : undefined),
+      large_strip_count: run.large_strip_count ?? run.strips_per_batch,
       order_id: run.order_id || run.order?.id,
       order_ids: initialOrderIds,
       order_targets: initialTargets,
@@ -174,12 +176,17 @@ export function ProductionLedgerTaskDrawer({ open, run, initialDraft, onClose, o
     }
     const primary = [...selected].sort((left, right) => (left.due_date || '9999-12-31').localeCompare(right.due_date || '9999-12-31'))[0]
     const total = selected.reduce((sum, item) => sum + Math.max(1, Number(targets[item.id] || item.production_remaining_quantity || item.order_quantity || 1)), 0)
+    const productSpecification = primary.product_specification
     form.setFieldsValue({
       order_id: primary.id,
       order_no: primary.order_no,
       specification: primary.specification,
       material: primary.material,
       order_quantity: total,
+      ...(productSpecification?.large_strip_weight_g != null ? { large_strip_weight_g: Number(productSpecification.large_strip_weight_g) } : {}),
+      ...(productSpecification?.large_strip_count != null ? { large_strip_count: productSpecification.large_strip_count } : {}),
+      ...(productSpecification?.small_strip_weight_g != null ? { small_strip_weight_g: Number(productSpecification.small_strip_weight_g) } : {}),
+      ...(productSpecification?.small_strip_count != null ? { small_strip_count: productSpecification.small_strip_count } : {}),
     })
   }
 
@@ -275,8 +282,11 @@ export function ProductionLedgerTaskDrawer({ open, run, initialDraft, onClose, o
         <Row gutter={12}>
           <Col xs={24} sm={12}><Form.Item name="station_id" label="机台（6台中选填）"><Select allowClear loading={stationsQuery.isLoading} placeholder="未确定可留空" options={(stationsQuery.data || []).map((station) => ({ value: station.id, label: stationLabel(station.group, station.position_no, station.code) }))} /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="compound_size" label="胶料尺寸"><Input /></Form.Item></Col>
-          <Col xs={12} sm={8}><Form.Item name="strip_weight_kg" label="条重(kg)"><InputNumber min={0} precision={3} style={{ width: '100%' }} /></Form.Item></Col>
-          <Col xs={12} sm={8}><Form.Item name="strips_per_batch" label="条数"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={12} sm={6}><Form.Item name="large_strip_weight_g" label="大条条重(g)" extra="成型前排料"><InputNumber min={0} precision={2} style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={12} sm={6}><Form.Item name="large_strip_count" label="大条数量"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={12} sm={6}><Form.Item name="small_strip_weight_g" label="小条条重(g)" extra="补料，没有可留空"><InputNumber min={0} precision={2} style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={12} sm={6}><Form.Item name="small_strip_count" label="小条数量"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={24}><Typography.Text type="secondary">大条和小条只用于计算成型前一模排料总重，不代表成品重量，也不进入库存。</Typography.Text></Col>
           <Col xs={24} sm={8}><Form.Item name="curing_seconds" label="硫化时间(秒)"><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
         </Row>
         <Form.Item name="notes" label="备注"><Input.TextArea rows={3} /></Form.Item>

@@ -45,6 +45,7 @@ from .models import (
     ProductionRun,
     ProductionSettlementRevision,
     ProductionStation,
+    ProductionYieldRecord,
     normalize_production_station_code,
 )
 from .serializers import (
@@ -57,6 +58,7 @@ from .serializers import (
     ProductionDailyLogSerializer,
     ProductionEmployeeSerializer,
     ProductionEmployeeIdentityMatchSerializer,
+    ProductionFinalYieldSerializer,
     ProductionMoldSerializer,
     ProductionRunSerializer,
     ProductionRecordAuditSerializer,
@@ -95,6 +97,7 @@ def _run_queryset():
         "mold__mold_model",
         "order",
         "product_specification",
+        "final_yield_record",
         "created_by",
         "settled_by",
     ).prefetch_related(
@@ -562,6 +565,81 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
         return Response(
             ProductionRunSerializer(
                 _run_queryset().get(pk=run.pk), context={"request": request}
+            ).data
+        )
+
+    @extend_schema(
+        methods=["GET", "POST"],
+        request=ProductionFinalYieldSerializer,
+        responses=ProductionFinalYieldSerializer,
+    )
+    @action(detail=True, methods=["get", "post"], url_path="final-yield")
+    def final_yield(self, request, pk=None):
+        run = self.get_object()
+        if request.method == "GET":
+            record = ProductionYieldRecord.objects.filter(run=run).select_related(
+                "confirmed_by"
+            ).first()
+            if record:
+                return Response(
+                    ProductionFinalYieldSerializer(
+                        record, context={"request": request}
+                    ).data
+                )
+            order_ids = list(
+                run.order_links.order_by("sequence", "id").values_list(
+                    "order_id", flat=True
+                )
+            )
+            if not order_ids and run.order_id:
+                order_ids = [run.order_id]
+            from quality.services import delivered_quantities_by_order
+
+            delivered = delivered_quantities_by_order(order_ids)
+            return Response(
+                {
+                    "id": None,
+                    "run_id": run.pk,
+                    "source_order_ids": list(dict.fromkeys(order_ids)),
+                    "production_quantity": run.theoretical_quantity,
+                    "effective_shipped_quantity": sum(
+                        int(delivered.get(order_id, 0) or 0) for order_id in order_ids
+                    ),
+                    "remaining_quantity": 0,
+                    "yield_percent": None,
+                    "notes": "",
+                    "confirmed_by_name": None,
+                    "confirmed_at": None,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            )
+
+        try:
+            with transaction.atomic():
+                locked_run = ProductionRun.objects.select_for_update().get(pk=run.pk)
+                record = (
+                    ProductionYieldRecord.objects.select_for_update()
+                    .filter(run=locked_run)
+                    .first()
+                )
+                input_serializer = ProductionFinalYieldSerializer(
+                    record,
+                    data=request.data or {},
+                    partial=record is not None,
+                    context={"run": locked_run, "request": request},
+                )
+                input_serializer.is_valid(raise_exception=True)
+                record = input_serializer.save()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(
+                exc.message_dict if hasattr(exc, "message_dict") else exc.messages
+            ) from exc
+        except IntegrityError as exc:
+            raise DRFValidationError({"detail": "最终良率记录已被其他操作创建，请刷新后重试。"}) from exc
+        return Response(
+            ProductionFinalYieldSerializer(
+                record, context={"request": request}
             ).data
         )
 

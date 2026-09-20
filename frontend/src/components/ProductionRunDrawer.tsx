@@ -113,6 +113,8 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
       form.resetFields()
       form.setFieldsValue({
         ...run,
+        large_strip_weight_g: run.large_strip_weight_g ?? (run.strip_weight_kg != null ? Number(run.strip_weight_kg) * 1000 : undefined),
+        large_strip_count: run.large_strip_count ?? run.strips_per_batch,
         station_id: run.station?.id,
         mold_id: run.mold?.id,
         order_ids: allocations.map((item) => item.order_id),
@@ -176,6 +178,10 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
       ...(strips !== undefined ? { strips_per_batch: strips } : {}),
       ...(seconds !== undefined ? { curing_seconds: seconds } : {}),
       ...(stripWeight !== undefined ? { strip_weight_kg: stripWeight } : {}),
+      ...(specification.large_strip_weight_g != null ? { large_strip_weight_g: Number(specification.large_strip_weight_g) } : {}),
+      ...(specification.large_strip_count != null ? { large_strip_count: specification.large_strip_count } : {}),
+      ...(specification.small_strip_weight_g != null ? { small_strip_weight_g: Number(specification.small_strip_weight_g) } : {}),
+      ...(specification.small_strip_count != null ? { small_strip_count: specification.small_strip_count } : {}),
     })
   }
 
@@ -568,8 +574,11 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
         <div className="production-form-section">胶料与结算单价</div>
         <Row gutter={14}>
           <Col xs={24} sm={12}><Form.Item name="compound_size" label="胶料尺寸"><Input placeholder="例如 长300×厚4" /></Form.Item></Col>
-          <Col xs={12} sm={6}><Form.Item name="strip_weight_kg" label="条重(kg)"><InputNumber min={0} precision={3} style={{ width: '100%' }} /></Form.Item></Col>
-          <Col xs={12} sm={6}><Form.Item name="strips_per_batch" label="每批条数"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={12} sm={6}><Form.Item name="large_strip_weight_g" label="大条条重(g)" extra="成型前排料"><InputNumber min={0} precision={2} style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={12} sm={6}><Form.Item name="large_strip_count" label="大条数量"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={12} sm={6}><Form.Item name="small_strip_weight_g" label="小条条重(g)" extra="补料，没有可留空"><InputNumber min={0} precision={2} style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={12} sm={6}><Form.Item name="small_strip_count" label="小条数量"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={24}><Typography.Text type="secondary">大条和小条只用于计算成型前一模排料总重，不代表成品重量，也不进入库存。</Typography.Text></Col>
           <Col xs={12}><Form.Item name="unit_price" label="成品单价(元/件)"><InputNumber min={0} precision={4} style={{ width: '100%' }} /></Form.Item></Col>
           <Col xs={12}><Form.Item name="material_unit_price" label="材料单价(元/kg)"><InputNumber min={0} precision={4} style={{ width: '100%' }} /></Form.Item></Col>
         </Row>

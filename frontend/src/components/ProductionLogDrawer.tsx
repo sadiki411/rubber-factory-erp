@@ -8,6 +8,7 @@ import { ApiError, productionApi } from '../api/client'
 import { canCreateProductionDailyLog, canSettleProductionRun, defaultProductionLogDate, formatProductionDate, isProductionLogDateAllowed, productionStationGroupLabel, productionStationNumber } from '../production'
 import type { ProductionDailyLog, ProductionRun } from '../types'
 import { ProductionPauseResumeDrawer } from './ProductionPauseResumeDrawer'
+import { ProductionFinalYieldDrawer } from './ProductionFinalYieldDrawer'
 import { ProductionSettlement } from './ProductionSettlement'
 
 const STATUS_META = {
@@ -39,6 +40,7 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
   const queryClient = useQueryClient()
   const [editingLog, setEditingLog] = useState<ProductionDailyLog>()
   const [pauseResumeOpen, setPauseResumeOpen] = useState(false)
+  const [finalYieldOpen, setFinalYieldOpen] = useState(false)
   const enteredMoldCount = Form.useWatch('produced_mold_count', form)
 
   useEffect(() => {
@@ -176,6 +178,7 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
       footer={run && (
         <Space className="drawer-footer-actions">
           <Button onClick={closeDrawer}>关闭</Button>
+          {run.status === 'COMPLETED' && <Button onClick={() => setFinalYieldOpen(true)}>{run.final_yield ? '修改最终良率' : '确认最终良率'}</Button>}
           {run.status === 'PLANNED' && (run.mold && run.station ? (
             <Popconfirm
               title="确认该模具上机并开始生产？"
@@ -289,6 +292,12 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
       run={run}
       onClose={() => setPauseResumeOpen(false)}
       onSuccess={onRunChange}
+    />
+    <ProductionFinalYieldDrawer
+      open={finalYieldOpen}
+      run={run}
+      onClose={() => setFinalYieldOpen(false)}
+      onSuccess={(updated) => onRunChange(updated)}
     />
     </>
   )

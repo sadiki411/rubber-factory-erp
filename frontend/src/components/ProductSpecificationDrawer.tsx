@@ -134,6 +134,11 @@ export function ProductSpecificationDrawer({ open, specification, onClose }: Pro
           <Col xs={24} sm={12}><Form.Item name="cut_weight" label="裁料重量"><Input placeholder="例如 10g、0.010kg" /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="actual_material_length" label="实际切料长" extra="只允许在这里手工修改，导入订单或产品规格时不会覆盖。"><Input placeholder="例如 275mm" /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="actual_cut_weight" label="实际切料重" extra="只允许在这里手工修改，导入订单或产品规格时不会覆盖。"><Input placeholder="例如 10.2g" /></Form.Item></Col>
+          <Col xs={12} sm={6}><Form.Item name="large_strip_weight_g" label="大条条重(g)" extra="成型前排料"><Input type="number" min={0} step="0.01" /></Form.Item></Col>
+          <Col xs={12} sm={6}><Form.Item name="large_strip_count" label="大条数量" extra="可留空"><Input type="number" min={1} step="1" /></Form.Item></Col>
+          <Col xs={12} sm={6}><Form.Item name="small_strip_weight_g" label="小条条重(g)" extra="补料，没有可留空"><Input type="number" min={0} step="0.01" /></Form.Item></Col>
+          <Col xs={12} sm={6}><Form.Item name="small_strip_count" label="小条数量" extra="补料，没有可留空"><Input type="number" min={1} step="1" /></Form.Item></Col>
+          {specification?.forming_material_weight_g != null && <Col xs={24}><Typography.Text type="secondary">当前一模排料总重：{specification.forming_material_weight_g} g（只用于成型前排料参考，不代表成品重量或库存数量）</Typography.Text></Col>}
           <Col xs={24} sm={12}><Form.Item name="strip_count" label="条数 / 每批条数"><Input /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="primary_curing" label="一次硫化参数"><Input placeholder="温度、时间、压力等原始内容" /></Form.Item></Col>
         </Row>

@@ -20,6 +20,7 @@ from .models import (
     ProductionRecordAudit,
     ProductionRun,
     ProductionRunOrder,
+    ProductionYieldRecord,
     ProductionSettlementRevision,
     ProductionStation,
     normalize_operator,
@@ -311,6 +312,110 @@ class ProductionRunOrderAllocationSerializer(serializers.Serializer):
     remaining_quantity = serializers.IntegerField()
 
 
+class ProductionFinalYieldSerializer(serializers.ModelSerializer):
+    run_id = serializers.IntegerField(read_only=True)
+    confirmed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductionYieldRecord
+        fields = [
+            "id",
+            "run_id",
+            "source_order_ids",
+            "production_quantity",
+            "effective_shipped_quantity",
+            "remaining_quantity",
+            "yield_percent",
+            "notes",
+            "confirmed_by_name",
+            "confirmed_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "run_id",
+            "source_order_ids",
+            "production_quantity",
+            "effective_shipped_quantity",
+            "yield_percent",
+            "confirmed_by_name",
+            "confirmed_at",
+            "created_at",
+            "updated_at",
+        ]
+
+    @staticmethod
+    def get_confirmed_by_name(obj) -> str | None:
+        if not obj.confirmed_by_id:
+            return None
+        return obj.confirmed_by.get_full_name() or obj.confirmed_by.get_username()
+
+    def validate_remaining_quantity(self, value):
+        if value < 0:
+            raise serializers.ValidationError("人工确认剩余数量不能小于0。")
+        return value
+
+    @staticmethod
+    def _order_ids(run):
+        ids = list(
+            run.order_links.order_by("sequence", "id").values_list("order_id", flat=True)
+        )
+        if not ids and run.order_id:
+            ids = [run.order_id]
+        return list(dict.fromkeys(ids))
+
+    def _snapshots(self, run):
+        production_quantity = int(run.theoretical_quantity or 0)
+        if production_quantity < 1:
+            raise serializers.ValidationError(
+                {"detail": "该生产任务还没有有效的机台模数，暂时不能确认最终良率。"}
+            )
+        order_ids = self._order_ids(run)
+        from quality.services import delivered_quantities_by_order
+
+        delivered = delivered_quantities_by_order(order_ids)
+        effective_shipped_quantity = sum(int(delivered.get(order_id, 0) or 0) for order_id in order_ids)
+        return order_ids, production_quantity, effective_shipped_quantity
+
+    def validate(self, attrs):
+        run = self.context.get("run") or getattr(self.instance, "run", None)
+        if run is None:
+            raise serializers.ValidationError({"run_id": "缺少生产任务。"})
+        if run.status == ProductionRun.Status.CANCELLED:
+            raise serializers.ValidationError({"detail": "已取消的生产任务不能确认最终良率。"})
+        if run.status != ProductionRun.Status.COMPLETED:
+            raise serializers.ValidationError({"detail": "请先结束生产任务，再确认最终良率。"})
+        self._snapshots(run)
+        return attrs
+
+    def _save_snapshot(self, instance, validated_data, *, user):
+        run = self.context.get("run") or instance.run
+        order_ids, production_quantity, effective_shipped_quantity = self._snapshots(run)
+        instance.run = run
+        instance.source_order_ids = order_ids
+        instance.production_quantity = production_quantity
+        instance.effective_shipped_quantity = effective_shipped_quantity
+        instance.remaining_quantity = validated_data.get(
+            "remaining_quantity", instance.remaining_quantity if instance.pk else 0
+        )
+        instance.notes = validated_data.get("notes", instance.notes if instance.pk else "")
+        instance.confirmed_by = user
+        instance.save()
+        return instance
+
+    def create(self, validated_data):
+        run = self.context["run"]
+        instance = ProductionYieldRecord(run=run)
+        return self._save_snapshot(instance, validated_data, user=self.context["request"].user)
+
+    def update(self, instance, validated_data):
+        return self._save_snapshot(
+            instance,
+            validated_data,
+            user=self.context["request"].user,
+        )
+
+
 class ProductionRunSerializer(serializers.ModelSerializer):
     station = ProductionStationSerializer(read_only=True)
     station_id = serializers.PrimaryKeyRelatedField(
@@ -344,6 +449,9 @@ class ProductionRunSerializer(serializers.ModelSerializer):
     defective_quantity = serializers.IntegerField(read_only=True)
     material_kg = serializers.DecimalField(
         max_digits=14, decimal_places=3, read_only=True
+    )
+    forming_material_weight_g = serializers.DecimalField(
+        max_digits=14, decimal_places=2, read_only=True, allow_null=True
     )
     is_settled = serializers.BooleanField(read_only=True)
     actual_hours = serializers.DecimalField(
@@ -382,6 +490,9 @@ class ProductionRunSerializer(serializers.ModelSerializer):
         write_only=True, required=False, allow_blank=True, max_length=1000
     )
     order_allocations = serializers.SerializerMethodField()
+    final_yield = ProductionFinalYieldSerializer(
+        source="final_yield_record", read_only=True, allow_null=True
+    )
 
     class Meta:
         model = ProductionRun
@@ -404,6 +515,10 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "estimated_defect_quantity",
             "planned_mold_count",
             "compound_size",
+            "large_strip_weight_g",
+            "large_strip_count",
+            "small_strip_weight_g",
+            "small_strip_count",
             "strip_weight_kg",
             "strips_per_batch",
             "curing_seconds",
@@ -438,6 +553,7 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "good_quantity",
             "defective_quantity",
             "material_kg",
+            "forming_material_weight_g",
             "actual_hours",
             "progress_percent",
             "remaining_mold_count",
@@ -456,6 +572,7 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "selected_orders",
             "order_change_reason",
             "order_allocations",
+            "final_yield",
             "revenue",
             "total_cost",
             "profit",
@@ -937,6 +1054,10 @@ class ProductionRunSerializer(serializers.ModelSerializer):
             "estimated_defect_quantity",
             "planned_mold_count",
             "compound_size",
+            "large_strip_weight_g",
+            "large_strip_count",
+            "small_strip_weight_g",
+            "small_strip_count",
             "strip_weight_kg",
             "strips_per_batch",
             "curing_seconds",
