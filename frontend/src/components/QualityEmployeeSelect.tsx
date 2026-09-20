@@ -16,6 +16,8 @@ interface QualityEmployeeSelectProps {
   multiple?: boolean
   allowClear?: boolean
   disabled?: boolean
+  /** Close the option list after each choice; users can reopen it to add another person. */
+  closeOnSelect?: boolean
   placeholder?: string
   id?: string
   'aria-describedby'?: string
@@ -49,6 +51,7 @@ export function QualityEmployeeSelect({
   multiple = false,
   allowClear = true,
   disabled = false,
+  closeOnSelect = true,
   placeholder,
   id,
   'aria-describedby': ariaDescribedBy,
@@ -59,6 +62,7 @@ export function QualityEmployeeSelect({
   const { message } = App.useApp()
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
+  const [dropdownOpen, setDropdownOpen] = useState(false)
   const creatingRef = useRef(false)
   const [createdEmployees, setCreatedEmployees] = useState<QualityEmployee[]>([])
 
@@ -133,6 +137,8 @@ export function QualityEmployeeSelect({
   return <div className="quality-employee-select">
     <Select
       mode={multiple ? 'multiple' : undefined}
+      open={dropdownOpen}
+      onOpenChange={setDropdownOpen}
       id={id}
       aria-describedby={ariaDescribedBy}
       aria-invalid={ariaInvalid}
@@ -143,8 +149,12 @@ export function QualityEmployeeSelect({
       optionFilterProp="label"
       value={value == null ? undefined : value}
       onChange={(next) => changeSelection(next as number | number[] | undefined)}
+      onSelect={() => {
+        if (multiple && closeOnSelect) setDropdownOpen(false)
+      }}
       options={options}
       maxTagCount={multiple ? 'responsive' : undefined}
+      classNames={{ popup: { root: 'quality-employee-select-popup' } }}
       placeholder={placeholder || (selectable.length ? `选择${purposeText(purpose)}` : `尚无${purposeText(purpose)}，请在下方新增`)}
       notFoundContent={<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={`暂无可选${purposeText(purpose)}`} />}
       style={{ width: '100%' }}

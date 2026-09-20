@@ -68,6 +68,20 @@ describe('business data pages on mobile', () => {
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
 
+  it('shows production completed when the production target is reached even if the order remains open', async () => {
+    apiMocks.listOrders.mockResolvedValue([{
+      id: 362, order_no: '362-001', item_no: '10', batch_no: '', product_code: 'P-362', product_name: '产品362', specification: '362', material: 'NBR',
+      order_quantity: 7656, order_date: '2026-09-01', due_date: '2026-09-30', status: 'OPEN', production_required: true,
+      produced_quantity: 9147, production_remaining_quantity: 0, production_target_reached: true, weighted_shipped_quantity: 0, weighted_remaining_quantity: 7656,
+    }])
+    renderPage(<OrdersPage />)
+
+    expect(await screen.findByText('362-001 / 10')).toBeInTheDocument()
+    expect(screen.getByText('生产已完成')).toBeInTheDocument()
+    expect(screen.queryByText('需要生产')).not.toBeInTheDocument()
+    expect(screen.getByText(/9147 \/ 7656 · 已达标/)).toBeInTheDocument()
+  })
+
   it('lets mobile users change order date sorting', async () => {
     const user = userEvent.setup()
     renderPage(<OrdersPage />)

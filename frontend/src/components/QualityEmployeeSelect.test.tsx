@@ -4,6 +4,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { QualityEmployeeSelect } from './QualityEmployeeSelect'
+import type { QualityEmployee } from '../types'
 
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
@@ -13,6 +14,9 @@ Object.defineProperty(window, 'matchMedia', {
     removeEventListener: vi.fn(),
   })),
 })
+
+class ResizeObserverMock { observe() {} unobserve() {} disconnect() {} }
+globalThis.ResizeObserver = ResizeObserverMock
 
 const apiMocks = vi.hoisted(() => ({
   quickResolveEmployee: vi.fn(),
@@ -26,12 +30,12 @@ vi.mock('../api/client', async (importOriginal) => {
   }
 })
 
-function renderSelect(onChange = vi.fn()) {
+function renderSelect(employees: QualityEmployee[] = [], onChange = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={client}>
       <App>
-        <QualityEmployeeSelect employees={[]} multiple value={[]} onChange={onChange} />
+        <QualityEmployeeSelect employees={employees} multiple value={[]} onChange={onChange} />
       </App>
     </QueryClientProvider>,
   )
@@ -70,6 +74,21 @@ describe('QualityEmployeeSelect', () => {
     }))
     await waitFor(() => expect(onChange).toHaveBeenCalledWith([18]))
     expect(screen.getByText('选择品检员')).toBeInTheDocument()
+  })
+
+  it('closes the multi-select after choosing one employee to prevent mobile mis-taps', async () => {
+    const user = userEvent.setup()
+    const onChange = renderSelect([
+      { id: 1, employee_no: 'Q001', name: '张三', role: 'INSPECTOR', is_active: true },
+      { id: 2, employee_no: 'Q002', name: '李四', role: 'INSPECTOR', is_active: true },
+    ])
+
+    await user.click(screen.getByRole('combobox'))
+    await user.click(await screen.findByText(/Q001 · 张三/))
+
+    expect(onChange).toHaveBeenCalledWith([1])
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-expanded', 'false')
+    expect(document.querySelector('.quality-employee-select-popup')).toHaveClass('ant-select-dropdown-hidden')
   })
 
 })

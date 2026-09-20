@@ -2000,7 +2000,7 @@ export function QualityWeightShipmentDrawer({
         </Card>
 
         <Card size="small" className="quality-weight-inspector-card" title="品检责任">
-          <Form.Item name="inspector_ids" label="品检员（选填，可后续补录）" extra={selectedInspectors.length > 1 ? `已选择 ${selectedInspectors.length} 人，将共同计入本批责任` : '新增出货时可以留空，确认后仍可在重量出货批次中补录'}>
+          <Form.Item name="inspector_ids" label="品检员（选填，可后续补录）" extra={selectedInspectors.length > 1 ? `已选择 ${selectedInspectors.length} 人，将共同计入本批责任；如需继续添加，请重新打开选择框` : '每次选择后下拉会自动收起；需要多人时重新打开继续添加。新增出货时可以留空，确认后仍可在重量出货批次中补录'}>
             <QualityEmployeeSelect employees={employees} multiple placeholder="暂不填写，或选择/新增一名或多名品检员" />
           </Form.Item>
         </Card>

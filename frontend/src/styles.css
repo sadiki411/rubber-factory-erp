@@ -130,7 +130,10 @@ button, input, textarea, select { font: inherit; }
 .record-card-heading h4 { margin: 0; }
 .record-location { margin-bottom: 14px; }
 .drawer-footer-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; width: 100%; }
-.quality-employee-select { width: 100%; }
+.quality-employee-select { width: 100%; min-width: 0; max-width: 100%; }
+.quality-employee-select .ant-select { max-width: 100%; }
+.quality-employee-select-popup { max-width: calc(100vw - 24px); }
+.quality-employee-select-popup .ant-select-item-option-content { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quality-employee-quick-create { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-top: 8px; }
 .quality-employee-empty-hint { display: block; margin-top: 6px; line-height: 1.5; }
 .quality-employee-quick-create .ant-btn { min-height: 40px; }
@@ -820,7 +823,7 @@ button, input, textarea, select { font: inherit; }
   .quality-shipment-batch-drawer .drawer-footer-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; width: 100%; }
   .quality-shipment-batch-drawer .drawer-footer-actions .ant-btn { min-width: 0; padding-inline: 8px; }
   .quality-weight-shipment-drawer .ant-drawer-content-wrapper { width: 100% !important; max-width: 100vw; }
-  .quality-weight-shipment-drawer .ant-drawer-body { padding: 14px 12px calc(20px + env(safe-area-inset-bottom)); }
+  .quality-weight-shipment-drawer .ant-drawer-body { padding: 14px 12px calc(20px + env(safe-area-inset-bottom)); overflow-x: hidden; }
   .quality-weight-shipment-drawer .ant-drawer-footer { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); }
   .quality-weight-shipment-drawer .drawer-footer-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; width: 100%; }
   .quality-weight-shipment-drawer .drawer-footer-actions .ant-btn { min-width: 0; min-height: 46px; padding-inline: 6px; }
@@ -831,6 +834,7 @@ button, input, textarea, select { font: inherit; }
   .quality-weight-shipment-drawer .ant-select-multiple .ant-select-selector { min-height: 44px; }
   .quality-weight-shipment-drawer .ant-input-number { width: 100%; }
   .quality-weight-shipment-drawer .ant-select-single .ant-select-selector { align-items: center; }
+  .quality-weight-shipment-form, .quality-weight-shipment-form > .ant-card, .quality-weight-shipment-form .ant-row { min-width: 0; max-width: 100%; }
   .quality-weight-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .quality-weight-derived-row { row-gap: 8px; }
   .quality-weight-derived-row .ant-statistic-content { font-size: 18px; }

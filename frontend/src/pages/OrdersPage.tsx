@@ -65,9 +65,15 @@ function formattedTimestamp(value?: string | null) {
   return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm') : value
 }
 
-function productionRequiredText(value?: boolean | null) {
+function productionRequiredText(value?: boolean | null, productionTargetReached = false) {
+  if (value !== false && productionTargetReached) return '生产已完成'
   if (value === null || value === undefined) return '未登记'
   return value ? '需要生产' : '无需生产'
+}
+
+function productionRequiredColor(value?: boolean | null, productionTargetReached = false) {
+  if (value !== false && productionTargetReached) return 'success'
+  return value === true ? 'processing' : 'default'
 }
 
 function MaterialStatusTag({ status = 'UNKNOWN' }: { status?: OrderMaterialStatus }) {
@@ -186,7 +192,7 @@ export function OrdersPage() {
       render: (value) => value || '未登记',
     },
     { title: '模具型号 / 尺寸', key: 'mold', width: 165, render: (_, row) => <span>{row.product_specification?.mold_model?.code || row.product_specification?.mold_no || '-'}<br /><Typography.Text type="secondary">{row.mold_size || row.product_specification?.mold_size || '-'}</Typography.Text></span> },
-    { title: '是否生产', dataIndex: 'production_required', width: 105, render: (value) => <Tag color={value === true ? 'processing' : 'default'}>{productionRequiredText(value)}</Tag> },
+    { title: '是否生产', dataIndex: 'production_required', width: 105, render: (value, row) => <Tag color={productionRequiredColor(value, row.production_target_reached)}>{productionRequiredText(value, row.production_target_reached)}</Tag> },
     { title: '生产进度', key: 'production_progress', width: 155, render: (_, row) => <span>{exactOrderValue(row.produced_quantity)} / {exactOrderValue(row.order_quantity)}<br />{row.production_target_reached ? <Tag color="success">生产已达标</Tag> : <Typography.Text type="secondary">欠 {exactOrderValue(row.production_remaining_quantity)} 件</Typography.Text>}</span> },
     { title: '出货日期', dataIndex: 'shipment_date', width: 120, render: (value) => exactOrderValue(value) },
     { title: '净有效出货', key: 'weighted_shipped_quantity', width: 135, render: (_, row) => <span>{exactOrderValue(row.weighted_shipped_quantity)} / {exactOrderValue(row.order_quantity)}<br /><Typography.Text type="secondary">待出 {exactOrderValue(row.weighted_remaining_quantity)}</Typography.Text></span> },
@@ -291,7 +297,7 @@ export function OrdersPage() {
                       <span><small>下单日期</small><b>{record.order_date || '未登记'}</b></span>
                       <span><small>模具型号</small><b>{record.product_specification?.mold_model?.code || record.product_specification?.mold_no || '-'}</b></span>
                       <span><small>模具尺寸</small><b>{record.mold_size || record.product_specification?.mold_size || '-'}</b></span>
-                      <span><small>是否生产</small><b>{productionRequiredText(record.production_required)}</b></span>
+                      <span><small>是否生产</small><b>{productionRequiredText(record.production_required, record.production_target_reached)}</b></span>
                       <span><small>生产进度</small><b>{exactOrderValue(record.produced_quantity)} / {exactOrderValue(record.order_quantity)}{record.production_target_reached ? ' · 已达标' : ` · 欠${exactOrderValue(record.production_remaining_quantity)}`}</b></span>
                       <span><small>出货日期</small><b>{exactOrderValue(record.shipment_date)}</b></span>
                       <span><small>净有效出货</small><b>{exactOrderValue(record.weighted_shipped_quantity)} / {exactOrderValue(record.order_quantity)} · 待出{exactOrderValue(record.weighted_remaining_quantity)}</b></span>
