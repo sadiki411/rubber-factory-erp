@@ -7,6 +7,7 @@ from django.test.utils import CaptureQueriesContext
 
 from quality.models import (
     QualityOrder,
+    QualityEmployee,
     QualityReworkCase,
     QualityReturnAllocation,
     QualityShipmentBatch,
@@ -91,6 +92,64 @@ class WholeBatchCustomerReturnTests(QualityTestMixin, TestCase):
         self.assertEqual(row["returned_batches"], 1)
         self.assertEqual(row["next_return_no"], 2)
         self.assertNotIn(1, row["available_batch_numbers"])
+
+    def test_return_inherits_source_inspector_and_ignores_duplicate_selection(self):
+        batch = self.create_confirmed_repeat(count=1)
+        replacement = QualityEmployee.objects.create(
+            employee_no="QC-RETURN-OVERRIDE",
+            name="退货误选品检",
+            role=QualityEmployee.Role.INSPECTOR,
+        )
+
+        response = self.client.post(
+            "/api/quality/rework-cases/",
+            {
+                "origin": "CUSTOMER_RETURN",
+                "shipment_batch_id": batch.pk,
+                "shipment_unit_no": 1,
+                "reason_category": "APPEARANCE",
+                "inspector_ids": [replacement.pk],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["responsible_inspector_id"], self.inspector.pk)
+        self.assertEqual(
+            [item["id"] for item in response.json()["responsible_inspectors"]],
+            [self.inspector.pk],
+        )
+        case = QualityReworkCase.objects.get(pk=response.json()["id"])
+        self.assertEqual(list(case.inspectors.values_list("id", flat=True)), [self.inspector.pk])
+
+    def test_return_can_use_manual_inspector_only_when_source_has_none(self):
+        batch = self.create_confirmed_repeat(count=1)
+        batch.inspectors.clear()
+        QualityShipmentBatch.objects.filter(pk=batch.pk).update(inspector=None)
+        fallback = QualityEmployee.objects.create(
+            employee_no="QC-RETURN-FALLBACK",
+            name="退货补录品检",
+            role=QualityEmployee.Role.INSPECTOR,
+        )
+
+        response = self.client.post(
+            "/api/quality/rework-cases/",
+            {
+                "origin": "CUSTOMER_RETURN",
+                "shipment_batch_id": batch.pk,
+                "shipment_unit_no": 1,
+                "reason_category": "APPEARANCE",
+                "inspector_ids": [fallback.pk],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["responsible_inspector_id"], fallback.pk)
+        self.assertEqual(
+            [item["id"] for item in response.json()["responsible_inspectors"]],
+            [fallback.pk],
+        )
 
     def test_same_physical_unit_cannot_be_returned_twice_but_cancel_releases_it(self):
         batch = self.create_confirmed_repeat(count=2)

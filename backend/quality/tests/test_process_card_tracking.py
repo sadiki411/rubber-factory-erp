@@ -8,6 +8,7 @@ from quality.models import (
     DefectReason,
     ProcessCard,
     ProcessCardUnitBinding,
+    QualityEmployee,
     QualityOrder,
     QualityReworkCase,
     QualityShipmentBatch,
@@ -181,6 +182,38 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
         self.assertEqual(totals["gross_shipped_quantity"], 2_000)
         self.assertEqual(totals["returned_quantity"], 2_000)
         self.assertEqual(totals["effective_delivered_quantity"], 0)
+
+    def test_each_return_round_inherits_its_own_shipment_inspector(self):
+        batch = self.create_confirmed_repeat(count=1)
+        batch.inspector = self.inspector
+        batch.save(update_fields=["inspector", "updated_at"])
+        batch.inspectors.set([self.inspector])
+        self.assertEqual(
+            self.bind(batch, [{"shipment_unit_no": 1, "card_no": "CARD-INSPECTOR-ROUNDS"}]).status_code,
+            200,
+        )
+
+        first = self.scan_return("CARD-INSPECTOR-ROUNDS")
+        self.assertEqual(first.status_code, 201, first.content)
+        self.assertEqual(first.json()["responsible_inspector_id"], self.inspector.pk)
+
+        second_inspector = QualityEmployee.objects.create(
+            employee_no="QC-ROUND-002",
+            name="第二轮品检",
+            role=QualityEmployee.Role.INSPECTOR,
+        )
+        reship = self.client.post(
+            f"{self.return_endpoint}{first.json()['id']}/reship/",
+            {"inspector_ids": [second_inspector.pk]},
+            format="json",
+        )
+        self.assertEqual(reship.status_code, 201, reship.content)
+
+        second = self.scan_return("CARD-INSPECTOR-ROUNDS")
+        self.assertEqual(second.status_code, 201, second.content)
+        self.assertEqual(second.json()["responsible_inspector_id"], second_inspector.pk)
+        first_case = QualityReworkCase.objects.get(pk=first.json()["id"])
+        self.assertEqual(first_case.responsible_inspector_id, self.inspector.pk)
 
     def test_scanned_return_rejects_manual_attempt_and_requires_next_scan(self):
         batch = self.create_confirmed_repeat(count=1)

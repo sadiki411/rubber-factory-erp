@@ -679,6 +679,7 @@ export function QualityPage() {
       />
       <QualityReturnReworkDrawer
         open={returnReworkOpen}
+        employees={employees}
         onClose={() => setReturnReworkOpen(false)}
         onBackfillShipment={() => {
           setReturnReworkOpen(false)

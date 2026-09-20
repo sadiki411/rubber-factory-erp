@@ -98,12 +98,13 @@ function WholeBatchSummary({ item }: { item: QualityReturnableBatch }) {
 
 interface ReturnDrawerProps {
   open: boolean
+  employees?: QualityEmployee[]
   onClose: () => void
   onSaved: (saved: QualityReworkCase) => void | Promise<void>
   onBackfillShipment: () => void
 }
 
-export function QualityReturnReworkDrawer({ open, onClose, onSaved, onBackfillShipment }: ReturnDrawerProps) {
+export function QualityReturnReworkDrawer({ open, employees = [], onClose, onSaved, onBackfillShipment }: ReturnDrawerProps) {
   const [form] = Form.useForm<Record<string, unknown>>()
   const { message } = App.useApp()
   const [search, setSearch] = useState('')
@@ -135,6 +136,7 @@ export function QualityReturnReworkDrawer({ open, onClose, onSaved, onBackfillSh
   const candidates = useMemo(() => candidatesQuery.data || [], [candidatesQuery.data])
   const activeSelected = useMemo(() => selected ? candidates.find((item) => item.key === selected.key) || selected : undefined, [candidates, selected])
   const selectedBatchNumbers = useMemo(() => activeSelected?.available_batch_numbers || [], [activeSelected?.available_batch_numbers])
+  const sourceInspectors = useMemo(() => activeSelected?.inspectors || [], [activeSelected?.inspectors])
   const selectCandidate = (item: QualityReturnableBatch) => {
     setSelected(item)
     form.setFieldValue('shipment_unit_no', item.available_batch_numbers?.[0])
@@ -160,6 +162,9 @@ export function QualityReturnReworkDrawer({ open, onClose, onSaved, onBackfillSh
         reason_category: values.reason_category,
         reason: values.reason || '',
         notes: values.notes || '',
+        ...(sourceInspectors.length ? {} : {
+          inspector_ids: ((values.inspector_ids as Array<number | string>) || []).map(Number),
+        }),
       })
       message.success(`已登记 ${activeSelected.shipment_no} 第${values.shipment_unit_no}批整批退货`)
       onClose()
@@ -226,6 +231,16 @@ export function QualityReturnReworkDrawer({ open, onClose, onSaved, onBackfillSh
         {historical && <Form.Item name="backfill_reason" label="补录原因" rules={[{ required: true, whitespace: true, message: '补录历史日期时请填写原因' }]}><Input placeholder="例如：当天漏记，现按退货单补录" /></Form.Item>}
         <Form.Item name="reason_category" label="原因分类" rules={[{ required: true }]}><Select options={RETURN_REASON_CATEGORY_OPTIONS} /></Form.Item>
         <Form.Item label="常用退货原因" extra="点击可直接带入，仍可在下方修改。"><Button htmlType="button" onClick={() => form.setFieldsValue({ reason_category: 'STICKING', reason: '粘皮' })}>粘皮</Button></Form.Item>
+        {sourceInspectors.length ? <Alert
+          type="success"
+          showIcon
+          message="责任品检员已从原出货自动带入"
+          description={`本次退货责任：${sourceInspectors.map((item) => item.name).join('、')}。无需重复选择，系统会按原出货责任统计。`}
+        /> : <Form.Item
+          name="inspector_ids"
+          label="责任品检员（原出货未填写，请补录）"
+          rules={[{ required: true, type: 'array', min: 1, message: '原出货没有品检员，请至少补录一名责任品检员' }]}
+        ><QualityEmployeeSelect employees={employees} multiple placeholder="请选择或新增责任品检员" /></Form.Item>}
         <Form.Item name="reason" label="问题描述（选填）"><Input.TextArea rows={2} maxLength={500} showCount placeholder="例如：粘皮" /></Form.Item>
         <Form.Item name="notes" label="备注（选填）"><Input.TextArea rows={2} maxLength={500} showCount /></Form.Item>
       </Form>

@@ -149,6 +149,11 @@ class WeightedWorkflowApiTests(QualityTestMixin, TestCase):
             format="json",
         )
         self.assertEqual(returned.status_code, 201, returned.content)
+        self.assertEqual(returned.json()["responsible_inspector_id"], self.inspector.pk)
+        self.assertEqual(
+            [item["id"] for item in returned.json()["responsible_inspectors"]],
+            [self.inspector.pk],
+        )
         card.refresh_from_db()
         self.assertEqual(card.delivered_net_weight_kg, Decimal("2.650"))
         resend = self.batch("return-2", {"process_card_id": card.pk, "net_weight_kg": "0.100", "piece_quantity": 40})

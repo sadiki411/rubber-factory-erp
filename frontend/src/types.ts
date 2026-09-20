@@ -819,6 +819,7 @@ export interface QualityProcessCardBinding {
   product_name?: string
   specification?: string
   material?: string
+  inspectors?: QualityEmployeeSummary[]
   piece_quantity?: number | null
   net_weight_kg?: number | string | null
 }

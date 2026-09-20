@@ -57,6 +57,7 @@ from .services import (
     returnable_groups_for_batch,
     serialize_order_allocation_plan,
     shipment_line_piece_quantity,
+    set_return_case_inspectors,
     shipment_return_groups,
     shipment_unit_allocations,
     sync_order_status_from_delivery,
@@ -192,7 +193,7 @@ class ProcessCardViewSet(WorkflowModelViewSet):
         queryset = ProcessCard.objects.select_related(
             "order", "product_specification", "unit_weight_config", "created_by",
             "replaces", "unit_binding__shipment_batch", "unit_binding__process_card__order",
-        ).all()
+        ).prefetch_related("unit_binding__shipment_batch__inspectors").all()
         q = str(self.request.query_params.get("q", "")).strip()
         if q:
             queryset = queryset.filter(
@@ -2296,6 +2297,16 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             batch.inspectors.set(ordered)
             batch.inspector = ordered[0] if ordered else None
             batch.save(update_fields=["inspector", "updated_at"])
+            # Returns created before the shipment inspector was backfilled
+            # must become attributable now.  Existing return cases always
+            # remain tied to their own source batch; a later reshipment never
+            # overwrites an earlier round's responsibility.
+            if ordered:
+                for case in QualityReworkCase.objects.select_for_update().filter(
+                    shipment_batch=batch,
+                    origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+                ).exclude(status=QualityReworkCase.Status.CANCELLED):
+                    set_return_case_inspectors(case, batch)
         return Response(self.get_serializer(batch).data)
 
     @staticmethod

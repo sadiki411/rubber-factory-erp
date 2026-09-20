@@ -78,6 +78,16 @@ function scanStatus(card: PendingCard) {
   return <Tag color="warning">首次绑定</Tag>
 }
 
+function cardSourceInspectors(
+  card: PendingCard,
+  candidates: QualityReturnableBatch[],
+  sources: Record<string, SourceSelection>,
+) {
+  const binding = processCardBinding(card.lookup)
+  if (binding?.inspectors?.length) return binding.inspectors
+  return sources[card.cardNo]?.batch.inspectors || []
+}
+
 export function QualityFlowCardReturnDrawer({
   open,
   employees,
@@ -128,6 +138,16 @@ export function QualityFlowCardReturnDrawer({
 
   const reasons = reasonsQuery.data || []
   const candidates = useMemo(() => candidatesQuery.data || [], [candidatesQuery.data])
+  const inspectorStatus = useMemo(() => {
+    const inherited = new Map<number, QualityEmployee>()
+    let missing = 0
+    for (const card of cards) {
+      const inspectors = cardSourceInspectors(card, candidates, sources)
+      if (!inspectors.length) missing += 1
+      inspectors.forEach((inspector) => inherited.set(inspector.id, inspector as QualityEmployee))
+    }
+    return { inherited: Array.from(inherited.values()), missing }
+  }, [cards, candidates, sources])
   const historical = Boolean(openedOn?.isValid() && openedOn.startOf('day').isBefore(dayjs().startOf('day')))
   const sourceOptions = useMemo(() => candidates.flatMap((batch) => (batch.available_batch_numbers || []).map((unitNo) => ({
     value: sourceOptionKey(batch, unitNo),
@@ -205,7 +225,7 @@ export function QualityFlowCardReturnDrawer({
       primary_reason_id: values.primary_reason_id,
       secondary_reason_ids: values.secondary_reason_ids || [],
       reason: values.reason || '',
-      inspector_ids: values.inspector_ids || [],
+      inspector_ids: inspectorStatus.missing ? values.inspector_ids || [] : [],
       notes: values.notes || '',
     }
     const scanCards = cards.map((item) => {
@@ -293,7 +313,17 @@ export function QualityFlowCardReturnDrawer({
           <Col xs={24} sm={12}><Form.Item name="secondary_reason_ids" label="次要问题标签（可多选）"><Select mode="multiple" showSearch optionFilterProp="label" options={secondaryOptions} placeholder="可不填或选择多项" maxTagCount="responsive" /></Form.Item></Col>
         </Row>
         {reasonsQuery.error && <Alert type="warning" showIcon message="退货原因库暂时读取失败" description="请刷新后重试，避免原因统计缺失。" />}
-        <Form.Item name="inspector_ids" label="责任品检员（选填，可多人、可后补）"><QualityEmployeeSelect employees={employees} multiple placeholder="暂不填写，或选择/新增一名或多名" /></Form.Item>
+        {inspectorStatus.missing ? <Form.Item
+          name="inspector_ids"
+          label="责任品检员（原出货未填写，请补录）"
+          rules={[{ required: true, type: 'array', min: 1, message: '存在未填写原出货品检员的退货，请至少补录一名责任品检员' }]}
+          extra={inspectorStatus.inherited.length ? `已有原出货责任：${inspectorStatus.inherited.map((item) => item.name).join('、')}；仅为未登记原出货的退货补录。` : '已登记原出货品检员的退货会自动沿用，不需要重复选择。'}
+        ><QualityEmployeeSelect employees={employees} multiple placeholder="请选择或新增责任品检员" /></Form.Item> : <Alert
+          type="success"
+          showIcon
+          message="责任品检员已从原出货自动带入"
+          description={`本次扫描的退货会分别沿用各自原出货责任：${inspectorStatus.inherited.map((item) => item.name).join('、')}。无需重复选择。`}
+        />}
         <Form.Item name="reason" label="具体问题说明（选填）"><Input.TextArea rows={2} maxLength={500} showCount /></Form.Item>
         <Form.Item name="notes" label="备注（选填）"><Input.TextArea rows={2} maxLength={500} showCount /></Form.Item>
       </Form>}

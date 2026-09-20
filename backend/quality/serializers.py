@@ -20,6 +20,8 @@ from .services import (
     create_whole_batch_return_case,
     legacy_reason_category,
     serialize_rework_source,
+    set_return_case_inspectors,
+    shipment_inspectors,
     sync_order_status_from_delivery,
 )
 
@@ -573,6 +575,7 @@ class ProcessCardUnitBindingSerializer(serializers.ModelSerializer):
     product_name = serializers.SerializerMethodField()
     specification = serializers.SerializerMethodField()
     material = serializers.SerializerMethodField()
+    inspectors = serializers.SerializerMethodField()
 
     class Meta:
         model = ProcessCardUnitBinding
@@ -580,7 +583,7 @@ class ProcessCardUnitBindingSerializer(serializers.ModelSerializer):
             "id", "process_card_id", "card_no", "shipment_batch_id",
             "shipment_no", "shipment_date", "shipment_unit_no", "order_id",
             "order_no", "item_no", "product_name", "specification",
-            "material", "piece_quantity", "net_weight_kg", "created_at",
+            "material", "inspectors", "piece_quantity", "net_weight_kg", "created_at",
             "updated_at",
         ]
         read_only_fields = fields
@@ -593,6 +596,13 @@ class ProcessCardUnitBindingSerializer(serializers.ModelSerializer):
 
     def get_material(self, obj) -> str:
         return obj.process_card.material_snapshot or obj.process_card.order.material
+
+    def get_inspectors(self, obj) -> list[dict]:
+        return QualityEmployeeSerializer(
+            shipment_inspectors(obj.shipment_batch),
+            many=True,
+            context=self.context,
+        ).data
 
 
 class ProcessCardSerializer(ValidatedModelSerializer):
@@ -1750,18 +1760,30 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
             and validated_data.get("shipment_unit_no") is not None
         ):
             try:
-                case = create_whole_batch_return_case(validated_data)
-                if inspectors:
-                    case.inspectors.set(inspectors)
+                case = create_whole_batch_return_case(
+                    validated_data,
+                    fallback_inspectors=inspectors,
+                )
                 if secondary_reasons:
                     case.secondary_reasons.set(secondary_reasons)
                 self._sync_case_orders(case, "登记客户退货")
                 return case
             except ValueError as exc:
                 raise serializers.ValidationError({"detail": str(exc)}) from exc
+        source_batch = validated_data.get("shipment_batch")
+        if source_batch is None and validated_data.get("shipment_line") is not None:
+            source_batch = validated_data["shipment_line"].batch
+        source_inspectors = shipment_inspectors(source_batch)
+        if source_inspectors:
+            validated_data["responsible_inspector"] = source_inspectors[0]
+        elif "responsible_inspector" not in validated_data and inspectors:
+            validated_data["responsible_inspector"] = inspectors[0]
         case = super().create(validated_data)
-        if inspectors:
-            case.inspectors.set(inspectors)
+        set_return_case_inspectors(
+            case,
+            source_batch,
+            fallback=inspectors,
+        )
         if secondary_reasons:
             case.secondary_reasons.set(secondary_reasons)
         if case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN:
@@ -1775,6 +1797,14 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
         secondary_reasons = validated_data.pop("secondary_reasons", None)
         with transaction.atomic():
             locked = QualityReworkCase.objects.select_for_update().get(pk=instance.pk)
+            source_batch = locked.shipment_batch
+            if source_batch is None and locked.shipment_line_id:
+                source_batch = locked.shipment_line.batch
+            source_inspectors = shipment_inspectors(source_batch)
+            if source_inspectors:
+                # Even a stale client payload must not move responsibility to
+                # the person selected while registering the return.
+                validated_data["responsible_inspector"] = source_inspectors[0]
             case = super().update(locked, validated_data)
             if (
                 case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
@@ -1783,11 +1813,12 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
             ):
                 case.is_current_return = False
                 case.save(update_fields=["is_current_return", "updated_at"])
-            if inspectors is not None:
-                case.inspectors.set(inspectors)
-                if inspectors and case.responsible_inspector_id is None:
-                    case.responsible_inspector = inspectors[0]
-                    case.save(update_fields=["responsible_inspector", "updated_at"])
+            if source_inspectors or inspectors is not None or case.responsible_inspector_id:
+                set_return_case_inspectors(
+                    case,
+                    source_batch,
+                    fallback=inspectors or [],
+                )
             if secondary_reasons is not None:
                 case.secondary_reasons.set(secondary_reasons)
             if case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN:
@@ -1879,6 +1910,14 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
 
     def get_responsible_inspectors(self, obj) -> list[dict]:
         values = getattr(obj, "_prefetched_objects_cache", {}).get("inspectors", [])
+        if not values:
+            # Do not turn list serialization into one query per return case.
+            # The view prefetches this relation when it is needed; direct
+            # serializers can still expose the fallback when the FK is already
+            # present in the instance cache.
+            responsible = obj._state.fields_cache.get("responsible_inspector")
+            if responsible is not None:
+                values = [responsible]
         return QualityEmployeeSerializer(values, many=True, context=self.context).data
 
     def get_secondary_reason_details(self, obj) -> list[dict]:

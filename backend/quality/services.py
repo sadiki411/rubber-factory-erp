@@ -31,6 +31,55 @@ PENDING_RETURN_STATUSES = (
 )
 
 
+def shipment_inspectors(batch: QualityShipmentBatch | None) -> list[QualityEmployee]:
+    """Return the inspectors recorded on the source shipment in stable order.
+
+    ``inspector`` is the legacy/primary column while ``inspectors`` is the
+    newer multi-person relation.  Old rows can have either one populated, so
+    every return path must use the same merged view instead of reading only
+    one of the two fields.
+    """
+
+    if batch is None:
+        return []
+    people = list(batch.inspectors.all())
+    if batch.inspector_id:
+        primary = batch.inspector
+        people = [primary, *[person for person in people if person.pk != primary.pk]]
+    unique: list[QualityEmployee] = []
+    seen: set[int] = set()
+    for person in people:
+        if person.pk not in seen:
+            seen.add(person.pk)
+            unique.append(person)
+    return unique
+
+
+def set_return_case_inspectors(
+    case: QualityReworkCase,
+    source_batch: QualityShipmentBatch | None,
+    *,
+    fallback: Iterable[QualityEmployee] = (),
+) -> list[QualityEmployee]:
+    """Freeze the source shipment's inspectors onto a return case.
+
+    A return must inherit responsibility from its corresponding shipment.  A
+    manually entered inspector is only a fallback for shipments whose
+    inspector was genuinely missing at the time of return registration.
+    """
+
+    source_people = shipment_inspectors(source_batch)
+    fallback_people = list(fallback)
+    people = source_people or fallback_people
+    if not people and case.responsible_inspector_id:
+        people = [case.responsible_inspector]
+    if people:
+        case.responsible_inspector = people[0]
+        case.save(update_fields=["responsible_inspector", "updated_at"])
+        case.inspectors.set(people)
+    return people
+
+
 def legacy_reason_category(reason: DefectReason | None) -> str:
     if reason is None:
         return "OTHER"
@@ -905,9 +954,7 @@ def serialize_returnable_group(
         return None
     lines = group["lines"]
     orders = _group_orders(group)
-    inspectors = list(batch.inspectors.all())
-    if not inspectors and batch.inspector_id:
-        inspectors = [batch.inspector]
+    inspectors = shipment_inspectors(batch)
     product_names = _unique(
         (line.order.product_name if line.order_id else "")
         or (
@@ -1119,8 +1166,14 @@ def _unit_allocations(group: dict, unit_no: int) -> list[dict]:
     return allocations
 
 
-def create_whole_batch_return_case(validated_data: dict) -> QualityReworkCase:
+def create_whole_batch_return_case(
+    validated_data: dict,
+    *,
+    fallback_inspectors: Iterable[QualityEmployee] = (),
+) -> QualityReworkCase:
     """Create one return case from a locked, confirmed physical shipment unit."""
+
+    fallback_inspectors = list(fallback_inspectors)
 
     supplied_batch = validated_data.get("shipment_batch")
     unit_no = validated_data.get("shipment_unit_no")
@@ -1199,12 +1252,22 @@ def create_whole_batch_return_case(validated_data: dict) -> QualityReworkCase:
                 "affected_weight_kg": group["single_batch_net_weight_kg"],
             }
         )
-        if values.get("responsible_inspector") is None:
-            values["responsible_inspector"] = batch.inspector or next(
-                iter(batch.inspectors.all()), None
+        source_inspectors = shipment_inspectors(batch)
+        if source_inspectors:
+            # The original shipment is authoritative.  A return form must
+            # never replace that responsibility with a second selection.
+            values["responsible_inspector"] = source_inspectors[0]
+        elif values.get("responsible_inspector") is None:
+            values["responsible_inspector"] = next(
+                iter(fallback_inspectors), None
             )
         try:
             case = QualityReworkCase.objects.create(**values)
+            set_return_case_inspectors(
+                case,
+                batch,
+                fallback=fallback_inspectors,
+            )
             for item in allocations:
                 QualityReturnAllocation.objects.create(
                     case=case,
@@ -1775,7 +1838,10 @@ def create_scanned_return(
         if primary_reason is not None and "reason_category" not in values:
             values["reason_category"] = legacy_reason_category(primary_reason)
         try:
-            case = create_whole_batch_return_case(values)
+            case = create_whole_batch_return_case(
+                values,
+                fallback_inspectors=inspectors,
+            )
         except IntegrityError as exc:
             raise ValueError("该流程卡刚被其他操作登记退货，请刷新后重试。") from exc
         if primary_reason is not None:
@@ -1783,11 +1849,6 @@ def create_scanned_return(
             case.save(update_fields=["primary_reason", "updated_at"])
         if secondary_reasons:
             case.secondary_reasons.set(secondary_reasons)
-        if inspectors:
-            case.inspectors.set(inspectors)
-            if case.responsible_inspector_id is None:
-                case.responsible_inspector = inspectors[0]
-                case.save(update_fields=["responsible_inspector", "updated_at"])
         return case
 
 

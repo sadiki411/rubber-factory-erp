@@ -201,6 +201,9 @@ export function QualityReworkDrawer({ open, rework, shipments, employees, onClos
   const [form] = Form.useForm<Record<string, any>>()
   const queryClient = useQueryClient()
   const { message } = App.useApp()
+  const selectedShipmentId = Form.useWatch('shipment_id', form)
+  const selectedShipment = shipments.find((item) => String(item.id) === String(selectedShipmentId))
+  const inheritedInspector = selectedShipment?.inspector || selectedShipment?.inspectors?.[0]
 
   useEffect(() => {
     if (!open) return
@@ -239,9 +242,10 @@ export function QualityReworkDrawer({ open, rework, shipments, employees, onClos
 
   const submit = async () => mutation.mutate(await form.validateFields())
   const selectShipment = (shipmentId: number) => {
-    const selected = shipments.find((item) => item.id === shipmentId)
-    if (selected?.inspector?.id) {
-      form.setFieldValue('responsible_inspector_id', selected.inspector.id)
+    const selected = shipments.find((item) => String(item.id) === String(shipmentId))
+    const inspector = selected?.inspector || selected?.inspectors?.[0]
+    if (inspector?.id) {
+      form.setFieldValue('responsible_inspector_id', inspector.id)
     }
   }
 
@@ -254,7 +258,12 @@ export function QualityReworkDrawer({ open, rework, shipments, employees, onClos
           <Col xs={24} sm={10}><Form.Item name="rework_date" label="退货 / 返工日期" rules={[{ required: true }]}><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
         </Row>
         <Row gutter={14}>
-          <Col xs={24} sm={12}><Form.Item name="responsible_inspector_id" label="责任品检员" rules={[{ required: true, message: '请选择责任品检员' }]}><QualityEmployeeSelect employees={employees} allowClear={false} placeholder="选择或新增责任品检员" /></Form.Item></Col>
+          <Col xs={24} sm={12}>{inheritedInspector ? <Alert
+            type="success"
+            showIcon
+            message="责任品检员已从原出货自动带入"
+            description={`${inheritedInspector.name}；无需在退货时重复选择。`}
+          /> : <Form.Item name="responsible_inspector_id" label="责任品检员（原出货未填写，请补录）" rules={[{ required: true, message: '原出货没有品检员，请补录责任品检员' }]}><QualityEmployeeSelect employees={employees} allowClear={false} placeholder="选择或新增责任品检员" /></Form.Item>}</Col>
           <Col xs={24} sm={12}><Form.Item name="rework_employee_id" label="返工处理人" rules={[{ required: true, message: '请选择返工处理人' }]}><QualityEmployeeSelect employees={employees} purpose="REWORKER" allowClear={false} placeholder="选择或新增返工处理人" /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="reason_category" label="原因分类" rules={[{ required: true }]}><Select options={[{ value: 'APPEARANCE', label: '外观' }, { value: 'STICKING', label: '粘皮' }, { value: 'DIMENSION', label: '尺寸' }, { value: 'MATERIAL', label: '材料' }, { value: 'MIXED', label: '混料' }, { value: 'PACKAGING', label: '包装' }, { value: 'OTHER', label: '其他' }]} /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="status" label="处理状态" rules={[{ required: true }]}><Select options={[{ value: 'PENDING', label: '待处理' }, { value: 'PROCESSING', label: '处理中' }, { value: 'COMPLETED', label: '已完成' }]} /></Form.Item></Col>
