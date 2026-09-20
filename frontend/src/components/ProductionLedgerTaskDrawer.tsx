@@ -18,6 +18,12 @@ function stationLabel(group?: string, position?: number, code?: string) {
   return group && position ? `${group}组 · ${position}号机台` : code ? `${code}号机台` : '未指定机台'
 }
 
+function allocationSignature(allocations: Array<{ order_id: number; planned_quantity: number }>) {
+  return allocations
+    .map((item) => ({ order_id: Number(item.order_id), planned_quantity: Number(item.planned_quantity) }))
+    .sort((left, right) => left.order_id - right.order_id)
+}
+
 export function ProductionLedgerTaskDrawer({ open, run, initialDraft, onClose, onSaved }: Props) {
   const [form] = Form.useForm<Record<string, any>>()
   const { message } = App.useApp()
@@ -26,6 +32,19 @@ export function ProductionLedgerTaskDrawer({ open, run, initialDraft, onClose, o
   const selectedOrderIds = watchedOrderIds || []
   const watchedOrderTargets = Form.useWatch<Record<number, number>>('order_targets', { form, preserve: true })
   const orderTargets = watchedOrderTargets || {}
+  const originalAllocations = run
+    ? run.order_allocations?.length
+      ? run.order_allocations
+      : run.order_id
+        ? [{ order_id: run.order_id, planned_quantity: run.order_quantity }]
+        : []
+    : []
+  const currentAllocations = selectedOrderIds.map((orderId) => ({
+    order_id: orderId,
+    planned_quantity: Math.max(1, Number(orderTargets[orderId] || 1)),
+  }))
+  const orderAllocationsChanged = Boolean(run)
+    && JSON.stringify(allocationSignature(originalAllocations)) !== JSON.stringify(allocationSignature(currentAllocations))
   const moldId = Form.useWatch<number>('mold_id', form)
   const cavities = Number(Form.useWatch<number>('cavities', form) || 0)
   const defectMode = Form.useWatch<'RATE' | 'QUANTITY'>('estimated_defect_mode', form) || 'RATE'
@@ -126,6 +145,7 @@ export function ProductionLedgerTaskDrawer({ open, run, initialDraft, onClose, o
           order_id: orderId,
           planned_quantity: Math.max(1, Number(orderTargets[orderId] || 1)),
         })),
+        order_change_reason: values.order_change_reason,
         station_id: values.station_id || null,
         mold_id: values.mold_id || null,
         planned_mold_count: values.planned_mold_count || suggestedMoldCount,
@@ -224,6 +244,19 @@ export function ProductionLedgerTaskDrawer({ open, run, initialDraft, onClose, o
             </div>)}
           </Space>
         </Card>}
+        {run && <Form.Item
+          name="order_change_reason"
+          label="关联订单修改原因"
+          dependencies={['order_ids', 'order_targets']}
+          rules={[{
+            validator: (_, value) => orderAllocationsChanged && !String(value || '').trim()
+              ? Promise.reject(new Error('增加、移除订单或调整本次生产数量时必须填写修改原因'))
+              : Promise.resolve(),
+          }]}
+          extra="只有增加、移除订单或调整本次生产数量时必填；系统会保留修改前后的订单分配记录。"
+        >
+          <Input.TextArea rows={2} maxLength={1000} showCount placeholder="例如：追加同规格订单，合并生产以减少重复换模" />
+        </Form.Item>}
         <Row gutter={12}>
           <Col xs={24} sm={12}><Form.Item name="mold_id" label="具体实物模具（可后补）"><Select allowClear showSearch optionFilterProp="label" loading={moldsQuery.isLoading} onChange={selectMold} placeholder="不选模具也可直接填孔数" options={suggestedMolds.map((mold) => ({ value: mold.id, label: `${mold.asset_code} · ${moldModelOf(mold)?.code || '-'} · ${moldModelOf(mold)?.product_name || '-'}` }))} /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="cavities" label="本次有效孔数" rules={[{ required: true, message: '请输入本次有效孔数' }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} placeholder="例如 6" /></Form.Item></Col>

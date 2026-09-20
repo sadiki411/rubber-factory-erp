@@ -49,6 +49,12 @@ function weightKg(value: unknown) {
   return grams ? Number(grams[1]) / 1000 : undefined
 }
 
+function allocationSignature(allocations: Array<{ order_id: number; planned_quantity: number }>) {
+  return allocations
+    .map((item) => ({ order_id: Number(item.order_id), planned_quantity: Number(item.planned_quantity) }))
+    .sort((left, right) => left.order_id - right.order_id)
+}
+
 export function ProductionRunDrawer({ open, run, station, mountedMold, initialStatus = 'RUNNING', onClose, onSuccess }: Props) {
   const [form] = Form.useForm()
   const selectedStatus = Form.useWatch('status', form)
@@ -60,6 +66,19 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
   const trialTask = Form.useWatch<boolean>('is_trial_task', form) || false
   const watchedOrderTargets = Form.useWatch<Record<number, number>>('order_targets', { form, preserve: true })
   const orderTargets = watchedOrderTargets || {}
+  const originalAllocations = run
+    ? run.order_allocations?.length
+      ? run.order_allocations
+      : run.order_id
+        ? [{ order_id: run.order_id, planned_quantity: run.order_quantity }]
+        : []
+    : []
+  const currentAllocations = selectedOrderIds.map((orderId) => ({
+    order_id: orderId,
+    planned_quantity: Math.max(1, Number(orderTargets[orderId] || 1)),
+  }))
+  const orderAllocationsChanged = Boolean(run)
+    && JSON.stringify(allocationSignature(originalAllocations)) !== JSON.stringify(allocationSignature(currentAllocations))
   const { message } = App.useApp()
   const queryClient = useQueryClient()
   const stationsQuery = useQuery({
@@ -464,7 +483,19 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
           <Col xs={24} sm={12}><Form.Item name="specification" label="规格" rules={[{ required: true, message: '请输入产品规格' }]}><Input /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="material" label="材质 / 胶料配方" rules={[{ required: true, message: '请输入材质' }]}><Input placeholder="例如 配方A" /></Form.Item></Col>
         </Row>
-        {run && <Form.Item name="order_change_reason" label="关联订单修改原因" extra="只在增加、移除订单或调整本次生产数量时必填；系统会永久保留修改前后内容。"><Input.TextArea rows={2} maxLength={1000} showCount /></Form.Item>}
+        {run && <Form.Item
+          name="order_change_reason"
+          label="关联订单修改原因"
+          dependencies={['order_ids', 'order_targets']}
+          rules={[{
+            validator: (_, value) => orderAllocationsChanged && !String(value || '').trim()
+              ? Promise.reject(new Error('增加、移除订单或调整本次生产数量时必须填写修改原因'))
+              : Promise.resolve(),
+          }]}
+          extra="只有增加、移除订单或调整本次生产数量时必填；系统会保留修改前后的订单分配记录。"
+        >
+          <Input.TextArea rows={2} maxLength={1000} showCount placeholder="例如：追加同规格订单，合并生产以减少重复换模" />
+        </Form.Item>}
 
         <Form.Item
           name="mold_id"
