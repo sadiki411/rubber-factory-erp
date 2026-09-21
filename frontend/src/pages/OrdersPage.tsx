@@ -179,6 +179,7 @@ export function OrdersPage() {
       render: (value) => value || <Tag color="warning">无交期</Tag>,
     },
     { title: '订单量', dataIndex: 'order_quantity', width: 95, render: (value) => exactOrderValue(value) },
+    { title: '库存', key: 'inventory', width: 145, render: (_, row) => <span>{exactOrderValue(row.inventory_available_quantity)} 件可用<br /><Typography.Text type="secondary">待检 {exactOrderValue(row.inventory_waiting_inspection_quantity)} · 合计 {exactOrderValue(row.inventory_total_quantity)}</Typography.Text></span> },
     { title: '胶料用量', dataIndex: 'required_material_kg', width: 115, render: (value) => exactOrderValue(value, ' kg') },
     { title: '已发胶料', key: 'received_material', width: 130, render: (_, row) => <span>{exactOrderValue(row.received_material_kg, ' kg')}<br /><Typography.Text type="secondary">差额 {exactOrderValue(row.material_gap_kg, ' kg')}</Typography.Text></span> },
     { title: '成型工时', dataIndex: 'forming_hours', width: 105, render: (value) => exactOrderValue(value, ' h') },
@@ -290,6 +291,7 @@ export function OrdersPage() {
                       <span><small>胶料</small><b>{record.material || '-'}</b></span>
                       <span><small>交期</small><b>{record.due_date || '未登记'}</b></span>
                       <span><small>订单量</small><b>{exactOrderValue(record.order_quantity)}</b></span>
+                      <span><small>库存</small><b>可用 {exactOrderValue(record.inventory_available_quantity)} · 待检 {exactOrderValue(record.inventory_waiting_inspection_quantity)}</b></span>
                       <span><small>胶料用量</small><b>{exactOrderValue(record.required_material_kg, ' kg')}</b></span>
                       <span><small>已发胶料</small><b>{exactOrderValue(record.received_material_kg, ' kg')}</b></span>
                       <span><small>胶料差额</small><b>{exactOrderValue(record.material_gap_kg, ' kg')}</b></span>

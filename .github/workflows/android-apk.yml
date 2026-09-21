@@ -5,6 +5,7 @@ on:
     branches:
       - "**"
     tags:
+      - "v*"
       - "android-v*"
   pull_request:
   workflow_dispatch:
@@ -67,7 +68,10 @@ jobs:
 
   signed_release:
     name: Build signed release APK
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/android-v')
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      startsWith(github.ref, 'refs/tags/android-v')
     needs: checks
     runs-on: ubuntu-latest
     permissions:
@@ -109,7 +113,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "$GITHUB_REF" == refs/tags/android-v* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version_name="${GITHUB_REF_NAME#v}"
+          elif [[ "$GITHUB_REF" == refs/tags/android-v* ]]; then
             version_name="${GITHUB_REF_NAME#android-v}"
           else
             version_name="$REQUESTED_VERSION"
@@ -207,7 +213,7 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/android-v')
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/android-v')
     needs: signed_release
     runs-on: ubuntu-latest
     permissions:

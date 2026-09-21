@@ -37,7 +37,7 @@ jobs:
         # Django does not discover tests in every app when no labels are
         # supplied in this repository.  Keep CI aligned with the local
         # regression command so a release cannot pass with zero tests run.
-        run: python manage.py test molds orders production quality analytics --verbosity 1
+        run: python manage.py test molds orders production quality analytics inventory --verbosity 1
 
       - name: Generate and validate OpenAPI schema
         run: python manage.py spectacular --file openapi.yml --validate

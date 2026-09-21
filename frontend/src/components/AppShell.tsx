@@ -2,6 +2,7 @@ import {
   AppstoreOutlined,
   BarChartOutlined,
   FileExcelOutlined,
+  InboxOutlined,
   HomeOutlined,
   LogoutOutlined,
   MenuOutlined,
@@ -28,6 +29,7 @@ const menuItems = [
   { key: '/analytics', icon: <BarChartOutlined />, label: '数据分析' },
   { key: '/molds', icon: <ToolOutlined />, label: '模具台账' },
   { key: '/racks', icon: <AppstoreOutlined />, label: '货架总览' },
+  { key: '/inventory', icon: <InboxOutlined />, label: '成品库存' },
   { key: '/rack-config', icon: <SettingOutlined />, label: '货架配置' },
   { key: '/imports', icon: <FileExcelOutlined />, label: '模具 Excel 导入' },
 ]

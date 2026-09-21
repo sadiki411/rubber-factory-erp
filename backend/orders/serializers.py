@@ -295,6 +295,9 @@ class BusinessOrderSerializer(AuditedModelSerializer):
     production_remaining_quantity = serializers.SerializerMethodField()
     production_target_reached = serializers.SerializerMethodField()
     production_run_count = serializers.SerializerMethodField()
+    inventory_total_quantity = serializers.SerializerMethodField()
+    inventory_available_quantity = serializers.SerializerMethodField()
+    inventory_waiting_inspection_quantity = serializers.SerializerMethodField()
     status_change_reason = serializers.CharField(
         write_only=True, required=False, allow_blank=True, max_length=1000
     )
@@ -334,6 +337,9 @@ class BusinessOrderSerializer(AuditedModelSerializer):
             "production_remaining_quantity",
             "production_target_reached",
             "production_run_count",
+            "inventory_total_quantity",
+            "inventory_available_quantity",
+            "inventory_waiting_inspection_quantity",
             "shipment_date",
             "shipped_quantity",
             "status",
@@ -554,6 +560,28 @@ class BusinessOrderSerializer(AuditedModelSerializer):
 
     def get_production_run_count(self, obj) -> int:
         return self._production_totals(obj)[1]
+
+    def _inventory_availability(self, obj):
+        cache = self.context.setdefault("_inventory_availability", {})
+        if obj.pk not in cache:
+            from inventory.services import product_availability
+
+            cache[obj.pk] = product_availability(
+                product_specification_id=obj.product_specification_id,
+                product_code=obj.product_code,
+                specification=obj.specification,
+                material=obj.material,
+            )
+        return cache[obj.pk]
+
+    def get_inventory_total_quantity(self, obj) -> int:
+        return int(self._inventory_availability(obj)["total_quantity"])
+
+    def get_inventory_available_quantity(self, obj) -> int:
+        return int(self._inventory_availability(obj)["available_quantity"])
+
+    def get_inventory_waiting_inspection_quantity(self, obj) -> int:
+        return int(self._inventory_availability(obj)["waiting_inspection_quantity"])
 
 
 class OrderSummarySerializer(serializers.ModelSerializer):

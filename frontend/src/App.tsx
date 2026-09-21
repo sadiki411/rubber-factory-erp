@@ -17,6 +17,7 @@ const ProductSpecificationsPage = lazy(() => import('./pages/ProductSpecificatio
 const QualityPage = lazy(() => import('./pages/QualityPage').then((module) => ({ default: module.QualityPage })))
 const RackConfigPage = lazy(() => import('./pages/RackConfigPage').then((module) => ({ default: module.RackConfigPage })))
 const RacksPage = lazy(() => import('./pages/RacksPage').then((module) => ({ default: module.RacksPage })))
+const InventoryPage = lazy(() => import('./pages/InventoryPage').then((module) => ({ default: module.InventoryPage })))
 
 export function App() {
   const queryClient = useQueryClient()
@@ -67,6 +68,7 @@ export function App() {
           <Route path="molds" element={<MoldsPage />} />
           <Route path="molds/:id" element={<MoldDetailPage />} />
           <Route path="racks" element={<RacksPage />} />
+          <Route path="inventory" element={<InventoryPage />} />
           <Route path="rack-config" element={<RackConfigPage />} />
           <Route path="imports" element={<ImportPage />} />
           <Route path="404" element={<Result status="404" title="页面不存在" extra={<Button type="primary" href="/">返回工作台</Button>} />} />

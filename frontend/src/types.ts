@@ -6,6 +6,115 @@ export interface User {
   display_name?: string
 }
 
+export type InventoryQualityStatus = 'WAITING' | 'PASSED' | 'FAILED' | 'HOLD'
+export type InventoryContainerType = 'BAG' | 'BASKET'
+
+export interface InventoryProduct {
+  id: number
+  product_code: string
+  product_name: string
+  specification: string
+  material: string
+  unit_weight_g?: string | number | null
+  product_specification?: number | null
+  is_active: boolean
+  notes?: string
+}
+
+export interface InventoryContainer {
+  id: number
+  container_code: string
+  container_type: InventoryContainerType
+  location?: number | null
+  location_code?: string | null
+  bag_count: number
+  pieces_per_bag?: number | null
+  quantity: number
+  status: 'ACTIVE' | 'EMPTY' | 'CLOSED'
+  batch: {
+    id: number
+    batch_no: string
+    quality_status: InventoryQualityStatus
+    received_on: string
+    source_note?: string
+    product: InventoryProduct
+    inspector?: number | null
+    inspected_on?: string | null
+  }
+}
+
+export interface InventoryLocation {
+  id: number
+  code: string
+  rack_code: string
+  rack_type: 'LARGE' | 'SMALL' | 'FRIDGE'
+  level_no?: number | null
+  position_no?: number | null
+  label: string
+  is_active: boolean
+  allows_basket: boolean
+  allows_bag: boolean
+  container?: {
+    id: number
+    container_code: string
+    container_type: InventoryContainerType
+    batch_no: string
+    product_id: number
+    product_name: string
+    product_code: string
+    specification: string
+    material: string
+    quantity: number
+    quality_status: InventoryQualityStatus
+    bag_count: number
+    pieces_per_bag?: number | null
+    inspector_name?: string
+  } | null
+}
+
+export interface InventorySummary {
+  total_quantity: number
+  available_quantity: number
+  waiting_inspection_quantity: number
+  active_containers: number
+  occupied_locations: number
+  location_count: number
+}
+
+export interface InventoryAvailability {
+  total_quantity: number
+  available_quantity: number
+  waiting_inspection_quantity: number
+  locations: Array<{
+    location: string
+    container_code: string
+    quantity: number
+    quality_status: InventoryQualityStatus
+    batch_no: string
+  }>
+}
+
+export interface MaterialRemainder {
+  id: number
+  material: string
+  weight_kg: string | number
+  remaining_weight_kg: string | number
+  stored_on: string
+  fridge_code: string
+  note?: string
+  created_by_name?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface MaterialRemainderUse {
+  id: number
+  remainder: number
+  weight_kg: string | number
+  note?: string
+  created_at?: string
+}
+
 export interface SessionResponse {
   authenticated: boolean
   user?: User
@@ -266,6 +375,9 @@ export interface Order {
   production_remaining_quantity?: number
   production_target_reached?: boolean
   production_run_count?: number
+  inventory_total_quantity?: number
+  inventory_available_quantity?: number
+  inventory_waiting_inspection_quantity?: number
   shipment_date?: string
   shipped_quantity?: string
   weighted_shipped_quantity?: number

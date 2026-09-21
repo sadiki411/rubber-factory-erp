@@ -196,6 +196,53 @@ button, input, textarea, select { font: inherit; }
 .legend-dot.highlighted { background: #fff0b8; border: 2px solid #f0a91e; }
 @keyframes pulse-target { 50% { box-shadow: inset 0 0 0 4px #f0a91e, 0 0 0 4px rgba(240,169,30,.18); } }
 
+.inventory-page .page-title-row { align-items: flex-start; }
+.inventory-stats { margin-bottom: 16px; }
+.inventory-stats .ant-card-body { padding: 15px 20px; }
+.inventory-map-card, .inventory-table-card { margin-bottom: 16px; }
+.inventory-map-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 14px; }
+.inventory-rack-card { height: 100%; }
+.inventory-rack-card .ant-card-head { min-height: 44px; }
+.inventory-rack-card .ant-card-body { padding: 10px; }
+.inventory-location-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; }
+.inventory-location-tile { min-height: 112px; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 4px; padding: 9px; border: 1px solid #dce8e4; border-radius: 8px; background: #fbfdfc; overflow: hidden; }
+.inventory-location-tile.occupied { background: #e9f6ef; border-color: #b9decb; }
+.inventory-location-tile.waiting { background: #fff8e8; border-color: #f0d18d; }
+.inventory-location-tile.empty { color: #91a19c; }
+.inventory-location-tile strong, .inventory-location-tile span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inventory-location-tile strong { color: #35655a; font-size: 12px; }
+.inventory-location-tile span { font-size: 12px; }
+.inventory-tile-quantity { font-weight: 700; color: #125d4c; }
+.inventory-label-sheet { display: none; }
+.inventory-label { padding: 5mm; display: flex; flex-direction: column; justify-content: center; gap: 3mm; border: 0.3mm solid #222; break-inside: avoid; }
+.inventory-label-sheet.label-100x50 .inventory-label { width: 100mm; height: 50mm; }
+.inventory-label-sheet.label-70x30 .inventory-label { width: 70mm; height: 30mm; }
+.inventory-label-sheet.label-50x30 .inventory-label { width: 50mm; height: 30mm; }
+.inventory-label strong { font-size: 14pt; font-weight: 500; }
+.inventory-label b { font-size: 26pt; letter-spacing: 1px; }
+
+@media (max-width: 900px) {
+  .inventory-location-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  .inventory-location-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .inventory-page .page-title-row { display: block; }
+  .inventory-page .page-title-extra { margin-top: 12px; }
+}
+
+@media print {
+  body { background: #fff; }
+  .app-sider, .app-header, .inventory-page > *:not(.inventory-label-sheet), .inventory-actions { display: none !important; }
+  .app-sider + .ant-layout { margin-left: 0 !important; }
+  .inventory-page { display: block; padding: 0; width: auto; }
+  .inventory-label-sheet { display: grid !important; gap: 4mm; padding: 4mm; }
+  .inventory-label-sheet.label-100x50 { grid-template-columns: repeat(2, 100mm); }
+  .inventory-label-sheet.label-70x30 { grid-template-columns: repeat(2, 70mm); }
+  .inventory-label-sheet.label-50x30 { grid-template-columns: repeat(3, 50mm); }
+  .inventory-label { page-break-inside: avoid; }
+}
+
 .panel-actions { display: flex; justify-content: flex-end; margin: -2px 0 12px; }
 .master-data-card .ant-tabs-nav { margin-bottom: 8px; }
 .config-card .ant-alert { margin-bottom: 18px; }

@@ -6,6 +6,13 @@ import type {
   BusinessImportHistorySummary,
   BusinessImportPreview,
   ImportPreview,
+  InventoryAvailability,
+  InventoryContainer,
+  InventoryLocation,
+  InventoryProduct,
+  InventorySummary,
+  MaterialRemainder,
+  MaterialRemainderUse,
   Machine,
   MaterialReceipt,
   ManualFinancialEntry,
@@ -327,6 +334,32 @@ export const productSpecificationApi = {
   update: (id: number, body: Partial<ProductSpecification> | FormData) => apiFetch<ProductSpecification>(`/api/orders/product-specifications/${id}/`, {
     method: 'PATCH', body: body instanceof FormData ? body : JSON.stringify(body),
   }),
+}
+
+export const inventoryApi = {
+  summary: () => apiFetch<InventorySummary>('/api/inventory/summary/'),
+  locations: (filters: { rack?: string; active?: boolean } = {}) =>
+    apiFetch<ApiList<InventoryLocation> | InventoryLocation[]>(`/api/inventory/locations/${queryString(filters)}`),
+  bootstrap: () => apiFetch<{ created: number; locations: number }>('/api/inventory/locations/bootstrap/', { method: 'POST', body: JSON.stringify({}) }),
+  products: (filters: { q?: string; page_size?: number } = {}) =>
+    apiFetch<ApiList<InventoryProduct> | InventoryProduct[]>(`/api/inventory/products/${queryString(filters)}`),
+  containers: (filters: { active?: boolean; quality_status?: string } = {}) =>
+    apiFetch<ApiList<InventoryContainer> | InventoryContainer[]>(`/api/inventory/containers/${queryString(filters)}`),
+  receipt: (body: Record<string, unknown>) =>
+    apiFetch<InventoryContainer>('/api/inventory/receipts/', { method: 'POST', body: JSON.stringify(body) }),
+  setQuality: (id: number, body: Record<string, unknown>) =>
+    apiFetch<InventoryContainer>(`/api/inventory/containers/${id}/set-quality/`, { method: 'POST', body: JSON.stringify(body) }),
+  moveContainer: (id: number, body: Record<string, unknown>) =>
+    apiFetch<InventoryContainer>(`/api/inventory/containers/${id}/move/`, { method: 'POST', body: JSON.stringify(body) }),
+  outbound: (body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>('/api/inventory/outbounds/', { method: 'POST', body: JSON.stringify(body) }),
+  availability: (filters: { product_specification_id?: number; product_code?: string; specification?: string; material?: string }) =>
+    apiFetch<InventoryAvailability>(`/api/inventory/availability/${queryString(filters)}`),
+  materialRemainders: () => apiFetch<ApiList<MaterialRemainder> | MaterialRemainder[]>('/api/inventory/material-remainders/'),
+  createMaterialRemainder: (body: Record<string, unknown>) =>
+    apiFetch<MaterialRemainder>('/api/inventory/material-remainders/', { method: 'POST', body: JSON.stringify(body) }),
+  useMaterialRemainder: (id: number, body: Record<string, unknown>) =>
+    apiFetch<MaterialRemainderUse>(`/api/inventory/material-remainders/${id}/use/`, { method: 'POST', body: JSON.stringify(body) }),
 }
 
 export interface OrderFilters {
