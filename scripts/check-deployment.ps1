@@ -110,6 +110,10 @@ foreach ($requiredCopy in @(
     'COPY backend/production/migrations/*.py /app/backend/production/migrations/',
     'COPY backend/quality/*.py /app/backend/quality/',
     'COPY backend/quality/migrations/*.py /app/backend/quality/migrations/',
+    'COPY backend/inventory/*.py /app/backend/inventory/',
+    'COPY backend/inventory/migrations/*.py /app/backend/inventory/migrations/',
+    'COPY backend/inventory/management/*.py /app/backend/inventory/management/',
+    'COPY backend/inventory/management/commands/*.py /app/backend/inventory/management/commands/',
     'COPY backend/analytics/*.py /app/backend/analytics/',
     'COPY backend/analytics/migrations/*.py /app/backend/analytics/migrations/'
 )) {
