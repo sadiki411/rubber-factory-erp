@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Max
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
@@ -783,6 +784,30 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                         {"order_change_reason": "修改生产任务关联订单时必须填写修改原因。"}
                     )
 
+        # A manual ledger task does not occupy a live machine, so the same
+        # machine/order can legitimately be recorded again after a counter
+        # reset or an urgent-order change.  ``segment_no`` has a model default
+        # of 1, which used to make the second record collide with the database
+        # uniqueness constraint.  Allocate the next segment only when the
+        # caller did not explicitly choose one; explicit values keep their
+        # normal duplicate validation.
+        if (
+            instance is None
+            and attrs.get("is_ledger_only", False)
+            and "segment_no" not in self.initial_data
+        ):
+            station = attrs.get("station")
+            order_no = str(attrs.get("order_no") or "").strip()
+            if station is not None and order_no:
+                latest_segment = (
+                    ProductionRun.objects.filter(
+                        station=station,
+                        order_no=order_no,
+                    ).aggregate(value=Max("segment_no"))["value"]
+                    or 0
+                )
+                attrs["segment_no"] = int(latest_segment) + 1
+
         if instance:
             requested_status = attrs.get("status", instance.status)
             allowed_status_changes = {
@@ -1139,6 +1164,18 @@ class ProductionRunSerializer(serializers.ModelSerializer):
                     instance.station = ProductionStation.objects.select_for_update().get(
                         pk=instance.station_id
                     )
+                    if (
+                        instance.is_ledger_only
+                        and "segment_no" not in self.initial_data
+                    ):
+                        latest_segment = (
+                            ProductionRun.objects.filter(
+                                station=instance.station,
+                                order_no=instance.order_no,
+                            ).aggregate(value=Max("segment_no"))["value"]
+                            or 0
+                        )
+                        instance.segment_no = int(latest_segment) + 1
                 if instance.mold_id:
                     locked_mold = (
                         MoldAsset.objects.select_for_update()

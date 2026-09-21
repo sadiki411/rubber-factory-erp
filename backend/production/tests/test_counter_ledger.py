@@ -258,6 +258,32 @@ class ProductionCounterLedgerApiTests(ProductionTestMixin, TestCase):
         self.assertEqual(next_log.json()["counter_segment"], 2)
         self.assertEqual(next_log.json()["produced_mold_count"], 30)
 
+    def test_reusing_machine_and_order_for_new_ledger_task_gets_next_production_segment(self):
+        station = ProductionStation.objects.get(code="3")
+        first = self.create_task(station_id=station.pk)
+        self.add_counter(first["id"], 200, operator="张三")
+        reset = self.client.post(
+            f"/api/production/runs/{first['id']}/reset-counter/",
+            {"note": "切换急单后机台计数清零"},
+            format="json",
+        )
+        self.assertEqual(reset.status_code, 200, reset.content)
+
+        second = self.client.post(
+            "/api/production/runs/",
+            {
+                "order_id": self.order.pk,
+                "station_id": station.pk,
+                "cavities": 10,
+                "estimated_defect_mode": "RATE",
+                "estimated_defect_rate": "8.00",
+                "is_ledger_only": True,
+            },
+            format="json",
+        )
+        self.assertEqual(second.status_code, 201, second.content)
+        self.assertEqual(second.json()["segment_no"], 2)
+
     def test_cancel_preserves_audit_and_recalculates_next_reading(self):
         run = self.create_task()
         first = self.add_counter(run["id"], 100, operator="张三").json()
