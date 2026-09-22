@@ -6,8 +6,8 @@ import java.util.Locale;
 
 /** Keeps the WebView and authenticated downloads on the ERP HTTPS origin. */
 public final class UrlPolicy {
-    public static final String APP_URL = "https://erp.qvgro.com/";
-    public static final String TRUSTED_HOST = "erp.qvgro.com";
+    public static final String APP_URL = "https://erp.qfylagent.org/";
+    public static final String TRUSTED_HOST = "erp.qfylagent.org";
 
     private UrlPolicy() {
     }

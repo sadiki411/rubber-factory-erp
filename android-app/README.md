@@ -1,12 +1,12 @@
 # 东橡生产助手（Android）
 
-这是橡胶工厂 ERP 的原生 Android WebView 客户端，应用名称为“东橡生产助手”，包名为 `com.qvgro.erp`。它固定加载 `https://erp.qvgro.com/`，适配 Android 8.0 及以上系统（`minSdk 26`），并以 Android 16（`targetSdk 36`）为目标版本。
+这是橡胶工厂 ERP 的原生 Android WebView 客户端，应用名称为“东橡生产助手”，包名为 `com.qvgro.erp`。它固定加载 `https://erp.qfylagent.org/`，适配 Android 8.0 及以上系统（`minSdk 26`），并以 Android 16（`targetSdk 36`）为目标版本。
 
 ## 更新方式
 
-- ERP 页面、功能和数据仍由服务器提供。网站部署新版本后，App下次打开或刷新时会直接使用新页面，不需要重新安装APK；因此网页和 App 的业务功能以同一次服务器发布为准。
+- ERP 页面、功能和数据仍由服务器提供。网站部署新版本后，App下次打开或刷新时会直接使用新页面；但服务器域名变更会改变原生入口和安全白名单，因此本次需要安装新版APK。
 - 每次业务功能更新都必须同时通过网站前端、后端（包含 `inventory`）和 Android WebView 的检查，发布流程不能只验证网页。
-- 只有原生外壳本身发生变化（例如上传、下载、系统权限或启动图标）时才需要发布新APK；原生外壳变化必须提高 `versionCode` 并发布签名 APK。
+- 原生外壳本身发生变化（包括入口域名、上传下载、安全白名单、系统权限或启动图标）时需要发布新APK；原生外壳变化必须提高 `versionCode` 并发布签名 APK。
 - 手机端不是把桌面网页缩小显示：网站使用移动 viewport、抽屉导航、触控尺寸和移动断点，库存页面的操作布局也必须在手机宽度下验收。
 - 后续APK必须继续使用相同包名和同一份签名密钥，才能在手机上覆盖升级。
 - 每次原生APK升级还必须提高 `versionCode`；GitHub Actions会自动使用递增的运行编号，本地构建时需手动传入比已安装版本更大的数值。
@@ -14,9 +14,9 @@
 
 ## 安全边界
 
-- WebView只加载 `https://erp.qvgro.com:443` 的页面和网络资源，禁止HTTP降级、混合内容、SSL错误绕过和第三方Cookie。
+- WebView只加载 `https://erp.qfylagent.org:443` 的页面和网络资源，禁止HTTP降级、混合内容、SSL错误绕过和第三方Cookie。
 - 登录继续使用网站现有的同域Session Cookie和CSRF保护，没有把账号密码写入APK。
-- 支持Excel/图片文件选择、拍照上传、流程卡二维码实时扫描，以及带登录Cookie的同域文件下载。扫码相机权限只会授予受信任的 `https://erp.qvgro.com` 页面；相机或识别内核不可用时可手动输入流程卡号。
+- 支持Excel/图片文件选择、拍照上传、流程卡二维码实时扫描，以及带登录Cookie的同域文件下载。扫码相机权限只会授予受信任的 `https://erp.qfylagent.org` 页面；相机或识别内核不可用时可手动输入流程卡号。
 - 没有JavaScript原生桥，也不会把ERP登录Cookie发送到其他域名。
 - 断网时只允许重试，不提供离线写入，避免产生无法同步的数据。
 
@@ -33,8 +33,8 @@
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\android-app\build-release.ps1 `
-  -VersionName 1.0.0 `
-  -VersionCode 1
+  -VersionName 1.0.1 `
+  -VersionCode 2
 ```
 
 脚本会先执行单元测试和Release Lint，再生成签名APK及SHA-256校验文件到 `outputs\android`。签名密钥、密码、APK和构建目录均已被 `.gitignore` 排除。

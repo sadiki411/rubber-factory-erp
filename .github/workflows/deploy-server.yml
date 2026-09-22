@@ -112,18 +112,39 @@ jobs:
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
           target="$DEPLOY_USER@$DEPLOY_HOST"
 
-          "${ssh_cmd[@]}" "$target" "mkdir -p '$DEPLOY_PATH/runtime/backups'"
           # The remote entrypoint also protects migrations, but this explicit
           # online backup is made before replacing compose.yaml whenever the
-          # existing backend is running.
-          "${ssh_cmd[@]}" "$target" "cd '$DEPLOY_PATH' && if docker compose ps --status running --services 2>/dev/null | grep -qx backend; then docker compose exec -T backend python manage.py backup_erp; fi"
+          # existing backend is running. Support both the Compose v2 plugin
+          # and the Compose v1 binary still used by older production hosts.
+          "${ssh_cmd[@]}" "$target" "DEPLOY_PATH='$DEPLOY_PATH' bash -s" <<'REMOTE_BACKUP'
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          compose_cmd() {
+            if docker compose version >/dev/null 2>&1; then
+              docker compose "$@"
+            else
+              docker-compose "$@"
+            fi
+          }
+          mkdir -p "$DEPLOY_PATH/runtime/backups"
+          if compose_cmd ps --status running --services 2>/dev/null | grep -qx backend; then
+            compose_cmd exec -T backend python manage.py backup_erp
+          fi
+          REMOTE_BACKUP
           "${scp_cmd[@]}" compose.yaml "$target:$DEPLOY_PATH/.compose.yaml.next"
 
           "${ssh_cmd[@]}" "$target" "DEPLOY_PATH='$DEPLOY_PATH' RELEASE_SHA='$GITHUB_SHA' bash -s" <<'REMOTE_SCRIPT'
           set -euo pipefail
           cd "$DEPLOY_PATH"
+          compose_cmd() {
+            if docker compose version >/dev/null 2>&1; then
+              docker compose "$@"
+            else
+              docker-compose "$@"
+            fi
+          }
           test -s .compose.yaml.next
-          docker compose -f .compose.yaml.next config >/dev/null
+          compose_cmd -f .compose.yaml.next config >/dev/null
           if [ -f compose.yaml ]; then
             cp compose.yaml "runtime/backups/compose-before-${RELEASE_SHA}.yaml"
           fi
@@ -142,7 +163,39 @@ jobs:
           ssh -i "$HOME/.ssh/erp-deploy-key" -p "$DEPLOY_PORT" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
-            "$DEPLOY_USER@$DEPLOY_HOST" "cd '$DEPLOY_PATH' && docker compose pull && docker compose up -d --remove-orphans --wait && docker compose ps"
+            "$DEPLOY_USER@$DEPLOY_HOST" "DEPLOY_PATH='$DEPLOY_PATH' bash -s" <<'REMOTE_DEPLOY'
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          compose_cmd() {
+            if docker compose version >/dev/null 2>&1; then
+              docker compose "$@"
+            else
+              docker-compose "$@"
+            fi
+          }
+          compose_cmd pull
+          compose_cmd up -d --remove-orphans
+          for service in backend web; do
+            ready=false
+            for attempt in $(seq 1 60); do
+              container_id="$(compose_cmd ps -q "$service" | head -n 1)"
+              if [ -n "$container_id" ]; then
+                health="$(docker inspect --format '{{.State.Health.Status}}' "$container_id" 2>/dev/null || true)"
+                if [ "$health" = healthy ]; then
+                  ready=true
+                  break
+                fi
+              fi
+              sleep 2
+            done
+            if [ "$ready" != true ]; then
+              compose_cmd ps
+              compose_cmd logs --tail=80 "$service"
+              exit 1
+            fi
+          done
+          compose_cmd ps
+          REMOTE_DEPLOY
 
       - name: Remove temporary SSH material
         if: always()

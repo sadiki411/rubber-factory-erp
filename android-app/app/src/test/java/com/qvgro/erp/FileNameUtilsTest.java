@@ -10,7 +10,7 @@ public class FileNameUtilsTest {
     @Test
     public void decodesUtf8ContentDisposition() {
         String value = FileNameUtils.choose(
-            "https://erp.qvgro.com/api/imports/template/",
+            "https://erp.qfylagent.org/api/imports/template/",
             "attachment; filename*=UTF-8''%E6%A8%A1%E5%85%B7%E5%AF%BC%E5%85%A5%E6%A8%A1%E6%9D%BF.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         );
@@ -20,7 +20,7 @@ public class FileNameUtilsTest {
     @Test
     public void removesPathAndControlCharacters() {
         String value = FileNameUtils.choose(
-            "https://erp.qvgro.com/download",
+            "https://erp.qfylagent.org/download",
             "attachment; filename=\"../../bad:\\name\r\n.xlsx\"",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         );
@@ -36,7 +36,7 @@ public class FileNameUtilsTest {
         assertEquals(
             "report.xlsx",
             FileNameUtils.choose(
-                "https://erp.qvgro.com/media/report.xlsx?download=1",
+            "https://erp.qfylagent.org/media/report.xlsx?download=1",
                 null,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )

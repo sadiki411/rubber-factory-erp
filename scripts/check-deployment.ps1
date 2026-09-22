@@ -76,8 +76,8 @@ for name in {"backend", "web", "backup"}:
         and "ghcr.io/sadiki411/rubber-factory-erp-web:latest" in image
     ):
         raise SystemExit("compose.yaml service web needs an overridable default web image")
-    if service.get("pull_policy") != "always":
-        raise SystemExit(f"compose.yaml service {name} must always pull its image")
+    if "pull_policy" in service:
+        raise SystemExit(f"compose.yaml service {name} must omit pull_policy for Docker Compose 1.29 compatibility")
     if "build" in service:
         raise SystemExit(f"compose.yaml service {name} must not build from source")
 watchtower = services["watchtower"]
@@ -169,8 +169,11 @@ foreach ($requiredText in @(
     'DEPLOY_SSH_KEY',
     'DEPLOY_KNOWN_HOSTS',
     'backup_erp',
-    'docker compose pull',
-    'docker compose up -d --remove-orphans --wait',
+    'compose_cmd',
+    'docker compose',
+    'docker-compose',
+    'compose_cmd pull',
+    'compose_cmd up -d --remove-orphans',
     'StrictHostKeyChecking=yes'
 )) {
     if ($serverDeployWorkflow -notmatch [regex]::Escape($requiredText)) {

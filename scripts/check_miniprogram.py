@@ -131,8 +131,8 @@ if not match:
     fail("utils/config.js must define a literal ERP_BASE_URL")
 erp_url_text = match.group(1)
 erp_url = urlparse(erp_url_text)
-if erp_url_text != "https://erp.qvgro.com" or erp_url.netloc != "erp.qvgro.com":
-    fail("ERP_BASE_URL must be exactly https://erp.qvgro.com")
+if erp_url_text != "https://erp.qfylagent.org" or erp_url.netloc != "erp.qfylagent.org":
+    fail("ERP_BASE_URL must be exactly https://erp.qfylagent.org")
 module_paths = re.findall(r"\{\s*path:\s*['\"]([^'\"]+)['\"]", config_text)
 expected_module_paths = [
     "/",

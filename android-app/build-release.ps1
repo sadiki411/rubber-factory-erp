@@ -1,10 +1,10 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$')]
-    [string]$VersionName = '1.0.0',
+    [string]$VersionName = '1.0.1',
 
     [ValidateRange(1, 2100000000)]
-    [int]$VersionCode = 1,
+    [int]$VersionCode = 2,
 
     [string]$CredentialFile = 'D:\develop\android-signing\dongxiang-production-assistant-credentials.json',
 

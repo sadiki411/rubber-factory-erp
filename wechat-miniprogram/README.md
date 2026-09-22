@@ -1,6 +1,6 @@
 # 橡胶工厂 ERP 微信小程序
 
-本目录是一个不重复保存业务数据的微信小程序入口。原生首页提供模具、货架、订单、生产、品检和绩效快捷入口；进入功能后由微信 `web-view` 打开 `https://erp.qvgro.com` 的移动端页面，因此网站和小程序始终使用同一套 Django API、SQLite 数据库与共享账号。
+本目录是一个不重复保存业务数据的微信小程序入口。原生首页提供模具、货架、订单、生产、品检和绩效快捷入口；进入功能后由微信 `web-view` 打开 `https://erp.qfylagent.org` 的移动端页面，因此网站和小程序始终使用同一套 Django API、SQLite 数据库与共享账号。
 
 ## 品牌头像
 
@@ -16,9 +16,9 @@ D:\develop\venvs\erp\Scripts\python.exe scripts\generate_app_avatar.py
 
 1. 使用非个人主体的小程序账号，并取得该小程序的真实 AppID。个人类型小程序和小游戏不支持 `web-view`。
 2. 在微信公众平台把开发微信加入项目成员并授予开发权限；提交审核和正式发布还需要管理员或具备“开发管理”权限的成员操作。
-3. 确认 `qvgro.com` 已完成 ICP 备案，`https://erp.qvgro.com` 使用有效 HTTPS 证书；新完成备案的域名按平台规则可能需要等待24小时后才能配置。
-4. 在“开发管理 → 开发设置 → 业务域名”添加 `https://erp.qvgro.com`。
-5. 如果微信要求放置域名校验文件，下载平台提供的原始文件，不要修改文件名或内容，将它放到 `frontend/public/`，重新构建并部署 Web 镜像；确认 `https://erp.qvgro.com/校验文件名.txt` 返回原始纯文本后再完成后台校验。
+3. 确认 `qfylagent.org` 已完成 ICP 备案，`https://erp.qfylagent.org` 使用有效 HTTPS 证书；新完成备案的域名按平台规则可能需要等待24小时后才能配置。
+4. 在“开发管理 → 开发设置 → 业务域名”添加 `https://erp.qfylagent.org`。
+5. 如果微信要求放置域名校验文件，下载平台提供的原始文件，不要修改文件名或内容，将它放到 `frontend/public/`，重新构建并部署 Web 镜像；确认 `https://erp.qfylagent.org/校验文件名.txt` 返回原始纯文本后再完成后台校验。
 6. 提交审核前按微信公众平台提示补齐小程序名称、图标、服务类目、版本截图、隐私保护指引及用户协议等资料；具体必填项以提交时后台显示为准。
 
 微信官方说明：
@@ -40,7 +40,7 @@ D:\develop\venvs\erp\Scripts\python.exe scripts\generate_app_avatar.py
 
 ## 安全边界
 
-- 小程序原生入口只生成固定的 `erp.qvgro.com` 域名和允许路径，不能通过入口参数跳转到任意网址；进入网页后的链接、重定向和iframe仍受微信业务域名及网站自身策略限制。
+- 小程序原生入口只生成固定的 `erp.qfylagent.org` 域名和允许路径，不能通过入口参数跳转到任意网址；进入网页后的链接、重定向和iframe仍受微信业务域名及网站自身策略限制。
 - 不在URL、小程序代码或Git仓库中保存ERP账号、密码、Django Session、CSRF值、AppSecret或上传私钥。
 - 微信身份不会自动等同于ERP身份；一期仍使用ERP共享账号登录。
 - 分享入口默认关闭，避免把内部ERP页面作为小程序卡片转发。

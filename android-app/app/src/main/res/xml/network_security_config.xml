@@ -6,6 +6,6 @@
         </trust-anchors>
     </base-config>
     <domain-config cleartextTrafficPermitted="false">
-        <domain includeSubdomains="false">erp.qvgro.com</domain>
+        <domain includeSubdomains="false">erp.qfylagent.org</domain>
     </domain-config>
 </network-security-config>

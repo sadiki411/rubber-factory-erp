@@ -84,13 +84,13 @@ echo "$GHCR_TOKEN" | docker login ghcr.io -u <GitHub账号> --password-stdin
 
 ## Android应用
 
-`android-app/` 提供面向OPPO等安卓手机的“东橡生产助手”APK。App直接连接 `https://erp.qvgro.com/`，网页部署后会自动使用最新功能；只有Android原生外壳变化时才需要重新发布APK。本机构建、正式签名、GitHub Release和ColorOS安装说明见 [android-app/README.md](android-app/README.md)。
+`android-app/` 提供面向OPPO等安卓手机的“东橡生产助手”APK。App直接连接 `https://erp.qfylagent.org/`，网页部署后会自动使用最新功能；本次服务器域名变更涉及Android原生入口和安全白名单，需要重新发布APK。本机构建、正式签名、GitHub Release和ColorOS安装说明见 [android-app/README.md](android-app/README.md)。
 
 ## 微信小程序
 
-`wechat-miniprogram/` 提供独立的微信小程序工程。小程序使用原生快捷首页展示工作台、模具、货架、订单、生产、品检、数据分析和产品规格入口，再通过固定白名单打开 `https://erp.qvgro.com` 的移动端页面；它不复制数据库，也不会在代码或URL中保存ERP密码和Session。
+`wechat-miniprogram/` 提供独立的微信小程序工程。小程序使用原生快捷首页展示工作台、模具、货架、订单、生产、品检、数据分析和产品规格入口，再通过固定白名单打开 `https://erp.qfylagent.org` 的移动端页面；它不复制数据库，也不会在代码或URL中保存ERP密码和Session。
 
-正式发布需要非个人主体小程序的真实 AppID、开发者权限、`qvgro.com` ICP备案，以及在微信公众平台把 `https://erp.qvgro.com` 配置为业务域名。仓库保留 `touristappid` 占位值，不提交AppSecret或上传私钥。完整配置与审核步骤见 [微信小程序说明](wechat-miniprogram/README.md)。
+正式发布需要非个人主体小程序的真实 AppID、开发者权限、`qfylagent.org` ICP备案，以及在微信公众平台把 `https://erp.qfylagent.org` 配置为业务域名。仓库保留 `touristappid` 占位值，不提交AppSecret或上传私钥。完整配置与审核步骤见 [微信小程序说明](wechat-miniprogram/README.md)。
 
 静态检查：
 
@@ -282,7 +282,7 @@ D:\develop\node22\npm.cmd run build
 - 每次推送到 `main` 后，容器工作流会先运行后端/前端/Compose 检查，再构建并推送 GHCR 镜像。
 - `.github/workflows/deploy-server.yml` 会在镜像工作流成功后，使用 SSH 连接生产服务器；连接成功时先执行在线备份，再同步最新 `compose.yaml`、拉取镜像、启动服务并等待健康检查。
 - 服务器部署工作流是可选的。需要在 GitHub 仓库 `Settings → Secrets and variables → Actions` 设置：`DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_PATH`、`DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS`；可选 `DEPLOY_PORT`（默认22）。未设置时工作流会明确跳过，不会误报已部署。
-- Android 应用和微信小程序的网页入口都固定加载 `https://erp.qvgro.com`。网站/API镜像更新并在服务器重启后，重新打开或刷新即可使用新版本，不需要重新安装 APK 或重新上传小程序网页页面。
+- Android 应用和微信小程序的网页入口都固定加载 `https://erp.qfylagent.org`。网站/API镜像更新并在服务器重启后，重新打开或刷新即可使用新版本；本次域名迁移后，Android 必须安装同签名的新 APK，小程序则需要同步更新业务域名和原生入口配置。
 - Android 原生代码、权限、图标或小程序原生首页变化不能通过网页部署替代。Android 需要同一签名的新版 APK；小程序原生代码可由 `.github/workflows/miniprogram-upload.yml` 上传开发版，但仍需配置 `WECHAT_MINIPROGRAM_APPID` 和 `WECHAT_MINIPROGRAM_PRIVATE_KEY_BASE64`，并由微信后台人工审核、发布。
 - 小程序上传密钥只存在 GitHub Runner 临时目录，不写入仓库、构建产物或日志。微信平台的 IP 白名单、业务域名、备案和审核要求仍由管理员维护。
 

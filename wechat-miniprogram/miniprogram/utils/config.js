@@ -1,4 +1,4 @@
-const ERP_BASE_URL = 'https://erp.qvgro.com'
+const ERP_BASE_URL = 'https://erp.qfylagent.org'
 
 const MODULES = Object.freeze([
   { path: '/', title: 'ERP 工作台', shortTitle: '工作台', icon: '查', description: '快速查询模具与当前状态' },

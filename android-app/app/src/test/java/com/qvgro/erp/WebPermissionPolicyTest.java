@@ -9,15 +9,15 @@ public class WebPermissionPolicyTest {
     @Test
     public void grantsOnlyCameraToTheExactErpOrigin() {
         assertTrue(WebPermissionPolicy.canGrantCamera(
-            "https://erp.qvgro.com/quality",
+            "https://erp.qfylagent.org/quality",
             new String[]{WebPermissionPolicy.VIDEO_CAPTURE}
         ));
         assertFalse(WebPermissionPolicy.canGrantCamera(
-            "https://evil.erp.qvgro.com/",
+            "https://evil.erp.qfylagent.org/",
             new String[]{WebPermissionPolicy.VIDEO_CAPTURE}
         ));
         assertFalse(WebPermissionPolicy.canGrantCamera(
-            "http://erp.qvgro.com/",
+            "http://erp.qfylagent.org/",
             new String[]{WebPermissionPolicy.VIDEO_CAPTURE}
         ));
     }
@@ -25,13 +25,13 @@ public class WebPermissionPolicyTest {
     @Test
     public void rejectsMicrophoneAndMixedMediaRequests() {
         assertFalse(WebPermissionPolicy.canGrantCamera(
-            "https://erp.qvgro.com/",
+            "https://erp.qfylagent.org/",
             new String[]{"android.webkit.resource.AUDIO_CAPTURE"}
         ));
         assertFalse(WebPermissionPolicy.canGrantCamera(
-            "https://erp.qvgro.com/",
+            "https://erp.qfylagent.org/",
             new String[]{WebPermissionPolicy.VIDEO_CAPTURE, "android.webkit.resource.AUDIO_CAPTURE"}
         ));
-        assertFalse(WebPermissionPolicy.canGrantCamera("https://erp.qvgro.com/", null));
+        assertFalse(WebPermissionPolicy.canGrantCamera("https://erp.qfylagent.org/", null));
     }
 }
