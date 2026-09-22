@@ -540,6 +540,9 @@ export function QualityWeightShipmentDrawer({
   const selectedInspectors = Form.useWatch('inspector_ids', form) || []
   const activeBatch = loadedDraft || batch
   const activeBatchBindings = activeBatch?.process_card_bindings || []
+  const confirmedAmendment = Boolean(
+    amendConfirmed && activeBatch?.id && activeBatch.status === 'CONFIRMED',
+  )
 
   const allKnownOrders = useMemo(() => {
     const seen = new Set<number>()
@@ -874,6 +877,19 @@ export function QualityWeightShipmentDrawer({
     const requestId = shipmentCheckRequestRef.current + 1
     shipmentCheckRequestRef.current = requestId
     if (!number) {
+      setDuplicate(false)
+      setDraftMatch(undefined)
+      draftMatchRef.current = undefined
+      return false
+    }
+
+    // A confirmed amendment keeps the system-generated document number.  The
+    // current batch must never be reported as a duplicate of itself, whether
+    // this function was called by the debounced watcher or by the input blur.
+    if (
+      confirmedAmendment
+      && text(activeBatch?.shipment_no).toUpperCase() === number.toUpperCase()
+    ) {
       setDuplicate(false)
       setDraftMatch(undefined)
       draftMatchRef.current = undefined
@@ -1430,10 +1446,16 @@ export function QualityWeightShipmentDrawer({
       // Ant Design has already rendered the field-level validation message.
       return
     }
-    const shipmentNo = text(values.shipment_no)
-    const duplicateFound = shipmentNo ? await checkShipmentNumber(shipmentNo) : false
     const editingDraft = Boolean(activeBatch?.id && activeBatch.status !== 'CONFIRMED' && activeBatch.status !== 'VOID')
-    const editingConfirmed = Boolean(amendConfirmed && activeBatch?.id && activeBatch.status === 'CONFIRMED')
+    const editingConfirmed = confirmedAmendment
+    const shipmentNo = text(values.shipment_no)
+    const keepsCurrentShipmentNumber = Boolean(
+      editingConfirmed
+      && text(activeBatch?.shipment_no).toUpperCase() === shipmentNo.toUpperCase(),
+    )
+    const duplicateFound = Boolean(shipmentNo && !keepsCurrentShipmentNumber
+      ? await checkShipmentNumber(shipmentNo)
+      : false)
     const localMatch = shipmentNo
       ? localDuplicateRecord(shipmentNo, shipment, activeBatch, existingShipments, existingBatches)
       : undefined
@@ -1946,8 +1968,8 @@ export function QualityWeightShipmentDrawer({
         <Card size="small" className="quality-weight-basic-card" title="出货基本信息">
           <Row gutter={14}>
             <Col xs={24} sm={12}>
-              <Form.Item name="shipment_no" label="出货单号" extra="可留空，保存时由系统自动生成；手工填写时会自动查重。">
-                <Input allowClear placeholder="留空自动生成" onBlur={(event) => void checkShipmentNumber(event.target.value)} suffix={checkingNumber ? <Typography.Text type="secondary">查重中</Typography.Text> : undefined} />
+                <Form.Item name="shipment_no" label="出货单号" extra={confirmedAmendment ? '系统生成的出货单号属于本条记录的固定身份，修改重量时保持不变。' : '可留空，保存时由系统自动生成；手工填写时会自动查重。'}>
+                <Input allowClear disabled={confirmedAmendment} placeholder="留空自动生成" onBlur={(event) => void checkShipmentNumber(event.target.value)} suffix={checkingNumber ? <Typography.Text type="secondary">查重中</Typography.Text> : undefined} />
               </Form.Item>
             </Col>
             <Col xs={24} sm={12}>

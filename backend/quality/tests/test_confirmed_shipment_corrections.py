@@ -195,7 +195,11 @@ class ConfirmedShipmentCorrectionApiTests(QualityTestMixin, TestCase):
         )
         self.assertEqual(batch.process_card_bindings.count(), 2)
 
-        preserved = self.amend(batch, notes="只改备注，未提交卡号字段")
+        preserved = self.amend(
+            batch,
+            shipment_no=batch.shipment_no,
+            notes="只改备注，保留系统生成的原出货单号",
+        )
         self.assertEqual(preserved.status_code, 200, preserved.content)
         self.assertEqual(
             set(batch.process_card_bindings.values_list("process_card__card_no", flat=True)),

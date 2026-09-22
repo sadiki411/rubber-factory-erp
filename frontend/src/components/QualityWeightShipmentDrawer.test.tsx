@@ -972,6 +972,9 @@ describe('QualityWeightShipmentDrawer', () => {
       total_net_weight_kg: 2.5,
       process_card_bindings: [confirmed.process_card_bindings![0]],
     })
+    // Reproduce the reported server response: an unfiltered lookup would
+    // incorrectly report the batch's own system-generated number as a duplicate.
+    apiMocks.checkShipmentNo.mockResolvedValue({ exists: true, duplicate: true })
     const onSaved = vi.fn().mockResolvedValue(undefined)
     const onClose = vi.fn()
     renderDrawer(undefined, {
@@ -984,6 +987,7 @@ describe('QualityWeightShipmentDrawer', () => {
 
     expect(await screen.findByText(`纠正已确认出货 · ${confirmed.shipment_no}`)).toBeInTheDocument()
     expect(screen.getByLabelText(/出货单号/)).toHaveValue(confirmed.shipment_no)
+    expect(screen.getByLabelText(/出货单号/)).toBeDisabled()
     expect(screen.getByDisplayValue('CARD-AMEND-201')).toBeInTheDocument()
     expect(screen.getByDisplayValue('CARD-AMEND-202')).toBeInTheDocument()
     await user.click(screen.getAllByRole('button', { name: '删除本条出货' })[1])
@@ -1011,7 +1015,9 @@ describe('QualityWeightShipmentDrawer', () => {
         net_weight_kg: 2.5,
       })],
     }))
-    expect(apiMocks.checkShipmentNo).toHaveBeenCalledWith(confirmed.shipment_no, confirmed.id)
+    // The current system-generated number belongs to this batch and must not
+    // be sent through the duplicate-number guard during an amendment.
+    expect(apiMocks.checkShipmentNo).not.toHaveBeenCalledWith(confirmed.shipment_no, confirmed.id)
     expect(onSaved).toHaveBeenCalledTimes(1)
     expect(onClose).toHaveBeenCalledTimes(1)
   }, 40_000)
