@@ -262,10 +262,16 @@ class ProductSpecificationSummarySerializer(serializers.ModelSerializer):
         ]
 
     def get_latest_unit_weight_g(self, obj) -> str | None:
+        cached = self.context.get("latest_product_unit_weights", {}).get(obj.pk)
+        if cached is not None:
+            return str(cached["unit_weight_g"])
         weight = _latest_product_unit_weight(obj)
         return str(weight.unit_weight_g) if weight else None
 
     def get_latest_unit_weight_measured_on(self, obj) -> str | None:
+        cached = self.context.get("latest_product_unit_weights", {}).get(obj.pk)
+        if cached is not None:
+            return cached["measured_on"].isoformat() if cached["measured_on"] else None
         weight = _latest_product_unit_weight(obj)
         return weight.measured_on.isoformat() if weight and weight.measured_on else None
 
@@ -564,14 +570,18 @@ class BusinessOrderSerializer(AuditedModelSerializer):
     def _inventory_availability(self, obj):
         cache = self.context.setdefault("_inventory_availability", {})
         if obj.pk not in cache:
-            from inventory.services import product_availability
+            supplied = self.context.get("inventory_availability_by_order")
+            if supplied is not None and obj.pk in supplied:
+                cache[obj.pk] = supplied[obj.pk]
+            else:
+                from inventory.services import product_availability
 
-            cache[obj.pk] = product_availability(
-                product_specification_id=obj.product_specification_id,
-                product_code=obj.product_code,
-                specification=obj.specification,
-                material=obj.material,
-            )
+                cache[obj.pk] = product_availability(
+                    product_specification_id=obj.product_specification_id,
+                    product_code=obj.product_code,
+                    specification=obj.specification,
+                    material=obj.material,
+                )
         return cache[obj.pk]
 
     def get_inventory_total_quantity(self, obj) -> int:

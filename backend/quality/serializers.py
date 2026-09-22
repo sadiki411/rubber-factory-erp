@@ -735,6 +735,28 @@ class ProcessCardSerializer(ValidatedModelSerializer):
         }
 
 
+class ProcessCardScanSerializer(ProcessCardSerializer):
+    """Small scan response used by phones while registering a shipment/return.
+
+    The list/detail serializer intentionally exposes tracking totals and
+    historical measurements.  A QR scan only needs identity, binding and the
+    current return state; keeping those expensive calculated fields out of the
+    response removes a number of per-scan queries and reduces mobile payloads.
+    """
+
+    class Meta:
+        model = ProcessCard
+        fields = [
+            "id", "card_no", "replaces_card_no", "replaced_by_card_no",
+            "active_card_id", "active_card_no", "unit_binding", "current_return",
+            "order_id", "source_order_no", "source_item_no",
+            "product_specification_id", "product_name_snapshot",
+            "product_code_snapshot", "specification_snapshot", "material_snapshot",
+            "quantity", "unit_weight_g", "qr_text", "status", "status_display",
+            "received_on", "notes",
+        ]
+
+
 class QualityShipmentOrderAllocationSerializer(serializers.ModelSerializer):
     order_id = serializers.IntegerField(read_only=True)
 

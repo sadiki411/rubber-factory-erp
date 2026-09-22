@@ -241,3 +241,94 @@ def product_availability(*, product_specification_id=None, product_code="", spec
                     "batch_no": batch.batch_no,
                 })
     return result
+
+
+def product_availability_by_orders(orders):
+    """Calculate inventory availability for a page of orders in one pass.
+
+    The matching rule intentionally mirrors ``product_availability``: an
+    active product linked to the specification has priority; otherwise the
+    exact non-empty product code/specification/material identity is used.
+    """
+    order_rows = list(orders)
+    if not order_rows:
+        return {}
+
+    products = list(
+        InventoryProduct.objects.filter(is_active=True).values(
+            "id", "product_specification_id", "product_code", "specification", "material"
+        )
+    )
+    by_spec = {}
+    for product in products:
+        if product["product_specification_id"]:
+            by_spec.setdefault(product["product_specification_id"], []).append(product["id"])
+
+    def identity_products(order):
+        values = (
+            str(order.product_code or "").casefold(),
+            str(order.specification or "").casefold(),
+            str(order.material or "").casefold(),
+        )
+        return [
+            product["id"]
+            for product in products
+            if (not values[0] or str(product["product_code"] or "").casefold() == values[0])
+            and (not values[1] or str(product["specification"] or "").casefold() == values[1])
+            and (not values[2] or str(product["material"] or "").casefold() == values[2])
+        ]
+
+    selected = {}
+    product_ids = set()
+    for order in order_rows:
+        product_ids_for_order = by_spec.get(order.product_specification_id) or identity_products(order)
+        selected[order.pk] = set(product_ids_for_order)
+        product_ids.update(product_ids_for_order)
+
+    totals = {
+        product_id: {
+            "total_quantity": 0,
+            "available_quantity": 0,
+            "waiting_inspection_quantity": 0,
+            "locations": [],
+        }
+        for product_id in product_ids
+    }
+    batches = InventoryBatch.objects.filter(product_id__in=product_ids).prefetch_related(
+        "containers__location"
+    )
+    for batch in batches:
+        aggregate = totals[batch.product_id]
+        for container in batch.containers.all():
+            if container.status != InventoryContainer.Status.ACTIVE:
+                continue
+            quantity = int(container.quantity or 0)
+            aggregate["total_quantity"] += quantity
+            if batch.quality_status == InventoryBatch.QualityStatus.PASSED:
+                aggregate["available_quantity"] += quantity
+            elif batch.quality_status == InventoryBatch.QualityStatus.WAITING:
+                aggregate["waiting_inspection_quantity"] += quantity
+            if container.location_id:
+                aggregate["locations"].append({
+                    "location": container.location.code,
+                    "container_code": container.container_code,
+                    "quantity": quantity,
+                    "quality_status": batch.quality_status,
+                    "batch_no": batch.batch_no,
+                })
+
+    result = {}
+    for order in order_rows:
+        value = {
+            "total_quantity": 0,
+            "available_quantity": 0,
+            "waiting_inspection_quantity": 0,
+            "locations": [],
+        }
+        for product_id in selected[order.pk]:
+            aggregate = totals[product_id]
+            for field in ("total_quantity", "available_quantity", "waiting_inspection_quantity"):
+                value[field] += aggregate[field]
+            value["locations"].extend(aggregate["locations"])
+        result[order.pk] = value
+    return result

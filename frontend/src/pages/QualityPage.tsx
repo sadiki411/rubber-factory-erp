@@ -160,6 +160,11 @@ export function QualityPage() {
   const dateTo = range[1].format('YYYY-MM-DD')
   const dueDateFrom = dueRange?.[0].format('YYYY-MM-DD')
   const dueDateTo = dueRange?.[1].format('YYYY-MM-DD')
+  const workflowTab = activeTab === 'workflow'
+  const dailyTab = activeTab === 'daily'
+  const reworksTab = activeTab === 'reworks'
+  const ordersTab = activeTab === 'orders'
+  const orderDataEnabled = workflowTab || dailyTab || ordersTab || Boolean(shipmentForm)
 
   const openShipmentForm = (shipment?: QualityShipment) => {
     setShipmentSessionKey((value) => value + 1)
@@ -174,6 +179,7 @@ export function QualityPage() {
   const summaryQuery = useQuery({
     queryKey: ['quality', 'summary', dateFrom, dateTo],
     queryFn: () => qualityApi.summary({ date_from: dateFrom, date_to: dateTo }),
+    enabled: activeTab !== 'employees',
   })
   const employeesQuery = useQuery({
     queryKey: ['quality', 'employees'],
@@ -182,6 +188,7 @@ export function QualityPage() {
   const pendingIdentityQuery = useQuery({
     queryKey: ['production', 'employee-identity-matches', 'PENDING'],
     queryFn: () => productionApi.listEmployeeIdentityMatches({ status: 'PENDING' }),
+    enabled: activeTab === 'employees',
   })
   const resolveIdentityMutation = useMutation({
     mutationFn: ({ matchId, employeeId }: { matchId: number; employeeId?: number | null }) => productionApi.resolveEmployeeIdentityMatch(matchId, employeeId),
@@ -199,6 +206,7 @@ export function QualityPage() {
   const ordersQuery = useQuery({
     queryKey: ['orders', 'quality-options'],
     queryFn: async () => toList(await orderApi.list({ page_size: 1000 })),
+    enabled: orderDataEnabled,
   })
   const shipmentLedgerQuery = useQuery({
     queryKey: ['quality', 'shipment-ledger', { dateFrom, dateTo, dueDateFrom, dueDateTo, query, shipmentStatus, orderStatus, deliveryStatus, inspectorFilter, ordering }],
@@ -215,24 +223,29 @@ export function QualityPage() {
       ordering,
       page_size: 1000,
     })),
+    enabled: dailyTab,
   })
   const shipmentOptionsQuery = useQuery({
     queryKey: ['quality', 'shipments', 'options'],
     queryFn: async () => toList(await qualityApi.listShipments({ page_size: 1000 })),
+    enabled: workflowTab || dailyTab || reworksTab || Boolean(shipmentForm),
   })
   const reworksQuery = useQuery({
     queryKey: ['quality', 'reworks', { dateFrom, dateTo, query }],
     queryFn: async () => toList(await qualityApi.listReworks({ q: query, date_from: dateFrom, date_to: dateTo, page_size: 1000 })),
+    enabled: reworksTab,
   })
   const processCardsQuery = useQuery({
     queryKey: ['quality', 'process-cards', query],
     queryFn: async () => toList(await qualityWorkflowApi.listProcessCards({ q: query, page_size: 1000 })),
     retry: false,
+    enabled: workflowTab || Boolean(replacementOpen),
   })
   const unitWeightsQuery = useQuery({
     queryKey: ['quality', 'unit-weights', query],
     queryFn: async () => toList(await qualityWorkflowApi.listUnitWeights({ q: query, page_size: 1000 })),
     retry: false,
+    enabled: workflowTab,
   })
   const batchesQuery = useQuery({
     queryKey: ['quality', 'shipment-batches', { dateFrom, dateTo, dueDateFrom, dueDateTo, query, shipmentStatus, orderStatus, deliveryStatus, inspectorFilter, ordering }],
@@ -250,21 +263,25 @@ export function QualityPage() {
       page_size: 1000,
     })),
     retry: false,
+    enabled: workflowTab,
   })
   const workflowBatchesQuery = useQuery({
     queryKey: ['quality', 'shipment-batches', 'workflow-all'],
     queryFn: async () => toList(await qualityWorkflowApi.listShipmentBatches({ ordering: '-shipment_date', page_size: 1000 })),
     retry: false,
+    enabled: workflowTab,
   })
   const shipmentBatchOptionsQuery = useQuery({
     queryKey: ['quality', 'shipment-batches', 'confirmed-options'],
     queryFn: async () => toList(await qualityWorkflowApi.listShipmentBatches({ status: 'CONFIRMED', page_size: 1000 })),
     retry: false,
+    enabled: workflowTab || reworksTab || Boolean(flowCardReturnOpen),
   })
   const reworkCasesQuery = useQuery({
     queryKey: ['quality', 'rework-cases'],
     queryFn: async () => toList(await qualityWorkflowApi.listReworkCases({ page_size: 1000 })),
     retry: false,
+    enabled: workflowTab || reworksTab,
   })
 
   const employees = useMemo(() => employeesQuery.data || [], [employeesQuery.data])
@@ -303,18 +320,17 @@ export function QualityPage() {
   }), [keyword, reworkCases, reworkCustomerFilter, reworkQuickFilter, reworkRange, reworkReasonFilter])
 
   const refreshAfterShipment = async () => {
+    const tasks: Array<Promise<unknown>> = []
+    if (orderDataEnabled) tasks.push(ordersQuery.refetch())
+    if (dailyTab) tasks.push(shipmentLedgerQuery.refetch(), summaryQuery.refetch())
+    if (workflowTab || dailyTab || reworksTab || shipmentForm) tasks.push(shipmentOptionsQuery.refetch())
+    if (workflowTab || replacementOpen) tasks.push(processCardsQuery.refetch())
+    if (workflowTab) tasks.push(unitWeightsQuery.refetch(), batchesQuery.refetch(), workflowBatchesQuery.refetch())
+    if (workflowTab || reworksTab || flowCardReturnOpen) tasks.push(shipmentBatchOptionsQuery.refetch())
+    if (workflowTab || reworksTab) tasks.push(reworkCasesQuery.refetch())
+    if (reworksTab) tasks.push(reworksQuery.refetch())
     await Promise.all([
-      ordersQuery.refetch(),
-      shipmentLedgerQuery.refetch(),
-      shipmentOptionsQuery.refetch(),
-      processCardsQuery.refetch(),
-      unitWeightsQuery.refetch(),
-      batchesQuery.refetch(),
-      workflowBatchesQuery.refetch(),
-      shipmentBatchOptionsQuery.refetch(),
-      reworksQuery.refetch(),
-      reworkCasesQuery.refetch(),
-      summaryQuery.refetch(),
+      ...tasks,
       queryClient.invalidateQueries({ queryKey: ['quality', 'returnable-batches'] }),
       queryClient.invalidateQueries({ queryKey: ['analytics'] }),
       queryClient.invalidateQueries({ queryKey: ['dashboard'] }),

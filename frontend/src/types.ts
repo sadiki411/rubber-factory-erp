@@ -1124,6 +1124,8 @@ export interface QualityShipmentBatchInput {
   inspector_id?: number | null
   inspector_ids?: number[]
   client_key?: string
+  /** Required when the shipment date is earlier than today. */
+  backfill_reason?: string
   notes?: string
   /** Required by the confirmed-batch amendment action; ignored for creates. */
   amend_reason?: string

@@ -4,7 +4,7 @@ import type { TableColumnsType } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { materialReceiptApi, orderApi, toList } from '../api/client'
 import { BusinessImportDrawer } from '../components/BusinessImportDrawer'
 import { BusinessImportHistoryDrawer } from '../components/BusinessImportHistoryDrawer'
@@ -90,6 +90,7 @@ export function OrdersPage() {
   const screens = Grid.useBreakpoint()
   const mobile = screens.md === false
   const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
   const [activeTab, setActiveTab] = useState<OrderTab>('orders-open')
   const [productionRequired, setProductionRequired] = useState<'' | 'yes' | 'no'>('')
   const [materialStatus, setMaterialStatus] = useState<OrderMaterialStatus | ''>('')
@@ -104,12 +105,17 @@ export function OrdersPage() {
   const [importOpen, setImportOpen] = useState(false)
   const [importHistoryOpen, setImportHistoryOpen] = useState(false)
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 300)
+    return () => window.clearTimeout(timer)
+  }, [query])
+
   const orderStatus: OrderStatus = activeTab === 'orders-completed' ? 'COMPLETED' : activeTab === 'orders-cancelled' ? 'CANCELLED' : 'OPEN'
   const showingOrders = activeTab !== 'receipts'
   const ordersQuery = useQuery({
-    queryKey: ['orders', { query, orderStatus, productionRequired, materialStatus, processCardStatus, ordering }],
+    queryKey: ['orders', { query: debouncedQuery, orderStatus, productionRequired, materialStatus, processCardStatus, ordering }],
     queryFn: async () => toList(await orderApi.list({
-      q: query || undefined,
+      q: debouncedQuery || undefined,
       status: orderStatus,
       production_required: productionRequired === '' ? undefined : productionRequired === 'yes',
       material_status: materialStatus || undefined,

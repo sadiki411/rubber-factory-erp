@@ -36,7 +36,8 @@ from .serializers import (
     QualityOrderSerializer,
     QualityShipmentSerializer,
     ReturnReworkSerializer,
-    ProductUnitWeightSerializer, ProcessCardSerializer, QualityShipmentBatchSerializer,
+    ProductUnitWeightSerializer, ProcessCardSerializer, ProcessCardScanSerializer,
+    QualityShipmentBatchSerializer,
     QualityShipmentLineSerializer, QualityReworkCaseSerializer, QualityReworkAttemptSerializer,
     QualityReturnableBatchPageSerializer,
     ReturnReshipRequestSerializer,
@@ -219,7 +220,7 @@ class ProcessCardViewSet(WorkflowModelViewSet):
 
     @extend_schema(
         parameters=[OpenApiParameter("code", str, required=True)],
-        responses=ProcessCardSerializer,
+        responses=ProcessCardScanSerializer,
     )
     @action(detail=False, methods=["get"], url_path="scan")
     def scan(self, request):
@@ -240,8 +241,8 @@ class ProcessCardViewSet(WorkflowModelViewSet):
         return Response(
             {
                 "found": True,
-                "scanned_card": self.get_serializer(scanned).data,
-                "active_card": self.get_serializer(active).data,
+                "scanned_card": ProcessCardScanSerializer(scanned, context={"request": request}).data,
+                "active_card": ProcessCardScanSerializer(active, context={"request": request}).data,
                 "was_replaced": scanned.pk != active.pk,
                 "replacement_notice": (
                     f"旧卡已作废，请使用补卡 {active.card_no}。"

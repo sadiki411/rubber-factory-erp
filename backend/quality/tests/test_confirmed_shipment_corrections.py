@@ -45,13 +45,16 @@ class ConfirmedShipmentCorrectionApiTests(QualityTestMixin, TestCase):
         standard=1_000,
         batch_count=1,
         bindings=None,
+        shipment_date=None,
+        backfill_reason=None,
     ):
         target = order or self.order
         draft = self.client.post(
             self.endpoint,
             {
                 "shipment_no": shipment_no,
-                "shipment_date": timezone.localdate().isoformat(),
+                "shipment_date": shipment_date or timezone.localdate().isoformat(),
+                "backfill_reason": backfill_reason or "",
                 "order_id": target.pk,
                 "specification_snapshot": target.specification,
                 "material_snapshot": target.material,
@@ -182,6 +185,26 @@ class ConfirmedShipmentCorrectionApiTests(QualityTestMixin, TestCase):
         self.assertEqual(
             revision.after_snapshot["shipment_no"], "QS-AMEND-CORRECTED"
         )
+
+    def test_amend_historical_shipment_accepts_and_persists_backfill_reason(self):
+        historical = timezone.localdate() - timedelta(days=1)
+        batch = self.create_confirmed_repeat(
+            shipment_no="QS-AMEND-HISTORICAL",
+            shipment_date=historical.isoformat(),
+            backfill_reason="纸质出货记录次日补录",
+        )
+        self.assertEqual(batch.backfill_reason, "纸质出货记录次日补录")
+
+        response = self.amend(
+            batch,
+            backfill_reason="修改称重后重新核对历史出货记录",
+            notes="历史出货重量已按纸质记录修正",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, QualityShipmentBatch.Status.CONFIRMED)
+        self.assertEqual(batch.backfill_reason, "修改称重后重新核对历史出货记录")
 
     def test_amend_can_preserve_replace_and_explicitly_clear_scan_bindings(self):
         self.order.order_quantity = 5_000

@@ -1556,6 +1556,7 @@ export function QualityWeightShipmentDrawer({
       inspector_ids: inspectorSelection,
       inspector_id: inspectorSelection[0] ?? null,
       client_key: activeBatch?.client_key || `quality-weight-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      backfill_reason: text(values.backfill_reason),
       notes: text(values.notes),
       amend_reason: amendConfirmed ? text(values.amend_reason) : undefined,
       removed_shipment_units: editingConfirmed ? removedShipmentUnitNos : undefined,
@@ -2073,7 +2074,19 @@ export function QualityWeightShipmentDrawer({
           {allocationPreviewCard}
           {(overLimit || underLimit) && <Alert className="quality-weight-limit-alert" type={overLimit ? 'error' : 'warning'} showIcon message={overLimit ? '超过理论重量 +10%，禁止提交' : '实称净重低于理论重量，请核对后确认'} />}
         </Card>
-        <Form.Item name="backfill_reason" label="历史日期补录原因" extra="早于今天的出货日期建议填写原因"><Input.TextArea rows={2} maxLength={300} showCount /></Form.Item>
+        <Form.Item
+          name="backfill_reason"
+          label="历史日期补录原因"
+          dependencies={['shipment_date']}
+          rules={[{
+            validator: async (_, value) => {
+              const shipmentDate = form.getFieldValue('shipment_date') as Dayjs | undefined
+              const historical = Boolean(shipmentDate?.isValid() && shipmentDate.startOf('day').isBefore(dayjs().startOf('day')))
+              if (historical && !text(value)) throw new Error('历史日期出货必须填写补录原因')
+            },
+          }]}
+          extra="早于今天的出货日期必须填写原因，修改历史记录时也会一并保存。"
+        ><Input.TextArea rows={2} maxLength={300} showCount /></Form.Item>
         {amendConfirmed && activeBatch?.status === 'CONFIRMED' && <Form.Item
           name="amend_reason"
           label="纠正原因"

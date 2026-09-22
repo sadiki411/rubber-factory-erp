@@ -286,6 +286,40 @@ class BusinessOrderViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
         ordering = str(params.get("ordering", "") or "").strip()
         return queryset.order_by(*_order_expressions(ordering))
 
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        rows = list(page if page is not None else queryset)
+        order_ids = [row.pk for row in rows]
+        context = self.get_serializer_context()
+        if order_ids:
+            from inventory.services import product_availability_by_orders
+            from quality.models import ProductUnitWeight
+            from quality.services import delivered_quantities_by_order
+
+            context["delivered_quantities_by_order"] = delivered_quantities_by_order(order_ids)
+            context["inventory_availability_by_order"] = product_availability_by_orders(rows)
+            specification_ids = {
+                row.product_specification_id
+                for row in rows
+                if row.product_specification_id
+            }
+            latest_weights = {}
+            for weight in ProductUnitWeight.objects.filter(
+                product_specification_id__in=specification_ids,
+                is_active=True,
+                unit_weight_g__gt=0,
+            ).order_by("product_specification_id", "-created_at", "-id"):
+                latest_weights.setdefault(weight.product_specification_id, {
+                    "unit_weight_g": weight.unit_weight_g,
+                    "measured_on": weight.measured_on,
+                })
+            context["latest_product_unit_weights"] = latest_weights
+        serializer = self.get_serializer(rows, many=True, context=context)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
+
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
 

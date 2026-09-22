@@ -2,7 +2,7 @@ import { DeleteOutlined, EditOutlined, ExportOutlined, HomeOutlined, MoreOutline
 import { Button, Card, Dropdown, Empty, Grid, Input, List, Select, Table, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { moldApi, toList } from '../api/client'
@@ -30,14 +30,19 @@ export function MoldsPage() {
   const screens = Grid.useBreakpoint()
   const mobile = !screens.md
   const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
   const [status, setStatus] = useState<MoldStatus | ''>('')
   const [operation, setOperation] = useState<{ mold: MoldAsset; action: MoldAction }>()
   const [editing, setEditing] = useState<MoldAsset | undefined>()
   const [formOpen, setFormOpen] = useState(false)
   const { confirmDelete } = useMoldDeletion()
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 300)
+    return () => window.clearTimeout(timer)
+  }, [query])
   const moldsQuery = useQuery({
-    queryKey: ['molds', { query, status }],
-    queryFn: async () => toList(await moldApi.list({ q: query, status, page_size: 500 })),
+    queryKey: ['molds', { query: debouncedQuery, status }],
+    queryFn: async () => toList(await moldApi.list({ q: debouncedQuery, status, page_size: 500 })),
   })
 
   const onMenu = (mold: MoldAsset, key: string) => {

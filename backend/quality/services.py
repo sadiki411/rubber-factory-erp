@@ -1382,11 +1382,14 @@ def active_process_card(card: ProcessCard) -> ProcessCard:
     current = card
     while current.pk not in seen:
         seen.add(current.pk)
-        replacement = (
-            ProcessCard.objects.filter(replaces_id=current.pk)
-            .order_by("id")
-            .first()
-        )
+        try:
+            replacement = current.replaced_by
+        except ProcessCard.DoesNotExist:
+            replacement = (
+                ProcessCard.objects.filter(replaces_id=current.pk)
+                .order_by("id")
+                .first()
+            )
         if replacement is None:
             return current
         current = replacement
@@ -1399,7 +1402,9 @@ def find_process_card(code: str, *, lock: bool = False) -> tuple[ProcessCard, Pr
     normalized = normalize_process_card_code(code)
     if not normalized:
         raise ValueError("请扫描或输入流程卡单号。")
-    queryset = ProcessCard.objects.select_related("order", "replaces")
+    queryset = ProcessCard.objects.select_related(
+        "order", "replaces", "replaced_by", "unit_binding__shipment_batch"
+    ).prefetch_related("unit_binding__shipment_batch__inspectors")
     if lock:
         queryset = queryset.select_for_update()
     card = queryset.filter(card_no__iexact=normalized).first()
