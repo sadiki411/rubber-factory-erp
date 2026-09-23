@@ -230,6 +230,16 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
                 raise DRFValidationError({"status": f"无效的生产状态：{', '.join(invalid)}"})
             queryset = queryset.filter(status__in=statuses)
 
+        ledger_only = str(params.get("is_ledger_only", "")).strip().lower()
+        if ledger_only:
+            if ledger_only not in {"1", "0", "true", "false", "yes", "no"}:
+                raise DRFValidationError(
+                    {"is_ledger_only": "请使用 true 或 false。"}
+                )
+            queryset = queryset.filter(
+                is_ledger_only=ledger_only in {"1", "true", "yes"}
+            )
+
         station = str(params.get("station", "")).strip()
         if station:
             normalized_station = normalize_production_station_code(station)

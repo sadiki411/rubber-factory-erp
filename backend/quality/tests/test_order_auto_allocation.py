@@ -80,6 +80,24 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
             .annotate(total=Sum("piece_quantity"))
         }
 
+    def test_candidate_pagination_keeps_due_date_order_and_total_count(self):
+        earliest = self.create_order("ORD-CANDIDATE-EARLY", 80, due_days=1)
+        self.create_order("ORD-CANDIDATE-LATE", 90, due_days=20)
+
+        response = self.client.get(
+            "/api/quality/shipment-batches/candidates/",
+            {
+                "specification": self.order.specification,
+                "material": self.order.material,
+                "page_size": 1,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["count"], 3)
+        self.assertEqual(len(response.json()["results"]), 1)
+        self.assertEqual(response.json()["results"][0]["order_id"], earliest.pk)
+
     def test_two_thousand_by_ten_fills_same_specification_order_and_is_idempotent(self):
         self.order.order_quantity = 10_000
         self.order.save()

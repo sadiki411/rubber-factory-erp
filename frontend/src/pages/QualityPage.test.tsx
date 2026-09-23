@@ -136,7 +136,7 @@ describe('QualityPage unified shipment ledger', () => {
 
     await userEvent.setup().type(screen.getByPlaceholderText('搜索出货单、订单、产品、规格、材质或品检员'), 'NBR')
     await waitFor(() => expect(apiMocks.listShipmentLedger).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'NBR', shipment_status: 'CONFIRMED' })))
-    expect(apiMocks.listShipmentBatches).toHaveBeenCalledWith({ ordering: '-shipment_date', page_size: 1000 })
+    expect(apiMocks.listShipmentBatches).toHaveBeenCalledWith(expect.objectContaining({ ordering: '-shipment_date', page_size: 200 }))
 
     await userEvent.setup().click(screen.getByText('已确认出货'))
     await userEvent.setup().click(await screen.findByText('草稿 / 待确认'))

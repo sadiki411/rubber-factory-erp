@@ -428,11 +428,13 @@ export const businessImportApi = {
 export interface ProductionRunFilters {
   q?: string
   status?: string
+  is_ledger_only?: boolean
   station?: number
   group?: string
   mold?: number
   date_from?: string
   date_to?: string
+  ordering?: string
   page?: number
   page_size?: number
 }

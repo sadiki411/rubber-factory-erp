@@ -109,6 +109,40 @@ class ProductionCounterLedgerApiTests(ProductionTestMixin, TestCase):
         self.assertEqual(payload["planned_mold_count"], 108)
         self.assertEqual(payload["status"], ProductionRun.Status.PLANNED)
 
+    def test_run_list_filters_ledger_tasks_before_serializing(self):
+        ledger = self.create_task()
+        standard = ProductionRun.objects.create(
+            order=self.order,
+            order_no=self.order.order_no,
+            specification=self.order.specification,
+            material=self.order.material,
+            order_quantity=self.order.order_quantity,
+            cavities=10,
+            planned_mold_count=100,
+            is_ledger_only=False,
+            created_by=self.user,
+        )
+
+        ledger_response = self.client.get(
+            "/api/production/runs/",
+            {"is_ledger_only": "true", "page_size": 100},
+        )
+        self.assertEqual(ledger_response.status_code, 200, ledger_response.content)
+        self.assertEqual(
+            [item["id"] for item in ledger_response.json()["results"]],
+            [ledger["id"]],
+        )
+
+        standard_response = self.client.get(
+            "/api/production/runs/",
+            {"is_ledger_only": "false", "page_size": 100},
+        )
+        self.assertEqual(standard_response.status_code, 200, standard_response.content)
+        self.assertEqual(
+            [item["id"] for item in standard_response.json()["results"]],
+            [standard.pk],
+        )
+
     def test_defect_quantity_formula(self):
         payload = self.create_task(
             estimated_defect_mode="QUANTITY",

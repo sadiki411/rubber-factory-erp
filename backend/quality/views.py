@@ -361,7 +361,7 @@ class QualityShippingCandidatesView(APIView):
         # and pre-weight-workflow shipment records.
         order_ids = list(queryset.values_list("id", flat=True))
         delivered_by_order = delivered_quantities_by_order(order_ids)
-        rows = []
+        candidates = []
         for order in queryset.order_by(
             F("due_date").asc(nulls_last=True),
             F("order_date").asc(nulls_last=True),
@@ -371,58 +371,65 @@ class QualityShippingCandidatesView(APIView):
             remaining = max(0, int(order.order_quantity or 0) - shipped)
             if remaining <= 0:
                 continue
-            # A manually corrected value from the last confirmed shipment is
-            # the authoritative default.  Only fall back to an older process
-            # card snapshot when ERP has never saved a product unit weight.
-            unit_record = latest_saved_product_unit_weight(
-                product_specification_id=order.product_specification_id,
-                specification=order.specification,
-                material=order.material,
-            )
-            unit = unit_record.unit_weight_g if unit_record else None
-            if unit is None:
-                card = (
-                    ProcessCard.objects.filter(order_id=order.pk)
-                    .exclude(status=ProcessCard.Status.CANCELLED)
-                    .exclude(unit_weight_g__isnull=True)
-                    .order_by("-received_on", "-id")
-                    .first()
+            candidates.append((order, remaining))
+
+        def serialize_candidates(items):
+            rows = []
+            for order, remaining in items:
+                # A manually corrected value from the last confirmed shipment is
+                # the authoritative default. Only fall back to an older process
+                # card snapshot when ERP has never saved a product unit weight.
+                unit_record = latest_saved_product_unit_weight(
+                    product_specification_id=order.product_specification_id,
+                    specification=order.specification,
+                    material=order.material,
                 )
-                unit = card.unit_weight_g if card else None
-            rows.append(
-                {
-                    "id": order.pk,
-                    "order_id": order.pk,
-                    "order": QualityOrderSerializer(
-                        order,
-                        context={
-                            "request": request,
-                            "delivered_quantities_by_order": delivered_by_order,
-                        },
-                    ).data,
-                    "order_no": order.order_no,
-                    "item_no": order.item_no,
-                    "batch_no": order.batch_no,
-                    "product_code": order.product_code,
-                    "product_name": order.product_name,
-                    "specification": order.specification,
-                    "material": order.material,
-                    "remaining_quantity": remaining,
-                    "remaining_weight_kg": (
-                        (Decimal(remaining) * Decimal(unit) / Decimal("1000")).quantize(Decimal("0.001"))
-                        if unit else None
-                    ),
-                    "unit_weight_g": unit,
-                    "product_specification_id": order.product_specification_id,
-                    "is_candidate": True,
-                }
-            )
+                unit = unit_record.unit_weight_g if unit_record else None
+                if unit is None:
+                    card = (
+                        ProcessCard.objects.filter(order_id=order.pk)
+                        .exclude(status=ProcessCard.Status.CANCELLED)
+                        .exclude(unit_weight_g__isnull=True)
+                        .order_by("-received_on", "-id")
+                        .first()
+                    )
+                    unit = card.unit_weight_g if card else None
+                rows.append(
+                    {
+                        "id": order.pk,
+                        "order_id": order.pk,
+                        "order": QualityOrderSerializer(
+                            order,
+                            context={
+                                "request": request,
+                                "delivered_quantities_by_order": delivered_by_order,
+                            },
+                        ).data,
+                        "order_no": order.order_no,
+                        "item_no": order.item_no,
+                        "batch_no": order.batch_no,
+                        "product_code": order.product_code,
+                        "product_name": order.product_name,
+                        "specification": order.specification,
+                        "material": order.material,
+                        "remaining_quantity": remaining,
+                        "remaining_weight_kg": (
+                            (Decimal(remaining) * Decimal(unit) / Decimal("1000")).quantize(Decimal("0.001"))
+                            if unit else None
+                        ),
+                        "unit_weight_g": unit,
+                        "product_specification_id": order.product_specification_id,
+                        "is_candidate": True,
+                    }
+                )
+            return rows
+
         page_size = params.get("page_size")
         if page_size is not None or params.get("page") is not None:
             paginator = QualityPagination()
-            page = paginator.paginate_queryset(rows, request, view=self)
-            return paginator.get_paginated_response(page)
-        return Response(rows)
+            page = paginator.paginate_queryset(candidates, request, view=self)
+            return paginator.get_paginated_response(serialize_candidates(page))
+        return Response(serialize_candidates(candidates))
 
 
 def _shipment_snapshot_value(value):

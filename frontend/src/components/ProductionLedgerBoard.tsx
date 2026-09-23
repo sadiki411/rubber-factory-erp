@@ -32,11 +32,15 @@ export function ProductionLedgerBoard() {
   const [expandedLogTaskIds, setExpandedLogTaskIds] = useState<Set<number>>(() => new Set())
 
   const tasksQuery = useQuery({
-    queryKey: ['production', 'ledger-tasks'],
-    queryFn: async () => {
-      const rows = toList(await productionApi.listRuns({ page_size: 1000 }))
-      return rows.filter((run) => run.is_ledger_only)
-    },
+    queryKey: ['production', 'ledger-tasks', showFinished ? 'finished' : 'active'],
+    queryFn: async () => toList(await productionApi.listRuns({
+      is_ledger_only: true,
+      status: showFinished
+        ? 'COMPLETED,CANCELLED'
+        : 'PLANNED,RUNNING,PAUSED_ON_MACHINE,PAUSED_UNLOADED',
+      ordering: '-created_at',
+      page_size: showFinished ? 200 : 100,
+    })),
   })
 
   const resetMutation = useMutation({
@@ -117,9 +121,7 @@ export function ProductionLedgerBoard() {
     })
   }
 
-  const tasks = (tasksQuery.data || []).filter((run) => showFinished
-    ? ['COMPLETED', 'CANCELLED'].includes(run.status)
-    : !['COMPLETED', 'CANCELLED'].includes(run.status))
+  const tasks = tasksQuery.data || []
 
   return (
     <section className="production-ledger-board">

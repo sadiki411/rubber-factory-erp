@@ -992,7 +992,7 @@ export function QualityWeightShipmentDrawer({
         q: query || undefined,
         specification: specification || undefined,
         material: material || undefined,
-        page_size: 1000,
+        page_size: 50,
         candidate: true,
       })
       const candidates = toList(payload as any) as any[]
@@ -1014,11 +1014,11 @@ export function QualityWeightShipmentDrawer({
   useEffect(() => {
     if (!open) return
     const timer = window.setTimeout(() => {
+      // Keep the selector ready when the drawer opens, but cap the initial
+      // result set. Exact specification/material searches below replace it.
       void loadCandidates('', { specification: '', material: '' })
     }, 0)
     return () => window.clearTimeout(timer)
-    // Candidate loading is intentionally tied to opening the drawer. Search
-    // and exact specification/material refreshes are handled separately.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
@@ -1061,7 +1061,8 @@ export function QualityWeightShipmentDrawer({
         product_specification_id: null,
         unit_weight_g: null,
       })
-      void loadCandidates('', { specification: '', material: '' })
+      setCandidateOrders([])
+      setCandidateLoaded(false)
       return
     }
     const order = allKnownOrders.find((item) => String(item.id) === String(value))
@@ -2000,7 +2001,7 @@ export function QualityWeightShipmentDrawer({
                 if (!visible) return
                 if (!candidateLoaded && !loadingCandidates) {
                   if (selectedOrder) void loadCandidates('', { specification: selectedOrder.specification, material: selectedOrder.material })
-                  else void loadCandidates('', { specification: '', material: '' })
+                  else void loadCandidates(candidateQuery, { specification: '', material: '' })
                 }
               }}
               notFoundContent={loadingCandidates ? '正在读取可出货订单…' : '没有仍可出货的候选订单'}

@@ -205,7 +205,7 @@ export function QualityPage() {
   })
   const ordersQuery = useQuery({
     queryKey: ['orders', 'quality-options'],
-    queryFn: async () => toList(await orderApi.list({ page_size: 1000 })),
+    queryFn: async () => toList(await orderApi.list({ page_size: 200 })),
     enabled: orderDataEnabled,
   })
   const shipmentLedgerQuery = useQuery({
@@ -221,29 +221,29 @@ export function QualityPage() {
       due_date_from: dueDateFrom,
       due_date_to: dueDateTo,
       ordering,
-      page_size: 1000,
+      page_size: 200,
     })),
     enabled: dailyTab,
   })
   const shipmentOptionsQuery = useQuery({
     queryKey: ['quality', 'shipments', 'options'],
-    queryFn: async () => toList(await qualityApi.listShipments({ page_size: 1000 })),
+    queryFn: async () => toList(await qualityApi.listShipments({ page_size: 200 })),
     enabled: workflowTab || dailyTab || reworksTab || Boolean(shipmentForm),
   })
   const reworksQuery = useQuery({
     queryKey: ['quality', 'reworks', { dateFrom, dateTo, query }],
-    queryFn: async () => toList(await qualityApi.listReworks({ q: query, date_from: dateFrom, date_to: dateTo, page_size: 1000 })),
+    queryFn: async () => toList(await qualityApi.listReworks({ q: query, date_from: dateFrom, date_to: dateTo, page_size: 200 })),
     enabled: reworksTab,
   })
   const processCardsQuery = useQuery({
     queryKey: ['quality', 'process-cards', query],
-    queryFn: async () => toList(await qualityWorkflowApi.listProcessCards({ q: query, page_size: 1000 })),
+    queryFn: async () => toList(await qualityWorkflowApi.listProcessCards({ q: query, page_size: 200 })),
     retry: false,
     enabled: workflowTab || Boolean(replacementOpen),
   })
   const unitWeightsQuery = useQuery({
     queryKey: ['quality', 'unit-weights', query],
-    queryFn: async () => toList(await qualityWorkflowApi.listUnitWeights({ q: query, page_size: 1000 })),
+    queryFn: async () => toList(await qualityWorkflowApi.listUnitWeights({ q: query, page_size: 200 })),
     retry: false,
     enabled: workflowTab,
   })
@@ -260,26 +260,20 @@ export function QualityPage() {
       due_date_from: dueDateFrom,
       due_date_to: dueDateTo,
       ordering,
-      page_size: 1000,
+      page_size: 200,
     })),
-    retry: false,
-    enabled: workflowTab,
-  })
-  const workflowBatchesQuery = useQuery({
-    queryKey: ['quality', 'shipment-batches', 'workflow-all'],
-    queryFn: async () => toList(await qualityWorkflowApi.listShipmentBatches({ ordering: '-shipment_date', page_size: 1000 })),
     retry: false,
     enabled: workflowTab,
   })
   const shipmentBatchOptionsQuery = useQuery({
     queryKey: ['quality', 'shipment-batches', 'confirmed-options'],
-    queryFn: async () => toList(await qualityWorkflowApi.listShipmentBatches({ status: 'CONFIRMED', page_size: 1000 })),
+    queryFn: async () => toList(await qualityWorkflowApi.listShipmentBatches({ status: 'CONFIRMED', ordering: '-shipment_date', page_size: 200 })),
     retry: false,
-    enabled: workflowTab || reworksTab || Boolean(flowCardReturnOpen),
+    enabled: reworksTab || Boolean(shipmentForm) || Boolean(batchAmendItem) || returnReworkOpen || flowCardReturnOpen,
   })
   const reworkCasesQuery = useQuery({
     queryKey: ['quality', 'rework-cases'],
-    queryFn: async () => toList(await qualityWorkflowApi.listReworkCases({ page_size: 1000 })),
+    queryFn: async () => toList(await qualityWorkflowApi.listReworkCases({ page_size: 200 })),
     retry: false,
     enabled: workflowTab || reworksTab,
   })
@@ -292,7 +286,6 @@ export function QualityPage() {
   const processCards = processCardsQuery.data || []
   const unitWeights = unitWeightsQuery.data || []
   const shipmentBatches = batchesQuery.data || []
-  const workflowBatches = workflowBatchesQuery.data || []
   const shipmentBatchOptions = shipmentBatchOptionsQuery.data || []
   const reworkCases = useMemo(() => reworkCasesQuery.data || [], [reworkCasesQuery.data])
   const summary = summaryQuery.data
@@ -325,8 +318,8 @@ export function QualityPage() {
     if (dailyTab) tasks.push(shipmentLedgerQuery.refetch(), summaryQuery.refetch())
     if (workflowTab || dailyTab || reworksTab || shipmentForm) tasks.push(shipmentOptionsQuery.refetch())
     if (workflowTab || replacementOpen) tasks.push(processCardsQuery.refetch())
-    if (workflowTab) tasks.push(unitWeightsQuery.refetch(), batchesQuery.refetch(), workflowBatchesQuery.refetch())
-    if (workflowTab || reworksTab || flowCardReturnOpen) tasks.push(shipmentBatchOptionsQuery.refetch())
+    if (workflowTab) tasks.push(unitWeightsQuery.refetch(), batchesQuery.refetch())
+    if (reworksTab || shipmentForm || batchAmendItem || returnReworkOpen || flowCardReturnOpen) tasks.push(shipmentBatchOptionsQuery.refetch())
     if (workflowTab || reworksTab) tasks.push(reworkCasesQuery.refetch())
     if (reworksTab) tasks.push(reworksQuery.refetch())
     await Promise.all([
@@ -542,8 +535,8 @@ export function QualityPage() {
       key: 'workflow',
       label: '流程卡出货',
       children: <div className="quality-tab-content">
-        {(processCardsQuery.error || unitWeightsQuery.error || batchesQuery.error || workflowBatchesQuery.error || shipmentBatchOptionsQuery.error || reworkCasesQuery.error) && <Alert type="warning" showIcon style={{ marginBottom: 16 }} title="流程卡重量出货模块暂不可用" description="当前服务器未返回一期流程卡接口，页面已保留原有件数出货功能；完成后端迁移后刷新即可启用。" />}
-        <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} shipments={shipmentOptions} batches={workflowBatches} reworks={reworks} reworkCases={filteredReworkCases} searchText={query} loading={ordersQuery.isLoading || processCardsQuery.isLoading || workflowBatchesQuery.isLoading} onOpenShipment={() => openShipmentForm()} onOpenRework={openFlowCardReturn} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); refreshAfterShipmentInBackground() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} /><QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions} reworkCases={filteredReworkCases} onOpenReturnRework={openFlowCardReturn} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={refreshAfterShipment} /></div>,
+        {(processCardsQuery.error || unitWeightsQuery.error || batchesQuery.error || shipmentBatchOptionsQuery.error || reworkCasesQuery.error) && <Alert type="warning" showIcon style={{ marginBottom: 16 }} title="流程卡重量出货模块暂不可用" description="当前服务器未返回一期流程卡接口，页面已保留原有件数出货功能；完成后端迁移后刷新即可启用。" />}
+        <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} shipments={shipmentOptions} batches={shipmentBatches} reworks={reworks} reworkCases={filteredReworkCases} searchText={query} loading={ordersQuery.isLoading || processCardsQuery.isLoading || batchesQuery.isLoading} onOpenShipment={() => openShipmentForm()} onOpenRework={openFlowCardReturn} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); refreshAfterShipmentInBackground() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} /><QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions.length ? shipmentBatchOptions : shipmentBatches} reworkCases={filteredReworkCases} onOpenReturnRework={openFlowCardReturn} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={refreshAfterShipment} /></div>,
     },
     {
       key: 'daily',
@@ -671,7 +664,7 @@ export function QualityPage() {
         orders={orders}
         employees={employees}
         existingShipments={shipmentOptions}
-        existingBatches={shipmentBatchOptions}
+        existingBatches={shipmentBatchOptions.length ? shipmentBatchOptions : shipmentBatches}
         resetKey={shipmentSessionKey}
         onClose={() => {
           setShipmentForm(undefined)
@@ -708,7 +701,7 @@ export function QualityPage() {
         amendConfirmed
         orders={orders}
         employees={employees}
-        existingBatches={shipmentBatchOptions}
+        existingBatches={shipmentBatchOptions.length ? shipmentBatchOptions : shipmentBatches}
         onClose={() => setBatchAmendItem(undefined)}
         onSaved={async () => refreshAfterShipmentInBackground()}
       />
