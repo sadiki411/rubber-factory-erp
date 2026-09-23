@@ -247,6 +247,42 @@ describe('QualityWeightShipmentDrawer', () => {
     })
   }, 120_000)
 
+  it('shows a scanned card before a slow server lookup completes', async () => {
+    const user = userEvent.setup()
+    const cardNo = '04-M003-2608210099'
+    let resolveScan!: (value: unknown) => void
+    apiMocks.scanProcessCard.mockImplementation(() => new Promise((resolve) => {
+      resolveScan = resolve
+    }))
+    renderDrawer()
+    expect(apiMocks.listShipmentCandidates).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: /连续扫码/ }))
+    const scanInput = await screen.findByPlaceholderText(/04-M003-2608210028/)
+    await user.type(scanInput, cardNo)
+    await user.click(screen.getByRole('button', { name: /加入/ }))
+
+    expect(await screen.findByText(new RegExp(`${cardNo}（校验中）`))).toBeInTheDocument()
+
+    const card: QualityProcessCard = {
+      id: 199,
+      card_no: cardNo,
+      order_id: order.id,
+      order,
+      quantity: 100,
+      unit_weight_g: 25,
+      status: 'READY',
+    }
+    resolveScan({ found: true, scanned_card: card, active_card: card, binding_required: true })
+    await waitFor(() => expect(screen.getByText((_, element) => Boolean(
+      element?.classList.contains('ant-tag')
+      && element.textContent?.includes(cardNo)
+      && !element.textContent?.includes('校验中'),
+    ))).toBeInTheDocument())
+    expect(screen.queryByText(new RegExp(`${cardNo}（校验中）`))).not.toBeInTheDocument()
+    expect(apiMocks.listShipmentCandidates).not.toHaveBeenCalled()
+  }, 20_000)
+
   it('clears the previous shipment number and scanned cards before a kept-alive drawer opens again', async () => {
     const user = userEvent.setup()
     const onClose = vi.fn()
@@ -537,9 +573,9 @@ describe('QualityWeightShipmentDrawer', () => {
     apiMocks.listShipmentCandidates.mockResolvedValue([first, second])
     renderDrawer(undefined, { orders: [first, second] })
 
-    await waitFor(() => expect(apiMocks.listShipmentCandidates).toHaveBeenCalled())
     const orderSelector = screen.getByRole('combobox', { name: /候选订单/ })
     await user.click(orderSelector)
+    await waitFor(() => expect(apiMocks.listShipmentCandidates).toHaveBeenCalled())
     await user.click(await screen.findByText((_, element) => Boolean(
       element?.classList.contains('ant-select-item-option-content')
       && element.textContent?.includes('TEST-ORDER-001'),
@@ -635,8 +671,8 @@ describe('QualityWeightShipmentDrawer', () => {
     apiMocks.listShipmentCandidates.mockResolvedValue([{ ...order, remaining_quantity: 240 }])
     renderDrawer(undefined, { orders: [order, completedOrder] })
 
-    await waitFor(() => expect(apiMocks.listShipmentCandidates).toHaveBeenCalled())
     await user.click(screen.getByRole('combobox', { name: /候选订单/ }))
+    await waitFor(() => expect(apiMocks.listShipmentCandidates).toHaveBeenCalled())
 
     expect(await screen.findByRole('option', { name: /TEST-ORDER-001/ })).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: /FULL-ORDER-008/ })).not.toBeInTheDocument()
@@ -647,8 +683,8 @@ describe('QualityWeightShipmentDrawer', () => {
     apiMocks.listShipmentCandidates.mockRejectedValue(new Error('候选服务暂不可用'))
     renderDrawer()
 
-    expect(await screen.findByText('候选订单暂时读取失败')).toBeInTheDocument()
     await user.click(screen.getByRole('combobox', { name: /候选订单/ }))
+    expect(await screen.findByText('候选订单暂时读取失败')).toBeInTheDocument()
 
     expect(screen.queryByRole('option', { name: /手工输入/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('option', { name: /TEST-ORDER-001/ })).not.toBeInTheDocument()
@@ -692,9 +728,9 @@ describe('QualityWeightShipmentDrawer', () => {
     const onSaved = vi.fn().mockResolvedValue(undefined)
     renderDrawer(onSubmit, { orders: [sourceOrder, matchingOrder], onSaved })
 
-    await waitFor(() => expect(apiMocks.listShipmentCandidates).toHaveBeenCalled())
     const orderSelector = screen.getByRole('combobox', { name: /候选订单/ })
     await user.click(orderSelector)
+    await waitFor(() => expect(apiMocks.listShipmentCandidates).toHaveBeenCalled())
     await user.type(orderSelector, 'TEST-ORDER')
     const searchedOrderOption = await screen.findByText((_, element) => Boolean(
       element?.classList.contains('ant-select-item-option-content')
@@ -744,8 +780,8 @@ describe('QualityWeightShipmentDrawer', () => {
     })
     renderDrawer(undefined, { orders: [sourceOrder] })
 
-    await waitFor(() => expect(apiMocks.listShipmentCandidates).toHaveBeenCalled())
     await user.click(screen.getByRole('combobox', { name: /候选订单/ }))
+    await waitFor(() => expect(apiMocks.listShipmentCandidates).toHaveBeenCalled())
     const sourceOrderOption = await screen.findByText((_, element) => Boolean(
       element?.classList.contains('ant-select-item-option-content')
       && element.textContent?.includes('TEST-ORDER-001'),

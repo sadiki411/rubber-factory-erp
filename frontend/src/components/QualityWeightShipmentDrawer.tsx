@@ -163,6 +163,12 @@ type ScannedLineOverride = {
   product_batch_count?: number
 }
 
+type ScannedCardEntry = {
+  cardNo: string
+  lookup: QualityProcessCardScanResult
+  pending?: boolean
+}
+
 type EditableBinding = {
   key: string
   process_card_id?: number | string | null
@@ -494,6 +500,7 @@ export function QualityWeightShipmentDrawer({
   const [candidateOrders, setCandidateOrders] = useState<QualityOrder[]>([])
   const [candidateQuery, setCandidateQuery] = useState('')
   const [candidateLoaded, setCandidateLoaded] = useState(false)
+  const [candidateSelectorOpen, setCandidateSelectorOpen] = useState(false)
   const [loadingCandidates, setLoadingCandidates] = useState(false)
   const [candidateError, setCandidateError] = useState('')
   const candidateRequestRef = useRef(0)
@@ -502,7 +509,7 @@ export function QualityWeightShipmentDrawer({
   const allocationRequestRef = useRef(0)
   const [lines, setLines] = useState<EditableLine[]>([])
   const [scannerOpen, setScannerOpen] = useState(false)
-  const [scannedCards, setScannedCards] = useState<Array<{ cardNo: string; lookup: QualityProcessCardScanResult }>>([])
+  const [scannedCards, setScannedCards] = useState<ScannedCardEntry[]>([])
   const [weightEntryMode, setWeightEntryMode] = useState<WeightEntryMode>('same')
   // In per-card mode the scanned cards become one editable shipment line per
   // physical package.  Keep only operator overrides here; card/order facts
@@ -750,6 +757,7 @@ export function QualityWeightShipmentDrawer({
     setCandidateOrders([])
     setCandidateQuery('')
     setCandidateLoaded(false)
+    setCandidateSelectorOpen(false)
     setLoadingCandidates(false)
     setCandidateError('')
     candidateRequestRef.current += 1
@@ -842,6 +850,7 @@ export function QualityWeightShipmentDrawer({
     setCandidateOrders([])
     setCandidateQuery('')
     setCandidateLoaded(false)
+    setCandidateSelectorOpen(false)
     setLoadingCandidates(false)
     setCandidateError('')
     candidateRequestRef.current += 1
@@ -1012,18 +1021,7 @@ export function QualityWeightShipmentDrawer({
   }
 
   useEffect(() => {
-    if (!open) return
-    const timer = window.setTimeout(() => {
-      // Keep the selector ready when the drawer opens, but cap the initial
-      // result set. Exact specification/material searches below replace it.
-      void loadCandidates('', { specification: '', material: '' })
-    }, 0)
-    return () => window.clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
-
-  useEffect(() => {
-    if (!open) return
+    if (!open || !candidateSelectorOpen) return
     const specification = text(specificationValue)
     const material = text(materialValue)
     if (!candidateQuery && !specification && !material) return
@@ -1035,7 +1033,7 @@ export function QualityWeightShipmentDrawer({
     // loadCandidates intentionally reads the current form values; watching
     // the two visible snapshot fields and the order search is sufficient.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candidateQuery, materialValue, open, specificationValue])
+  }, [candidateQuery, candidateSelectorOpen, materialValue, open, specificationValue])
 
   useEffect(() => {
     if (!open) return
@@ -1297,145 +1295,175 @@ export function QualityWeightShipmentDrawer({
 
   const handleShipmentCardScan = async (cardNo: string) => {
     const entrySession = entrySessionRef.current
-    let lookup: QualityProcessCardScanResult
+    const pendingCardNo = text(cardNo).toUpperCase()
+    if (!pendingCardNo) return false
+    if (scannedCards.some((item) => item.cardNo === pendingCardNo)) {
+      message.info(`流程卡 ${pendingCardNo} 已在本次出货中。`)
+      return false
+    }
+    // Put the physical card into the form before the network lookup.  The
+    // scan endpoint also checks returns and old replacement cards, but those
+    // checks must not hide the card number from the operator for several
+    // seconds on a phone.
+    setScannedCards((items) => [...items, { cardNo: pendingCardNo, lookup: { code: pendingCardNo }, pending: true }])
+    const replacePendingCard = (normalizedCardNo: string, lookup: QualityProcessCardScanResult) => {
+      setScannedCards((items) => items.map((item) => (
+        item.cardNo === pendingCardNo
+          ? { cardNo: normalizedCardNo, lookup, pending: false }
+          : item
+      )))
+    }
+    const removePendingCard = () => {
+      setScannedCards((items) => items.filter((item) => item.cardNo !== pendingCardNo))
+    }
     try {
-      lookup = await qualityWorkflowApi.scanProcessCard(cardNo)
-    } catch (error) {
-      if (/404|未找到|不存在/.test((error as Error).message || '')) lookup = { code: cardNo }
-      else throw error
-    }
-    if (entrySession !== entrySessionRef.current || !open) return false
-    const scanned = lookup.scanned_card
-    const activeCard = lookup.active_card || scanned
-    if (scanned?.replaced_by_id || (scanned && activeCard && String(scanned.id) !== String(activeCard.id))) {
-      throw new Error(`旧流程卡 ${cardNo} 已作废，请扫描替代卡 ${activeCard?.card_no || '（见补卡记录）'}。`)
-    }
-    const lookupReturn = activeCard?.current_return || lookup.current_return
-    const waitingReturn = lookupReturn && !['RESHIPPED', 'SCRAPPED', 'CANCELLED'].includes(lookupReturn.status)
-      ? lookupReturn
-      : undefined
-    if (waitingReturn) {
-      if (scannedCards.length) throw new Error('已扫描普通出货流程卡，请完成或清空后再处理返工重新出货。')
-      const binding = activeCard?.unit_binding || activeCard?.binding || lookup.binding || waitingReturn.binding
-      const source = waitingReturn.source
-      const linkedOrder = allKnownOrders.find((order) => order.id === (binding?.order_id || activeCard?.order_id))
-      setReshipCase(waitingReturn)
-      form.setFieldsValue({
-        order_id: linkedOrder?.id || binding?.order_id || activeCard?.order_id,
-        product_name: binding?.product_name || source?.product_name || activeCard?.product_name_snapshot || '',
-        specification: binding?.specification || source?.specification || activeCard?.specification_snapshot || '',
-        specification_snapshot: binding?.specification || source?.specification || activeCard?.specification_snapshot || '',
-        material: binding?.material || source?.material || activeCard?.material_snapshot || '',
-        material_snapshot: binding?.material || source?.material || activeCard?.material_snapshot || '',
-        unit_weight_g: numeric(activeCard?.unit_weight_g),
-        single_batch_net_weight_kg: numeric(binding?.net_weight_kg ?? source?.single_batch_net_weight_kg),
-        product_batch_count: 1,
-        batch_count: 1,
-        process_card_shipment_quantity: numeric(binding?.piece_quantity ?? source?.pieces_per_batch),
-      })
-      setScannerOpen(false)
-      message.warning(`${activeCard?.card_no || cardNo} 是${waitingReturn.return_label || `第${waitingReturn.return_round || 1}次退货返工`}产品，已带出上次数量和重量；核对或修改后确认重新出货。`)
-      return true
-    }
-    if (reshipCase) throw new Error('当前正在处理返工品重新出货，请先完成或关闭后再扫描普通出货。')
-    const existingBinding = activeCard?.unit_binding || activeCard?.binding || lookup.binding
-    if (existingBinding) {
-      throw new Error(`流程卡 ${activeCard?.card_no || cardNo} 已绑定出货单 ${existingBinding.shipment_no || existingBinding.shipment_batch_id} 第 ${existingBinding.shipment_unit_no} 包，不能重复出货；如为退货返工，请先在退货端登记。`)
-    }
-    const normalizedCardNo = activeCard?.card_no || cardNo
-    const scannedOrder = activeCard?.order || allKnownOrders.find((order) => order.id === activeCard?.order_id)
-    if (String(scannedOrder?.status || '').toUpperCase() === 'CANCELLED') {
-      throw new Error(`流程卡 ${normalizedCardNo} 所属订单已取消，不能登记出货。`)
-    }
-    const firstScannedCard = scannedCards[0]?.lookup.active_card || scannedCards[0]?.lookup.scanned_card
-    const firstScannedOrder = firstScannedCard?.order || allKnownOrders.find((order) => order.id === firstScannedCard?.order_id)
-    const firstOrderId = numeric(firstScannedCard?.order_id) ?? numeric(orderId)
-    const scannedOrderId = numeric(activeCard?.order_id)
-    if (scannedCards.length && firstOrderId != null && scannedOrderId != null && firstOrderId !== scannedOrderId) {
-      const firstSpecification = text(firstScannedCard?.specification_snapshot || firstScannedOrder?.specification).toLocaleLowerCase()
-      const firstMaterial = text(firstScannedCard?.material_snapshot || firstScannedOrder?.material).toLocaleLowerCase()
-      const scannedSpecification = text(activeCard?.specification_snapshot || scannedOrder?.specification).toLocaleLowerCase()
-      const scannedMaterial = text(activeCard?.material_snapshot || scannedOrder?.material).toLocaleLowerCase()
-      const sameProduct = Boolean(
-        firstSpecification
-        && firstMaterial
-        && firstSpecification === scannedSpecification
-        && firstMaterial === scannedMaterial
-      )
-      if (!sameProduct) {
-        throw new Error(`流程卡 ${normalizedCardNo} 属于另一规格或材质，不能和本次已扫包装一起出货。请分开登记。`)
+      let lookup: QualityProcessCardScanResult
+      try {
+        lookup = await qualityWorkflowApi.scanProcessCard(pendingCardNo)
+      } catch (error) {
+        if (/404|未找到|不存在/.test((error as Error).message || '')) lookup = { code: pendingCardNo }
+        else throw error
       }
-      message.info(`流程卡 ${normalizedCardNo} 属于另一张相同规格材质订单，已加入本次出货；确认时会按包装顺序自动分配。`)
-    }
-    if (!scannedCards.length && activeCard) {
-      const scannedSpec = activeCard.specification_snapshot || scannedOrder?.specification || ''
-      const scannedMaterial = activeCard.material_snapshot || scannedOrder?.material || ''
-      const scannedUnit = numeric(activeCard.unit_weight_g)
-      form.setFieldsValue({
-        order_id: scannedOrder?.id || activeCard.order_id,
-        product_name: activeCard.product_name_snapshot || scannedOrder?.product_name || '',
-        specification: scannedSpec,
-        specification_snapshot: scannedSpec,
-        material: scannedMaterial,
-        material_snapshot: scannedMaterial,
-        product_specification_id: scannedOrder?.product_specification_id ?? null,
-        unit_weight_g: scannedUnit ?? form.getFieldValue('unit_weight_g'),
-        process_card_shipment_quantity: processCardStandardQuantity(activeCard) ?? form.getFieldValue('process_card_shipment_quantity'),
-      })
-    }
-    const commonUnit = numeric(form.getFieldValue('unit_weight_g'))
-    const commonWeight = numeric(form.getFieldValue('single_batch_net_weight_kg'))
-    const commonQuantity = numeric(form.getFieldValue('process_card_shipment_quantity'))
-    const scannedUnit = numeric(activeCard?.unit_weight_g)
-    const scannedQuantity = processCardStandardQuantity(activeCard)
-    const needsIndividualWeights = Boolean(
-      weightEntryMode === 'same'
-      && scannedCards.length
-      && (
-        (scannedUnit != null && commonUnit != null && scannedUnit !== commonUnit)
-        || (scannedQuantity != null && commonQuantity != null && scannedQuantity !== commonQuantity)
+      if (entrySession !== entrySessionRef.current || !open) {
+        removePendingCard()
+        return false
+      }
+      const scanned = lookup.scanned_card
+      const activeCard = lookup.active_card || scanned
+      if (scanned?.replaced_by_id || (scanned && activeCard && String(scanned.id) !== String(activeCard.id))) {
+        throw new Error(`旧流程卡 ${pendingCardNo} 已作废，请扫描替代卡 ${activeCard?.card_no || '（见补卡记录）'}。`)
+      }
+      const lookupReturn = activeCard?.current_return || lookup.current_return
+      const waitingReturn = lookupReturn && !['RESHIPPED', 'SCRAPPED', 'CANCELLED'].includes(lookupReturn.status)
+        ? lookupReturn
+        : undefined
+      if (waitingReturn) {
+        if (scannedCards.length) throw new Error('已扫描普通出货流程卡，请完成或清空后再处理返工重新出货。')
+        const binding = activeCard?.unit_binding || activeCard?.binding || lookup.binding || waitingReturn.binding
+        const source = waitingReturn.source
+        const linkedOrder = allKnownOrders.find((order) => order.id === (binding?.order_id || activeCard?.order_id))
+        setReshipCase(waitingReturn)
+        form.setFieldsValue({
+          order_id: linkedOrder?.id || binding?.order_id || activeCard?.order_id,
+          product_name: binding?.product_name || source?.product_name || activeCard?.product_name_snapshot || '',
+          specification: binding?.specification || source?.specification || activeCard?.specification_snapshot || '',
+          specification_snapshot: binding?.specification || source?.specification || activeCard?.specification_snapshot || '',
+          material: binding?.material || source?.material || activeCard?.material_snapshot || '',
+          material_snapshot: binding?.material || source?.material || activeCard?.material_snapshot || '',
+          unit_weight_g: numeric(activeCard?.unit_weight_g),
+          single_batch_net_weight_kg: numeric(binding?.net_weight_kg ?? source?.single_batch_net_weight_kg),
+          product_batch_count: 1,
+          batch_count: 1,
+          process_card_shipment_quantity: numeric(binding?.piece_quantity ?? source?.pieces_per_batch),
+        })
+        replacePendingCard(activeCard?.card_no || pendingCardNo, lookup)
+        setScannerOpen(false)
+        message.warning(`${activeCard?.card_no || pendingCardNo} 是${waitingReturn.return_label || `第${waitingReturn.return_round || 1}次退货返工`}产品，已带出上次数量和重量；核对或修改后确认重新出货。`)
+        return true
+      }
+      if (reshipCase) throw new Error('当前正在处理返工品重新出货，请先完成或关闭后再扫描普通出货。')
+      const existingBinding = activeCard?.unit_binding || activeCard?.binding || lookup.binding
+      if (existingBinding) {
+        throw new Error(`流程卡 ${activeCard?.card_no || pendingCardNo} 已绑定出货单 ${existingBinding.shipment_no || existingBinding.shipment_batch_id} 第 ${existingBinding.shipment_unit_no} 包，不能重复出货；如为退货返工，请先在退货端登记。`)
+      }
+      const normalizedCardNo = activeCard?.card_no || pendingCardNo
+      const scannedOrder = activeCard?.order || allKnownOrders.find((order) => order.id === activeCard?.order_id)
+      if (String(scannedOrder?.status || '').toUpperCase() === 'CANCELLED') {
+        throw new Error(`流程卡 ${normalizedCardNo} 所属订单已取消，不能登记出货。`)
+      }
+      const firstScannedCard = scannedCards[0]?.lookup.active_card || scannedCards[0]?.lookup.scanned_card
+      const firstScannedOrder = firstScannedCard?.order || allKnownOrders.find((order) => order.id === firstScannedCard?.order_id)
+      const firstOrderId = numeric(firstScannedCard?.order_id) ?? numeric(orderId)
+      const scannedOrderId = numeric(activeCard?.order_id)
+      if (scannedCards.length && firstOrderId != null && scannedOrderId != null && firstOrderId !== scannedOrderId) {
+        const firstSpecification = text(firstScannedCard?.specification_snapshot || firstScannedOrder?.specification).toLocaleLowerCase()
+        const firstMaterial = text(firstScannedCard?.material_snapshot || firstScannedOrder?.material).toLocaleLowerCase()
+        const scannedSpecification = text(activeCard?.specification_snapshot || scannedOrder?.specification).toLocaleLowerCase()
+        const scannedMaterial = text(activeCard?.material_snapshot || scannedOrder?.material).toLocaleLowerCase()
+        const sameProduct = Boolean(
+          firstSpecification
+          && firstMaterial
+          && firstSpecification === scannedSpecification
+          && firstMaterial === scannedMaterial
+        )
+        if (!sameProduct) {
+          throw new Error(`流程卡 ${normalizedCardNo} 属于另一规格或材质，不能和本次已扫包装一起出货。请分开登记。`)
+        }
+        message.info(`流程卡 ${normalizedCardNo} 属于另一张相同规格材质订单，已加入本次出货；确认时会按包装顺序自动分配。`)
+      }
+      if (!scannedCards.length && activeCard) {
+        const scannedSpec = activeCard.specification_snapshot || scannedOrder?.specification || ''
+        const scannedMaterial = activeCard.material_snapshot || scannedOrder?.material || ''
+        const scannedUnit = numeric(activeCard.unit_weight_g)
+        form.setFieldsValue({
+          order_id: scannedOrder?.id || activeCard.order_id,
+          product_name: activeCard.product_name_snapshot || scannedOrder?.product_name || '',
+          specification: scannedSpec,
+          specification_snapshot: scannedSpec,
+          material: scannedMaterial,
+          material_snapshot: scannedMaterial,
+          product_specification_id: scannedOrder?.product_specification_id ?? null,
+          unit_weight_g: scannedUnit ?? form.getFieldValue('unit_weight_g'),
+          process_card_shipment_quantity: processCardStandardQuantity(activeCard) ?? form.getFieldValue('process_card_shipment_quantity'),
+        })
+      }
+      const commonUnit = numeric(form.getFieldValue('unit_weight_g'))
+      const commonWeight = numeric(form.getFieldValue('single_batch_net_weight_kg'))
+      const commonQuantity = numeric(form.getFieldValue('process_card_shipment_quantity'))
+      const scannedUnit = numeric(activeCard?.unit_weight_g)
+      const scannedQuantity = processCardStandardQuantity(activeCard)
+      const needsIndividualWeights = Boolean(
+        weightEntryMode === 'same'
+        && scannedCards.length
+        && (
+          (scannedUnit != null && commonUnit != null && scannedUnit !== commonUnit)
+          || (scannedQuantity != null && commonQuantity != null && scannedQuantity !== commonQuantity)
+        )
       )
-    )
-    if (needsIndividualWeights) {
-      // A tail card or a card with another saved unit weight cannot safely use
-      // one shared 10% limit. Preserve the fast scan flow, but switch to one
-      // editable row per physical package automatically.
-      setWeightEntryMode('individual')
-      setScannedLineOverrides((previous) => {
-        const next = { ...previous }
-        scannedCards.forEach((item) => {
-          const card = item.lookup.active_card || item.lookup.scanned_card
-          next[item.cardNo] = {
-            unit_weight_g: next[item.cardNo]?.unit_weight_g ?? numeric(card?.unit_weight_g) ?? commonUnit,
-            single_batch_net_weight_kg: next[item.cardNo]?.single_batch_net_weight_kg ?? commonWeight,
-            process_card_shipment_quantity: next[item.cardNo]?.process_card_shipment_quantity
-              ?? processCardStandardQuantity(card)
-              ?? commonQuantity,
+      if (needsIndividualWeights) {
+        // A tail card or a card with another saved unit weight cannot safely use
+        // one shared 10% limit. Preserve the fast scan flow, but switch to one
+        // editable row per physical package automatically.
+        setWeightEntryMode('individual')
+        setScannedLineOverrides((previous) => {
+          const next = { ...previous }
+          scannedCards.forEach((item) => {
+            const card = item.lookup.active_card || item.lookup.scanned_card
+            next[item.cardNo] = {
+              unit_weight_g: next[item.cardNo]?.unit_weight_g ?? numeric(card?.unit_weight_g) ?? commonUnit,
+              single_batch_net_weight_kg: next[item.cardNo]?.single_batch_net_weight_kg ?? commonWeight,
+              process_card_shipment_quantity: next[item.cardNo]?.process_card_shipment_quantity
+                ?? processCardStandardQuantity(card)
+                ?? commonQuantity,
+              product_batch_count: 1,
+            }
+          })
+          next[normalizedCardNo] = {
+            unit_weight_g: scannedUnit ?? commonUnit,
+            single_batch_net_weight_kg: commonWeight,
+            process_card_shipment_quantity: scannedQuantity ?? commonQuantity,
             product_batch_count: 1,
           }
+          return next
         })
-        next[normalizedCardNo] = {
-          unit_weight_g: scannedUnit ?? commonUnit,
-          single_batch_net_weight_kg: commonWeight,
-          process_card_shipment_quantity: scannedQuantity ?? commonQuantity,
-          product_batch_count: 1,
-        }
-        return next
-      })
-      message.warning('检测到流程卡标准数量或产品单重不同，已自动切换为“逐包填写不同重量”，避免套用错误的10%上限。')
-    } else if (weightEntryMode === 'individual') {
-      setScannedLineOverrides((previous) => ({
-        ...previous,
-        [normalizedCardNo]: {
-          unit_weight_g: scannedUnit ?? commonUnit,
-          single_batch_net_weight_kg: commonWeight,
-          process_card_shipment_quantity: scannedQuantity ?? commonQuantity,
-          product_batch_count: 1,
-        },
-      }))
+        message.warning('检测到流程卡标准数量或产品单重不同，已自动切换为“逐包填写不同重量”，避免套用错误的10%上限。')
+      } else if (weightEntryMode === 'individual') {
+        setScannedLineOverrides((previous) => ({
+          ...previous,
+          [normalizedCardNo]: {
+            unit_weight_g: scannedUnit ?? commonUnit,
+            single_batch_net_weight_kg: commonWeight,
+            process_card_shipment_quantity: scannedQuantity ?? commonQuantity,
+            product_batch_count: 1,
+          },
+        }))
+      }
+      replacePendingCard(normalizedCardNo, lookup)
+      return true
+    } catch (error) {
+      removePendingCard()
+      throw error
     }
-    setScannedCards((items) => [...items, { cardNo: normalizedCardNo, lookup }])
-    return true
   }
 
   const submit = async () => {
@@ -1910,7 +1938,7 @@ export function QualityWeightShipmentDrawer({
           description={`流程卡 ${reshipCase.active_process_card_no || reshipCase.process_card_no || reshipCase.process_card?.card_no || '已识别'}；已带出上一次的数量和重量，现场有变化可以直接修改。确认后自动变为“已重新出货”。`}
           action={<Button size="small" onClick={() => setReshipCase(undefined)}>取消返工出货</Button>}
         /> : scannedCards.length ? <>
-          <div className="quality-weight-scanned-cards">{scannedCards.map((item, index) => <Tag key={item.cardNo} closable onClose={() => removeScannedCard(item.cardNo)}>{index + 1}. {item.cardNo}</Tag>)}</div>
+          <div className="quality-weight-scanned-cards">{scannedCards.map((item, index) => <Tag key={item.cardNo} color={item.pending ? 'processing' : undefined} closable onClose={() => removeScannedCard(item.cardNo)}>{index + 1}. {item.cardNo}{item.pending ? '（校验中）' : ''}</Tag>)}</div>
           <Space wrap className="quality-weight-scan-mode">
             <Radio.Group
               value={weightEntryMode}
@@ -1998,6 +2026,7 @@ export function QualityWeightShipmentDrawer({
               searchValue={candidateQuery}
               onSearch={setCandidateQuery}
               onOpenChange={(visible) => {
+                setCandidateSelectorOpen(visible)
                 if (!visible) return
                 if (!candidateLoaded && !loadingCandidates) {
                   if (selectedOrder) void loadCandidates('', { specification: selectedOrder.specification, material: selectedOrder.material })
