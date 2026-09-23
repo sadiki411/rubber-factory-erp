@@ -269,7 +269,11 @@ export function QualityPage() {
     queryKey: ['quality', 'shipment-batches', 'confirmed-options'],
     queryFn: async () => toList(await qualityWorkflowApi.listShipmentBatches({ status: 'CONFIRMED', ordering: '-shipment_date', page_size: 200 })),
     retry: false,
-    enabled: reworksTab || Boolean(shipmentForm) || Boolean(batchAmendItem) || returnReworkOpen || flowCardReturnOpen,
+    // A new shipment only needs the server-side duplicate check. Loading the
+    // full confirmed-batch history here can be megabytes of nested line data
+    // and competes with the first process-card scan on SQLite. Keep this
+    // option list for workflows that actually select a historical batch.
+    enabled: reworksTab || returnReworkOpen || flowCardReturnOpen,
   })
   const reworkCasesQuery = useQuery({
     queryKey: ['quality', 'rework-cases'],
@@ -319,7 +323,7 @@ export function QualityPage() {
     if (workflowTab || dailyTab || reworksTab || shipmentForm) tasks.push(shipmentOptionsQuery.refetch())
     if (workflowTab || replacementOpen) tasks.push(processCardsQuery.refetch())
     if (workflowTab) tasks.push(unitWeightsQuery.refetch(), batchesQuery.refetch())
-    if (reworksTab || shipmentForm || batchAmendItem || returnReworkOpen || flowCardReturnOpen) tasks.push(shipmentBatchOptionsQuery.refetch())
+    if (reworksTab || returnReworkOpen || flowCardReturnOpen) tasks.push(shipmentBatchOptionsQuery.refetch())
     if (workflowTab || reworksTab) tasks.push(reworkCasesQuery.refetch())
     if (reworksTab) tasks.push(reworksQuery.refetch())
     await Promise.all([

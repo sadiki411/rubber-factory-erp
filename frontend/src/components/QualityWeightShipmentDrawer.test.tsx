@@ -157,6 +157,22 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(screen.getByText('批数快捷计算：')).toBeInTheDocument()
   })
 
+  it('loads candidates once when the order selector is opened', async () => {
+    const user = userEvent.setup()
+    renderDrawer()
+
+    await user.click(screen.getByRole('combobox', { name: /候选订单/ }))
+    await waitFor(() => expect(apiMocks.listShipmentCandidates).toHaveBeenCalledTimes(1))
+
+    expect(apiMocks.listShipmentCandidates).toHaveBeenCalledWith(expect.objectContaining({
+      q: undefined,
+      specification: undefined,
+      material: undefined,
+      page_size: 50,
+      candidate: true,
+    }))
+  }, 20_000)
+
   it('does not confirm a hand-entered shipment without an explicit order', async () => {
     const user = userEvent.setup()
     const { onSubmit } = renderDrawer()

@@ -1024,7 +1024,6 @@ export function QualityWeightShipmentDrawer({
     if (!open || !candidateSelectorOpen) return
     const specification = text(specificationValue)
     const material = text(materialValue)
-    if (!candidateQuery && !specification && !material) return
     const timer = window.setTimeout(() => {
       if (candidateQuery) void loadCandidates(candidateQuery, { specification: '', material: '' })
       else void loadCandidates('', { specification, material })
@@ -2025,14 +2024,7 @@ export function QualityWeightShipmentDrawer({
               onChange={chooseOrder}
               searchValue={candidateQuery}
               onSearch={setCandidateQuery}
-              onOpenChange={(visible) => {
-                setCandidateSelectorOpen(visible)
-                if (!visible) return
-                if (!candidateLoaded && !loadingCandidates) {
-                  if (selectedOrder) void loadCandidates('', { specification: selectedOrder.specification, material: selectedOrder.material })
-                  else void loadCandidates(candidateQuery, { specification: '', material: '' })
-                }
-              }}
+              onOpenChange={setCandidateSelectorOpen}
               notFoundContent={loadingCandidates ? '正在读取可出货订单…' : '没有仍可出货的候选订单'}
             />
           </Form.Item>
