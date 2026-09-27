@@ -127,7 +127,8 @@ jobs:
             fi
           }
           mkdir -p "$DEPLOY_PATH/runtime/backups"
-          if compose_cmd ps --status running --services 2>/dev/null | grep -qx backend; then
+          backend_id="$(compose_cmd ps -q backend 2>/dev/null | head -n 1)"
+          if [ -n "$backend_id" ] && [ "$(docker inspect --format '{{.State.Running}}' "$backend_id" 2>/dev/null || true)" = true ]; then
             compose_cmd exec -T backend python manage.py backup_erp
           fi
           REMOTE_BACKUP
@@ -157,13 +158,14 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          GITHUB_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         shell: bash
         run: |
           set -euo pipefail
           ssh -i "$HOME/.ssh/erp-deploy-key" -p "$DEPLOY_PORT" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
-            "$DEPLOY_USER@$DEPLOY_HOST" "DEPLOY_PATH='$DEPLOY_PATH' bash -s" <<'REMOTE_DEPLOY'
+            "$DEPLOY_USER@$DEPLOY_HOST" "DEPLOY_PATH='$DEPLOY_PATH' RELEASE_SHA='$GITHUB_SHA' bash -s" <<'REMOTE_DEPLOY'
           set -euo pipefail
           cd "$DEPLOY_PATH"
           compose_cmd() {
@@ -173,27 +175,45 @@ jobs:
               docker-compose "$@"
             fi
           }
-          compose_cmd pull
-          compose_cmd up -d --remove-orphans
-          for service in backend web; do
-            ready=false
-            for attempt in $(seq 1 60); do
-              container_id="$(compose_cmd ps -q "$service" | head -n 1)"
-              if [ -n "$container_id" ]; then
-                health="$(docker inspect --format '{{.State.Health.Status}}' "$container_id" 2>/dev/null || true)"
-                if [ "$health" = healthy ]; then
-                  ready=true
-                  break
+          release_ready=false
+          for release_attempt in $(seq 1 12); do
+            compose_cmd pull
+            compose_cmd up -d --remove-orphans
+            for service in backend web; do
+              ready=false
+              for health_attempt in $(seq 1 60); do
+                container_id="$(compose_cmd ps -q "$service" | head -n 1)"
+                if [ -n "$container_id" ]; then
+                  health="$(docker inspect --format '{{.State.Health.Status}}' "$container_id" 2>/dev/null || true)"
+                  if [ "$health" = healthy ]; then
+                    ready=true
+                    break
+                  fi
                 fi
+                sleep 2
+              done
+              if [ "$ready" != true ]; then
+                compose_cmd ps
+                compose_cmd logs --tail=80 "$service"
+                exit 1
               fi
-              sleep 2
             done
-            if [ "$ready" != true ]; then
-              compose_cmd ps
-              compose_cmd logs --tail=80 "$service"
-              exit 1
+
+            backend_id="$(compose_cmd ps -q backend | head -n 1)"
+            web_id="$(compose_cmd ps -q web | head -n 1)"
+            backend_revision="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$backend_id" 2>/dev/null || true)"
+            web_revision="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$web_id" 2>/dev/null || true)"
+            if [ "$backend_revision" = "$RELEASE_SHA" ] && [ "$web_revision" = "$RELEASE_SHA" ]; then
+              release_ready=true
+              break
             fi
+            echo "Release image not visible yet (attempt ${release_attempt}/12): backend=${backend_revision:-missing}, web=${web_revision:-missing}, expected=$RELEASE_SHA"
+            sleep 10
           done
+          if [ "$release_ready" != true ]; then
+            echo "Release containers do not match expected commit $RELEASE_SHA" >&2
+            exit 1
+          fi
           compose_cmd ps
           REMOTE_DEPLOY
 
