@@ -177,7 +177,11 @@ jobs:
           }
           release_ready=false
           for release_attempt in $(seq 1 12); do
-            compose_cmd pull
+            # Only the ERP images belong to this release. Pulling every
+            # Compose service also contacts Docker Hub for Watchtower; a
+            # transient Docker Hub timeout must not block an otherwise valid
+            # ERP deployment from GHCR.
+            compose_cmd pull backend web backup
             compose_cmd up -d --remove-orphans
             for service in backend web; do
               ready=false
