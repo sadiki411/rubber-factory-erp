@@ -54,6 +54,21 @@ describe('QualityQrScanner', () => {
     await waitFor(() => expect(onScan).toHaveBeenCalledTimes(2))
   })
 
+  it('allows a retry in the same camera session after the parent rejects an optimistic scan', async () => {
+    const cardNo = '04-M003-2608210031'
+    const onScan = vi.fn().mockResolvedValue(true)
+    const { rerender } = render(<App><QualityQrScanner open initialValues={[cardNo]} onClose={vi.fn()} onScan={onScan} /></App>)
+    expect(await screen.findByText('本次已扫 1 张')).toBeInTheDocument()
+
+    rerender(<App><QualityQrScanner open initialValues={[]} onClose={vi.fn()} onScan={onScan} /></App>)
+    expect(await screen.findByText('本次已扫 0 张')).toBeInTheDocument()
+
+    const input = screen.getByPlaceholderText(/04-M003-2608210028/)
+    fireEvent.change(input, { target: { value: cardNo } })
+    fireEvent.click(screen.getByRole('button', { name: /加入/ }))
+    await waitFor(() => expect(onScan).toHaveBeenCalledWith(cardNo))
+  })
+
   it('does not restart the phone camera when the parent supplies fresh callbacks or seed arrays', async () => {
     const originalSecureContext = Object.getOwnPropertyDescriptor(window, 'isSecureContext')
     const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices')

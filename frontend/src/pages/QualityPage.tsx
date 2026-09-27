@@ -273,7 +273,7 @@ export function QualityPage() {
     // full confirmed-batch history here can be megabytes of nested line data
     // and competes with the first process-card scan on SQLite. Keep this
     // option list for workflows that actually select a historical batch.
-    enabled: reworksTab || returnReworkOpen || flowCardReturnOpen,
+    enabled: reworksTab || returnReworkOpen,
   })
   const reworkCasesQuery = useQuery({
     queryKey: ['quality', 'rework-cases'],
@@ -323,7 +323,7 @@ export function QualityPage() {
     if (workflowTab || dailyTab || reworksTab || shipmentForm) tasks.push(shipmentOptionsQuery.refetch())
     if (workflowTab || replacementOpen) tasks.push(processCardsQuery.refetch())
     if (workflowTab) tasks.push(unitWeightsQuery.refetch(), batchesQuery.refetch())
-    if (reworksTab || returnReworkOpen || flowCardReturnOpen) tasks.push(shipmentBatchOptionsQuery.refetch())
+    if (reworksTab || returnReworkOpen) tasks.push(shipmentBatchOptionsQuery.refetch())
     if (workflowTab || reworksTab) tasks.push(reworkCasesQuery.refetch())
     if (reworksTab) tasks.push(reworksQuery.refetch())
     await Promise.all([

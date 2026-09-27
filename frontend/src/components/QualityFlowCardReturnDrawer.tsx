@@ -1,6 +1,7 @@
 import {
   CameraOutlined,
   LinkOutlined,
+  LoadingOutlined,
   QrcodeOutlined,
   SwapOutlined,
 } from '@ant-design/icons'
@@ -28,6 +29,7 @@ type SourceSelection = {
 type PendingCard = {
   cardNo: string
   lookup: QualityProcessCardScanResult
+  pending?: boolean
 }
 
 type ReturnFormValues = {
@@ -74,6 +76,7 @@ function sourceSelectionFromKey(value: string, batches: QualityReturnableBatch[]
 }
 
 function scanStatus(card: PendingCard) {
+  if (card.pending) return <Tag color="processing" icon={<LoadingOutlined />}>校验中</Tag>
   if (processCardBinding(card.lookup)) return <Tag color="success" icon={<LinkOutlined />}>已锁定原出货</Tag>
   return <Tag color="warning">首次绑定</Tag>
 }
@@ -132,7 +135,7 @@ export function QualityFlowCardReturnDrawer({
   const candidatesQuery = useQuery({
     queryKey: ['quality', 'returnable-batches', 'flow-card-binding'],
     queryFn: async () => toList(await qualityWorkflowApi.listReturnableBatches({ page_size: 200 })),
-    enabled: open && cards.some((item) => !processCardBinding(item.lookup)),
+    enabled: open && cards.some((item) => !item.pending && !processCardBinding(item.lookup)),
     retry: false,
   })
 
@@ -142,6 +145,7 @@ export function QualityFlowCardReturnDrawer({
     const inherited = new Map<number, QualityEmployee>()
     let missing = 0
     for (const card of cards) {
+      if (card.pending) continue
       const inspectors = cardSourceInspectors(card, candidates, sources)
       if (!inspectors.length) missing += 1
       inspectors.forEach((inspector) => inherited.set(inspector.id, inspector as QualityEmployee))
@@ -155,6 +159,7 @@ export function QualityFlowCardReturnDrawer({
   }))), [candidates])
   const reasonOptions = reasons.map((item) => ({ value: item.id, label: item.name || item.label || item.code || String(item.id) }))
   const secondaryOptions = reasonOptions.filter((item) => String(item.value) !== String(primaryReasonId ?? ''))
+  const hasPendingCards = cards.some((item) => item.pending)
 
   const closeDrawer = () => {
     setScannerOpen(false)
@@ -164,27 +169,49 @@ export function QualityFlowCardReturnDrawer({
     onClose()
   }
 
-  const handleScan = async (cardNo: string) => {
-    let lookup: QualityProcessCardScanResult
-    try {
-      lookup = await qualityWorkflowApi.scanProcessCard(cardNo)
-    } catch (error) {
-      const text = (error as Error).message || ''
-      // A never-before-recorded card is still valid: scan-return will create
-      // and bind it once the operator selects the original shipment.
-      if (/404|未找到|不存在/.test(text)) lookup = { code: cardNo }
-      else throw error
-    }
-    const scanned = lookup.scanned_card
-    const active = activeCard(lookup)
-    if (scanned?.replaced_by_id || (scanned && active && String(scanned.id) !== String(active.id))) {
-      throw new Error(`旧流程卡 ${cardNo} 已作废，请扫描替代卡 ${active?.card_no || '（见补卡记录）'}。`)
-    }
-    const openReturn = currentReturn(lookup)
-    if (openReturn && !['RESHIPPED', 'SCRAPPED', 'CANCELLED'].includes(openReturn.status)) {
-      throw new Error(`${cardNo} 当前已有“${openReturn.return_label || '待返工'}”记录，请返工完成后在出货端重新扫码。`)
-    }
-    setCards((items) => [...items, { cardNo: active?.card_no || normalizeProcessCardQrText(cardNo), lookup }])
+  const handleScan = (cardNo: string) => {
+    const normalizedCardNo = normalizeProcessCardQrText(cardNo)
+    setCards((items) => items.some((item) => item.cardNo === normalizedCardNo)
+      ? items
+      : [...items, { cardNo: normalizedCardNo, lookup: { code: normalizedCardNo }, pending: true }])
+    // Accept the camera scan immediately so the operator can keep moving.
+    // Validation updates this visible placeholder in the background; a
+    // rejected card is removed again with a concrete error message.
+    void (async () => {
+      try {
+        let lookup: QualityProcessCardScanResult
+        try {
+          lookup = await qualityWorkflowApi.scanProcessCard(normalizedCardNo)
+        } catch (error) {
+          const text = (error as Error).message || ''
+          // A never-before-recorded card is still valid: scan-return will
+          // create and bind it once the operator selects the original shipment.
+          if (/404|未找到|不存在/.test(text)) lookup = { code: normalizedCardNo }
+          else throw error
+        }
+        const scanned = lookup.scanned_card
+        const active = activeCard(lookup)
+        if (scanned?.replaced_by_id || (scanned && active && String(scanned.id) !== String(active.id))) {
+          throw new Error(`旧流程卡 ${normalizedCardNo} 已作废，请扫描替代卡 ${active?.card_no || '（见补卡记录）'}。`)
+        }
+        const openReturn = currentReturn(lookup)
+        if (openReturn && !['RESHIPPED', 'SCRAPPED', 'CANCELLED'].includes(openReturn.status)) {
+          throw new Error(`${normalizedCardNo} 当前已有“${openReturn.return_label || '待返工'}”记录，请返工完成后在出货端重新扫码。`)
+        }
+        const resolvedCardNo = active?.card_no || normalizedCardNo
+        setCards((items) => items.map((item) => item.cardNo === normalizedCardNo
+          ? { cardNo: resolvedCardNo, lookup, pending: false }
+          : item))
+      } catch (error) {
+        setCards((items) => items.filter((item) => item.cardNo !== normalizedCardNo))
+        setSources((values) => {
+          const next = { ...values }
+          delete next[normalizedCardNo]
+          return next
+        })
+        message.error((error as Error).message || `流程卡 ${normalizedCardNo} 校验失败，请重试。`)
+      }
+    })()
     return true
   }
 
@@ -201,6 +228,10 @@ export function QualityFlowCardReturnDrawer({
     if (saving) return
     if (!cards.length) {
       message.warning('请先扫描至少一张退回产品的流程卡。')
+      return
+    }
+    if (hasPendingCards) {
+      message.info('仍有流程卡正在校验，请稍候。')
       return
     }
     const values = await form.validateFields()
@@ -265,7 +296,7 @@ export function QualityFlowCardReturnDrawer({
       width={720}
       className="quality-return-rework-drawer quality-flow-card-return-drawer"
       title="扫描登记退货返工"
-      footer={<Space className="drawer-footer-actions"><Button onClick={closeDrawer}>取消</Button><Button icon={<CameraOutlined />} onClick={() => setScannerOpen(true)}>继续扫码</Button><Button type="primary" loading={saving} disabled={!cards.length} onClick={() => void submit()}>确认登记 {cards.length || ''} 批退货</Button></Space>}
+      footer={<Space className="drawer-footer-actions"><Button onClick={closeDrawer}>取消</Button><Button icon={<CameraOutlined />} onClick={() => setScannerOpen(true)}>继续扫码</Button><Button type="primary" loading={saving} disabled={!cards.length || hasPendingCards} onClick={() => void submit()}>确认登记 {cards.length || ''} 批退货</Button></Space>}
     >
       <Alert type="info" showIcon message="一张流程卡追踪一批产品" description="多批退货可连续扫码后统一填写日期和原因；系统仍为每张流程卡建立独立的第1次、第2次、第3次退货记录。" />
       <Button className="quality-flow-card-scan-button" type="primary" size="large" block icon={<QrcodeOutlined />} onClick={() => setScannerOpen(true)}>扫描流程卡二维码</Button>
@@ -283,7 +314,7 @@ export function QualityFlowCardReturnDrawer({
                 <span><small>订单 / 项次</small><b>{binding ? `${binding.order_no || '-'}${binding.item_no ? ` / ${binding.item_no}` : ''}` : processCardOrderText(card)}</b></span>
                 <span><small>产品 / 规格 / 材质</small><b>{binding ? [binding.product_name, binding.specification, binding.material].filter(Boolean).join(' · ') || '-' : [card?.product_name_snapshot, card?.specification_snapshot, card?.material_snapshot].filter(Boolean).join(' · ') || '首次绑定后自动带入'}</b></span>
               </div>
-              {binding ? <Typography.Text type="secondary">原出货 {binding.shipment_no || `#${binding.shipment_batch_id}`} · 第 {binding.shipment_unit_no} 批 · {qualityNumber(binding.piece_quantity)}件 / {qualityNumber(binding.net_weight_kg, 3)}kg</Typography.Text> : <Select
+              {item.pending ? <Typography.Text type="secondary"><LoadingOutlined /> 正在后台核对原出货记录，可继续扫描下一张。</Typography.Text> : binding ? <Typography.Text type="secondary">原出货 {binding.shipment_no || `#${binding.shipment_batch_id}`} · 第 {binding.shipment_unit_no} 批 · {qualityNumber(binding.piece_quantity)}件 / {qualityNumber(binding.net_weight_kg, 3)}kg</Typography.Text> : <Select
                 showSearch
                 optionFilterProp="label"
                 placeholder={candidatesQuery.isLoading ? '正在读取原出货…' : '首次退货：选择对应的原出货和物理批号'}
@@ -299,7 +330,7 @@ export function QualityFlowCardReturnDrawer({
           </List.Item>
         }}
       />}
-      {cards.some((item) => !processCardBinding(item.lookup)) && candidatesQuery.error && <Alert type="warning" showIcon message="原出货读取失败" description={(candidatesQuery.error as Error).message} action={<Button onClick={onBackfillShipment}>补录原出货</Button>} />}
+      {cards.some((item) => !item.pending && !processCardBinding(item.lookup)) && candidatesQuery.error && <Alert type="warning" showIcon message="原出货读取失败" description={(candidatesQuery.error as Error).message} action={<Button onClick={onBackfillShipment}>补录原出货</Button>} />}
 
       {!!cards.length && <Form form={form} layout="vertical" requiredMark="optional" className="quality-flow-card-return-form">
         <Typography.Title level={5}>本次共同信息</Typography.Title>

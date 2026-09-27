@@ -1929,7 +1929,7 @@ export function QualityWeightShipmentDrawer({
           ? '修改会原地重算出货件数、重量、订单分配和流程卡绑定，并保留纠正审计记录；请填写纠正原因后保存。'
           : '连续扫码时一张流程卡对应一包：重量相同可只填一次，扫码张数自动成为批数；重量不同可切换为逐包填写。每包换算件数超过对应流程卡标准数量 10% 会阻止提交。'}
       />
-      {!basketLineMode && <Card size="small" className="quality-weight-scan-card" title="流程卡扫码（选填）" extra={<Button type="primary" icon={<QrcodeOutlined />} onClick={() => setScannerOpen(true)}>连续扫码</Button>}>
+      {!basketLineMode && <Card size="small" className="quality-weight-scan-card" title="流程卡扫码（有卡产品请逐包扫描）" extra={<Button type="primary" icon={<QrcodeOutlined />} onClick={() => setScannerOpen(true)}>连续扫码</Button>}>
         {reshipCase ? <Alert
           type="warning"
           showIcon
@@ -1954,8 +1954,9 @@ export function QualityWeightShipmentDrawer({
           {weightEntryMode === 'same'
             ? <Typography.Text type="secondary">已扫 {scannedCards.length} 张卡＝{scannedCards.length} 包；共用一次单重和单批净重，批数已自动设为至少 {scannedCards.length} 批。当前共 {effectiveBatchCount} 批，另有 {unscannedBatchCount} 批未扫码。</Typography.Text>
             : <Alert type="info" showIcon message={`已扫 ${scannedCards.length} 张卡＝${scannedCards.length} 包`} description="每张卡会生成一条独立重量明细；切换时已用当前公共单重、净重和流程卡数量预填，可只修改重量不同的包。" />}
+          {weightEntryMode === 'same' && unscannedBatchCount > 0 && <Alert type="warning" showIcon message={`还有 ${unscannedBatchCount} 包未扫描流程卡`} description="有流程卡的产品请补扫完整；未扫码的出货记录仍会保存，但以后退货扫码时无法自动找到这包原出货。只有确实没有流程卡的手工出货才保留未扫码。" />}
           {weightEntryMode === 'same' && scannedCards.length > effectiveBatchCount && <Alert type="error" showIcon message="扫码张数超过相同称重批数" description="请增加批数或移除多余流程卡后再确认。" />}
-        </> : <Typography.Text type="secondary">正常出货不强制逐张扫码；愿意扫码时可连续扫任意部分，其余批次仍按“卡号未录入”正常出货。退货时再扫码即可首次绑定。</Typography.Text>}
+        </> : <Alert type="warning" showIcon message="本次尚未扫描流程卡" description="翔邦等有流程卡的产品请先逐包扫码，否则以后退货扫码时无法自动找到原出货。只有确实没有流程卡的手工订单才直接确认出货。" />}
       </Card>}
       {amendConfirmed && activeBatch?.status === 'CONFIRMED' && <Card
         size="small"
@@ -2126,8 +2127,8 @@ export function QualityWeightShipmentDrawer({
       </div>
       <QualityQrScanner
         open={open && scannerOpen}
-        title="扫描出货流程卡（选填）"
-        description="可连续扫描本次出货中的部分或全部流程卡；未扫描的批次仍允许出货。扫到待返工卡时会自动切换为返工重新出货。"
+        title="扫描出货流程卡"
+        description="有流程卡的产品请逐包扫全；未扫描的包虽然仍可出货，但退货时无法自动追溯原出货。扫到待返工卡时会自动切换为返工重新出货。"
         initialValues={scannedCards.map((item) => item.cardNo)}
         onClose={() => setScannerOpen(false)}
         onScan={handleShipmentCardScan}

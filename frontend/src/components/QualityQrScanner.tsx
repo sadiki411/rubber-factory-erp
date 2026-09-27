@@ -101,12 +101,21 @@ export function QualityQrScanner({
   // and restart an active phone camera session. This effect is declared before
   // the open/close effect below, so a newly opened session sees fresh seeds.
   useEffect(() => {
-    initialValuesRef.current = initialValues.map(normalizeProcessCardQrText).filter(Boolean)
+    const normalizedInitialValues = initialValues.map(normalizeProcessCardQrText).filter(Boolean)
+    initialValuesRef.current = normalizedInitialValues
+    // The parent can reject a scan after an optimistic, immediate UI update.
+    // Reconcile the duplicate guard without restarting the camera so that a
+    // failed card can be scanned again during the same open session.
+    if (open) {
+      scannedRef.current = new Set(normalizedInitialValues)
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setScanned(normalizedInitialValues)
+    }
     onCloseRef.current = onClose
     onScanRef.current = onScan
     continuousRef.current = continuous
     messageRef.current = message
-  }, [continuous, initialValues, message, onClose, onScan])
+  }, [continuous, initialValues, message, onClose, onScan, open])
 
   const stopCamera = useCallback(() => {
     cameraSessionRef.current += 1

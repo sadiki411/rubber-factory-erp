@@ -61,6 +61,10 @@ vi.mock('../components/QualityReturnReworkDrawer', () => ({
   QualityReturnReworkAttemptDrawer: () => null,
   QualityReworkCaseDetailDrawer: () => null,
 }))
+vi.mock('../components/QualityFlowCardReturnDrawer', () => ({
+  QualityFlowCardReturnDrawer: ({ open }: any) => open ? <div role="dialog" aria-label="流程卡退货抽屉">流程卡退货扫码</div> : null,
+  QualityProcessCardReplacementDrawer: () => null,
+}))
 
 const weightedBatch = {
   id: 1,
@@ -161,6 +165,25 @@ describe('QualityPage unified shipment ledger', () => {
     fireEvent.click(await screen.findByRole('button', { name: '模拟确认出货' }))
     expect(await screen.findByText('整批退货候选')).toBeInTheDocument()
   }, 30_000)
+
+  it('does not download the complete confirmed-shipment history when scan return opens', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<MemoryRouter><QueryClientProvider client={client}><App><QualityPage /></App></QueryClientProvider></MemoryRouter>)
+    await screen.findByText('品检出货与退货返工')
+
+    const completeHistoryCallCount = () => apiMocks.listShipmentBatches.mock.calls.filter(([filters]) => (
+      filters?.status === 'CONFIRMED'
+      && filters?.ordering === '-shipment_date'
+      && filters?.page_size === 200
+      && filters?.date_from == null
+      && filters?.date_to == null
+    )).length
+    const beforeOpen = completeHistoryCallCount()
+
+    fireEvent.click(screen.getAllByRole('button', { name: /扫码登记退货/ })[0])
+    expect(await screen.findByText('流程卡退货扫码')).toBeInTheDocument()
+    expect(completeHistoryCallCount()).toBe(beforeOpen)
+  })
 
   it('filters return cases by source shipment, order, specification and material', async () => {
     apiMocks.listReworkCases.mockResolvedValue([
