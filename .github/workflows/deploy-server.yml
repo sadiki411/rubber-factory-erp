@@ -182,7 +182,7 @@ jobs:
             # transient Docker Hub timeout must not block an otherwise valid
             # ERP deployment from GHCR.
             compose_cmd pull backend web backup
-            compose_cmd up -d --remove-orphans
+            compose_cmd up -d --remove-orphans backend web backup
             for service in backend web; do
               ready=false
               for health_attempt in $(seq 1 60); do
