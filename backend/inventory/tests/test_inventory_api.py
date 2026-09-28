@@ -164,6 +164,70 @@ class InventoryApiTests(APITestCase):
         self.assertIsNone(product.product_specification_id)
         self.assertFalse(ProductUnitWeight.objects.filter(product_specification=first).exists())
 
+    def test_received_inventory_product_details_can_be_corrected_and_weight_is_remembered(self):
+        specification = ProductSpecification.objects.create(
+            product_name="产品100-正确名称", specification="100A", material="NBR",
+        )
+        created = self.receipt(batch_no="CORRECT-001")
+        container_id = created.json()["id"]
+
+        corrected = self.client.post(
+            f"/api/inventory/containers/{container_id}/correct-product/",
+            {
+                "product_code": "P-100-CORRECT",
+                "product_name": "产品100-正确名称",
+                "specification": "100A",
+                "material": "NBR",
+                "unit_weight_g": "2.75000",
+                "reason": "入库时编号和单重填错",
+            },
+            format="json",
+        )
+
+        self.assertEqual(corrected.status_code, 200, corrected.content)
+        container = InventoryContainer.objects.select_related("batch__product").get(pk=container_id)
+        self.assertEqual(container.batch.product.product_code, "P-100-CORRECT")
+        self.assertEqual(container.batch.product.unit_weight_g, Decimal("2.75000"))
+        self.assertEqual(container.batch.product.product_specification_id, specification.pk)
+        self.assertTrue(ProductUnitWeight.objects.filter(
+            product_specification=specification,
+            unit_weight_g=Decimal("2.75000"),
+        ).exists())
+        correction = container.transactions.filter(transaction_type="ADJUST").get()
+        self.assertIn("入库时编号和单重填错", correction.reason)
+
+    def test_received_inventory_can_be_reassigned_to_an_existing_product(self):
+        created = self.receipt(batch_no="REASSIGN-001")
+        container_id = created.json()["id"]
+        replacement = InventoryProduct.objects.create(
+            product_code="P-200", product_name="产品200",
+            specification="200A", material="EPDM", unit_weight_g="3.10000",
+        )
+
+        corrected = self.client.post(
+            f"/api/inventory/containers/{container_id}/correct-product/",
+            {"replacement_product_id": replacement.pk, "reason": "入库时选错产品"},
+            format="json",
+        )
+
+        self.assertEqual(corrected.status_code, 200, corrected.content)
+        container = InventoryContainer.objects.select_related("batch__product").get(pk=container_id)
+        self.assertEqual(container.batch.product_id, replacement.pk)
+        self.assertEqual(corrected.json()["batch"]["product"]["product_code"], "P-200")
+
+    def test_product_correction_rejects_an_empty_identity(self):
+        created = self.receipt(batch_no="CORRECT-EMPTY-001")
+        container_id = created.json()["id"]
+        corrected = self.client.post(
+            f"/api/inventory/containers/{container_id}/correct-product/",
+            {"product_code": "", "product_name": "", "specification": "", "material": ""},
+            format="json",
+        )
+
+        self.assertEqual(corrected.status_code, 400, corrected.content)
+        container = InventoryContainer.objects.select_related("batch__product").get(pk=container_id)
+        self.assertEqual(container.batch.product.product_code, "P-100")
+
     def test_small_rack_rejects_basket(self):
         response = self.receipt(batch_no="OPEN-002", location_id=self.small.pk)
         self.assertEqual(response.status_code, 400)

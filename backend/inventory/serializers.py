@@ -147,6 +147,25 @@ class InventoryReceiptSerializer(serializers.Serializer):
         return create_inventory_receipt(validated_data, created_by=self.context["request"].user)
 
 
+class InventoryProductCorrectionSerializer(serializers.Serializer):
+    replacement_product_id = serializers.IntegerField(required=False, allow_null=True)
+    product_code = serializers.CharField(required=False, allow_blank=True, max_length=120)
+    product_name = serializers.CharField(required=False, allow_blank=True, max_length=200)
+    specification = serializers.CharField(required=False, allow_blank=True, max_length=200)
+    material = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    unit_weight_g = serializers.DecimalField(
+        max_digits=14, decimal_places=5, required=False, allow_null=True,
+        min_value=Decimal("0.00001"),
+    )
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=300)
+
+    def validate(self, attrs):
+        editable_fields = {"product_code", "product_name", "specification", "material", "unit_weight_g"}
+        if not attrs.get("replacement_product_id") and not editable_fields.intersection(attrs):
+            raise serializers.ValidationError("请选择正确的已有产品，或填写需要更正的产品资料。")
+        return attrs
+
+
 class InventoryContainerSerializer(serializers.ModelSerializer):
     batch = InventoryBatchSerializer(read_only=True)
     location_code = serializers.CharField(source="location.code", read_only=True)

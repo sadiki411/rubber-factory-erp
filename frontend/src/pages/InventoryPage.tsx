@@ -1,4 +1,4 @@
-import { CameraOutlined, InboxOutlined, MinusCircleOutlined, PlusOutlined, PrinterOutlined, QrcodeOutlined, SearchOutlined, SwapOutlined } from '@ant-design/icons'
+import { CameraOutlined, EditOutlined, InboxOutlined, MinusCircleOutlined, PlusOutlined, PrinterOutlined, QrcodeOutlined, SearchOutlined, SwapOutlined } from '@ant-design/icons'
 import { Alert, App, Button, Card, Col, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, QRCode, Row, Select, Space, Statistic, Table, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -42,6 +42,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
   const [printLocationIds, setPrintLocationIds] = useState<number[]>([])
   const [labelLocations, setLabelLocations] = useState<InventoryLocation[]>([])
   const [detailLocation, setDetailLocation] = useState<InventoryLocation>()
+  const [productCorrectionTarget, setProductCorrectionTarget] = useState<NonNullable<InventoryLocation['container']>>()
   const [scanPurpose, setScanPurpose] = useState<LocationScanPurpose>()
   const [receiptOpen, setReceiptOpen] = useState(false)
   const [outboundOpen, setOutboundOpen] = useState(false)
@@ -55,6 +56,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
   const [remainderForm] = Form.useForm()
   const [remainderUseForm] = Form.useForm()
   const [moveForm] = Form.useForm()
+  const [productCorrectionForm] = Form.useForm()
   const selectedProductId = Form.useWatch<number | undefined>('product_id', receiptForm)
   const summaryQuery = useQuery({ queryKey: ['inventory', 'summary'], queryFn: inventoryApi.summary })
   const locationsQuery = useQuery({
@@ -151,6 +153,17 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
     },
     onError: (error: Error) => message.error(error.message),
   })
+  const productCorrectionMutation = useMutation({
+    mutationFn: ({ id, body }: { id: number; body: Record<string, unknown> }) => inventoryApi.correctContainerProduct(id, body),
+    onSuccess: async () => {
+      setProductCorrectionTarget(undefined)
+      setDetailLocation(undefined)
+      productCorrectionForm.resetFields()
+      await queryClient.invalidateQueries({ queryKey: ['inventory'] })
+      message.success('库存产品资料已更正')
+    },
+    onError: (error: Error) => message.error(error.message),
+  })
 
   const locations = locationsQuery.data || EMPTY_LOCATIONS
   const finishedLocations = useMemo(() => locations.filter((location) => location.rack_type !== 'FRIDGE'), [locations])
@@ -207,6 +220,36 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
     onLocationDetailClose?.()
   }
 
+  const fillProductCorrectionForm = (productId?: number) => {
+    const product = productId
+      ? products.find((item) => item.id === productId)
+      : products.find((item) => item.id === productCorrectionTarget?.product_id)
+    productCorrectionForm.setFieldsValue({
+      replacement_product_id: productId,
+      product_code: product?.product_code ?? productCorrectionTarget?.product_code ?? '',
+      product_name: product?.product_name ?? productCorrectionTarget?.product_name ?? '',
+      specification: product?.specification ?? productCorrectionTarget?.specification ?? '',
+      material: product?.material ?? productCorrectionTarget?.material ?? '',
+      unit_weight_g: product
+        ? product.effective_unit_weight_g ?? product.latest_quality_unit_weight_g ?? product.unit_weight_g ?? null
+        : productCorrectionTarget?.unit_weight_g ?? null,
+    })
+  }
+
+  const openProductCorrection = (target: NonNullable<InventoryLocation['container']>) => {
+    setProductCorrectionTarget(target)
+    const product = products.find((item) => item.id === target.product_id)
+    productCorrectionForm.setFieldsValue({
+      replacement_product_id: undefined,
+      product_code: product?.product_code ?? target.product_code ?? '',
+      product_name: product?.product_name ?? target.product_name ?? '',
+      specification: product?.specification ?? target.specification ?? '',
+      material: product?.material ?? target.material ?? '',
+      unit_weight_g: product?.effective_unit_weight_g ?? product?.latest_quality_unit_weight_g ?? product?.unit_weight_g ?? target.unit_weight_g ?? null,
+      reason: '',
+    })
+  }
+
   const handleLocationScan = async (rawCode: string) => {
     const code = normalizeInventoryLocationCode(rawCode)
     const location = finishedLocations.find((item) => item.code === code)
@@ -258,7 +301,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
     { title: '数量', key: 'quantity', width: 100, render: (_, row) => row.container?.quantity ?? '-' },
     { title: '质量状态', key: 'quality', width: 110, render: (_, row) => qualityTag(row.container?.quality_status) },
     { title: '最近品检员', key: 'inspector', width: 120, render: (_, row) => row.container?.inspector_name || '未登记' },
-    { title: '操作', key: 'actions', width: 230, render: (_, row) => <Space size={0}><Button type="link" size="small" onClick={() => setDetailLocation(row)}>查看</Button>{row.container ? <><Button type="link" size="small" onClick={() => { setQualityTarget(row.container); qualityForm.setFieldsValue({ quality_status: row.container?.quality_status, inspector_id: undefined, inspected_on: new Date().toISOString().slice(0, 10) }) }}>改质量状态</Button><Button type="link" size="small" onClick={() => { setMoveTarget({ containerId: row.container!.id, containerCode: row.container!.container_code, containerType: row.container!.container_type, currentLocationId: row.id }); moveForm.resetFields() }}>移库</Button></> : null}</Space> },
+    { title: '操作', key: 'actions', width: 320, render: (_, row) => <Space size={0}><Button type="link" size="small" onClick={() => setDetailLocation(row)}>查看</Button>{row.container ? <><Button type="link" size="small" onClick={() => openProductCorrection(row.container!)}>改产品资料</Button><Button type="link" size="small" onClick={() => { setQualityTarget(row.container); qualityForm.setFieldsValue({ quality_status: row.container?.quality_status, inspector_id: undefined, inspected_on: new Date().toISOString().slice(0, 10) }) }}>改质量状态</Button><Button type="link" size="small" onClick={() => { setMoveTarget({ containerId: row.container!.id, containerCode: row.container!.container_code, containerType: row.container!.container_type, currentLocationId: row.id }); moveForm.resetFields() }}>移库</Button></> : null}</Space> },
   ]
 
   const submitReceipt = async () => {
@@ -333,6 +376,12 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
     if (!moveTarget) return
     const values = await moveForm.validateFields()
     moveMutation.mutate({ id: moveTarget.containerId, body: { location_id: values.location_id, reason: values.reason || '' } })
+  }
+
+  const submitProductCorrection = async () => {
+    if (!productCorrectionTarget) return
+    const values = await productCorrectionForm.validateFields()
+    productCorrectionMutation.mutate({ id: productCorrectionTarget.id, body: values })
   }
 
   const remainderColumns: TableColumnsType<MaterialRemainder> = [
@@ -430,6 +479,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
             <Descriptions.Item label="品检员">{activeDetailLocation.container.inspector_name || '未登记'}</Descriptions.Item>
             <Descriptions.Item label="入库日期">{activeDetailLocation.container.received_on || '-'}</Descriptions.Item>
           </Descriptions> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前为空库位"><Button type="primary" icon={<InboxOutlined />} onClick={() => { receiptForm.setFieldValue('location_id', activeDetailLocation.id); closeLocationDetail(); setReceiptOpen(true) }}>在此库位入库</Button></Empty>}
+          {activeDetailLocation.container && <Button block icon={<EditOutlined />} style={{ marginTop: 16 }} onClick={() => openProductCorrection(activeDetailLocation.container!)}>更正产品资料</Button>}
         </>}
       </Drawer>
 
@@ -471,6 +521,17 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
           <Form.Item label="质量状态" name="quality_status" rules={[{ required: true }]}><Select options={Object.entries(QUALITY_META).map(([value, meta]) => ({ value, label: meta.label }))} /></Form.Item>
           <Form.Item label="品检员" name="inspector_id" rules={[{ required: true, message: '请选择品检员' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} loading={employeesQuery.isLoading} options={(employeesQuery.data || []).map((employee: QualityEmployee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} /></Form.Item>
           <Form.Item label="检验日期" name="inspected_on" rules={[{ required: true, message: '请选择检验日期' }]}><Input type="date" /></Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal className="inventory-modal" title={`更正库存产品资料${productCorrectionTarget ? ` · ${productCorrectionTarget.container_code}` : ''}`} open={!!productCorrectionTarget} onCancel={() => setProductCorrectionTarget(undefined)} onOk={() => void submitProductCorrection()} confirmLoading={productCorrectionMutation.isPending} width={680} okText="保存更正">
+        <Alert type="warning" showIcon message="漏填或填错可在这里更正。若本次入库选错了产品，请选择另一个已有产品；直接修改字段时，其他使用同一产品资料的库存批次也会同步显示更正。" style={{ marginBottom: 16 }} />
+        <Form form={productCorrectionForm} layout="vertical">
+          <Form.Item label="更换为已有产品（可选）" name="replacement_product_id"><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} onChange={fillProductCorrectionForm} placeholder="仅选错产品时使用" options={products.filter((item) => item.id !== productCorrectionTarget?.product_id).map((item) => ({ value: item.id, label: `${item.product_code || item.product_name || '-'} · ${item.specification || '-'} · ${item.material || '-'}` }))} /></Form.Item>
+          <Row gutter={12}><Col xs={24} sm={12}><Form.Item label="产品编号" name="product_code"><Input /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="产品名称" name="product_name"><Input /></Form.Item></Col></Row>
+          <Row gutter={12}><Col xs={24} sm={12}><Form.Item label="规格" name="specification"><Input /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="材质" name="material"><Input /></Form.Item></Col></Row>
+          <Form.Item label="成品单重(g)" name="unit_weight_g" extra="填写后会同步到品检出货的产品单重历史，并成为后续默认值。"><InputNumber min={0.00001} precision={5} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item label="更正说明（可选）" name="reason"><Input.TextArea rows={2} placeholder="例如：入库时漏填规格、误选了产品" maxLength={300} showCount /></Form.Item>
         </Form>
       </Modal>
 

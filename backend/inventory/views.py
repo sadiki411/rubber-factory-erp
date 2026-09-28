@@ -25,13 +25,19 @@ from .serializers import (
     InventoryLocationSerializer,
     InventoryOutboundReadSerializer,
     InventoryOutboundSerializer,
+    InventoryProductCorrectionSerializer,
     InventoryProductSerializer,
     InventoryReceiptSerializer,
     InventoryTransactionSerializer,
     MaterialRemainderSerializer,
     MaterialRemainderUseSerializer,
 )
-from .services import bootstrap_inventory_locations, move_inventory_container, product_availability
+from .services import (
+    bootstrap_inventory_locations,
+    correct_inventory_container_product,
+    move_inventory_container,
+    product_availability,
+)
 
 
 class InventoryPagination(PageNumberPagination):
@@ -173,6 +179,19 @@ class InventoryContainerViewSet(viewsets.ReadOnlyModelViewSet):
                 created_by=request.user,
             )
         return Response(self.get_serializer(container).data)
+
+    @action(detail=True, methods=["post"], url_path="correct-product")
+    def correct_product(self, request, pk=None):
+        serializer = InventoryProductCorrectionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            correct_inventory_container_product(
+                self.get_object(), serializer.validated_data, created_by=request.user,
+            )
+        except ValueError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+        refreshed = self.get_queryset().get(pk=pk)
+        return Response(self.get_serializer(refreshed).data)
 
 
 class InventoryReceiptView(APIView):

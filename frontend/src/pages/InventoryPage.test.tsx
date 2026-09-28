@@ -17,6 +17,7 @@ const apiMocks = vi.hoisted(() => ({
   locations: vi.fn(),
   containers: vi.fn(),
   products: vi.fn(),
+  correctContainerProduct: vi.fn(),
   materialRemainders: vi.fn(),
   listEmployees: vi.fn(),
   listOrders: vi.fn(),
@@ -28,6 +29,7 @@ vi.mock('../api/client', () => ({
     locations: apiMocks.locations,
     containers: apiMocks.containers,
     products: apiMocks.products,
+    correctContainerProduct: apiMocks.correctContainerProduct,
     materialRemainders: apiMocks.materialRemainders,
     bootstrap: vi.fn(),
     receipt: vi.fn(),
@@ -62,6 +64,7 @@ describe('InventoryPage mobile inventory forms', () => {
     apiMocks.locations.mockResolvedValue([lastLocation])
     apiMocks.containers.mockResolvedValue([])
     apiMocks.products.mockResolvedValue([])
+    apiMocks.correctContainerProduct.mockResolvedValue({})
     apiMocks.materialRemainders.mockResolvedValue([])
     apiMocks.listEmployees.mockResolvedValue([])
     apiMocks.listOrders.mockResolvedValue([])
@@ -119,5 +122,57 @@ describe('InventoryPage mobile inventory forms', () => {
     expect(Number((within(dialog).getByRole('spinbutton', { name: '成品单重(g)' }) as HTMLInputElement).value)).toBe(2.25)
     const inspectorColumn = within(dialog).getByText('品检员（已检时必填）').closest('.ant-form-item')?.parentElement
     expect(inspectorColumn).toHaveClass('ant-col-sm-12')
+  }, 30_000)
+
+  it('allows received inventory product details to be corrected after putaway', async () => {
+    apiMocks.locations.mockResolvedValue([{
+      ...lastLocation,
+      container: {
+        id: 81,
+        container_code: 'CT-081',
+        container_type: 'BAG',
+        batch_no: 'INV-081',
+        product_id: 362,
+        product_code: 'P-362',
+        product_name: '旧名称',
+        specification: '362',
+        material: 'NBR',
+        quantity: 1000,
+        quality_status: 'PASSED',
+        bag_count: 1,
+        unit_weight_g: '2.25000',
+      },
+    }])
+    apiMocks.products.mockResolvedValue([{
+      id: 362,
+      product_code: 'P-362',
+      product_name: '旧名称',
+      specification: '362',
+      material: 'NBR',
+      unit_weight_g: '2.25000',
+      effective_unit_weight_g: '2.25000',
+      is_active: true,
+    }])
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><InventoryPage /></App></QueryClientProvider>)
+
+    await user.click(await screen.findByRole('button', { name: '改产品资料' }))
+    const title = await screen.findByText('更正库存产品资料 · CT-081')
+    const dialog = title.closest('[role="dialog"]') as HTMLElement
+    expect(dialog).toBeInTheDocument()
+    const nameInput = within(dialog).getByRole('textbox', { name: '产品名称' })
+    expect(nameInput).toHaveValue('旧名称')
+    await user.clear(nameInput)
+    await user.type(nameInput, '正确名称')
+    await user.type(within(dialog).getByRole('textbox', { name: '更正说明（可选）' }), '入库时漏填')
+    await user.click(within(dialog).getByRole('button', { name: '保存更正' }))
+
+    await waitFor(() => expect(apiMocks.correctContainerProduct).toHaveBeenCalledWith(81, expect.objectContaining({
+      product_name: '正确名称',
+      specification: '362',
+      material: 'NBR',
+      reason: '入库时漏填',
+    })))
   }, 30_000)
 })

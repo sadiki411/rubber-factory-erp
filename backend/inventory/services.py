@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone
 
@@ -169,6 +170,99 @@ def create_inventory_receipt(data, *, created_by):
         quantity=container.quantity,
         to_location=location,
         reason="库存直接入库",
+        created_by=created_by,
+    )
+    return container
+
+
+def _inventory_product_snapshot(product):
+    return " / ".join(filter(None, [
+        str(product.product_code or "").strip(),
+        str(product.product_name or "").strip(),
+        str(product.specification or "").strip(),
+        str(product.material or "").strip(),
+        f"{product.unit_weight_g}g" if product.unit_weight_g is not None else "",
+    ])) or f"产品#{product.pk}"
+
+
+@transaction.atomic
+def correct_inventory_container_product(container, data, *, created_by):
+    """Correct or replace the product attached to one received inventory batch."""
+
+    container = (
+        InventoryContainer.objects.select_for_update()
+        .select_related("batch__product", "location")
+        .get(pk=container.pk)
+    )
+    batch = container.batch
+    previous_product = batch.product
+    replacement_id = data.get("replacement_product_id")
+    if replacement_id:
+        try:
+            product = InventoryProduct.objects.select_for_update().get(pk=replacement_id, is_active=True)
+        except InventoryProduct.DoesNotExist as exc:
+            raise ValueError("选择的已有产品不存在或已停用。") from exc
+    else:
+        product = InventoryProduct.objects.select_for_update().get(pk=previous_product.pk)
+
+    identity_changed = False
+    changed_fields = []
+    for field in ("product_code", "product_name", "specification", "material"):
+        if field not in data:
+            continue
+        value = str(data.get(field) or "").strip()
+        if getattr(product, field) != value:
+            setattr(product, field, value)
+            changed_fields.append(field)
+            identity_changed = identity_changed or field in {"specification", "material"}
+
+    if "unit_weight_g" in data and product.unit_weight_g != data.get("unit_weight_g"):
+        product.unit_weight_g = data.get("unit_weight_g")
+        changed_fields.append("unit_weight_g")
+
+    if identity_changed:
+        product.product_specification = None
+        matched = _matching_product_specification(product)
+        if matched:
+            product.product_specification = matched
+        changed_fields.append("product_specification")
+
+    if changed_fields:
+        try:
+            product.save(update_fields=[*dict.fromkeys(changed_fields), "updated_at"])
+        except DjangoValidationError as exc:
+            messages = getattr(exc, "messages", None) or [str(exc)]
+            raise ValueError("；".join(messages)) from exc
+
+    if batch.product_id != product.pk:
+        batch.product = product
+        batch.save(update_fields=["product", "updated_at"])
+
+    entered_weight = data.get("unit_weight_g") if "unit_weight_g" in data else None
+    if entered_weight is not None and product.product_specification_id:
+        remember_confirmed_product_unit_weight(
+            product_specification_id=product.product_specification_id,
+            unit_weight_g=entered_weight,
+            created_by=created_by,
+            measured_on=batch.received_on,
+            note="由库存产品资料更正自动保存的产品单重",
+            backfill_reason="库存产品资料更正",
+        )
+
+    before_text = _inventory_product_snapshot(previous_product)
+    after_text = _inventory_product_snapshot(product)
+    operator_reason = str(data.get("reason") or "").strip()
+    reason = f"库存产品资料更正：{before_text} -> {after_text}"
+    if operator_reason:
+        reason = f"{reason}；说明：{operator_reason}"
+    InventoryTransaction.objects.create(
+        transaction_type=InventoryTransaction.TransactionType.ADJUST,
+        batch=batch,
+        container=container,
+        quantity=0,
+        from_location=container.location,
+        to_location=container.location,
+        reason=reason[:500],
         created_by=created_by,
     )
     return container

@@ -349,6 +349,8 @@ export const inventoryApi = {
     apiFetch<InventoryContainer>('/api/inventory/receipts/', { method: 'POST', body: JSON.stringify(body) }),
   setQuality: (id: number, body: Record<string, unknown>) =>
     apiFetch<InventoryContainer>(`/api/inventory/containers/${id}/set-quality/`, { method: 'POST', body: JSON.stringify(body) }),
+  correctContainerProduct: (id: number, body: Record<string, unknown>) =>
+    apiFetch<InventoryContainer>(`/api/inventory/containers/${id}/correct-product/`, { method: 'POST', body: JSON.stringify(body) }),
   moveContainer: (id: number, body: Record<string, unknown>) =>
     apiFetch<InventoryContainer>(`/api/inventory/containers/${id}/move/`, { method: 'POST', body: JSON.stringify(body) }),
   outbound: (body: Record<string, unknown>) =>
