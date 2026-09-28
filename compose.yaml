@@ -62,7 +62,9 @@ services:
     restart: unless-stopped
     logging: *default-logging
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null || exit 1"]
+      # Verify the actual React entry point. A fixed /healthz response can stay
+      # green even when Nginx is looking for index.html in the wrong root.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]
       interval: 20s
       timeout: 5s
       retries: 3

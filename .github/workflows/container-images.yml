@@ -94,6 +94,9 @@ jobs:
       - name: Validate Compose configuration
         run: docker compose config >/dev/null
 
+      - name: Validate web image paths and health check
+        run: python3 scripts/check_deployment.py
+
       - name: Validate container shell scripts
         run: |
           sh -n deploy/backend-entrypoint.sh
