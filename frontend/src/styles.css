@@ -226,9 +226,24 @@ button, input, textarea, select { font: inherit; }
 }
 
 @media (max-width: 560px) {
+  .inventory-map-grid { grid-template-columns: minmax(0, 1fr); }
   .inventory-location-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .inventory-page .page-title-row { display: block; }
   .inventory-page .page-title-extra { margin-top: 12px; }
+  .inventory-page .inventory-actions { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+  .inventory-page .inventory-actions .ant-select { grid-column: 1 / -1; width: 100%; }
+  .inventory-page .inventory-actions .ant-btn { min-height: 44px; white-space: normal; }
+  .inventory-modal { width: calc(100vw - 16px) !important; max-width: calc(100vw - 16px); margin: 8px auto; top: 0; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+  .inventory-modal .ant-modal-content { padding: 18px 14px 12px; }
+  .inventory-modal .ant-modal-body { max-height: calc(100dvh - 170px); overflow-y: auto; overscroll-behavior: contain; }
+  .inventory-modal .ant-select-selector, .inventory-modal .ant-input, .inventory-modal .ant-input-number, .inventory-modal .ant-picker { min-height: 44px; }
+  .inventory-modal .ant-input-number-input { height: 42px; }
+  .inventory-modal .ant-modal-footer { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .inventory-modal .ant-modal-footer .ant-btn { margin-inline-start: 0; min-height: 44px; }
+  .inventory-outbound-line + .inventory-outbound-line { padding-top: 10px; border-top: 1px solid #edf1f0; }
+  .inventory-select-popup { width: calc(100vw - 24px) !important; max-width: calc(100vw - 24px); }
+  .inventory-select-popup .ant-select-item { min-height: 44px; height: auto; align-items: center; }
+  .inventory-select-popup .ant-select-item-option-content { white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
 }
 
 @media print {

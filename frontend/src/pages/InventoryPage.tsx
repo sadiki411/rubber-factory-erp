@@ -15,6 +15,7 @@ const QUALITY_META: Record<InventoryQualityStatus, { label: string; color: strin
   HOLD: { label: '冻结', color: 'default' },
 }
 const EMPTY_LOCATIONS: InventoryLocation[] = []
+const INVENTORY_SELECT_CLASS_NAMES = { popup: { root: 'inventory-select-popup' } }
 
 function qualityTag(value?: InventoryQualityStatus) {
   const meta = value ? QUALITY_META[value] : undefined
@@ -45,7 +46,7 @@ export function InventoryPage() {
   })
   const containersQuery = useQuery({
     queryKey: ['inventory', 'containers'],
-    queryFn: async () => toList(await inventoryApi.containers({ active: true })),
+    queryFn: async () => toList(await inventoryApi.containers({ active: true, page_size: 1000 })),
   })
   const productsQuery = useQuery({
     queryKey: ['inventory', 'products', query],
@@ -63,7 +64,7 @@ export function InventoryPage() {
   })
   const remaindersQuery = useQuery({
     queryKey: ['inventory', 'material-remainders'],
-    queryFn: async () => toList(await inventoryApi.materialRemainders()),
+    queryFn: async () => toList(await inventoryApi.materialRemainders({ page_size: 1000 })),
   })
   const bootstrapMutation = useMutation({
     mutationFn: inventoryApi.bootstrap,
@@ -297,64 +298,64 @@ export function InventoryPage() {
         {finishedLocations.map((location) => <div className="inventory-label" key={location.id}><strong>成品库存库位</strong><b>{location.code}</b></div>)}
       </div>
 
-      <Modal title="库存直接入库" open={receiptOpen} onCancel={() => setReceiptOpen(false)} onOk={() => void submitReceipt()} confirmLoading={receiptMutation.isPending} width={720} okText="确认入库">
+      <Modal className="inventory-modal" title="库存直接入库" open={receiptOpen} onCancel={() => setReceiptOpen(false)} onOk={() => void submitReceipt()} confirmLoading={receiptMutation.isPending} width={720} okText="确认入库">
         <Alert type="info" showIcon message="本表单不需要订单或流程卡；库存批次由系统生成，可手工填写现场批次号。" style={{ marginBottom: 16 }} />
         <Form form={receiptForm} layout="vertical" initialValues={{ quality_status: 'WAITING', container_type: 'BAG', bag_count: 1 }}>
-          <Form.Item label="已有产品" name="product_id"><Select allowClear showSearch optionFilterProp="label" placeholder="不选则填写临时产品资料" options={(productsQuery.data || []).map((item) => ({ value: item.id, label: `${item.product_code || item.product_name || '-'} · ${item.specification}` }))} /></Form.Item>
-          <Row gutter={12}><Col span={12}><Form.Item label="产品编号" name="product_code"><Input /></Form.Item></Col><Col span={12}><Form.Item label="产品名称" name="product_name"><Input /></Form.Item></Col></Row>
-          <Row gutter={12}><Col span={12}><Form.Item label="规格" name="specification"><Input /></Form.Item></Col><Col span={12}><Form.Item label="材质" name="material"><Input /></Form.Item></Col></Row>
-          <Row gutter={12}><Col span={8}><Form.Item label="成品单重(g)" name="unit_weight_g"><InputNumber min={0} precision={5} style={{ width: '100%' }} /></Form.Item></Col><Col span={8}><Form.Item label="容器类型" name="container_type" rules={[{ required: true }]}><Select options={[{ value: 'BAG', label: '袋' }, { value: 'BASKET', label: '筐' }]} /></Form.Item></Col><Col span={8}><Form.Item label="库位" name="location_id" rules={[{ required: true, message: '请选择库位' }]}><Select showSearch optionFilterProp="label" options={finishedLocations.filter((item) => !item.container).map((item) => ({ value: item.id, label: `${item.code}${item.allows_basket ? ' · 可放筐/袋' : ' · 袋位'}` }))} /></Form.Item></Col></Row>
-          <Row gutter={12}><Col span={8}><Form.Item label="总数量（件）" name="quantity" rules={[{ required: true, type: 'number', min: 1 }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col><Col span={8}><Form.Item label="筐内/容器袋数" name="bag_count"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col><Col span={8}><Form.Item label="每袋数量" name="pieces_per_bag"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col></Row>
-          <Row gutter={12}><Col span={8}><Form.Item label="质量状态" name="quality_status" rules={[{ required: true }]}><Select options={Object.entries(QUALITY_META).map(([value, meta]) => ({ value, label: meta.label }))} /></Form.Item></Col><Col span={8}><Form.Item label="品检员（已检时必填）" name="inspector_id"><Select allowClear showSearch optionFilterProp="label" loading={employeesQuery.isLoading} options={(employeesQuery.data || []).map((employee: QualityEmployee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} /></Form.Item></Col><Col span={8}><Form.Item label="库存批次号" name="batch_no"><Input placeholder="留空自动生成" /></Form.Item></Col></Row>
+          <Form.Item label="已有产品" name="product_id"><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} placeholder="不选则填写临时产品资料" options={(productsQuery.data || []).map((item) => ({ value: item.id, label: `${item.product_code || item.product_name || '-'} · ${item.specification}` }))} /></Form.Item>
+          <Row gutter={12}><Col xs={24} sm={12}><Form.Item label="产品编号" name="product_code"><Input /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="产品名称" name="product_name"><Input /></Form.Item></Col></Row>
+          <Row gutter={12}><Col xs={24} sm={12}><Form.Item label="规格" name="specification"><Input /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="材质" name="material"><Input /></Form.Item></Col></Row>
+          <Row gutter={12}><Col xs={24} sm={8}><Form.Item label="成品单重(g)" name="unit_weight_g"><InputNumber min={0} precision={5} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="容器类型" name="container_type" rules={[{ required: true }]}><Select options={[{ value: 'BAG', label: '袋' }, { value: 'BASKET', label: '筐' }]} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="库位" name="location_id" rules={[{ required: true, message: '请选择库位' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} options={finishedLocations.filter((item) => !item.container).map((item) => ({ value: item.id, label: `${item.code}${item.allows_basket ? ' · 可放筐/袋' : ' · 袋位'}` }))} /></Form.Item></Col></Row>
+          <Row gutter={12}><Col xs={24} sm={8}><Form.Item label="总数量（件）" name="quantity" rules={[{ required: true, type: 'number', min: 1 }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="筐内/容器袋数" name="bag_count"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="每袋数量" name="pieces_per_bag"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col></Row>
+          <Row gutter={12}><Col xs={24} sm={8}><Form.Item label="质量状态" name="quality_status" rules={[{ required: true }]}><Select options={Object.entries(QUALITY_META).map(([value, meta]) => ({ value, label: meta.label }))} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="品检员（已检时必填）" name="inspector_id"><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} loading={employeesQuery.isLoading} options={(employeesQuery.data || []).map((employee: QualityEmployee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="库存批次号" name="batch_no"><Input placeholder="留空自动生成" /></Form.Item></Col></Row>
           <Form.Item label="来源说明" name="source_note"><Input.TextArea rows={2} placeholder="例如：前批生产剩余、现场期初盘点" /></Form.Item>
         </Form>
       </Modal>
 
-      <Modal title="库存出库" open={outboundOpen} onCancel={() => setOutboundOpen(false)} onOk={() => void submitOutbound()} confirmLoading={outboundMutation.isPending} width={620} okText="确认出库">
+      <Modal className="inventory-modal" title="库存出库" open={outboundOpen} onCancel={() => setOutboundOpen(false)} onOk={() => void submitOutbound()} confirmLoading={outboundMutation.isPending} width={620} okText="确认出库">
         <Alert type="warning" showIcon message="这里只扣减已检库存；确认后请到品检出货页面单独扫描流程卡。" style={{ marginBottom: 16 }} />
         <Form form={outboundForm} layout="vertical" initialValues={{ lines: [{}] }}>
           <Form.List name="lines">
             {(fields, { add, remove }) => <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              {fields.map(({ key, name, ...restField }) => <Row gutter={8} key={key} align="middle">
-                <Col flex="1"><Form.Item {...restField} label={name === 0 ? '出库容器' : undefined} name={[name, 'container_id']} rules={[{ required: true, message: '请选择容器' }]}><Select showSearch optionFilterProp="label" options={containerOptions} /></Form.Item></Col>
-                <Col flex="145px"><Form.Item {...restField} label={name === 0 ? '出库数量（件）' : undefined} name={[name, 'quantity']} rules={[{ required: true, type: 'number', min: 1 }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
-                <Col flex="32px">{fields.length > 1 ? <Button type="text" danger icon={<MinusCircleOutlined />} aria-label="移除出库行" onClick={() => remove(name)} /> : null}</Col>
+              {fields.map(({ key, name, ...restField }) => <Row gutter={8} key={key} align="middle" className="inventory-outbound-line">
+                <Col xs={24} sm={14}><Form.Item {...restField} label={name === 0 ? '出库容器' : undefined} name={[name, 'container_id']} rules={[{ required: true, message: '请选择容器' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} options={containerOptions} /></Form.Item></Col>
+                <Col xs={20} sm={8}><Form.Item {...restField} label={name === 0 ? '出库数量（件）' : undefined} name={[name, 'quantity']} rules={[{ required: true, type: 'number', min: 1 }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
+                <Col xs={4} sm={2}>{fields.length > 1 ? <Button type="text" danger icon={<MinusCircleOutlined />} aria-label="移除出库行" onClick={() => remove(name)} /> : null}</Col>
               </Row>)}
               <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()}>添加另一个容器</Button>
             </Space>}
           </Form.List>
-          <Row gutter={12}><Col span={12}><Form.Item label="关联订单（可选）" name="order_id"><Select allowClear showSearch optionFilterProp="label" loading={ordersQuery.isLoading} options={orderOptions} /></Form.Item></Col><Col span={12}><Form.Item label="出库单号" name="outbound_no"><Input placeholder="留空自动生成" /></Form.Item></Col></Row>
+          <Row gutter={12}><Col xs={24} sm={12}><Form.Item label="关联订单（可选）" name="order_id"><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} loading={ordersQuery.isLoading} options={orderOptions} /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="出库单号" name="outbound_no"><Input placeholder="留空自动生成" /></Form.Item></Col></Row>
           <Form.Item label="装车/出货参考号" name="shipment_ref"><Input /></Form.Item>
           <Form.Item label="备注" name="note"><Input.TextArea rows={2} /></Form.Item>
         </Form>
       </Modal>
 
-      <Modal title={`更新库存质量状态${qualityTarget ? ` · ${qualityTarget.container_code}` : ''}`} open={!!qualityTarget} onCancel={() => setQualityTarget(undefined)} onOk={() => void submitQuality()} confirmLoading={qualityMutation.isPending} okText="保存状态">
+      <Modal className="inventory-modal" title={`更新库存质量状态${qualityTarget ? ` · ${qualityTarget.container_code}` : ''}`} open={!!qualityTarget} onCancel={() => setQualityTarget(undefined)} onOk={() => void submitQuality()} confirmLoading={qualityMutation.isPending} okText="保存状态">
         <Alert type="info" showIcon message="待检库存通过检验后才会进入可用库存；这里不需要订单或流程卡。" style={{ marginBottom: 16 }} />
         <Form form={qualityForm} layout="vertical">
           <Form.Item label="质量状态" name="quality_status" rules={[{ required: true }]}><Select options={Object.entries(QUALITY_META).map(([value, meta]) => ({ value, label: meta.label }))} /></Form.Item>
-          <Form.Item label="品检员" name="inspector_id" rules={[{ required: true, message: '请选择品检员' }]}><Select showSearch optionFilterProp="label" loading={employeesQuery.isLoading} options={(employeesQuery.data || []).map((employee: QualityEmployee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} /></Form.Item>
+          <Form.Item label="品检员" name="inspector_id" rules={[{ required: true, message: '请选择品检员' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} loading={employeesQuery.isLoading} options={(employeesQuery.data || []).map((employee: QualityEmployee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} /></Form.Item>
           <Form.Item label="检验日期" name="inspected_on" rules={[{ required: true, message: '请选择检验日期' }]}><Input type="date" /></Form.Item>
         </Form>
       </Modal>
 
-      <Modal title={`库存移库${moveTarget ? ` · ${moveTarget.containerCode}` : ''}`} open={!!moveTarget} onCancel={() => setMoveTarget(undefined)} onOk={() => void submitMove()} confirmLoading={moveMutation.isPending} okText="确认移库">
+      <Modal className="inventory-modal" title={`库存移库${moveTarget ? ` · ${moveTarget.containerCode}` : ''}`} open={!!moveTarget} onCancel={() => setMoveTarget(undefined)} onOk={() => void submitMove()} confirmLoading={moveMutation.isPending} okText="确认移库">
         <Alert type="info" showIcon message="移库只改变固定库位，不改变产品、批次、质量状态或库存数量。" style={{ marginBottom: 16 }} />
         <Form form={moveForm} layout="vertical">
-          <Form.Item label="目标库位" name="location_id" rules={[{ required: true, message: '请选择目标库位' }]}><Select showSearch optionFilterProp="label" options={moveLocationOptions} /></Form.Item>
+          <Form.Item label="目标库位" name="location_id" rules={[{ required: true, message: '请选择目标库位' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} options={moveLocationOptions} /></Form.Item>
           <Form.Item label="移库原因" name="reason"><Input.TextArea rows={2} placeholder="例如：货架整理、腾挪库位" /></Form.Item>
         </Form>
       </Modal>
 
-      <Modal title="登记冰箱胶料余料" open={remainderOpen} onCancel={() => setRemainderOpen(false)} onOk={() => void submitRemainder()} confirmLoading={remainderMutation.isPending} okText="保存记录">
+      <Modal className="inventory-modal" title="登记冰箱胶料余料" open={remainderOpen} onCancel={() => setRemainderOpen(false)} onOk={() => void submitRemainder()} confirmLoading={remainderMutation.isPending} okText="保存记录">
         <Form form={remainderForm} layout="vertical">
-          <Row gutter={12}><Col span={12}><Form.Item label="胶料材质" name="material" rules={[{ required: true, message: '请填写胶料材质' }]}><Input placeholder="例如：PP、ABS" /></Form.Item></Col><Col span={12}><Form.Item label="重量(kg)" name="weight_kg" rules={[{ required: true, type: 'number', min: 0.001, message: '请输入大于0的重量' }]}><InputNumber min={0.001} precision={3} style={{ width: '100%' }} /></Form.Item></Col></Row>
+          <Row gutter={12}><Col xs={24} sm={12}><Form.Item label="胶料材质" name="material" rules={[{ required: true, message: '请填写胶料材质' }]}><Input placeholder="例如：PP、ABS" /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="重量(kg)" name="weight_kg" rules={[{ required: true, type: 'number', min: 0.001, message: '请输入大于0的重量' }]}><InputNumber min={0.001} precision={3} style={{ width: '100%' }} /></Form.Item></Col></Row>
           <Form.Item label="入冰箱时间" name="stored_on"><Input type="datetime-local" /></Form.Item>
           <Form.Item label="备注" name="note"><Input.TextArea rows={2} placeholder="可填写来源订单或颜色等补充信息" /></Form.Item>
         </Form>
       </Modal>
 
-      <Modal title={`登记胶料使用${remainderUseTarget ? ` · ${remainderUseTarget.material}` : ''}`} open={!!remainderUseTarget} onCancel={() => setRemainderUseTarget(undefined)} onOk={() => void submitRemainderUse()} confirmLoading={remainderUseMutation.isPending} okText="保存使用记录">
+      <Modal className="inventory-modal" title={`登记胶料使用${remainderUseTarget ? ` · ${remainderUseTarget.material}` : ''}`} open={!!remainderUseTarget} onCancel={() => setRemainderUseTarget(undefined)} onOk={() => void submitRemainderUse()} confirmLoading={remainderUseMutation.isPending} okText="保存使用记录">
         <Alert type="info" showIcon message={`当前剩余 ${remainderUseTarget?.remaining_weight_kg ?? 0} kg`} style={{ marginBottom: 16 }} />
         <Form form={remainderUseForm} layout="vertical">
           <Form.Item label="使用重量(kg)" name="weight_kg" rules={[{ required: true, type: 'number', min: 0.001, message: '请输入大于0的重量' }]}><InputNumber min={0.001} max={Number(remainderUseTarget?.remaining_weight_kg || 0)} precision={3} style={{ width: '100%' }} /></Form.Item>

@@ -4,6 +4,7 @@ from django.utils.dateparse import parse_date
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -33,9 +34,20 @@ from .serializers import (
 from .services import bootstrap_inventory_locations, move_inventory_container, product_availability
 
 
+class InventoryPagination(PageNumberPagination):
+    """Keep inventory lists bounded while allowing complete selector datasets."""
+
+    page_size = 30
+    page_size_query_param = "page_size"
+    max_page_size = 1000
+
+
 class InventoryLocationViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = InventoryLocation.objects.all().prefetch_related("inventory_container__batch__product", "inventory_container__batch__inspector")
     serializer_class = InventoryLocationSerializer
+    # Fixed locations are selector master data. Returning only the global first
+    # page silently hides most of the 150 physical shelf positions.
+    pagination_class = None
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -55,6 +67,7 @@ class InventoryLocationViewSet(viewsets.ReadOnlyModelViewSet):
 class InventoryProductViewSet(viewsets.ModelViewSet):
     queryset = InventoryProduct.objects.all().select_related("product_specification")
     serializer_class = InventoryProductSerializer
+    pagination_class = InventoryPagination
     http_method_names = ["get", "post", "patch", "head", "options"]
 
     def get_queryset(self):
@@ -73,6 +86,7 @@ class InventoryProductViewSet(viewsets.ModelViewSet):
 class InventoryBatchViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = InventoryBatch.objects.all().select_related("product", "inspector").prefetch_related("containers")
     serializer_class = InventoryBatchSerializer
+    pagination_class = InventoryPagination
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -94,6 +108,7 @@ class InventoryBatchViewSet(viewsets.ReadOnlyModelViewSet):
 class InventoryContainerViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = InventoryContainer.objects.all().select_related("batch__product", "batch__inspector", "location")
     serializer_class = InventoryContainerSerializer
+    pagination_class = InventoryPagination
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -163,6 +178,7 @@ class InventoryReceiptView(APIView):
 
 class InventoryOutboundViewSet(viewsets.ModelViewSet):
     queryset = InventoryOutbound.objects.all().select_related("order", "created_by").prefetch_related("lines__container__batch__product")
+    pagination_class = InventoryPagination
     http_method_names = ["get", "post", "head", "options"]
 
     def get_serializer_class(self):
@@ -184,11 +200,13 @@ class InventoryOutboundViewSet(viewsets.ModelViewSet):
 class InventoryTransactionViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = InventoryTransaction.objects.all().select_related("batch", "container", "from_location", "to_location", "outbound", "created_by")
     serializer_class = InventoryTransactionSerializer
+    pagination_class = InventoryPagination
 
 
 class MaterialRemainderViewSet(viewsets.ModelViewSet):
     queryset = MaterialRemainder.objects.all().select_related("created_by").prefetch_related("uses")
     serializer_class = MaterialRemainderSerializer
+    pagination_class = InventoryPagination
     http_method_names = ["get", "post", "head", "options"]
 
     def perform_create(self, serializer):

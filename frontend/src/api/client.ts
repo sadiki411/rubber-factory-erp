@@ -343,7 +343,7 @@ export const inventoryApi = {
   bootstrap: () => apiFetch<{ created: number; locations: number }>('/api/inventory/locations/bootstrap/', { method: 'POST', body: JSON.stringify({}) }),
   products: (filters: { q?: string; page_size?: number } = {}) =>
     apiFetch<ApiList<InventoryProduct> | InventoryProduct[]>(`/api/inventory/products/${queryString(filters)}`),
-  containers: (filters: { active?: boolean; quality_status?: string } = {}) =>
+  containers: (filters: { active?: boolean; quality_status?: string; page_size?: number } = {}) =>
     apiFetch<ApiList<InventoryContainer> | InventoryContainer[]>(`/api/inventory/containers/${queryString(filters)}`),
   receipt: (body: Record<string, unknown>) =>
     apiFetch<InventoryContainer>('/api/inventory/receipts/', { method: 'POST', body: JSON.stringify(body) }),
@@ -355,7 +355,8 @@ export const inventoryApi = {
     apiFetch<Record<string, unknown>>('/api/inventory/outbounds/', { method: 'POST', body: JSON.stringify(body) }),
   availability: (filters: { product_specification_id?: number; product_code?: string; specification?: string; material?: string }) =>
     apiFetch<InventoryAvailability>(`/api/inventory/availability/${queryString(filters)}`),
-  materialRemainders: () => apiFetch<ApiList<MaterialRemainder> | MaterialRemainder[]>('/api/inventory/material-remainders/'),
+  materialRemainders: (filters: { page_size?: number } = {}) =>
+    apiFetch<ApiList<MaterialRemainder> | MaterialRemainder[]>(`/api/inventory/material-remainders/${queryString(filters)}`),
   createMaterialRemainder: (body: Record<string, unknown>) =>
     apiFetch<MaterialRemainder>('/api/inventory/material-remainders/', { method: 'POST', body: JSON.stringify(body) }),
   useMaterialRemainder: (id: number, body: Record<string, unknown>) =>

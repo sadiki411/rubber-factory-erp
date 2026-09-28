@@ -48,6 +48,28 @@ class InventoryApiTests(APITestCase):
         self.assertTrue(self.large.allows_basket)
         self.assertTrue(self.large.allows_bag)
 
+    def test_location_selector_returns_every_active_fixed_position(self):
+        response = self.client.get("/api/inventory/locations/?active=true")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIsInstance(response.json(), list)
+        self.assertEqual(len(response.json()), 151)
+        self.assertIn("K09-L05-P02", {item["code"] for item in response.json()})
+
+    def test_inventory_list_page_size_can_be_requested_for_selectors(self):
+        for index in range(35):
+            MaterialRemainder.objects.create(
+                material=f"测试胶料-{index:02d}",
+                weight_kg=Decimal("1.000"),
+                created_by=self.user,
+            )
+
+        default_response = self.client.get("/api/inventory/material-remainders/")
+        complete_response = self.client.get("/api/inventory/material-remainders/?page_size=1000")
+
+        self.assertEqual(len(default_response.json()["results"]), 30)
+        self.assertEqual(len(complete_response.json()["results"]), 35)
+
     def test_receipt_is_independent_of_order_and_process_card(self):
         response = self.receipt()
         self.assertEqual(response.status_code, 201, response.content)
