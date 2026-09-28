@@ -16,6 +16,8 @@ export interface InventoryProduct {
   specification: string
   material: string
   unit_weight_g?: string | number | null
+  latest_quality_unit_weight_g?: string | number | null
+  effective_unit_weight_g?: string | number | null
   product_specification?: number | null
   is_active: boolean
   notes?: string
@@ -69,6 +71,8 @@ export interface InventoryLocation {
     bag_count: number
     pieces_per_bag?: number | null
     inspector_name?: string
+    received_on?: string
+    unit_weight_g?: string | number | null
   } | null
 }
 

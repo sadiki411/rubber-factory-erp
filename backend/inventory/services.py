@@ -1,6 +1,9 @@
 from django.db import transaction
 from django.utils import timezone
 
+from orders.models import ProductSpecification
+from quality.unit_weights import remember_confirmed_product_unit_weight
+
 from .models import (
     InventoryBatch,
     InventoryContainer,
@@ -68,20 +71,51 @@ def _make_container_code():
     return f"{prefix}-{sequence:04d}"
 
 
+def _matching_product_specification(product):
+    specification = str(product.specification or "").strip()
+    material = str(product.material or "").strip()
+    if not specification or not material:
+        return None
+    queryset = ProductSpecification.objects.filter(
+        is_active=True,
+        specification__iexact=specification,
+        material__iexact=material,
+    )
+    matches = list(queryset[:2])
+    return matches[0] if len(matches) == 1 else None
+
+
 def _product_from_payload(data):
     product_id = data.get("product_id")
     if product_id:
-        return InventoryProduct.objects.get(pk=product_id)
-    product_data = data.get("product") or {}
-    return InventoryProduct.objects.create(
-        product_code=product_data.get("product_code", ""),
-        product_name=product_data.get("product_name", ""),
-        specification=product_data.get("specification", ""),
-        material=product_data.get("material", ""),
-        unit_weight_g=product_data.get("unit_weight_g"),
-        product_specification_id=product_data.get("product_specification"),
-        notes=product_data.get("notes", ""),
-    )
+        product = InventoryProduct.objects.get(pk=product_id)
+    else:
+        product_data = data.get("product") or {}
+        product = InventoryProduct.objects.create(
+            product_code=product_data.get("product_code", ""),
+            product_name=product_data.get("product_name", ""),
+            specification=product_data.get("specification", ""),
+            material=product_data.get("material", ""),
+            unit_weight_g=product_data.get("unit_weight_g"),
+            product_specification_id=product_data.get("product_specification"),
+            notes=product_data.get("notes", ""),
+        )
+
+    fields = []
+    if not product.product_specification_id:
+        matched = _matching_product_specification(product)
+        if matched:
+            product.product_specification = matched
+            fields.append("product_specification")
+    unit_weight_g = data.get("unit_weight_g")
+    if unit_weight_g is None:
+        unit_weight_g = (data.get("product") or {}).get("unit_weight_g")
+    if unit_weight_g is not None and product.unit_weight_g != unit_weight_g:
+        product.unit_weight_g = unit_weight_g
+        fields.append("unit_weight_g")
+    if fields:
+        product.save(update_fields=[*fields, "updated_at"])
+    return product, unit_weight_g
 
 
 @transaction.atomic
@@ -96,11 +130,21 @@ def create_inventory_receipt(data, *, created_by):
         raise ValueError("该库位不允许放袋。")
     if InventoryContainer.objects.filter(location=location, status=InventoryContainer.Status.ACTIVE).exists():
         raise ValueError("目标库位已经有在用容器。")
-    product = _product_from_payload(data)
+    product, entered_unit_weight_g = _product_from_payload(data)
+    received_on = data.get("received_on") or timezone.localdate()
+    if entered_unit_weight_g is not None and product.product_specification_id:
+        remember_confirmed_product_unit_weight(
+            product_specification_id=product.product_specification_id,
+            unit_weight_g=entered_unit_weight_g,
+            created_by=created_by,
+            measured_on=received_on,
+            note="由库存入库确认自动保存的产品单重",
+            backfill_reason="库存入库记录",
+        )
     batch = InventoryBatch.objects.create(
         batch_no=data.get("batch_no") or _make_batch_no(),
         product=product,
-        received_on=data.get("received_on") or timezone.localdate(),
+        received_on=received_on,
         source_type=data.get("source_type") or InventoryBatch.SourceType.MANUAL,
         source_note=str(data.get("source_note") or "").strip(),
         quality_status=data.get("quality_status") or InventoryBatch.QualityStatus.WAITING,

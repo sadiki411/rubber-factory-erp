@@ -90,4 +90,34 @@ describe('InventoryPage mobile inventory forms', () => {
     await waitFor(() => expect(document.querySelector('.inventory-select-popup')).toBeInTheDocument())
     expect(await screen.findByRole('option', { name: /K09-L05-P02/ })).toBeInTheDocument()
   })
+
+  it('fills immutable product identity and the latest quality unit weight when an existing product is selected', async () => {
+    apiMocks.products.mockResolvedValue([{
+      id: 362,
+      product_code: 'P-362',
+      product_name: '产品362',
+      specification: '362',
+      material: 'NBR',
+      unit_weight_g: '1.80000',
+      latest_quality_unit_weight_g: '2.25000',
+      effective_unit_weight_g: '2.25000',
+      product_specification: 9,
+      is_active: true,
+    }])
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><InventoryPage /></App></QueryClientProvider>)
+
+    await user.click(await screen.findByRole('button', { name: /直接入库/ }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('combobox', { name: '已有产品' }))
+    await user.click(await screen.findByText('P-362 · 362 · NBR'))
+
+    expect(within(dialog).getByRole('textbox', { name: '产品编号' })).toHaveValue('P-362')
+    expect(within(dialog).getByRole('textbox', { name: '规格' })).toHaveValue('362')
+    expect(within(dialog).getByRole('textbox', { name: '规格' })).toHaveAttribute('readonly')
+    expect(Number((within(dialog).getByRole('spinbutton', { name: '成品单重(g)' }) as HTMLInputElement).value)).toBe(2.25)
+    const inspectorColumn = within(dialog).getByText('品检员（已检时必填）').closest('.ant-form-item')?.parentElement
+    expect(inspectorColumn).toHaveClass('ant-col-sm-12')
+  }, 30_000)
 })

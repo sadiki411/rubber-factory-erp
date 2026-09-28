@@ -1,11 +1,15 @@
-import { InboxOutlined, MinusCircleOutlined, PlusOutlined, PrinterOutlined, SearchOutlined, SwapOutlined } from '@ant-design/icons'
-import { Alert, App, Button, Card, Col, Empty, Form, Input, InputNumber, Modal, Row, Select, Space, Statistic, Table, Tag, Typography } from 'antd'
+import { CameraOutlined, InboxOutlined, MinusCircleOutlined, PlusOutlined, PrinterOutlined, QrcodeOutlined, SearchOutlined, SwapOutlined } from '@ant-design/icons'
+import { Alert, App, Button, Card, Col, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, QRCode, Row, Select, Space, Statistic, Table, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import { inventoryApi, orderApi, toList } from '../api/client'
 import { qualityApi } from '../api/client'
+import { Code128Barcode } from '../components/Code128Barcode'
 import { PageTitle } from '../components/PageTitle'
+import { QualityQrScanner } from '../components/QualityQrScanner'
+import { inventoryLocationDetailUrl, isInventoryLocationCode, normalizeInventoryLocationCode } from '../inventory'
 import type { InventoryLocation, InventoryQualityStatus, MaterialRemainder, Order, QualityEmployee } from '../types'
 
 const QUALITY_META: Record<InventoryQualityStatus, { label: string; color: string }> = {
@@ -16,17 +20,29 @@ const QUALITY_META: Record<InventoryQualityStatus, { label: string; color: strin
 }
 const EMPTY_LOCATIONS: InventoryLocation[] = []
 const INVENTORY_SELECT_CLASS_NAMES = { popup: { root: 'inventory-select-popup' } }
+const INVENTORY_SCAN_FORMATS = ['qr_code', 'code_128']
+
+type PrintLayout = 'A4' | 'THERMAL'
+type PrintScope = 'ALL' | 'RACK' | 'CUSTOM'
+type LocationScanPurpose = 'LOOKUP' | 'RECEIPT' | 'MOVE'
 
 function qualityTag(value?: InventoryQualityStatus) {
   const meta = value ? QUALITY_META[value] : undefined
   return <Tag color={meta?.color}>{meta?.label || value || '空位'}</Tag>
 }
 
-export function InventoryPage() {
-  const { message } = App.useApp()
+export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { initialLocationCode?: string; onLocationDetailClose?: () => void } = {}) {
+  const { message, modal } = App.useApp()
   const queryClient = useQueryClient()
   const [query, setQuery] = useState('')
-  const [labelSize, setLabelSize] = useState<'100x50' | '70x30' | '50x30'>('100x50')
+  const [printOpen, setPrintOpen] = useState(false)
+  const [printLayout, setPrintLayout] = useState<PrintLayout>('A4')
+  const [printScope, setPrintScope] = useState<PrintScope>('ALL')
+  const [printRack, setPrintRack] = useState<string>()
+  const [printLocationIds, setPrintLocationIds] = useState<number[]>([])
+  const [labelLocations, setLabelLocations] = useState<InventoryLocation[]>([])
+  const [detailLocation, setDetailLocation] = useState<InventoryLocation>()
+  const [scanPurpose, setScanPurpose] = useState<LocationScanPurpose>()
   const [receiptOpen, setReceiptOpen] = useState(false)
   const [outboundOpen, setOutboundOpen] = useState(false)
   const [remainderOpen, setRemainderOpen] = useState(false)
@@ -39,6 +55,7 @@ export function InventoryPage() {
   const [remainderForm] = Form.useForm()
   const [remainderUseForm] = Form.useForm()
   const [moveForm] = Form.useForm()
+  const selectedProductId = Form.useWatch<number | undefined>('product_id', receiptForm)
   const summaryQuery = useQuery({ queryKey: ['inventory', 'summary'], queryFn: inventoryApi.summary })
   const locationsQuery = useQuery({
     queryKey: ['inventory', 'locations'],
@@ -49,8 +66,8 @@ export function InventoryPage() {
     queryFn: async () => toList(await inventoryApi.containers({ active: true, page_size: 1000 })),
   })
   const productsQuery = useQuery({
-    queryKey: ['inventory', 'products', query],
-    queryFn: async () => toList(await inventoryApi.products({ q: query || undefined, page_size: 1000 })),
+    queryKey: ['inventory', 'products'],
+    queryFn: async () => toList(await inventoryApi.products({ page_size: 1000 })),
   })
   const ordersQuery = useQuery({
     queryKey: ['inventory', 'orders'],
@@ -137,6 +154,12 @@ export function InventoryPage() {
 
   const locations = locationsQuery.data || EMPTY_LOCATIONS
   const finishedLocations = useMemo(() => locations.filter((location) => location.rack_type !== 'FRIDGE'), [locations])
+  const products = useMemo(() => productsQuery.data || [], [productsQuery.data])
+  const selectedProduct = useMemo(() => products.find((item) => item.id === selectedProductId), [products, selectedProductId])
+  const rackCodes = useMemo(() => [...new Set(finishedLocations.map((location) => location.rack_code))], [finishedLocations])
+  const routedLocationCode = normalizeInventoryLocationCode(initialLocationCode)
+  const routedLocation = routedLocationCode ? finishedLocations.find((item) => item.code === routedLocationCode) : undefined
+  const activeDetailLocation = detailLocation || routedLocation
   const visibleLocations = useMemo(() => {
     const needle = query.trim().toLowerCase()
     if (!needle) return finishedLocations
@@ -163,6 +186,71 @@ export function InventoryPage() {
   const orderOptions = (ordersQuery.data || []).map((order: Order) => ({ value: order.id, label: `${order.order_no}${order.item_no ? ` / ${order.item_no}` : ''} · ${order.specification}` }))
   const moveLocationOptions = moveTarget ? finishedLocations.filter((location) => location.id !== moveTarget.currentLocationId && !location.container && (moveTarget.containerType === 'BASKET' ? location.allows_basket : location.allows_bag)).map((location) => ({ value: location.id, label: `${location.code}${location.allows_basket ? ' · 可放筐/袋' : ' · 袋位'}` })) : []
 
+  const selectReceiptProduct = (productId?: number) => {
+    const product = products.find((item) => item.id === productId)
+    if (!product) {
+      receiptForm.setFieldsValue({ product_id: undefined, product_code: '', product_name: '', specification: '', material: '', unit_weight_g: null })
+      return
+    }
+    receiptForm.setFieldsValue({
+      product_id: product.id,
+      product_code: product.product_code || '',
+      product_name: product.product_name || '',
+      specification: product.specification || '',
+      material: product.material || '',
+      unit_weight_g: product.effective_unit_weight_g ?? product.latest_quality_unit_weight_g ?? product.unit_weight_g ?? null,
+    })
+  }
+
+  const closeLocationDetail = () => {
+    setDetailLocation(undefined)
+    onLocationDetailClose?.()
+  }
+
+  const handleLocationScan = async (rawCode: string) => {
+    const code = normalizeInventoryLocationCode(rawCode)
+    const location = finishedLocations.find((item) => item.code === code)
+    if (!location) throw new Error(`系统中不存在库位 ${code}`)
+    if (scanPurpose === 'RECEIPT') {
+      if (location.container) throw new Error(`${code} 已放置 ${location.container.container_code}，不能重复入库`)
+      receiptForm.setFieldValue('location_id', location.id)
+      message.success(`已选择入库库位 ${code}`)
+    } else if (scanPurpose === 'MOVE') {
+      if (!moveTarget) throw new Error('请先选择需要移库的库存容器')
+      const allowed = moveLocationOptions.some((option) => option.value === location.id)
+      if (!allowed) throw new Error(`${code} 不是当前容器可用的空库位`)
+      moveForm.setFieldValue('location_id', location.id)
+      message.success(`已选择目标库位 ${code}`)
+    } else {
+      setDetailLocation(location)
+    }
+    return true
+  }
+
+  const startLabelPrint = () => {
+    let selected: InventoryLocation[] = []
+    if (printScope === 'ALL') selected = finishedLocations
+    if (printScope === 'RACK') selected = finishedLocations.filter((location) => location.rack_code === printRack)
+    if (printScope === 'CUSTOM') selected = finishedLocations.filter((location) => printLocationIds.includes(location.id))
+    if (!selected.length) {
+      message.warning('请至少选择一个需要打印的库位。')
+      return
+    }
+    setLabelLocations(selected)
+    setPrintOpen(false)
+    const previousStyle = document.getElementById('inventory-print-page-style')
+    previousStyle?.remove()
+    const style = document.createElement('style')
+    style.id = 'inventory-print-page-style'
+    style.textContent = printLayout === 'THERMAL'
+      ? '@page { size: 70mm 50mm; margin: 0; }'
+      : '@page { size: A4 portrait; margin: 8mm; }'
+    document.head.appendChild(style)
+    const cleanup = () => style.remove()
+    window.addEventListener('afterprint', cleanup, { once: true })
+    window.setTimeout(() => window.print(), 120)
+  }
+
   const locationColumns: TableColumnsType<InventoryLocation> = [
     { title: '库位', dataIndex: 'code', width: 140 },
     { title: '容器', key: 'container', width: 130, render: (_, row) => row.container?.container_code || '空位' },
@@ -170,12 +258,25 @@ export function InventoryPage() {
     { title: '数量', key: 'quantity', width: 100, render: (_, row) => row.container?.quantity ?? '-' },
     { title: '质量状态', key: 'quality', width: 110, render: (_, row) => qualityTag(row.container?.quality_status) },
     { title: '最近品检员', key: 'inspector', width: 120, render: (_, row) => row.container?.inspector_name || '未登记' },
-    { title: '操作', key: 'actions', width: 170, render: (_, row) => row.container ? <Space size={0}><Button type="link" size="small" onClick={() => { setQualityTarget(row.container); qualityForm.setFieldsValue({ quality_status: row.container?.quality_status, inspector_id: undefined, inspected_on: new Date().toISOString().slice(0, 10) }) }}>改质量状态</Button><Button type="link" size="small" onClick={() => { setMoveTarget({ containerId: row.container!.id, containerCode: row.container!.container_code, containerType: row.container!.container_type, currentLocationId: row.id }); moveForm.resetFields() }}>移库</Button></Space> : null },
+    { title: '操作', key: 'actions', width: 230, render: (_, row) => <Space size={0}><Button type="link" size="small" onClick={() => setDetailLocation(row)}>查看</Button>{row.container ? <><Button type="link" size="small" onClick={() => { setQualityTarget(row.container); qualityForm.setFieldsValue({ quality_status: row.container?.quality_status, inspector_id: undefined, inspected_on: new Date().toISOString().slice(0, 10) }) }}>改质量状态</Button><Button type="link" size="small" onClick={() => { setMoveTarget({ containerId: row.container!.id, containerCode: row.container!.container_code, containerType: row.container!.container_type, currentLocationId: row.id }); moveForm.resetFields() }}>移库</Button></> : null}</Space> },
   ]
 
   const submitReceipt = async () => {
     const values = await receiptForm.validateFields()
     const productId = values.product_id
+    const previousWeight = Number(selectedProduct?.effective_unit_weight_g ?? selectedProduct?.latest_quality_unit_weight_g ?? selectedProduct?.unit_weight_g)
+    const nextWeight = Number(values.unit_weight_g)
+    if (productId && Number.isFinite(previousWeight) && previousWeight > 0 && Number.isFinite(nextWeight) && nextWeight > 0 && previousWeight !== nextWeight) {
+      const confirmed = await new Promise<boolean>((resolve) => modal.confirm({
+        title: '确认更新产品默认单重',
+        content: `原单重 ${previousWeight}g，本次填写 ${nextWeight}g。确认入库后，新单重会保存到品检出货的产品单重历史，并成为以后出货的默认值。`,
+        okText: '确认并入库',
+        cancelText: '返回检查',
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      }))
+      if (!confirmed) return
+    }
     const body: Record<string, unknown> = {
       ...values,
       product_id: productId || undefined,
@@ -191,7 +292,6 @@ export function InventoryPage() {
     delete body.product_name
     delete body.specification
     delete body.material
-    delete body.unit_weight_g
     receiptMutation.mutate(body)
   }
 
@@ -250,7 +350,7 @@ export function InventoryPage() {
       <PageTitle
         title="成品库存"
         description="库存直接入库、人工选取出库；流程卡只在品检出货页面单独扫描，不会重复扣减库存。"
-        extra={<Space wrap className="inventory-actions"><Select aria-label="标签尺寸" value={labelSize} onChange={setLabelSize} options={[{ value: '100x50', label: '标签 100×50 mm' }, { value: '70x30', label: '标签 70×30 mm' }, { value: '50x30', label: '标签 50×30 mm' }]} /><Button icon={<PrinterOutlined />} onClick={() => window.print()}>打印库位标签</Button><Button icon={<SwapOutlined />} onClick={() => setOutboundOpen(true)}>库存出库</Button><Button type="primary" icon={<InboxOutlined />} onClick={() => setReceiptOpen(true)}>直接入库</Button></Space>}
+        extra={<Space wrap className="inventory-actions"><Button icon={<QrcodeOutlined />} onClick={() => setScanPurpose('LOOKUP')}>扫码查库位</Button><Button icon={<PrinterOutlined />} onClick={() => setPrintOpen(true)}>打印库位标签</Button><Button icon={<SwapOutlined />} onClick={() => setOutboundOpen(true)}>库存出库</Button><Button type="primary" icon={<InboxOutlined />} onClick={() => setReceiptOpen(true)}>直接入库</Button></Space>}
       />
 
       <Row gutter={[12, 12]} className="inventory-stats">
@@ -270,10 +370,10 @@ export function InventoryPage() {
               const sorted = [...items].sort((a, b) => (b.level_no || 0) - (a.level_no || 0) || (a.position_no || 0) - (b.position_no || 0))
               return <Card key={rack} size="small" title={`${rack} · ${items[0]?.rack_type === 'SMALL' ? '小货架（袋位）' : '大货架（筐/袋位）'}`} className="inventory-rack-card">
                 <div className="inventory-location-grid">
-                  {sorted.map((location) => <div key={location.id} className={`inventory-location-tile ${location.container ? 'occupied' : 'empty'} ${location.container?.quality_status === 'WAITING' ? 'waiting' : ''}`}>
+                  {sorted.map((location) => <button type="button" key={location.id} onClick={() => setDetailLocation(location)} className={`inventory-location-tile ${location.container ? 'occupied' : 'empty'} ${location.container?.quality_status === 'WAITING' ? 'waiting' : ''}`}>
                     <strong>{location.code}</strong>
                     {location.container ? <><span>{location.container.product_code || location.container.product_name || '未命名产品'}</span><span className="inventory-tile-quantity">{location.container.quantity} 件</span>{qualityTag(location.container.quality_status)}</> : <Typography.Text type="secondary">空位</Typography.Text>}
-                  </div>)}
+                  </button>)}
                 </div>
               </Card>
             })}
@@ -294,19 +394,54 @@ export function InventoryPage() {
         <Table rowKey="id" size="small" loading={remaindersQuery.isLoading} dataSource={remaindersQuery.data || []} columns={remainderColumns} pagination={{ pageSize: 8 }} scroll={{ x: 900 }} locale={{ emptyText: '暂无冰箱胶料记录' }} />
       </Card>
 
-      <div className={`inventory-label-sheet label-${labelSize}`} aria-hidden="true">
-        {finishedLocations.map((location) => <div className="inventory-label" key={location.id}><strong>成品库存库位</strong><b>{location.code}</b></div>)}
+      <div className={`inventory-label-sheet print-${printLayout.toLowerCase()}`} aria-hidden="true">
+        {labelLocations.map((location) => <div className="inventory-label" key={location.id}>
+          <div className="inventory-label-codes"><Code128Barcode value={location.code} /><QRCode type="svg" value={inventoryLocationDetailUrl(location.code)} bordered={false} /></div>
+          <b>{location.code}</b>
+          <span>{location.label || `${location.rack_code} · 第${location.level_no}层 · 第${location.position_no}位`}</span>
+        </div>)}
       </div>
+
+      <Modal className="inventory-modal" title="打印70×50mm库位标签" open={printOpen} onCancel={() => setPrintOpen(false)} onOk={startLabelPrint} okText="打开打印窗口">
+        <Alert type="info" showIcon message="标签含库位编号、Code 128条形码和可直接打开库位详情的二维码。" style={{ marginBottom: 16 }} />
+        <Form layout="vertical">
+          <Form.Item label="打印设备"><Select value={printLayout} onChange={setPrintLayout} options={[{ value: 'A4', label: 'A4打印机 · 自动排列多张70×50标签' }, { value: 'THERMAL', label: '热敏标签机 · 每页一张70×50标签' }]} /></Form.Item>
+          <Form.Item label="打印范围"><Select value={printScope} onChange={setPrintScope} options={[{ value: 'ALL', label: `全部库位（${finishedLocations.length}张）` }, { value: 'RACK', label: '按货架打印' }, { value: 'CUSTOM', label: '勾选库位补打' }]} /></Form.Item>
+          {printScope === 'RACK' && <Form.Item label="选择货架" required><Select value={printRack} onChange={setPrintRack} placeholder="请选择K01-K09" options={rackCodes.map((code) => ({ value: code, label: `${code}（${finishedLocations.filter((item) => item.rack_code === code).length}张）` }))} /></Form.Item>}
+          {printScope === 'CUSTOM' && <Form.Item label="选择需要补打的库位" required><Select mode="multiple" showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} value={printLocationIds} onChange={setPrintLocationIds} placeholder="可选择一个或多个库位" options={finishedLocations.map((location) => ({ value: location.id, label: `${location.code} · ${location.label}` }))} /></Form.Item>}
+        </Form>
+      </Modal>
+
+      <Drawer className="inventory-location-detail" title={`库位详情${activeDetailLocation ? ` · ${activeDetailLocation.code}` : ''}`} open={!!activeDetailLocation} onClose={closeLocationDetail} width={480}>
+        {activeDetailLocation && <>
+          <Descriptions bordered size="small" column={1}>
+            <Descriptions.Item label="库位编号"><Typography.Text copyable strong>{activeDetailLocation.code}</Typography.Text></Descriptions.Item>
+            <Descriptions.Item label="位置说明">{activeDetailLocation.label || `${activeDetailLocation.rack_code} 第${activeDetailLocation.level_no}层 第${activeDetailLocation.position_no}位`}</Descriptions.Item>
+            <Descriptions.Item label="允许容器">{activeDetailLocation.allows_basket ? '筐、袋' : '袋'}</Descriptions.Item>
+            <Descriptions.Item label="当前状态">{activeDetailLocation.container ? qualityTag(activeDetailLocation.container.quality_status) : <Tag>空位</Tag>}</Descriptions.Item>
+          </Descriptions>
+          {activeDetailLocation.container ? <Descriptions bordered size="small" column={1} style={{ marginTop: 16 }}>
+            <Descriptions.Item label="产品">{activeDetailLocation.container.product_name || activeDetailLocation.container.product_code || '-'}</Descriptions.Item>
+            <Descriptions.Item label="规格 / 材质">{activeDetailLocation.container.specification || '-'} / {activeDetailLocation.container.material || '-'}</Descriptions.Item>
+            <Descriptions.Item label="库存数量"><Typography.Text strong>{activeDetailLocation.container.quantity} 件</Typography.Text></Descriptions.Item>
+            <Descriptions.Item label="成品单重">{activeDetailLocation.container.unit_weight_g ? `${Number(activeDetailLocation.container.unit_weight_g)} g` : '未记录'}</Descriptions.Item>
+            <Descriptions.Item label="容器">{activeDetailLocation.container.container_code} · {activeDetailLocation.container.container_type === 'BASKET' ? '筐' : '袋'}</Descriptions.Item>
+            <Descriptions.Item label="库存批次">{activeDetailLocation.container.batch_no}</Descriptions.Item>
+            <Descriptions.Item label="品检员">{activeDetailLocation.container.inspector_name || '未登记'}</Descriptions.Item>
+            <Descriptions.Item label="入库日期">{activeDetailLocation.container.received_on || '-'}</Descriptions.Item>
+          </Descriptions> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前为空库位"><Button type="primary" icon={<InboxOutlined />} onClick={() => { receiptForm.setFieldValue('location_id', activeDetailLocation.id); closeLocationDetail(); setReceiptOpen(true) }}>在此库位入库</Button></Empty>}
+        </>}
+      </Drawer>
 
       <Modal className="inventory-modal" title="库存直接入库" open={receiptOpen} onCancel={() => setReceiptOpen(false)} onOk={() => void submitReceipt()} confirmLoading={receiptMutation.isPending} width={720} okText="确认入库">
         <Alert type="info" showIcon message="本表单不需要订单或流程卡；库存批次由系统生成，可手工填写现场批次号。" style={{ marginBottom: 16 }} />
         <Form form={receiptForm} layout="vertical" initialValues={{ quality_status: 'WAITING', container_type: 'BAG', bag_count: 1 }}>
-          <Form.Item label="已有产品" name="product_id"><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} placeholder="不选则填写临时产品资料" options={(productsQuery.data || []).map((item) => ({ value: item.id, label: `${item.product_code || item.product_name || '-'} · ${item.specification}` }))} /></Form.Item>
-          <Row gutter={12}><Col xs={24} sm={12}><Form.Item label="产品编号" name="product_code"><Input /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="产品名称" name="product_name"><Input /></Form.Item></Col></Row>
-          <Row gutter={12}><Col xs={24} sm={12}><Form.Item label="规格" name="specification"><Input /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="材质" name="material"><Input /></Form.Item></Col></Row>
-          <Row gutter={12}><Col xs={24} sm={8}><Form.Item label="成品单重(g)" name="unit_weight_g"><InputNumber min={0} precision={5} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="容器类型" name="container_type" rules={[{ required: true }]}><Select options={[{ value: 'BAG', label: '袋' }, { value: 'BASKET', label: '筐' }]} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="库位" name="location_id" rules={[{ required: true, message: '请选择库位' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} options={finishedLocations.filter((item) => !item.container).map((item) => ({ value: item.id, label: `${item.code}${item.allows_basket ? ' · 可放筐/袋' : ' · 袋位'}` }))} /></Form.Item></Col></Row>
+          <Form.Item label="已有产品" name="product_id"><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} onChange={selectReceiptProduct} placeholder="选择后自动带出产品资料和最新单重" options={products.map((item) => ({ value: item.id, label: `${item.product_code || item.product_name || '-'} · ${item.specification} · ${item.material || '-'}` }))} /></Form.Item>
+          <Row gutter={12}><Col xs={24} sm={12}><Form.Item label="产品编号" name="product_code"><Input readOnly={!!selectedProductId} /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="产品名称" name="product_name"><Input readOnly={!!selectedProductId} /></Form.Item></Col></Row>
+          <Row gutter={12}><Col xs={24} sm={12}><Form.Item label="规格" name="specification"><Input readOnly={!!selectedProductId} /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="材质" name="material"><Input readOnly={!!selectedProductId} /></Form.Item></Col></Row>
+          <Row gutter={12}><Col xs={24} sm={8}><Form.Item label="成品单重(g)" name="unit_weight_g" extra={selectedProductId ? '自动带出品检出货最近确认的单重；修改后会写入同一单重历史。' : '可选填；能唯一匹配产品规格资料时会同步到品检出货。'}><InputNumber min={0.00001} precision={5} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="容器类型" name="container_type" rules={[{ required: true }]}><Select options={[{ value: 'BAG', label: '袋' }, { value: 'BASKET', label: '筐' }]} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="库位" required><div className="inventory-scan-field"><Form.Item name="location_id" noStyle rules={[{ required: true, message: '请选择库位' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} options={finishedLocations.filter((item) => !item.container).map((item) => ({ value: item.id, label: `${item.code}${item.allows_basket ? ' · 可放筐/袋' : ' · 袋位'}` }))} /></Form.Item><Button aria-label="扫描入库库位" icon={<CameraOutlined />} onClick={() => setScanPurpose('RECEIPT')}>扫码</Button></div></Form.Item></Col></Row>
           <Row gutter={12}><Col xs={24} sm={8}><Form.Item label="总数量（件）" name="quantity" rules={[{ required: true, type: 'number', min: 1 }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="筐内/容器袋数" name="bag_count"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="每袋数量" name="pieces_per_bag"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col></Row>
-          <Row gutter={12}><Col xs={24} sm={8}><Form.Item label="质量状态" name="quality_status" rules={[{ required: true }]}><Select options={Object.entries(QUALITY_META).map(([value, meta]) => ({ value, label: meta.label }))} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="品检员（已检时必填）" name="inspector_id"><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} loading={employeesQuery.isLoading} options={(employeesQuery.data || []).map((employee: QualityEmployee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="库存批次号" name="batch_no"><Input placeholder="留空自动生成" /></Form.Item></Col></Row>
+          <Row gutter={12}><Col xs={24} sm={6}><Form.Item label="质量状态" name="quality_status" rules={[{ required: true }]}><Select options={Object.entries(QUALITY_META).map(([value, meta]) => ({ value, label: meta.label }))} /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="品检员（已检时必填）" name="inspector_id"><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} loading={employeesQuery.isLoading} options={(employeesQuery.data || []).map((employee: QualityEmployee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} /></Form.Item></Col><Col xs={24} sm={6}><Form.Item label="库存批次号" name="batch_no"><Input placeholder="留空自动生成" /></Form.Item></Col></Row>
           <Form.Item label="来源说明" name="source_note"><Input.TextArea rows={2} placeholder="例如：前批生产剩余、现场期初盘点" /></Form.Item>
         </Form>
       </Modal>
@@ -342,7 +477,7 @@ export function InventoryPage() {
       <Modal className="inventory-modal" title={`库存移库${moveTarget ? ` · ${moveTarget.containerCode}` : ''}`} open={!!moveTarget} onCancel={() => setMoveTarget(undefined)} onOk={() => void submitMove()} confirmLoading={moveMutation.isPending} okText="确认移库">
         <Alert type="info" showIcon message="移库只改变固定库位，不改变产品、批次、质量状态或库存数量。" style={{ marginBottom: 16 }} />
         <Form form={moveForm} layout="vertical">
-          <Form.Item label="目标库位" name="location_id" rules={[{ required: true, message: '请选择目标库位' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} options={moveLocationOptions} /></Form.Item>
+          <Form.Item label="目标库位" required><div className="inventory-scan-field"><Form.Item name="location_id" noStyle rules={[{ required: true, message: '请选择目标库位' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} options={moveLocationOptions} /></Form.Item><Button aria-label="扫描目标库位" icon={<CameraOutlined />} onClick={() => setScanPurpose('MOVE')}>扫码</Button></div></Form.Item>
           <Form.Item label="移库原因" name="reason"><Input.TextArea rows={2} placeholder="例如：货架整理、腾挪库位" /></Form.Item>
         </Form>
       </Modal>
@@ -362,6 +497,29 @@ export function InventoryPage() {
           <Form.Item label="使用说明" name="note"><Input.TextArea rows={2} /></Form.Item>
         </Form>
       </Modal>
+
+      <QualityQrScanner
+        open={!!scanPurpose}
+        title={scanPurpose === 'RECEIPT' ? '扫描入库库位' : scanPurpose === 'MOVE' ? '扫描目标库位' : '扫码查询库位'}
+        description="手机可直接对准标签二维码；外接扫码枪可扫描条形码，也可以在下方手工输入库位编号。"
+        continuous={false}
+        formats={INVENTORY_SCAN_FORMATS}
+        normalizeValue={normalizeInventoryLocationCode}
+        isValidValue={isInventoryLocationCode}
+        valueNoun="库位"
+        counterUnit="个"
+        invalidMessage="未识别为ERP库位编号，请对准完整二维码或条形码。"
+        manualPlaceholder="库位编号，如 K01-L01-P01"
+        videoLabel="库位标签扫码取景画面"
+        onClose={() => setScanPurpose(undefined)}
+        onScan={handleLocationScan}
+      />
     </div>
   )
+}
+
+export function InventoryLocationPage() {
+  const { locationCode } = useParams<{ locationCode: string }>()
+  const navigate = useNavigate()
+  return <InventoryPage initialLocationCode={locationCode} onLocationDetailClose={() => navigate('/inventory', { replace: true })} />
 }

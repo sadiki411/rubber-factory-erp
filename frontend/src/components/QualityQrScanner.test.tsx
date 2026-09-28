@@ -1,6 +1,7 @@
 import { App } from 'antd'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QualityQrScanner } from './QualityQrScanner'
+import { isInventoryLocationCode, normalizeInventoryLocationCode } from '../inventory'
 
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
@@ -52,6 +53,28 @@ describe('QualityQrScanner', () => {
     fireEvent.change(input, { target: { value: '04-M003-2608210028' } })
     fireEvent.click(screen.getByRole('button', { name: /加入/ }))
     await waitFor(() => expect(onScan).toHaveBeenCalledTimes(2))
+  })
+
+  it('can be reused for a location URL or scanner-gun code', async () => {
+    const onScan = vi.fn().mockResolvedValue(true)
+    render(<App><QualityQrScanner
+      open
+      continuous={false}
+      normalizeValue={normalizeInventoryLocationCode}
+      isValidValue={isInventoryLocationCode}
+      valueNoun="库位"
+      counterUnit="个"
+      manualPlaceholder="库位编号，如 K01-L01-P01"
+      onClose={vi.fn()}
+      onScan={onScan}
+    /></App>)
+
+    const input = screen.getByPlaceholderText(/K01-L01-P01/)
+    fireEvent.change(input, { target: { value: 'https://erp.qfylagent.org/inventory/locations/K09-L05-P02' } })
+    fireEvent.click(screen.getByRole('button', { name: /加入/ }))
+
+    await waitFor(() => expect(onScan).toHaveBeenCalledWith('K09-L05-P02'))
+    expect(screen.getByText('本次已扫 1 个')).toBeInTheDocument()
   })
 
   it('allows a retry in the same camera session after the parent rejects an optimistic scan', async () => {

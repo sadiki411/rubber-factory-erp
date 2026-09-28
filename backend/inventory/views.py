@@ -1,5 +1,5 @@
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import DecimalField, OuterRef, Q, Subquery, Sum
 from django.utils.dateparse import parse_date
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -18,7 +18,7 @@ from .models import (
     MaterialRemainder,
     MaterialRemainderUse,
 )
-from quality.models import QualityEmployee
+from quality.models import ProductUnitWeight, QualityEmployee
 from .serializers import (
     InventoryBatchSerializer,
     InventoryContainerSerializer,
@@ -65,7 +65,17 @@ class InventoryLocationViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class InventoryProductViewSet(viewsets.ModelViewSet):
-    queryset = InventoryProduct.objects.all().select_related("product_specification")
+    latest_quality_weight = ProductUnitWeight.objects.filter(
+        product_specification_id=OuterRef("product_specification_id"),
+        is_active=True,
+        unit_weight_g__gt=0,
+    ).order_by("-created_at", "-id").values("unit_weight_g")[:1]
+    queryset = InventoryProduct.objects.all().select_related("product_specification").annotate(
+        latest_quality_unit_weight_g=Subquery(
+            latest_quality_weight,
+            output_field=DecimalField(max_digits=14, decimal_places=5),
+        )
+    )
     serializer_class = InventoryProductSerializer
     pagination_class = InventoryPagination
     http_method_names = ["get", "post", "patch", "head", "options"]

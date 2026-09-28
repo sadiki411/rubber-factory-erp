@@ -14,6 +14,7 @@ type DetectedBarcode = { rawValue?: string }
 type BarcodeDetectorLike = { detect: (source: CanvasImageSource) => Promise<DetectedBarcode[]> }
 type BarcodeDetectorConstructor = new (options?: { formats?: string[] }) => BarcodeDetectorLike
 const EMPTY_SCAN_VALUES: string[] = []
+const QR_ONLY_FORMATS = ['qr_code']
 
 declare global {
   interface Window {
@@ -29,6 +30,14 @@ export interface QualityQrScannerProps {
   description?: string
   continuous?: boolean
   initialValues?: string[]
+  normalizeValue?: (value: string | null | undefined) => string
+  isValidValue?: (value: string | null | undefined) => boolean
+  formats?: string[]
+  valueNoun?: string
+  counterUnit?: string
+  invalidMessage?: string
+  manualPlaceholder?: string
+  videoLabel?: string
   onClose: () => void
   /** Return false when the server rejects a scan so the same card can retry. */
   onScan: (cardNo: string) => boolean | void | Promise<boolean | void>
@@ -73,6 +82,14 @@ export function QualityQrScanner({
   description = '将流程卡二维码放入取景框，可连续扫描多张。',
   continuous = true,
   initialValues = EMPTY_SCAN_VALUES,
+  normalizeValue = normalizeProcessCardQrText,
+  isValidValue = isLikelyProcessCardNo,
+  formats = QR_ONLY_FORMATS,
+  valueNoun = '流程卡',
+  counterUnit = '张',
+  invalidMessage = '未识别为流程卡单号，请对准完整二维码或手动核对。',
+  manualPlaceholder = '流程卡完整单号，如 04-M003-2608210028',
+  videoLabel = '流程卡二维码取景画面',
   onClose,
   onScan,
 }: QualityQrScannerProps) {
@@ -88,6 +105,11 @@ export function QualityQrScanner({
   const onCloseRef = useRef(onClose)
   const onScanRef = useRef(onScan)
   const continuousRef = useRef(continuous)
+  const normalizeValueRef = useRef(normalizeValue)
+  const isValidValueRef = useRef(isValidValue)
+  const formatsRef = useRef(formats)
+  const valueNounRef = useRef(valueNoun)
+  const invalidMessageRef = useRef(invalidMessage)
   const messageRef = useRef(message)
   const [manualValue, setManualValue] = useState('')
   const [starting, setStarting] = useState(false)
@@ -101,7 +123,12 @@ export function QualityQrScanner({
   // and restart an active phone camera session. This effect is declared before
   // the open/close effect below, so a newly opened session sees fresh seeds.
   useEffect(() => {
-    const normalizedInitialValues = initialValues.map(normalizeProcessCardQrText).filter(Boolean)
+    normalizeValueRef.current = normalizeValue
+    isValidValueRef.current = isValidValue
+    formatsRef.current = formats
+    valueNounRef.current = valueNoun
+    invalidMessageRef.current = invalidMessage
+    const normalizedInitialValues = initialValues.map(normalizeValue).filter(Boolean)
     initialValuesRef.current = normalizedInitialValues
     // The parent can reject a scan after an optimistic, immediate UI update.
     // Reconcile the duplicate guard without restarting the camera so that a
@@ -115,7 +142,7 @@ export function QualityQrScanner({
     onScanRef.current = onScan
     continuousRef.current = continuous
     messageRef.current = message
-  }, [continuous, initialValues, message, onClose, onScan, open])
+  }, [continuous, formats, initialValues, invalidMessage, isValidValue, message, normalizeValue, onClose, onScan, open, valueNoun])
 
   const stopCamera = useCallback(() => {
     cameraSessionRef.current += 1
@@ -132,15 +159,15 @@ export function QualityQrScanner({
   }, [])
 
   const acceptValue = useCallback(async (rawValue: string) => {
-    const cardNo = normalizeProcessCardQrText(rawValue)
-    if (!isLikelyProcessCardNo(cardNo)) {
+    const cardNo = normalizeValueRef.current(rawValue)
+    if (!isValidValueRef.current(cardNo)) {
       scanFeedback('error')
-      messageRef.current.warning('未识别为流程卡单号，请对准完整二维码或手动核对。')
+      messageRef.current.warning(invalidMessageRef.current)
       return false
     }
     if (scannedRef.current.has(cardNo)) {
       scanFeedback('duplicate')
-      messageRef.current.info(`流程卡 ${cardNo} 已扫过，本次未重复加入。`)
+      messageRef.current.info(`${valueNounRef.current} ${cardNo} 已扫过，本次未重复加入。`)
       return false
     }
     scannedRef.current.add(cardNo)
@@ -159,7 +186,7 @@ export function QualityQrScanner({
       scannedRef.current.delete(cardNo)
       setScanned((values) => values.filter((value) => value !== cardNo))
       scanFeedback('error')
-      messageRef.current.error((scanError as Error).message || `流程卡 ${cardNo} 处理失败`)
+      messageRef.current.error((scanError as Error).message || `${valueNounRef.current} ${cardNo} 处理失败`)
       return false
     }
   }, [])
@@ -177,8 +204,10 @@ export function QualityQrScanner({
         throw new Error('当前浏览器内核不支持实时二维码识别，请更新系统 WebView，或先使用下方手动输入。')
       }
       const supported = await window.BarcodeDetector.getSupportedFormats?.()
-      if (supported && !supported.includes('qr_code')) throw new Error('当前设备不支持二维码识别。')
-      const detector = new window.BarcodeDetector({ formats: ['qr_code'] })
+      const requestedFormats = formatsRef.current
+      const usableFormats = supported ? requestedFormats.filter((format) => supported.includes(format)) : requestedFormats
+      if (!usableFormats.length) throw new Error('当前设备不支持所需的二维码或条形码识别。')
+      const detector = new window.BarcodeDetector({ formats: usableFormats })
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -278,12 +307,12 @@ export function QualityQrScanner({
     closable={false}
     className="quality-qr-scanner"
     title={<div className="quality-qr-scanner-title"><div><CameraOutlined /><span>{title}</span></div><Button type="text" icon={<CloseOutlined />} aria-label="关闭扫码" onClick={onClose} /></div>}
-    footer={<div className="quality-qr-scanner-footer"><Button block size="large" onClick={onClose}>{scanned.length ? `完成（已扫 ${scanned.length} 张）` : '关闭扫码'}</Button></div>}
+    footer={<div className="quality-qr-scanner-footer"><Button block size="large" onClick={onClose}>{scanned.length ? `完成（已扫 ${scanned.length} ${counterUnit}）` : '关闭扫码'}</Button></div>}
   >
     <div className="quality-qr-scanner-body">
       <Typography.Paragraph type="secondary">{description}</Typography.Paragraph>
       <div className="quality-qr-viewport">
-        <video ref={videoRef} muted playsInline aria-label="流程卡二维码取景画面" />
+        <video ref={videoRef} muted playsInline aria-label={videoLabel} />
         <div className="quality-qr-frame" aria-hidden="true"><span /><span /><span /><span /></div>
         {starting && <div className="quality-qr-overlay">正在启动相机…</div>}
         {error && <div className="quality-qr-overlay is-error"><CameraOutlined /><span>相机暂不可用</span></div>}
@@ -291,15 +320,15 @@ export function QualityQrScanner({
       {error && <Alert type="warning" showIcon message={error} action={<Button icon={<ReloadOutlined />} onClick={() => void startCamera()}>重试</Button>} />}
       <Space className="quality-qr-actions" wrap>
         {torchAvailable && <Button icon={<BulbOutlined />} type={torchEnabled ? 'primary' : 'default'} onClick={() => void toggleTorch()}>{torchEnabled ? '关闭闪光灯' : '打开闪光灯'}</Button>}
-        <Tag color="success" icon={<CheckCircleOutlined />}>本次已扫 {scanned.length} 张</Tag>
+        <Tag color="success" icon={<CheckCircleOutlined />}>本次已扫 {scanned.length} {counterUnit}</Tag>
       </Space>
-      {scanned.length > 0 && <div className="quality-qr-results" aria-label="已扫描流程卡">
+      {scanned.length > 0 && <div className="quality-qr-results" aria-label={`已扫描${valueNoun}`}>
         {scanned.slice(-6).reverse().map((cardNo, index) => <div key={cardNo}><CheckCircleOutlined /><strong>{cardNo}</strong>{index === 0 && <Tag color="green">刚刚</Tag>}</div>)}
       </div>}
       <div className="quality-qr-manual">
         <Typography.Text strong>扫码失败时手动输入</Typography.Text>
         <Space.Compact block>
-          <Input value={manualValue} onChange={(event) => setManualValue(event.target.value)} onPressEnter={() => void submitManual()} placeholder="流程卡完整单号，如 04-M003-2608210028" autoCapitalize="characters" />
+          <Input value={manualValue} onChange={(event) => setManualValue(event.target.value)} onPressEnter={() => void submitManual()} placeholder={manualPlaceholder} autoCapitalize="characters" />
           <Button type="primary" icon={<EnterOutlined />} disabled={!manualValue.trim()} onClick={() => void submitManual()}>加入</Button>
         </Space.Compact>
       </div>

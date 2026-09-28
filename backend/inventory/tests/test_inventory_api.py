@@ -4,9 +4,10 @@ from django.contrib.auth import get_user_model
 from django.urls import reverse
 from rest_framework.test import APITestCase
 
-from quality.models import QualityEmployee, QualityOrder
+from orders.models import ProductSpecification
+from quality.models import ProductUnitWeight, QualityEmployee, QualityOrder
 
-from inventory.models import InventoryBatch, InventoryContainer, InventoryLocation, InventoryTransaction, MaterialRemainder
+from inventory.models import InventoryBatch, InventoryContainer, InventoryLocation, InventoryProduct, InventoryTransaction, MaterialRemainder
 
 
 class InventoryApiTests(APITestCase):
@@ -78,6 +79,90 @@ class InventoryApiTests(APITestCase):
         self.assertEqual(container.location.code, "K01-L01-P01")
         self.assertEqual(container.batch.quality_status, InventoryBatch.QualityStatus.PASSED)
         self.assertEqual(InventoryTransaction.objects.filter(transaction_type="RECEIPT").count(), 1)
+
+    def test_receipt_reuses_quality_unit_weight_and_saves_an_inventory_override_to_the_same_history(self):
+        specification = ProductSpecification.objects.create(
+            product_name="产品362", customer_product_no="P-362",
+            specification="362", material="NBR",
+        )
+        product = InventoryProduct.objects.create(
+            product_code="P-362", product_name="产品362", specification="362",
+            material="NBR", unit_weight_g="1.80000", product_specification=specification,
+        )
+        ProductUnitWeight.objects.create(
+            product_specification=specification, unit_weight_g="2.10000",
+            created_by=self.user,
+        )
+
+        listed = self.client.get("/api/inventory/products/?page_size=1000").json()["results"]
+        listed_product = next(item for item in listed if item["id"] == product.pk)
+        self.assertEqual(Decimal(listed_product["effective_unit_weight_g"]), Decimal("2.10000"))
+
+        response = self.receipt(
+            product_id=product.pk,
+            unit_weight_g="2.25000",
+            batch_no="WEIGHT-001",
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        product.refresh_from_db()
+        self.assertEqual(product.unit_weight_g, Decimal("2.25000"))
+        latest = ProductUnitWeight.objects.filter(product_specification=specification).order_by("-created_at", "-id").first()
+        self.assertEqual(latest.unit_weight_g, Decimal("2.25000"))
+        self.assertEqual(latest.notes, "由库存入库确认自动保存的产品单重")
+
+        location = self.client.get("/api/inventory/locations/?active=true").json()
+        occupied = next(item for item in location if item["id"] == self.large.pk)
+        self.assertEqual(Decimal(occupied["container"]["unit_weight_g"]), Decimal("2.25000"))
+        self.assertTrue(occupied["container"]["received_on"])
+
+    def test_manual_inventory_product_links_to_a_unique_matching_product_specification(self):
+        specification = ProductSpecification.objects.create(
+            product_name="唯一产品", specification="14x2.5", material="EPDM",
+        )
+        response = self.receipt(
+            batch_no="MATCH-001",
+            product={
+                "product_code": "",
+                "product_name": "唯一产品",
+                "specification": "14x2.5",
+                "material": "EPDM",
+                "unit_weight_g": "0.50000",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        product = InventoryContainer.objects.get(pk=response.json()["id"]).batch.product
+        self.assertEqual(product.product_specification_id, specification.pk)
+        self.assertTrue(ProductUnitWeight.objects.filter(
+            product_specification=specification,
+            unit_weight_g=Decimal("0.50000"),
+        ).exists())
+
+    def test_manual_inventory_product_does_not_guess_when_specification_and_material_are_ambiguous(self):
+        first = ProductSpecification.objects.create(
+            product_name="同规格产品甲", customer_product_no="P-MATCH",
+            specification="14x2.5", material="EPDM",
+        )
+        ProductSpecification.objects.create(
+            product_name="同规格产品乙", customer_product_no="P-OTHER",
+            specification="14x2.5", material="EPDM",
+        )
+        response = self.receipt(
+            batch_no="AMBIGUOUS-001",
+            location_id=InventoryLocation.objects.get(code="K01-L01-P02").pk,
+            product={
+                "product_code": "P-MATCH",
+                "product_name": "同规格库存产品",
+                "specification": "14x2.5",
+                "material": "EPDM",
+                "unit_weight_g": "0.50000",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        product = InventoryContainer.objects.get(pk=response.json()["id"]).batch.product
+        self.assertIsNone(product.product_specification_id)
+        self.assertFalse(ProductUnitWeight.objects.filter(product_specification=first).exists())
 
     def test_small_rack_rejects_basket(self):
         response = self.receipt(batch_no="OPEN-002", location_id=self.small.pk)

@@ -49,6 +49,7 @@ def remember_confirmed_product_unit_weight(
     created_by,
     measured_on=None,
     note="由出货确认自动保存的单重历史",
+    backfill_reason="出货确认自动保存历史单重",
 ):
     """Make a confirmed shipment value the default for future shipments.
 
@@ -71,7 +72,7 @@ def remember_confirmed_product_unit_weight(
         unit_weight_g=value,
         is_active=True,
         measured_on=measured_on or timezone.localdate(),
-        backfill_reason="出货确认自动保存历史单重",
+        backfill_reason=backfill_reason,
         created_by=created_by,
         notes=note,
     )

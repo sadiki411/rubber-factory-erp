@@ -16,16 +16,44 @@ from .models import (
 )
 from .services import create_inventory_outbound, create_inventory_receipt
 from quality.models import QualityEmployee
+from quality.unit_weights import latest_saved_product_unit_weight
 
 
 class InventoryProductSerializer(serializers.ModelSerializer):
+    latest_quality_unit_weight_g = serializers.SerializerMethodField()
+    effective_unit_weight_g = serializers.SerializerMethodField()
+
     class Meta:
         model = InventoryProduct
         fields = [
             "id", "product_code", "product_name", "specification", "material",
-            "unit_weight_g", "product_specification", "is_active", "notes",
+            "unit_weight_g", "latest_quality_unit_weight_g", "effective_unit_weight_g",
+            "product_specification", "is_active", "notes",
             "created_at", "updated_at",
         ]
+
+    def get_latest_quality_unit_weight_g(self, obj):
+        # Product list queries annotate this field in one database query.  Nested
+        # product serializers (locations/containers/batches) deliberately avoid
+        # looking it up row-by-row, which would make the inventory screen issue
+        # hundreds of extra queries as the warehouse grows.
+        if not hasattr(obj, "latest_quality_unit_weight_g"):
+            return None
+        annotated = getattr(obj, "latest_quality_unit_weight_g", None)
+        if annotated is not None:
+            return str(Decimal(annotated).quantize(Decimal("0.00001")))
+        latest = latest_saved_product_unit_weight(
+            product_specification_id=obj.product_specification_id,
+            specification=obj.specification,
+            material=obj.material,
+        )
+        return str(latest.unit_weight_g.quantize(Decimal("0.00001"))) if latest else None
+
+    def get_effective_unit_weight_g(self, obj):
+        latest = self.get_latest_quality_unit_weight_g(obj)
+        if latest is not None:
+            return latest
+        return str(obj.unit_weight_g.quantize(Decimal("0.00001"))) if obj.unit_weight_g is not None else None
 
 
 class InventoryLocationSerializer(serializers.ModelSerializer):
@@ -59,6 +87,8 @@ class InventoryLocationSerializer(serializers.ModelSerializer):
             "inspector_name": (
                 container.batch.inspector.name if container.batch.inspector_id else ""
             ),
+            "received_on": container.batch.received_on,
+            "unit_weight_g": container.batch.product.unit_weight_g,
         }
 
 
@@ -85,6 +115,10 @@ class InventoryBatchSerializer(serializers.ModelSerializer):
 class InventoryReceiptSerializer(serializers.Serializer):
     product_id = serializers.IntegerField(required=False, allow_null=True)
     product = InventoryProductSerializer(required=False)
+    unit_weight_g = serializers.DecimalField(
+        max_digits=14, decimal_places=5, required=False, allow_null=True,
+        min_value=Decimal("0.00001"),
+    )
     batch_no = serializers.CharField(required=False, allow_blank=True, max_length=80)
     received_on = serializers.DateField(required=False)
     source_type = serializers.ChoiceField(choices=InventoryBatch.SourceType.choices, default=InventoryBatch.SourceType.MANUAL)
