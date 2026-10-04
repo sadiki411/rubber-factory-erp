@@ -487,6 +487,7 @@ button, input, textarea, select { font: inherit; }
 .quality-filter-row + .quality-filter-row { margin-top: 12px; }
 .quality-filter-row > .ant-typography { white-space: nowrap; }
 .quality-filter-row > .ant-select { min-width: 180px; }
+.quality-filter-row > .ant-select-auto-complete { min-width: 180px; }
 .quality-filter-actions { justify-content: flex-end; }
 .quality-page-alert { margin-bottom: 16px; }
 .quality-kpis { margin-bottom: 18px; }
@@ -522,6 +523,14 @@ button, input, textarea, select { font: inherit; }
 .quality-workflow-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .quality-workflow-heading > div { min-width: 0; }
 .quality-workflow .ant-table-wrapper, .quality-workflow-management .ant-table-wrapper { max-width: 100%; overflow-x: auto; }
+.quality-shipment-ledger-mobile-list { display: grid; gap: 12px; }
+.quality-shipment-ledger-mobile-card { border-color: #dce8e4; }
+.quality-shipment-ledger-mobile-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 10px; }
+.quality-shipment-ledger-mobile-heading > div { min-width: 0; display: grid; gap: 2px; }
+.quality-shipment-ledger-mobile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; margin-bottom: 12px; }
+.quality-shipment-ledger-mobile-grid span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.quality-shipment-ledger-mobile-grid small { color: #748983; font-size: 12px; }
+.quality-shipment-ledger-mobile-grid b { overflow-wrap: anywhere; color: #294f46; font-size: 13px; font-weight: 600; }
 .quality-legacy-reworks { margin-top: 24px; }
 .quality-return-source-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; margin: 16px 0; }
 .quality-return-source-loading { display: grid; min-height: 160px; place-items: center; }
@@ -853,7 +862,7 @@ button, input, textarea, select { font: inherit; }
   .production-settlement .ant-form > .ant-space { display: grid; width: 100%; }
   .production-settlement .ant-form > .ant-space .ant-btn { min-height: 44px; }
   .quality-filter-row { grid-template-columns: 1fr; }
-  .quality-filter-row .ant-picker, .quality-filter-row .ant-input-affix-wrapper, .quality-filter-row .ant-select, .quality-filter-row .ant-select-selector { width: 100%; min-height: 44px; }
+  .quality-filter-row .ant-picker, .quality-filter-row .ant-input-affix-wrapper, .quality-filter-row .ant-select, .quality-filter-row .ant-select-auto-complete, .quality-filter-row .ant-select-selector { width: 100%; min-height: 44px; }
   .quality-filter-row > .ant-typography { white-space: normal; }
   .quality-filter-actions { width: 100%; justify-content: space-between; }
   .quality-kpi .ant-card-body { padding: 14px; }
@@ -865,6 +874,8 @@ button, input, textarea, select { font: inherit; }
   .quality-tab-content > .section-heading { align-items: stretch; flex-direction: column; gap: 10px; }
   .quality-tab-content > .section-heading h3 { font-size: 20px; }
   .quality-tab-content > .section-heading .ant-btn { flex: 0 0 auto; min-height: 44px; width: 100%; }
+  .quality-shipment-ledger-mobile-heading .ant-btn { min-height: 0; padding-inline: 0; text-align: left; }
+  .quality-shipment-ledger-mobile-card > .ant-card-body > .ant-btn { min-height: 44px; }
   .quality-trend-card .ant-card-body { padding: 14px; }
   .quality-workflow-heading { align-items: stretch; flex-direction: column; }
   .quality-workflow-heading .ant-space { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }

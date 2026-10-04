@@ -206,6 +206,20 @@ class ProcessCardViewSet(WorkflowModelViewSet):
                 | Q(specification_snapshot__icontains=q)
                 | Q(material_snapshot__icontains=q)
             )
+        specification = str(
+            self.request.query_params.get("specification", "")
+        ).strip()
+        if specification:
+            queryset = queryset.filter(
+                Q(specification_snapshot__icontains=specification)
+                | Q(order__specification__icontains=specification)
+            )
+        material = str(self.request.query_params.get("material", "")).strip()
+        if material:
+            queryset = queryset.filter(
+                Q(material_snapshot__icontains=material)
+                | Q(order__material__icontains=material)
+            )
         status = str(self.request.query_params.get("status", "")).strip().upper()
         if status:
             if status not in ProcessCard.Status.values:
@@ -709,6 +723,19 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 | Q(lines__order_allocations__order__material__icontains=material)
                 | Q(lines__process_card__material_snapshot__icontains=material)
                 | Q(lines__process_card__order__material__icontains=material)
+            ).distinct()
+
+        specification = str(params.get("specification", "")).strip()
+        if specification:
+            queryset = queryset.filter(
+                Q(specification_snapshot__icontains=specification)
+                | Q(order__specification__icontains=specification)
+                | Q(lines__specification_snapshot__icontains=specification)
+                | Q(lines__order__specification__icontains=specification)
+                | Q(lines__order_allocations__specification_snapshot__icontains=specification)
+                | Q(lines__order_allocations__order__specification__icontains=specification)
+                | Q(lines__process_card__specification_snapshot__icontains=specification)
+                | Q(lines__process_card__order__specification__icontains=specification)
             ).distinct()
 
         order_value = str(
@@ -3462,6 +3489,17 @@ class QualityShipmentLedgerView(APIView):
                 row
                 for row in rows
                 if any(material in value.casefold() for value in row["materials"])
+            ]
+
+        specification = str(params.get("specification", "")).strip().casefold()
+        if specification:
+            rows = [
+                row
+                for row in rows
+                if any(
+                    specification in value.casefold()
+                    for value in row["specifications"]
+                )
             ]
 
         order_value = str(params.get("order", params.get("order_no", ""))).strip()

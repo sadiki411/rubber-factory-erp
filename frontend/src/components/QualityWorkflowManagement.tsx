@@ -28,8 +28,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { PlusOutlined } from '@ant-design/icons'
 import { qualityWorkflowApi } from '../api/client'
 import { QualityReworkCaseMobileList } from './QualityReworkCaseMobileList'
-import { QualityWeightShipmentDrawer } from './QualityWeightShipmentDrawer'
 import { QualityEmployeeSelect } from './QualityEmployeeSelect'
+import { QualityWeightShipmentDrawer } from './QualityWeightShipmentDrawer'
 import type {
   QualityEmployee,
   QualityOrder,
@@ -42,6 +42,8 @@ import type {
 
 interface Props {
   orders: QualityOrder[]
+  /** Kept in the public component contract for existing callers; shipment
+   * editing now lives in the unified ledger on the parent page. */
   employees: QualityEmployee[]
   cards: QualityProcessCard[]
   unitWeights: QualityUnitWeight[]
@@ -674,7 +676,7 @@ export function QualityWorkflowManagement({ orders, employees, cards, unitWeight
   return <div className="quality-workflow-management">
     <Tabs items={[
       { key: 'weights', label: `成品单重标准（${unitWeights.length}）`, children: <Card title="成品单重标准" extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setWeightItem(null)}>新增标准</Button>}><Typography.Paragraph type="secondary">按产品规格/模具型号维护成品单重；流程卡建立时保存快照，后续修改不会改变历史出货计算。</Typography.Paragraph>{unitWeights.length ? <Table rowKey="id" dataSource={unitWeights} columns={weightColumns} scroll={{ x: 720 }} pagination={{ pageSize: 8 }} /> : <Empty description="尚未维护单重标准，可直接在流程卡上填写单重" />}</Card> },
-      { key: 'batches', label: `重量出货批次（${batches.length}）`, children: <Card title="重量出货批次" extra={<Tag color="blue">超过理论+10%会阻断</Tag>}>{batches.length ? <Table rowKey="id" dataSource={batches} columns={batchColumns} scroll={{ x: 1550 }} pagination={{ pageSize: 8 }} /> : <Empty description="暂无重量出货批次" />}</Card> },
+      { key: 'batches', label: `重量出货批次（${batches.length}）`, children: <Card title="重量出货批次（兼容入口）" extra={<Tag color="blue">完整统计请看上方流程卡出货台账</Tag>}>{batches.length ? <Table rowKey="id" dataSource={batches} columns={batchColumns} scroll={{ x: 1550 }} pagination={{ pageSize: 8 }} /> : <Empty description="暂无重量出货批次" />}</Card> },
       { key: 'rework', label: `退货返工记录（${reworkCases.length}）`, children: <Card title="内部返工 / 客户整批退货" extra={<Space wrap>{onOpenReturnRework && <Button type="primary" icon={<PlusOutlined />} onClick={onOpenReturnRework}>登记客户整批退货</Button>}<Button icon={<PlusOutlined />} onClick={() => setCaseItem(null)}>新增内部返工</Button></Space>}><Typography.Paragraph type="secondary">带流程卡的客户退货由再次扫码自动生成下一轮，页面不再提供容易误点的“登记下一轮”；只有手工订单或内部返工保留人工新增入口。</Typography.Paragraph>{mobile
         ? <QualityReworkCaseMobileList items={reworkCases} onOpen={(row) => { if (row.origin === 'CUSTOMER_RETURN') onOpenReturnReworkDetail?.(row); else setCaseItem(row) }} onAddAttempt={(row) => { if (row.origin === 'CUSTOMER_RETURN') onOpenReturnReworkAttempt?.(row); else setAttemptCase(row) }} />
         : reworkCases.length ? <Table rowKey="id" dataSource={reworkCases} columns={caseColumns} scroll={{ x: 1260 }} pagination={{ pageSize: 8 }} /> : <Empty description="暂无退货返工记录" />}</Card> },

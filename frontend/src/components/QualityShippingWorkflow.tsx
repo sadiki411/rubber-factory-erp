@@ -30,6 +30,7 @@ import {
   formatQualityDate,
   orderUnitWeightG,
   qualityNumber,
+  reworkCasesForProcessCard,
   resolvedProcessCardReworkCount,
 } from '../quality'
 import type {
@@ -173,7 +174,6 @@ function BatchShipmentDrawer({
 function ReworkTimelineDrawer({
   open,
   card,
-  reworks,
   reworkCases,
   shipments,
   onClose,
@@ -181,21 +181,19 @@ function ReworkTimelineDrawer({
 }: {
   open: boolean
   card?: WorkflowCard
-  reworks: ReturnRework[]
   reworkCases: QualityReworkCase[]
   shipments: QualityShipment[]
   onClose: () => void
   onAdd: (shipment?: QualityShipment) => void
 }) {
-  const rows = useMemo(() => {
-    if (!card) return []
-    return reworks.filter((item) => item.shipment?.order_id === card.order.id || item.shipment?.order?.id === card.order.id).sort((a, b) => String(a.rework_date).localeCompare(String(b.rework_date)) || a.id - b.id)
-  }, [card, reworks])
+  // Legacy ReturnRework rows have no process-card identity. Showing them on
+  // every card in the same order made unrelated cards share one timeline.
+  // They remain visible in the dedicated historical ledger instead.
+  const rows = useMemo(() => [] as ReturnRework[], [])
   const linkedShipment = shipments.find((item) => item.order_id === card?.order.id || item.order?.id === card?.order.id)
   const weightedRows = useMemo(() => {
     if (!card) return []
-    return reworkCases.filter((item) => item.process_card_id != null && String(item.process_card_id) === String(card.processCard?.id)
-      || item.source?.order_ids?.includes(card.order.id))
+    return reworkCasesForProcessCard(reworkCases, card.processCard?.id)
   }, [card, reworkCases])
   return (
     <Drawer open={open} onClose={onClose} width={560} title={card ? `${card.cardNo} · 返工时间线` : '返工时间线'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>关闭</Button><Button type="primary" onClick={() => onAdd(linkedShipment)}>登记返工</Button></Space>}>
@@ -295,7 +293,7 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
           : legacyShippedQuantity
       const remainingQuantity = Math.max(0, quantity - shippedQuantity)
       const dueDate = item.demand_date || item.due_date || null
-      const linkedCaseCount = reworkCases.filter((entry) => String(entry.process_card_id || '') === String(item.id) || entry.source?.order_ids?.includes(order.id)).length
+      const linkedCaseCount = reworkCasesForProcessCard(reworkCases, item.id).length
       // Current APIs already include weighted return cases in rework_count.
       // Only derive a fallback for older responses where the field is absent.
       const reworkCount = resolvedProcessCardReworkCount(item, linkedCaseCount)
@@ -340,7 +338,7 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
       </Card>
       <BatchShipmentDrawer key={`shipment-basket-session-${basketSessionKey}`} open={basketOpen} cards={selectedCards} orders={orders} employees={employees} shipments={shipments} batches={batches} onClose={() => setBasketOpen(false)} onSubmit={async (payload) => { await onSubmitBatch(payload); setSelectedKeys([]) }} />
       <ProcessCardDrawer open={processCardForm !== undefined} card={processCardForm || undefined} orders={orders} onClose={() => setProcessCardForm(undefined)} onSave={onSaveProcessCard} />
-      <ReworkTimelineDrawer open={!!timelineCard} card={timelineCard} reworks={reworks} reworkCases={reworkCases} shipments={shipments} onClose={() => setTimelineCard(undefined)} onAdd={() => onOpenRework()} />
+      <ReworkTimelineDrawer open={!!timelineCard} card={timelineCard} reworkCases={reworkCases} shipments={shipments} onClose={() => setTimelineCard(undefined)} onAdd={() => onOpenRework()} />
     </div>
   )
 }

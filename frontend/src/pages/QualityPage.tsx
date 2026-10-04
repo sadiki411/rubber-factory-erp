@@ -10,7 +10,7 @@ import {
   SendOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
-import { Alert, App, Button, Card, Col, DatePicker, Empty, Grid, Input, Progress, Row, Select, Skeleton, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
+import { Alert, App, AutoComplete, Button, Card, Col, DatePicker, Empty, Grid, Input, Progress, Row, Select, Skeleton, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -122,6 +122,50 @@ function DailyTrend({ rows, loading }: { rows: QualityDailyTrend[]; loading: boo
   )
 }
 
+function shipmentLedgerValues(values?: Array<string | null | undefined>) {
+  return [...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))]
+}
+
+function ShipmentLedgerMobileList({
+  rows,
+  loading,
+  onOpen,
+  emptyText,
+}: {
+  rows: QualityShipmentLedgerRow[]
+  loading: boolean
+  onOpen: (row: QualityShipmentLedgerRow) => void
+  emptyText: string
+}) {
+  if (loading) return <Skeleton active paragraph={{ rows: 5 }} />
+  if (!rows.length) return <Empty description={emptyText} />
+  return <div className="quality-shipment-ledger-mobile-list">
+    {rows.map((row) => {
+      const orderNos = shipmentLedgerValues(row.order_nos)
+      const itemNos = shipmentLedgerValues(row.item_nos)
+      const products = shipmentLedgerValues(row.product_names)
+      const specs = shipmentLedgerValues(row.specifications)
+      const materials = shipmentLedgerValues(row.materials)
+      const inspectors = shipmentLedgerValues((row.inspectors || []).map((item) => item.name))
+      return <Card key={row.key} size="small" className="quality-shipment-ledger-mobile-card">
+        <div className="quality-shipment-ledger-mobile-heading">
+          <div><Button type="link" className="table-primary-link" onClick={() => onOpen(row)}><strong>{row.shipment_no}</strong></Button><Typography.Text type="secondary">{row.shipment_date ? formatQualityDate(row.shipment_date) : '待补日期'}</Typography.Text></div>
+          <Tag color={row.source_type === 'WEIGHTED' ? 'blue' : 'default'}>{row.source_type === 'WEIGHTED' ? '重量出货' : '历史出货'}</Tag>
+        </div>
+        <div className="quality-shipment-ledger-mobile-grid">
+          <span><small>订单 / 项次</small><b>{orderNos.join('、') || '-'}{itemNos.length ? ` / ${itemNos.join('、')}` : ''}</b></span>
+          <span><small>产品</small><b>{products.join('、') || '-'}</b></span>
+          <span><small>规格 / 材质</small><b>{[specs.join('、'), materials.join('、')].filter(Boolean).join(' · ') || '-'}</b></span>
+          <span><small>品检员</small><b>{inspectors.join('、') || '待补录'}</b></span>
+          <span><small>实际出货</small><b>{qualityNumber(row.shipped_quantity)} 件 · {row.net_weight_kg == null ? '-' : `${qualityNumber(row.net_weight_kg, 3)} kg`}</b></span>
+          <span><small>退货 / 返工</small><b className={Number(row.returned_quantity || 0) > 0 ? 'quality-danger-text' : ''}>{qualityNumber(row.returned_quantity)} / {qualityNumber(row.rework_count)} 次</b></span>
+        </div>
+        <Button block icon={<EyeOutlined />} onClick={() => onOpen(row)}>查看明细 / 修改品检员</Button>
+      </Card>
+    })}
+  </div>
+}
+
 type OrderRow = { order: QualityOrder; stats?: QualityOrderStatistics }
 
 export function QualityPage() {
@@ -136,6 +180,8 @@ export function QualityPage() {
   const [shipmentStatus, setShipmentStatus] = useState('CONFIRMED')
   const [orderStatus, setOrderStatus] = useState('')
   const [deliveryStatus, setDeliveryStatus] = useState('')
+  const [specificationFilter, setSpecificationFilter] = useState('')
+  const [materialFilter, setMaterialFilter] = useState('')
   const [inspectorFilter, setInspectorFilter] = useState<number>()
   const [ordering, setOrdering] = useState('-shipment_date')
   const [activeTab, setActiveTab] = useState('workflow')
@@ -209,12 +255,14 @@ export function QualityPage() {
     enabled: orderDataEnabled,
   })
   const shipmentLedgerQuery = useQuery({
-    queryKey: ['quality', 'shipment-ledger', { dateFrom, dateTo, dueDateFrom, dueDateTo, query, shipmentStatus, orderStatus, deliveryStatus, inspectorFilter, ordering }],
+    queryKey: ['quality', 'shipment-ledger', { dateFrom, dateTo, dueDateFrom, dueDateTo, query, shipmentStatus, orderStatus, deliveryStatus, specificationFilter, materialFilter, inspectorFilter, ordering }],
     queryFn: async () => toList(await qualityApi.listShipmentLedger({
       q: query,
       shipment_status: shipmentStatus,
       order_status: orderStatus || undefined,
       delivery_status: deliveryStatus || undefined,
+      specification: specificationFilter || undefined,
+      material: materialFilter || undefined,
       inspector: inspectorFilter,
       date_from: dateFrom,
       date_to: dateTo,
@@ -223,7 +271,7 @@ export function QualityPage() {
       ordering,
       page_size: 200,
     })),
-    enabled: dailyTab,
+    enabled: workflowTab || dailyTab,
   })
   const shipmentOptionsQuery = useQuery({
     queryKey: ['quality', 'shipments', 'options'],
@@ -236,8 +284,8 @@ export function QualityPage() {
     enabled: reworksTab,
   })
   const processCardsQuery = useQuery({
-    queryKey: ['quality', 'process-cards', query],
-    queryFn: async () => toList(await qualityWorkflowApi.listProcessCards({ q: query, page_size: 200 })),
+    queryKey: ['quality', 'process-cards', { query, specificationFilter, materialFilter }],
+    queryFn: async () => toList(await qualityWorkflowApi.listProcessCards({ q: query, specification: specificationFilter || undefined, material: materialFilter || undefined, page_size: 200 })),
     retry: false,
     enabled: workflowTab || Boolean(replacementOpen),
   })
@@ -248,12 +296,14 @@ export function QualityPage() {
     enabled: workflowTab,
   })
   const batchesQuery = useQuery({
-    queryKey: ['quality', 'shipment-batches', { dateFrom, dateTo, dueDateFrom, dueDateTo, query, shipmentStatus, orderStatus, deliveryStatus, inspectorFilter, ordering }],
+    queryKey: ['quality', 'shipment-batches', { dateFrom, dateTo, dueDateFrom, dueDateTo, query, shipmentStatus, orderStatus, deliveryStatus, specificationFilter, materialFilter, inspectorFilter, ordering }],
     queryFn: async () => toList(await qualityWorkflowApi.listShipmentBatches({
       q: query,
       status: shipmentStatus,
       order_status: orderStatus || undefined,
       delivery_status: deliveryStatus || undefined,
+      specification: specificationFilter || undefined,
+      material: materialFilter || undefined,
       inspector: inspectorFilter,
       date_from: dateFrom,
       date_to: dateTo,
@@ -284,16 +334,30 @@ export function QualityPage() {
 
   const employees = useMemo(() => employeesQuery.data || [], [employeesQuery.data])
   const orders = useMemo(() => ordersQuery.data || [], [ordersQuery.data])
-  const shipmentLedger = shipmentLedgerQuery.data || []
+  const shipmentLedger = useMemo(() => shipmentLedgerQuery.data || [], [shipmentLedgerQuery.data])
   const shipmentOptions = shipmentOptionsQuery.data || []
   const reworks = reworksQuery.data || []
-  const processCards = processCardsQuery.data || []
+  const processCards = useMemo(() => processCardsQuery.data || [], [processCardsQuery.data])
   const unitWeights = unitWeightsQuery.data || []
   const shipmentBatches = batchesQuery.data || []
+  const workflowShipmentLedger = useMemo(
+    () => shipmentLedger.filter((row) => row.source_type === 'WEIGHTED'),
+    [shipmentLedger],
+  )
   const shipmentBatchOptions = shipmentBatchOptionsQuery.data || []
   const reworkCases = useMemo(() => reworkCasesQuery.data || [], [reworkCasesQuery.data])
   const summary = summaryQuery.data
   const totals = summary?.totals
+  const specificationOptions = useMemo(() => [...new Set([
+    ...orders.map((order) => order.specification),
+    ...processCards.map((card) => card.specification_snapshot),
+    ...shipmentLedger.flatMap((row) => row.specifications || []),
+  ].map((value) => String(value || '').trim()).filter(Boolean))].sort(), [orders, processCards, shipmentLedger])
+  const materialOptions = useMemo(() => [...new Set([
+    ...orders.map((order) => order.material),
+    ...processCards.map((card) => card.material_snapshot),
+    ...shipmentLedger.flatMap((row) => row.materials || []),
+  ].map((value) => String(value || '').trim()).filter(Boolean))].sort(), [orders, processCards, shipmentLedger])
   const keyword = query.trim().toLowerCase()
   const filteredReworkCases = useMemo(() => reworkCases.filter((item) => {
     const source = item.source
@@ -533,6 +597,9 @@ export function QualityPage() {
       <Table<T> rowKey={rowKey} loading={loading} dataSource={rows} columns={columns} scroll={{ x: scrollX }} pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }} locale={{ emptyText }} />
     </Card>
   )
+  const renderShipmentLedger = (rows: QualityShipmentLedgerRow[], loading: boolean, emptyText: string) => mobile
+    ? <ShipmentLedgerMobileList rows={rows} loading={loading} onOpen={openLedgerDetail} emptyText={emptyText} />
+    : tableCard(rows, ledgerColumns, loading, 'key', 1765, emptyText)
 
   const tabItems = [
     {
@@ -540,7 +607,10 @@ export function QualityPage() {
       label: '流程卡出货',
       children: <div className="quality-tab-content">
         {(processCardsQuery.error || unitWeightsQuery.error || batchesQuery.error || shipmentBatchOptionsQuery.error || reworkCasesQuery.error) && <Alert type="warning" showIcon style={{ marginBottom: 16 }} title="流程卡重量出货模块暂不可用" description="当前服务器未返回一期流程卡接口，页面已保留原有件数出货功能；完成后端迁移后刷新即可启用。" />}
-        <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} shipments={shipmentOptions} batches={shipmentBatches} reworks={reworks} reworkCases={filteredReworkCases} searchText={query} loading={ordersQuery.isLoading || processCardsQuery.isLoading || batchesQuery.isLoading} onOpenShipment={() => openShipmentForm()} onOpenRework={openFlowCardReturn} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); refreshAfterShipmentInBackground() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} /><QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions.length ? shipmentBatchOptions : shipmentBatches} reworkCases={filteredReworkCases} onOpenReturnRework={openFlowCardReturn} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={refreshAfterShipment} /></div>,
+        <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} shipments={shipmentOptions} batches={shipmentBatches} reworks={reworks} reworkCases={filteredReworkCases} searchText={query} loading={ordersQuery.isLoading || processCardsQuery.isLoading || batchesQuery.isLoading} onOpenShipment={() => openShipmentForm()} onOpenRework={openFlowCardReturn} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); refreshAfterShipmentInBackground() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} />
+        {workflowTab && <><div className="section-heading quality-shipment-ledger-heading"><div><Typography.Title level={3}>流程卡出货台账</Typography.Title><Typography.Text type="secondary">与“每日出货”使用同一套出货明细；点击出货单号可查看称重、品检员、退货和返工次数，并可修改品检员或进入出货更正。</Typography.Text></div></div>
+        {renderShipmentLedger(workflowShipmentLedger, shipmentLedgerQuery.isLoading, '当前筛选条件下暂无流程卡出货记录')}</>}
+        <QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions.length ? shipmentBatchOptions : shipmentBatches} reworkCases={filteredReworkCases} onOpenReturnRework={openFlowCardReturn} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={refreshAfterShipment} /></div>,
     },
     {
       key: 'daily',
@@ -548,7 +618,7 @@ export function QualityPage() {
       children: <div className="quality-tab-content">
         <DailyTrend rows={summary?.daily_trend || []} loading={summaryQuery.isLoading} />
         <div className="section-heading"><div><Typography.Title level={3}>每日出货台账</Typography.Title><Typography.Text type="secondary">统一显示重量出货与历史出货；点击出货单号即可查看产品、材质、称重和批数明细。</Typography.Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => openShipmentForm()}>新增出货</Button></div>
-        {tableCard(shipmentLedger, ledgerColumns, shipmentLedgerQuery.isLoading, 'key', 1765, '当前筛选条件下暂无出货记录')}
+        {renderShipmentLedger(shipmentLedger, shipmentLedgerQuery.isLoading, '当前筛选条件下暂无出货记录')}
       </div>,
     },
     {
@@ -613,6 +683,8 @@ export function QualityPage() {
     setShipmentStatus('CONFIRMED')
     setOrderStatus('')
     setDeliveryStatus('')
+    setSpecificationFilter('')
+    setMaterialFilter('')
     setInspectorFilter(undefined)
     setOrdering('-shipment_date')
   }
@@ -635,13 +707,17 @@ export function QualityPage() {
         </div>
         <div className="quality-filter-row">
           <RangePicker allowClear value={dueRange} onChange={(value) => setDueRange(value?.[0] && value?.[1] ? [value[0], value[1]] : null)} placeholder={['交期开始', '交期结束']} />
-          <Select allowClear value={inspectorFilter} onChange={setInspectorFilter} showSearch optionFilterProp="label" placeholder="按品检员筛选（可清空）" options={employees.filter((employee) => ['INSPECTOR', 'BOTH'].includes(employee.role)).map((employee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} />
-          <Select allowClear value={orderStatus || undefined} onChange={(value) => setOrderStatus(value || '')} placeholder="按订单状态筛选" options={[{ value: 'OPEN', label: '进行中订单' }, { value: 'COMPLETED', label: '已完成订单' }, { value: 'CANCELLED', label: '已取消订单' }]} />
+          <AutoComplete allowClear value={specificationFilter} onChange={setSpecificationFilter} options={specificationOptions.map((value) => ({ value }))} placeholder="填写/选择规格" filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} />
+          <AutoComplete allowClear value={materialFilter} onChange={setMaterialFilter} options={materialOptions.map((value) => ({ value }))} placeholder="填写/选择材质" filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} />
         </div>
         <div className="quality-filter-row">
           <Select allowClear value={deliveryStatus || undefined} onChange={(value) => setDeliveryStatus(value || '')} placeholder="按关联订单出货进度筛选" options={[{ value: 'PARTIAL', label: '部分出货' }, { value: 'SHIPPED', label: '已完成出货' }, { value: 'CANCELLED', label: '订单已取消' }]} />
           <Select value={ordering} onChange={setOrdering} options={[{ value: '-shipment_date', label: '出货日期：新到旧' }, { value: 'shipment_date', label: '出货日期：旧到新' }, { value: 'due_date', label: '交期：早到晚' }, { value: '-due_date', label: '交期：晚到早' }]} />
           <Space className="quality-filter-actions"><Typography.Text type="secondary">出货区间：{dateFrom} 至 {dateTo}</Typography.Text><Button icon={<ReloadOutlined />} onClick={resetFilters}>重置筛选</Button></Space>
+        </div>
+        <div className="quality-filter-row">
+          <Select allowClear value={inspectorFilter} onChange={setInspectorFilter} showSearch optionFilterProp="label" placeholder="按品检员筛选（可清空）" options={employees.filter((employee) => ['INSPECTOR', 'BOTH'].includes(employee.role)).map((employee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} />
+          <Select allowClear value={orderStatus || undefined} onChange={(value) => setOrderStatus(value || '')} placeholder="按订单状态筛选" options={[{ value: 'OPEN', label: '进行中订单' }, { value: 'COMPLETED', label: '已完成订单' }, { value: 'CANCELLED', label: '已取消订单' }]} />
         </div>
       </Card>
 

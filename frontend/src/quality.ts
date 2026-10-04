@@ -57,6 +57,22 @@ export function resolvedProcessCardReworkCount(item: QualityProcessCard, linkedC
 }
 
 /**
+ * A return belongs to one physical process card. Orders may legitimately
+ * contain several cards with identical product data, so an order id must
+ * never be used as a fallback for a card timeline.
+ */
+export function reworkCasesForProcessCard(
+  cases: QualityReworkCase[],
+  processCardId: number | string | null | undefined,
+) {
+  if (processCardId == null || processCardId === '') return []
+  return cases.filter((item) => (
+    item.process_card_id != null
+    && String(item.process_card_id) === String(processCardId)
+  ))
+}
+
+/**
  * Normalize the text carried by a customer's process-card QR code.
  *
  * Their current cards encode the card number directly (for example

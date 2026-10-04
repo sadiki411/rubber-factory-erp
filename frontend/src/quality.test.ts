@@ -10,6 +10,7 @@ import {
   piecesFromWeight,
   processCardQuantityUpperLimit,
   repeatedBatchNetWeightKg,
+  reworkCasesForProcessCard,
   resolvedProcessCardReworkCount,
   reworkQuantitiesValid,
   shipmentPieceQuantity,
@@ -53,6 +54,17 @@ describe('quality quantity validation', () => {
   it('does not double count return cases already included by the process-card API', () => {
     expect(resolvedProcessCardReworkCount({ rework_count: 2 } as any, 2)).toBe(2)
     expect(resolvedProcessCardReworkCount({} as any, 2)).toBe(2)
+  })
+
+  it('never assigns another card\'s return history through a shared order id', () => {
+    const cases = [
+      { id: 53, process_card_id: 48, source: { order_ids: [7] } },
+      { id: 88, process_card_id: 50, source: { order_ids: [7] } },
+      { id: 111, process_card_id: null, source: { order_ids: [7] } },
+    ] as any
+
+    expect(reworkCasesForProcessCard(cases, 48).map((item) => item.id)).toEqual([53])
+    expect(reworkCasesForProcessCard(cases, 50).map((item) => item.id)).toEqual([88])
   })
 
   it('calculates flow-card weight without mixing in material issue weight', () => {
