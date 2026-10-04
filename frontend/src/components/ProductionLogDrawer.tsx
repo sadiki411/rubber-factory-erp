@@ -1,4 +1,4 @@
-import { CheckCircleOutlined, EditOutlined, FieldTimeOutlined, HomeOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, ToolOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, CloseCircleOutlined, EditOutlined, FieldTimeOutlined, HomeOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, ToolOutlined } from '@ant-design/icons'
 import { Alert, App, Button, Col, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Popconfirm, Progress, Row, Space, Table, Tag, Tooltip, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -95,6 +95,20 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
     },
     onError: (error: Error) => message.error(error.message),
   })
+  const cancelRunMutation = useMutation({
+    mutationFn: (reason: string) => productionApi.cancelRun(run!.id, reason),
+    onSuccess: async (result) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['production'] }),
+        queryClient.invalidateQueries({ queryKey: ['orders'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+      ])
+      setEditingLog(undefined)
+      onRunChange(result)
+      message.success('误录生产任务已取消，相关生产数据已从进度和统计中撤销')
+    },
+    onError: (error: Error) => message.error(error.message),
+  })
   const materialChangeMutation = useMutation({
     mutationFn: () => productionApi.updateRun(run!.id, { material_changed_at: dayjs().toISOString() }),
     onSuccess: async (result) => {
@@ -146,15 +160,44 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
     }
   }
 
+  const askCancelRun = () => {
+    let reason = ''
+    modal.confirm({
+      title: '取消整个误录生产任务？',
+      content: (
+        <div>
+          <Alert
+            type="warning"
+            showIcon
+            title="任务下的全部生产记录将作废，不再计入订单进度、员工绩效和数据分析。"
+            description="此操作保留审计记录，不会自动改变模具当前所在位置；若现场模具已经下机，请另行执行下机归位。"
+          />
+          <Input.TextArea className="production-cancel-reason" autoFocus rows={3} maxLength={1000} showCount placeholder="请填写取消原因（必填），例如：误建到每日生产台账，应改录生产手工账" onChange={(event) => { reason = event.target.value }} />
+        </div>
+      ),
+      okText: '确认取消任务',
+      okButtonProps: { danger: true },
+      cancelText: '保留任务',
+      onOk: (close) => {
+        if (!reason.trim()) {
+          message.error('请填写取消原因')
+          return
+        }
+        cancelRunMutation.mutate(reason.trim(), { onSuccess: () => close() })
+      },
+    })
+  }
+
   const columns: TableColumnsType<ProductionDailyLog> = [
     { title: '日期', dataIndex: 'date', width: 105 },
     { title: '作业员', dataIndex: 'operator', width: 110 },
     { title: '生产模数', dataIndex: 'produced_mold_count', width: 105 },
+    { title: '状态', key: 'status', width: 80, render: (_, log) => log.is_cancelled ? <Tag>已作废</Tag> : <Tag color="success">有效</Tag> },
     { title: '备注', dataIndex: 'notes', ellipsis: true, render: (value) => value || '-' },
     {
       title: '操作', key: 'action', width: 70, fixed: 'right',
       render: (_, log) => (
-        run?.status === 'PLANNED' || (run?.status === 'CANCELLED' && !run.loaded_at)
+        log.is_cancelled || run?.status === 'PLANNED' || run?.status === 'CANCELLED'
           ? '-'
           : <Button type="link" size="small" onClick={() => { setEditingLog(log); form.setFieldsValue({ ...log, date: dayjs(log.date) }) }}>修改</Button>
       ),
@@ -178,6 +221,7 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
       footer={run && (
         <Space className="drawer-footer-actions">
           <Button onClick={closeDrawer}>关闭</Button>
+          {run.status !== 'CANCELLED' && <Button danger icon={<CloseCircleOutlined />} loading={cancelRunMutation.isPending} onClick={askCancelRun}>取消误录任务</Button>}
           {run.status === 'COMPLETED' && <Button onClick={() => setFinalYieldOpen(true)}>{run.final_yield ? '修改最终良率' : '确认最终良率'}</Button>}
           {run.status === 'PLANNED' && (run.mold && run.station ? (
             <Popconfirm
@@ -244,9 +288,9 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
 
           <div className="section-heading production-log-heading">
             <div><Typography.Title level={4}>每日人员生产记录</Typography.Title><Typography.Text type="secondary">同一天可按不同作业员分别登记；交接班各填本人实际完成模数，月末自动汇总绩效。</Typography.Text></div>
-            <Typography.Text type="secondary">共 {run.daily_logs?.length || 0} 条</Typography.Text>
+            <Typography.Text type="secondary">有效 {(run.daily_logs || []).filter((log) => !log.is_cancelled).length} 条 / 共 {run.daily_logs?.length || 0} 条</Typography.Text>
           </div>
-          <Table rowKey="id" size="small" dataSource={run.daily_logs || []} columns={columns} pagination={false} scroll={{ x: 560 }} locale={{ emptyText: '还没有人员模数记录' }} />
+          <Table rowKey="id" rowClassName={(log) => log.is_cancelled ? 'production-cancelled-log-row' : ''} size="small" dataSource={run.daily_logs || []} columns={columns} pagination={false} scroll={{ x: 640 }} locale={{ emptyText: '还没有人员模数记录' }} />
 
           {showDailyLogForm && (
             <div className="production-log-form">

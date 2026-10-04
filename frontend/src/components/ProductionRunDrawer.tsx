@@ -397,7 +397,11 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
                   label: run?.status === 'PLANNED' ? '已完成（需先确认上机）' : '已完成',
                   disabled: run?.status === 'PLANNED',
                 },
-                { value: 'CANCELLED', label: '已取消' },
+                {
+                  value: 'CANCELLED',
+                  label: run ? '已取消（请在详情使用“取消误录任务”）' : '已取消',
+                  disabled: !!run,
+                },
               ]} />
             </Form.Item>
           </Col>

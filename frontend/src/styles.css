@@ -460,6 +460,8 @@ button, input, textarea, select { font: inherit; }
 .production-log-heading { margin-top: 25px; }
 .production-log-form { margin-top: 24px; padding-top: 20px; border-top: 1px solid #e3ebe8; }
 .production-log-form > .ant-alert { margin-bottom: 16px; }
+.production-cancel-reason { margin-top: 14px; }
+.production-cancelled-log-row { opacity: .62; background: #f6f7f7; }
 .production-settlement-pending { margin-top: 24px; }
 .production-settlement { margin-top: 28px; padding-top: 24px; border-top: 1px solid #dfe8e5; }
 .production-settlement-heading { align-items: flex-start; }

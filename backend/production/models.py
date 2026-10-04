@@ -607,9 +607,9 @@ class ProductionRun(TimeStampedModel):
             self.pk
             and self.status == self.Status.CANCELLED
             and not self.loaded_at
-            and self.daily_logs.exists()
+            and self.daily_logs.filter(is_cancelled=False).exists()
         ):
-            errors["status"] = "未上模即取消的订单不能保留生产日报。"
+            errors["status"] = "未上模即取消的订单不能保留有效生产日报。"
         if self.loaded_at and self.unloaded_at and self.unloaded_at < self.loaded_at:
             errors["unloaded_at"] = "下机时间不能早于上模时间。"
         if self.loaded_at and self.expected_change_at and self.expected_change_at < self.loaded_at:

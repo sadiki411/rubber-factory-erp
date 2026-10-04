@@ -1426,26 +1426,20 @@ class ProductionApiTests(ProductionTestMixin, TestCase):
         )
         self.assertEqual(logged.status_code, 201, logged.content)
         log_id = logged.json()["daily_logs"][0]["id"]
-        unloaded_at = parse_datetime(running.json()["loaded_at"]) + timedelta(hours=1)
-        cancelled = self.client.patch(
-            f"/api/production/runs/{run_id}/",
-            {
-                "status": ProductionRun.Status.CANCELLED,
-                "unloaded_at": unloaded_at.isoformat(),
-            },
+        cancelled = self.client.post(
+            f"/api/production/runs/{run_id}/cancel-run/",
+            {"reason": "整项生产任务误录"},
             format="json",
         )
         self.assertEqual(cancelled.status_code, 200, cancelled.content)
+        self.assertTrue(cancelled.json()["daily_logs"][0]["is_cancelled"])
 
         corrected = self.client.patch(
             f"/api/production/runs/{run_id}/daily-logs/{log_id}/",
             {"notes": "取消后修正备注"},
             format="json",
         )
-        self.assertEqual(corrected.status_code, 200, corrected.content)
-        self.assertEqual(
-            corrected.json()["daily_logs"][0]["notes"], "取消后修正备注"
-        )
+        self.assertEqual(corrected.status_code, 400, corrected.content)
         new_log = self.client.post(
             f"/api/production/runs/{run_id}/daily-logs/",
             {

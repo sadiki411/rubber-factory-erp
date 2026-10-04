@@ -1,4 +1,4 @@
-import { CheckCircleOutlined, EditOutlined, HistoryOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, CloseCircleOutlined, EditOutlined, HistoryOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { App, Button, Card, Empty, Input, Popconfirm, Progress, Space, Tag, Typography } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
@@ -64,6 +64,19 @@ export function ProductionLedgerBoard() {
     onError: (error: Error) => message.error(error.message),
   })
 
+  const cancelTaskMutation = useMutation({
+    mutationFn: ({ runId, reason }: { runId: number; reason: string }) => productionApi.cancelRun(runId, reason),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['production'] }),
+        queryClient.invalidateQueries({ queryKey: ['orders'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+      ])
+      message.success('误录生产任务已取消，相关模数已从订单进度和统计中撤销')
+    },
+    onError: (error: Error) => message.error(error.message),
+  })
+
   const completeTaskMutation = useMutation({
     mutationFn: ({ run, note, confirmBelowTarget }: { run: ProductionRun; note?: string; confirmBelowTarget?: boolean }) => productionApi.completeLedger(run.id, { note, confirm_below_target: confirmBelowTarget }),
     onSuccess: async () => {
@@ -121,6 +134,27 @@ export function ProductionLedgerBoard() {
     })
   }
 
+  const askCancelTask = (run: ProductionRun) => {
+    let reason = ''
+    modal.confirm({
+      title: `取消整个生产任务 ${run.order_no}？`,
+      content: <Input.TextArea autoFocus rows={3} maxLength={1000} showCount placeholder="请填写取消原因（必填），例如：误建到生产手工账" onChange={(event) => { reason = event.target.value }} />,
+      okText: '确认取消任务',
+      okButtonProps: { danger: true },
+      cancelText: '保留任务',
+      onOk: (close) => {
+        if (!reason.trim()) {
+          message.error('请填写取消原因')
+          return
+        }
+        cancelTaskMutation.mutate(
+          { runId: run.id, reason: reason.trim() },
+          { onSuccess: () => close() },
+        )
+      },
+    })
+  }
+
   const tasks = tasksQuery.data || []
 
   return (
@@ -153,6 +187,7 @@ export function ProductionLedgerBoard() {
                   <Button icon={<EditOutlined />} onClick={() => { setEditingTask(run); setTaskDrawerOpen(true) }}>编辑任务</Button>
                   {run.status === 'COMPLETED' && <Button onClick={() => setFinalYieldTarget(run)}>{run.final_yield ? '修改最终良率' : '确认最终良率'}</Button>}
                   {!['COMPLETED', 'CANCELLED'].includes(run.status) && <><Popconfirm title="确认机台计数已清零？" description="下一次累计读数将从0开始计算，历史记录不会删除。" okText="已清零" cancelText="取消" onConfirm={() => resetMutation.mutate(run)}><Button icon={<ReloadOutlined />}>计数已清零</Button></Popconfirm><Button icon={<CheckCircleOutlined />} onClick={() => completeTask(run)}>结束当前任务</Button></>}
+                  {run.status !== 'CANCELLED' && <Button danger icon={<CloseCircleOutlined />} loading={cancelTaskMutation.isPending} onClick={() => askCancelTask(run)}>取消整个任务</Button>}
                 </Space>
                 <div className="production-ledger-log-list">
                   <div className="production-ledger-log-heading">

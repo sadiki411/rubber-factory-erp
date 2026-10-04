@@ -11,7 +11,7 @@ from molds.models import MoldAsset, MoldModel, RackSlot
 from molds.services import seed_default_racks
 from production.models import ProductionStation
 
-from production.models import ProductionDailyLog, ProductionRun
+from production.models import ProductionDailyLog, ProductionRecordAudit, ProductionRun
 from production.ledger_imports import create_ledger_template
 from production.ocr import _extract_log_rows, _extract_task
 
@@ -338,6 +338,72 @@ class ProductionCounterLedgerApiTests(ProductionTestMixin, TestCase):
         )
         self.assertEqual(audits.status_code, 200)
         self.assertIn("CANCELLED", [item["action"] for item in audits.json()])
+
+    def test_cancel_entire_ledger_task_removes_it_from_all_production_statistics(self):
+        run = self.create_task()
+        first = self.add_counter(run["id"], 100, operator="张三").json()
+        self.add_counter(run["id"], 180, operator="李四")
+
+        cancelled = self.client.post(
+            f"/api/production/runs/{run['id']}/cancel-run/",
+            {"reason": "误建到生产手工账之外的板块"},
+            format="json",
+        )
+        self.assertEqual(cancelled.status_code, 200, cancelled.content)
+        self.assertEqual(cancelled.json()["status"], ProductionRun.Status.CANCELLED)
+        self.assertEqual(cancelled.json()["produced_mold_count"], 0)
+        self.assertEqual(cancelled.json()["order_production_quantity"], 0)
+        self.assertTrue(
+            all(item["is_cancelled"] for item in cancelled.json()["daily_logs"])
+        )
+
+        audit = ProductionRecordAudit.objects.get(
+            run_id=run["id"],
+            daily_log__isnull=True,
+            action=ProductionRecordAudit.Action.CANCELLED,
+        )
+        self.assertEqual(audit.before["active_log_count"], 2)
+        self.assertEqual(audit.after["cancelled_log_count"], 2)
+
+        summary = self.client.get(
+            "/api/production/summary/",
+            {
+                "date_from": timezone.localdate().isoformat(),
+                "date_to": timezone.localdate().isoformat(),
+            },
+        )
+        self.assertEqual(summary.status_code, 200, summary.content)
+        self.assertEqual(summary.json()["run_count"], 0)
+        self.assertEqual(summary.json()["produced_mold_count"], 0)
+
+        performance = self.client.get(
+            "/api/production/performance/monthly/",
+            {"month": timezone.localdate().strftime("%Y-%m")},
+        )
+        self.assertEqual(performance.status_code, 200, performance.content)
+        self.assertEqual(performance.json()["totals"]["total_mold_count"], 0)
+        self.assertEqual(performance.json()["totals"]["participated_run_count"], 0)
+
+        dashboard = self.client.get(
+            "/api/analytics/dashboard/",
+            {
+                "date_from": timezone.localdate().isoformat(),
+                "date_to": timezone.localdate().isoformat(),
+            },
+        )
+        self.assertEqual(dashboard.status_code, 200, dashboard.content)
+        self.assertEqual(
+            dashboard.json()["production"]["automatic"]["produced_mold_count"],
+            0,
+        )
+        self.assertEqual(dashboard.json()["production"]["run_count"], 0)
+
+        blocked_edit = self.client.patch(
+            f"/api/production/runs/{run['id']}/counter-logs/{first['id']}/",
+            {"notes": "取消后仍尝试修改"},
+            format="json",
+        )
+        self.assertEqual(blocked_edit.status_code, 400, blocked_edit.content)
 
     def test_complete_ledger_requires_confirmation_below_target(self):
         run = self.create_task(planned_mold_count=100)

@@ -810,18 +810,17 @@ class ProductionRunSerializer(serializers.ModelSerializer):
 
         if instance:
             requested_status = attrs.get("status", instance.status)
+            if (
+                requested_status == ProductionRun.Status.CANCELLED
+                and instance.status != ProductionRun.Status.CANCELLED
+            ):
+                raise serializers.ValidationError(
+                    {"status": "请使用详情中的“取消误录任务”操作，并填写取消原因。"}
+                )
             allowed_status_changes = {
-                (
-                    ProductionRun.Status.PLANNED,
-                    ProductionRun.Status.CANCELLED,
-                ),
                 (
                     ProductionRun.Status.RUNNING,
                     ProductionRun.Status.COMPLETED,
-                ),
-                (
-                    ProductionRun.Status.RUNNING,
-                    ProductionRun.Status.CANCELLED,
                 ),
             }
             if (
@@ -1542,6 +1541,16 @@ class ResetProductionCounterSerializer(serializers.Serializer):
 
 class CancelProductionLogSerializer(serializers.Serializer):
     reason = serializers.CharField()
+
+
+class CancelProductionRunSerializer(serializers.Serializer):
+    reason = serializers.CharField(max_length=1000, trim_whitespace=True)
+
+    def validate_reason(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("取消误录任务必须填写原因。")
+        return value
 
 
 class CompleteLedgerTaskSerializer(serializers.Serializer):

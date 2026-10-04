@@ -41,6 +41,7 @@ const apiMocks = vi.hoisted(() => {
     ApiError: MockApiError,
     startRun: vi.fn(),
     completeRun: vi.fn(),
+    cancelRun: vi.fn(),
     updateRun: vi.fn(),
     addLog: vi.fn(),
     updateLog: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock('../api/client', () => ({
   productionApi: {
     startRun: apiMocks.startRun,
     completeRun: apiMocks.completeRun,
+    cancelRun: apiMocks.cancelRun,
     updateRun: apiMocks.updateRun,
     addLog: apiMocks.addLog,
     updateLog: apiMocks.updateLog,
@@ -110,6 +112,7 @@ describe('ProductionLogDrawer planned start', () => {
   beforeEach(() => {
     apiMocks.startRun.mockReset()
     apiMocks.completeRun.mockReset()
+    apiMocks.cancelRun.mockReset()
     apiMocks.updateRun.mockReset()
     apiMocks.addLog.mockReset()
     apiMocks.updateLog.mockReset()
@@ -187,4 +190,27 @@ describe('ProductionLogDrawer planned start', () => {
     expect(apiMocks.completeRun).not.toHaveBeenCalled()
     expect(onRunChange).not.toHaveBeenCalled()
   })
+
+  it('requires a reason and cancels the entire mistaken run with linked cache refreshes', async () => {
+    const running = { ...plannedRun, status: 'RUNNING' as const, loaded_at: new Date().toISOString(), mold: { ...plannedRun.mold!, status: 'ON_MACHINE' as const } }
+    const cancelled = { ...running, status: 'CANCELLED' as const, unloaded_at: new Date().toISOString(), produced_mold_count: 0 }
+    apiMocks.cancelRun.mockResolvedValue(cancelled)
+    const user = userEvent.setup()
+    const { invalidateSpy, onRunChange } = renderDrawer(running)
+
+    await user.click(screen.getByRole('button', { name: /取消误录任务/ }))
+    expect((await screen.findAllByText('取消整个误录生产任务？')).length).toBeGreaterThan(0)
+    expect(screen.getByText(/全部生产记录将作废/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '确认取消任务' }))
+    expect(apiMocks.cancelRun).not.toHaveBeenCalled()
+
+    await user.type(screen.getByPlaceholderText(/请填写取消原因/), '误建到每日生产台账')
+    await user.click(screen.getByRole('button', { name: '确认取消任务' }))
+
+    await waitFor(() => expect(apiMocks.cancelRun).toHaveBeenCalledWith(running.id, '误建到每日生产台账'))
+    expect(onRunChange).toHaveBeenCalledWith(cancelled)
+    const refreshedKeys = invalidateSpy.mock.calls.map(([filters]) => filters?.queryKey?.[0])
+    expect(refreshedKeys).toEqual(expect.arrayContaining(['production', 'orders', 'analytics']))
+  }, 30_000)
 })

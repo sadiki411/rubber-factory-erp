@@ -7,7 +7,13 @@ from rest_framework.test import APIClient
 
 from molds.models import MoldAsset, MoldModel, RackSlot
 from molds.services import seed_default_racks
-from production.models import ProductionRun, ProductionStation
+from production.models import (
+    ProductionDailyLog,
+    ProductionRecordAudit,
+    ProductionRun,
+    ProductionSettlementRevision,
+    ProductionStation,
+)
 from production.services import seed_default_stations
 
 
@@ -80,7 +86,7 @@ class ProductionRunStateGuardApiTests(TestCase):
         self.assertEqual(run.status, ProductionRun.Status.RUNNING)
         self.assertIsNone(run.unloaded_at)
 
-    def test_existing_completion_and_cancellation_patch_paths_remain_compatible(self):
+    def test_completion_patch_remains_compatible_but_cancellation_uses_action(self):
         completed = self.create_running_run(order_no="STATE-PATCH-COMPLETE")
 
         completed_response = self.client.patch(
@@ -110,15 +116,111 @@ class ProductionRunStateGuardApiTests(TestCase):
             },
             format="json",
         )
-        self.assertEqual(
-            cancelled_response.status_code,
-            200,
-            cancelled_response.content,
+        self.assertEqual(cancelled_response.status_code, 400, cancelled_response.content)
+        self.assertIn("取消误录任务", str(cancelled_response.json()))
+
+        cancelled_response = self.client.post(
+            f"/api/production/runs/{cancelled.pk}/cancel-run/",
+            {"reason": "测试误录取消"},
+            format="json",
         )
+        self.assertEqual(cancelled_response.status_code, 200, cancelled_response.content)
         self.assertEqual(
             cancelled_response.json()["status"],
             ProductionRun.Status.CANCELLED,
         )
+
+    def test_cancel_running_run_requires_reason_voids_logs_and_preserves_mold(self):
+        run = self.create_running_run(order_no="STATE-CANCEL-ACTION")
+        log = ProductionDailyLog.objects.create(
+            run=run,
+            production_date=timezone.localdate(),
+            operator="张三",
+            produced_mold_count=10,
+        )
+        mold_status = run.mold.status
+        mold_machine_id = run.mold.current_machine_id
+
+        missing_reason = self.client.post(
+            f"/api/production/runs/{run.pk}/cancel-run/",
+            {"reason": "   "},
+            format="json",
+        )
+        self.assertEqual(missing_reason.status_code, 400, missing_reason.content)
+
+        cancelled = self.client.post(
+            f"/api/production/runs/{run.pk}/cancel-run/",
+            {"reason": "误建到每日生产台账，应改录生产手工账"},
+            format="json",
+        )
+        self.assertEqual(cancelled.status_code, 200, cancelled.content)
+        self.assertEqual(cancelled.json()["status"], ProductionRun.Status.CANCELLED)
+        self.assertIsNotNone(cancelled.json()["unloaded_at"])
+        self.assertEqual(cancelled.json()["produced_mold_count"], 0)
+
+        log.refresh_from_db()
+        self.assertTrue(log.is_cancelled)
+        self.assertIsNotNone(log.cancelled_at)
+        self.assertEqual(log.cancelled_by_id, self.user.pk)
+        run.mold.refresh_from_db()
+        self.assertEqual(run.mold.status, mold_status)
+        self.assertEqual(run.mold.current_machine_id, mold_machine_id)
+
+        audit = ProductionRecordAudit.objects.get(
+            run=run,
+            daily_log__isnull=True,
+            action=ProductionRecordAudit.Action.CANCELLED,
+        )
+        self.assertEqual(audit.reason, "误建到每日生产台账，应改录生产手工账")
+        self.assertEqual(audit.before["produced_mold_count"], 10)
+        self.assertEqual(audit.after["produced_mold_count"], 0)
+
+        repeated = self.client.post(
+            f"/api/production/runs/{run.pk}/cancel-run/",
+            {"reason": "重复点击"},
+            format="json",
+        )
+        self.assertEqual(repeated.status_code, 200, repeated.content)
+        self.assertEqual(
+            ProductionRecordAudit.objects.filter(
+                run=run,
+                daily_log__isnull=True,
+                action=ProductionRecordAudit.Action.CANCELLED,
+            ).count(),
+            1,
+        )
+
+    def test_cancel_settled_run_invalidates_settlement_with_revision(self):
+        run = self.create_running_run(order_no="STATE-CANCEL-SETTLED")
+        ProductionDailyLog.objects.create(
+            run=run,
+            production_date=timezone.localdate(),
+            operator="张三",
+            produced_mold_count=10,
+        )
+        completed = self.client.post(
+            f"/api/production/runs/{run.pk}/complete/", {}, format="json"
+        )
+        self.assertEqual(completed.status_code, 200, completed.content)
+        run.refresh_from_db()
+        run.actual_good_quantity = 18
+        run.actual_defective_quantity = 2
+        run.settled_at = timezone.now()
+        run.settled_by = self.user
+        run.save()
+
+        cancelled = self.client.post(
+            f"/api/production/runs/{run.pk}/cancel-run/",
+            {"reason": "结算后发现整项误录"},
+            format="json",
+        )
+        self.assertEqual(cancelled.status_code, 200, cancelled.content)
+        self.assertFalse(cancelled.json()["is_settled"])
+        revision = ProductionSettlementRevision.objects.get(run=run)
+        self.assertEqual(
+            revision.action, ProductionSettlementRevision.Action.INVALIDATED
+        )
+        self.assertEqual(revision.produced_mold_count, 10)
 
     def test_terminal_orders_cannot_be_reopened_as_planned_through_patch(self):
         now = timezone.now()

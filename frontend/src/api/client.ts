@@ -494,6 +494,8 @@ export const productionApi = {
     apiFetch<ProductionDailyLog>(`/api/production/runs/${runId}/counter-logs/${logId}/`, { method: 'PATCH', body: JSON.stringify(body) }),
   cancelCounterLog: (runId: number, logId: number, reason: string) =>
     apiFetch<ProductionDailyLog>(`/api/production/runs/${runId}/counter-logs/${logId}/cancel/`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  cancelRun: (runId: number, reason: string) =>
+    apiFetch<ProductionRun>(`/api/production/runs/${runId}/cancel-run/`, { method: 'POST', body: JSON.stringify({ reason }) }),
   resetCounter: (runId: number, note = '') =>
     apiFetch<ProductionRun>(`/api/production/runs/${runId}/reset-counter/`, { method: 'POST', body: JSON.stringify({ note }) }),
   completeLedger: (runId: number, body: { note?: string; confirm_below_target?: boolean } = {}) =>

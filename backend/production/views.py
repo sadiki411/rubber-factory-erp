@@ -51,6 +51,7 @@ from .models import (
 from .serializers import (
     CompleteAndPutawayProductionRunSerializer,
     CancelProductionLogSerializer,
+    CancelProductionRunSerializer,
     CompleteLedgerTaskSerializer,
     CompleteProductionRunSerializer,
     PauseProductionRunSerializer,
@@ -71,6 +72,7 @@ from .serializers import (
     ResumeProductionRunSerializer,
 )
 from .services import (
+    cancel_production_run,
     complete_and_putaway_production_run,
     complete_ledger_task,
     cancel_counter_log,
@@ -487,6 +489,27 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
         return Response(ProductionCounterLogSerializer(log).data)
 
     @extend_schema(
+        request=CancelProductionRunSerializer,
+        responses=ProductionRunSerializer,
+    )
+    @action(detail=True, methods=["post"], url_path="cancel-run")
+    def cancel_run(self, request, pk=None):
+        serializer = CancelProductionRunSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            run = cancel_production_run(
+                self.get_object(), request.user, serializer.validated_data["reason"]
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(
+                exc.message_dict if hasattr(exc, "message_dict") else exc.messages
+            ) from exc
+        refreshed = _run_queryset().get(pk=run.pk)
+        return Response(
+            ProductionRunSerializer(refreshed, context={"request": request}).data
+        )
+
+    @extend_schema(
         request=ResetProductionCounterSerializer,
         responses=ProductionRunSerializer,
     )
@@ -681,6 +704,10 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
                     run=run,
                     pk=log_id,
                 )
+                if run.status == ProductionRun.Status.CANCELLED or log.is_cancelled:
+                    raise DRFValidationError(
+                        {"detail": "已取消的生产任务或已作废的生产记录不能再修改。"}
+                    )
                 previous_mold_count = log.produced_mold_count
                 serializer = ProductionDailyLogSerializer(
                     log,
@@ -1156,13 +1183,17 @@ class ProductionSummaryView(APIView):
             else None
         )
 
-        log_queryset = ProductionDailyLog.objects.filter(is_cancelled=False)
+        log_queryset = ProductionDailyLog.objects.filter(
+            is_cancelled=False
+        ).exclude(run__status=ProductionRun.Status.CANCELLED)
         if parsed_from:
             log_queryset = log_queryset.filter(production_date__gte=parsed_from)
         if parsed_to:
             log_queryset = log_queryset.filter(production_date__lte=parsed_to)
 
-        queryset = ProductionRun.objects.select_related(
+        queryset = ProductionRun.objects.exclude(
+            status=ProductionRun.Status.CANCELLED
+        ).select_related(
             "station__machine",
             "mold__mold_model",
             "order",
@@ -1200,7 +1231,9 @@ class ProductionSummaryView(APIView):
                 log_filter | overlap_filter | created_filter
             ).distinct()
 
-        settlement_queryset = ProductionRun.objects.filter(settled_at__isnull=False)
+        settlement_queryset = ProductionRun.objects.filter(
+            settled_at__isnull=False
+        ).exclude(status=ProductionRun.Status.CANCELLED)
         if group:
             settlement_queryset = settlement_queryset.filter(station__group=group)
         if period_start:
@@ -1353,7 +1386,7 @@ class ProductionMonthlyPerformanceView(APIView):
             production_date__gte=month_start,
             production_date__lt=next_month,
             is_cancelled=False,
-        ).select_related("employee")
+        ).exclude(run__status=ProductionRun.Status.CANCELLED).select_related("employee")
         if group:
             logs = logs.filter(run__station__group=group)
         grouped = (

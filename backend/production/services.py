@@ -281,6 +281,68 @@ def cancel_counter_log(log, user, reason):
 
 
 @transaction.atomic
+def cancel_production_run(run, user, reason):
+    """Void an incorrectly entered run while preserving a complete audit trail."""
+
+    run = ProductionRun.objects.select_for_update().get(pk=run.pk)
+    if run.status == ProductionRun.Status.CANCELLED:
+        return run
+
+    reason = str(reason or "").strip()
+    if not reason:
+        raise ValidationError({"reason": "取消误录任务必须填写原因。"})
+
+    active_logs = list(
+        ProductionDailyLog.objects.select_for_update()
+        .filter(run=run, is_cancelled=False)
+        .order_by("sequence_no", "id")
+    )
+    now = timezone.now()
+    before = {
+        "status": run.status,
+        "loaded_at": run.loaded_at.isoformat() if run.loaded_at else None,
+        "unloaded_at": run.unloaded_at.isoformat() if run.unloaded_at else None,
+        "active_log_count": len(active_logs),
+        "produced_mold_count": sum(log.produced_mold_count for log in active_logs),
+        "was_settled": bool(run.settled_at),
+    }
+
+    # Preserve the completed accounting snapshot before the source logs are
+    # voided. invalidate_settlement also clears settled_at/settled_by.
+    settlement_invalidated = invalidate_settlement(run, user)
+    if active_logs:
+        ProductionDailyLog.objects.filter(
+            pk__in=[log.pk for log in active_logs]
+        ).update(
+            is_cancelled=True,
+            cancelled_at=now,
+            cancelled_by=user,
+            updated_at=now,
+        )
+
+    run.status = ProductionRun.Status.CANCELLED
+    if run.loaded_at and not run.unloaded_at:
+        run.unloaded_at = now
+    run.save(update_fields=["status", "unloaded_at", "settled_at", "settled_by", "updated_at"])
+    _record_audit(
+        run,
+        user,
+        ProductionRecordAudit.Action.CANCELLED,
+        before=before,
+        after={
+            "status": run.status,
+            "loaded_at": run.loaded_at.isoformat() if run.loaded_at else None,
+            "unloaded_at": run.unloaded_at.isoformat() if run.unloaded_at else None,
+            "cancelled_log_count": len(active_logs),
+            "produced_mold_count": 0,
+            "settlement_invalidated": settlement_invalidated,
+        },
+        reason=reason,
+    )
+    return run
+
+
+@transaction.atomic
 def reset_production_counter(run, user, note=""):
     run = ProductionRun.objects.select_for_update().get(pk=run.pk)
     if run.status in (ProductionRun.Status.COMPLETED, ProductionRun.Status.CANCELLED):

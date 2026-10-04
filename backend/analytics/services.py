@@ -551,7 +551,8 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
     logs_qs = ProductionDailyLog.objects.filter(
         production_date__gte=date_from,
         production_date__lte=date_to,
-    ).select_related(
+        is_cancelled=False,
+    ).exclude(run__status=ProductionRun.Status.CANCELLED).select_related(
         "run__station__machine", "run__mold__mold_model", "run__order", "employee"
     ).prefetch_related("run__order_links__order")
     logs_qs = _filter_production(
@@ -645,7 +646,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
     settled_qs = ProductionRun.objects.filter(
         settled_at__gte=period_start,
         settled_at__lt=period_end,
-    ).select_related(
+    ).exclude(status=ProductionRun.Status.CANCELLED).select_related(
         "station__machine", "mold__mold_model", "order"
     ).prefetch_related(
         "daily_logs",
@@ -656,7 +657,9 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
     )
     settled_runs = list(settled_qs)
 
-    period_runs_qs = ProductionRun.objects.filter(
+    period_runs_qs = ProductionRun.objects.exclude(
+        status=ProductionRun.Status.CANCELLED
+    ).filter(
         (
             Q(loaded_at__isnull=False, loaded_at__lt=period_end)
             & (Q(unloaded_at__isnull=True) | Q(unloaded_at__gte=period_start))
