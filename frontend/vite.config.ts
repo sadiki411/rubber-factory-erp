@@ -15,6 +15,10 @@ export default defineConfig({
     setupFiles: './src/test/setup.ts',
     globals: true,
     css: true,
+    // The Ant Design/jsdom page tests are CPU-heavy and share browser globals.
+    // Running files in parallel made the inventory correction test flaky on CI
+    // runners even though it passed in isolation.
+    fileParallelism: false,
     testTimeout: 15_000,
   },
 })
