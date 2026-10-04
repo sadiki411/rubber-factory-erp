@@ -119,8 +119,9 @@ public final class MainActivity extends ComponentActivity {
         });
 
         boolean restored = savedInstanceState != null && webView.restoreState(savedInstanceState) != null;
-        if (!restored) {
-            pendingTrustedStartUrl = trustedStartUrl(getIntent());
+        String incomingStartUrl = trustedStartUrl(getIntent());
+        if (!restored || incomingStartUrl != null) {
+            pendingTrustedStartUrl = incomingStartUrl;
             loadStartPage();
         }
     }
@@ -301,7 +302,7 @@ public final class MainActivity extends ComponentActivity {
             return null;
         }
         String value = intent.getData().toString();
-        return UrlPolicy.isTrusted(value) ? value : null;
+        return UrlPolicy.isTrusted(value) ? UrlPolicy.moldRackManageUrl(value) : null;
     }
 
     private void retryConnection() {

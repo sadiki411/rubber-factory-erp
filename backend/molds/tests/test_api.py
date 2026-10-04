@@ -144,6 +144,40 @@ class MoldApiTests(SeededRackMixin, TestCase):
         self.assertEqual(results["ABC-100-02"]["machine"]["code"], "MC-01")
         self.assertIsNone(results["ABC-100-02"]["slot"])
 
+    def test_public_rack_slot_detail_is_read_only_and_does_not_require_login(self):
+        response = APIClient().get(f"/api/public/mold-rack/slots/{self.stock.current_slot_id}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "id": self.stock.current_slot_id,
+                "display_code": self.stock.current_slot.display_code,
+                "rack_code": self.stock.current_slot.zone.level.rack.code,
+                "level_no": self.stock.current_slot.zone.level.level_no,
+                "zone_code": self.stock.current_slot.zone.code,
+                "zone_label": self.stock.current_slot.zone.label,
+                "position_no": self.stock.current_slot.position_no,
+                "stack_level": self.stock.current_slot.stack_level,
+                "is_blocked": False,
+                "blocking_reason": "",
+                "occupied": True,
+                "mold": {
+                    "id": self.stock.pk,
+                    "asset_code": "ABC-100-01",
+                    "model_code": "ABC-100",
+                    "product_name": "汽车密封圈",
+                    "status": MoldAsset.Status.IN_STOCK,
+                    "status_label": "在库",
+                },
+            },
+        )
+
+    def test_public_rack_slot_detail_returns_not_found_for_unknown_slot(self):
+        response = APIClient().get("/api/public/mold-rack/slots/999999/")
+
+        self.assertEqual(response.status_code, 404)
+
     def test_search_accepts_asset_code_and_product_name(self):
         by_asset = self.client.get("/api/molds/", {"q": "100-02"}).json()
         self.assertEqual([item["asset_code"] for item in by_asset["results"]], ["ABC-100-02"])

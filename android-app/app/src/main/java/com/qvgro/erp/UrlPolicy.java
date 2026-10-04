@@ -45,4 +45,38 @@ public final class UrlPolicy {
             return false;
         }
     }
+
+    public static boolean isMoldRackSlot(String value) {
+        if (!isTrusted(value)) {
+            return false;
+        }
+        try {
+            String path = new URI(value).getPath();
+            return path != null && path.matches("/mold-rack/slots/[0-9]+/?");
+        } catch (URISyntaxException | IllegalArgumentException ignored) {
+            return false;
+        }
+    }
+
+    public static String moldRackManageUrl(String value) {
+        if (!isMoldRackSlot(value)) {
+            return value;
+        }
+        return UriCompat.withManageMode(value);
+    }
+
+    private static final class UriCompat {
+        private UriCompat() {
+        }
+
+        static String withManageMode(String value) {
+            try {
+                URI uri = new URI(value);
+                String separator = uri.getQuery() == null || uri.getQuery().isEmpty() ? "?" : "&";
+                return value + separator + "mode=manage";
+            } catch (URISyntaxException | IllegalArgumentException ignored) {
+                return value;
+            }
+        }
+    }
 }

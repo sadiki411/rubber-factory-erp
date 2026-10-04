@@ -1,6 +1,6 @@
 import { Alert, Button, Result, Skeleton } from 'antd'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { lazy, Suspense } from 'react'
 import { authApi, ApiError } from './api/client'
 import { AppShell } from './components/AppShell'
@@ -22,13 +22,28 @@ const InventoryLocationPage = lazy(() => import('./pages/InventoryPage').then((m
 const MoldRackLocationPage = lazy(() => import('./pages/MoldRackLocationPage').then((module) => ({ default: module.MoldRackLocationPage })))
 
 export function App() {
+  const location = useLocation()
   const queryClient = useQueryClient()
+  const moldRackPath = /^\/mold-rack\/slots\/[^/]+\/?$/.test(location.pathname)
+  const appWebView = /DongXiangERP\//.test(window.navigator.userAgent)
+  const manageMoldRack = moldRackPath && appWebView && new URLSearchParams(location.search).get('mode') === 'manage'
   const sessionQuery = useQuery({
     queryKey: ['session'],
     queryFn: authApi.session,
+    enabled: !moldRackPath || manageMoldRack,
     retry: (count, error) => !(error instanceof ApiError && error.status === 401) && count < 2,
     staleTime: 5 * 60 * 1000,
   })
+
+  if (moldRackPath && !manageMoldRack) {
+    return (
+      <Suspense fallback={<div className="route-loading"><Skeleton active /></div>}>
+        <Routes>
+          <Route path="mold-rack/slots/:slotId" element={<MoldRackLocationPage readOnly />} />
+        </Routes>
+      </Suspense>
+    )
+  }
 
   if (sessionQuery.isLoading) {
     return <div className="boot-screen"><div className="boot-logo">橡</div><Skeleton active paragraph={{ rows: 2 }} /></div>

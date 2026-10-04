@@ -10,6 +10,10 @@ import { PageTitle } from '../components/PageTitle'
 import { moldCode, moldLocation } from '../types'
 import type { RackSlot } from '../types'
 
+interface Props {
+  readOnly?: boolean
+}
+
 function slotPosition(slot: RackSlot) {
   return [
     slot.rack_code,
@@ -20,7 +24,7 @@ function slotPosition(slot: RackSlot) {
   ].filter(Boolean).join(' · ')
 }
 
-export function MoldRackLocationPage() {
+export function MoldRackLocationPage({ readOnly = false }: Props) {
   const { slotId } = useParams<{ slotId: string }>()
   const navigate = useNavigate()
   const { message } = App.useApp()
@@ -32,8 +36,8 @@ export function MoldRackLocationPage() {
   const [newMoldOpen, setNewMoldOpen] = useState(false)
 
   const slotQuery = useQuery({
-    queryKey: ['slot', slotId],
-    queryFn: () => slotApi.detail(slotId!),
+    queryKey: [readOnly ? 'public-slot' : 'slot', slotId],
+    queryFn: () => readOnly ? slotApi.publicDetail(slotId!) : slotApi.detail(slotId!),
     enabled: !!slotId,
   })
   const slot = slotQuery.data
@@ -42,12 +46,12 @@ export function MoldRackLocationPage() {
   const moldQuery = useQuery({
     queryKey: ['mold', actionMoldId],
     queryFn: () => moldApi.detail(actionMoldId!),
-    enabled: !!actionMoldId,
+    enabled: !readOnly && !!actionMoldId,
   })
   const machineMoldsQuery = useQuery({
     queryKey: ['molds', 'ON_MACHINE', 'slot-putaway'],
     queryFn: async () => toList(await moldApi.list({ status: 'ON_MACHINE', page_size: 1000 })),
-    enabled: !!slot && !currentMoldId && putawayPickerOpen,
+    enabled: !readOnly && !!slot && !currentMoldId && putawayPickerOpen,
   })
 
   const currentMold = currentMoldId ? moldQuery.data : undefined
@@ -82,8 +86,8 @@ export function MoldRackLocationPage() {
     <div className="page-container mold-rack-location-page">
       <PageTitle
         title={`模具架库位 · ${slot.display_code}`}
-        description="扫描标签后可查看该固定库位当前模具，并直接进行入库、下机归位、移库、上机或出库操作。"
-        extra={<Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/racks')}>返回模具架</Button>}
+        description={readOnly ? '扫码查看固定库位当前信息（只读）。如需操作，请使用东橡 ERP 安卓 App。' : '扫描标签后可查看该固定库位当前模具，并直接进行入库、下机归位、移库、上机或出库操作。'}
+        extra={!readOnly && <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/racks')}>返回模具架</Button>}
       />
       <Card className="mold-rack-location-card">
         <Descriptions bordered size="small" column={1}>
@@ -93,7 +97,14 @@ export function MoldRackLocationPage() {
           <Descriptions.Item label="二维码说明">二维码绑定本库位，不随模具更换而变化。</Descriptions.Item>
         </Descriptions>
 
-        {slot.mold && (
+        {slot.mold && readOnly && <Descriptions bordered size="small" column={1} style={{ marginTop: 16 }}>
+          <Descriptions.Item label="模具编号"><Typography.Text strong>{slot.mold.asset_code || '-'}</Typography.Text></Descriptions.Item>
+          <Descriptions.Item label="模具型号">{slot.mold.model_code || '-'}</Descriptions.Item>
+          <Descriptions.Item label="产品名称">{slot.mold.product_name || '-'}</Descriptions.Item>
+          <Descriptions.Item label="当前状态">{slot.mold.status_label || slot.mold.status || '-'}</Descriptions.Item>
+        </Descriptions>}
+
+        {slot.mold && !readOnly && (
           <>
             {moldQuery.isLoading ? <Spin style={{ marginTop: 20 }} /> : currentMold ? <Descriptions bordered size="small" column={1} style={{ marginTop: 16 }}>
               <Descriptions.Item label="模具编号"><Typography.Text strong>{moldCode(currentMold)}</Typography.Text></Descriptions.Item>
@@ -105,18 +116,18 @@ export function MoldRackLocationPage() {
           </>
         )}
 
-        <Space wrap className="mold-rack-location-actions">
+        {!readOnly && <Space wrap className="mold-rack-location-actions">
           {!slot.mold && !slot.is_blocked && <Button type="primary" icon={<InboxOutlined />} onClick={() => setNewMoldOpen(true)}>新增模具入库</Button>}
           {!slot.mold && !slot.is_blocked && <Button icon={<HomeOutlined />} onClick={beginPutaway}>机上模具下机归位</Button>}
           {currentMold && <Button icon={<SwapOutlined />} onClick={() => setAction('move')}>修改库位</Button>}
           {currentMold && <Button icon={<ToolOutlined />} onClick={() => setAction('load-machine')}>安排上机</Button>}
           {currentMold && <Button danger icon={<ExportOutlined />} onClick={() => setAction('send-out')}>出库 / 客户收回</Button>}
           {currentMold && <Button onClick={() => setEditing(true)}>编辑模具资料</Button>}
-        </Space>
-        {!slot.mold && slot.is_blocked && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该库位已禁放，不能执行入库" />}
+        </Space>}
+        {!slot.mold && slot.is_blocked && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={readOnly ? '该库位当前禁放' : '该库位已禁放，不能执行入库'} />}
       </Card>
 
-      <Modal title={`选择机上模具 · 归位到 ${slot.display_code}`} open={putawayPickerOpen} onCancel={() => setPutawayPickerOpen(false)} onOk={confirmPutaway} okText="下一步">
+      {!readOnly && <Modal title={`选择机上模具 · 归位到 ${slot.display_code}`} open={putawayPickerOpen} onCancel={() => setPutawayPickerOpen(false)} onOk={confirmPutaway} okText="下一步">
         <Alert type="info" showIcon message="确认后会直接打开下机归位操作，目标库位已预填为当前扫码库位。" style={{ marginBottom: 16 }} />
         <Select
           showSearch
@@ -128,18 +139,20 @@ export function MoldRackLocationPage() {
           style={{ width: '100%' }}
           options={(machineMoldsQuery.data || []).map((mold) => ({ value: mold.id, label: `${moldCode(mold)} · ${mold.mold_model?.code || mold.model?.code || '-'} · ${mold.machine?.code || '-'}号机台` }))}
         />
-      </Modal>
+      </Modal>}
 
-      <MoldFormDrawer open={newMoldOpen} initialSlot={slot} onClose={() => setNewMoldOpen(false)} onSuccess={async () => { setNewMoldOpen(false); await refresh(); message.success('模具已入库到当前库位') }} />
-      <MoldFormDrawer open={editing} mold={currentMold} onClose={() => setEditing(false)} onSuccess={async () => { setEditing(false); await refresh() }} />
-      <OperationDrawer
-        open={!!action && !!moldQuery.data}
-        mold={moldQuery.data}
-        action={action}
-        initialSlotId={!currentMoldId && action === 'putaway' ? slot.id : undefined}
-        onClose={closeAction}
-        onSuccess={async () => { closeAction(); await refresh() }}
-      />
+      {!readOnly && <>
+        <MoldFormDrawer open={newMoldOpen} initialSlot={slot} onClose={() => setNewMoldOpen(false)} onSuccess={async () => { setNewMoldOpen(false); await refresh(); message.success('模具已入库到当前库位') }} />
+        <MoldFormDrawer open={editing} mold={currentMold} onClose={() => setEditing(false)} onSuccess={async () => { setEditing(false); await refresh() }} />
+        <OperationDrawer
+          open={!!action && !!moldQuery.data}
+          mold={moldQuery.data}
+          action={action}
+          initialSlotId={!currentMoldId && action === 'putaway' ? slot.id : undefined}
+          onClose={closeAction}
+          onSuccess={async () => { closeAction(); await refresh() }}
+        />
+      </>}
     </div>
   )
 }

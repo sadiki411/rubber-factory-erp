@@ -13,6 +13,7 @@ from .views import (
     MoldModelViewSet,
     MoldViewSet,
     ProcessorViewSet,
+    PublicMoldRackSlotView,
     RackViewSet,
     SessionView,
     SlotViewSet,
@@ -30,6 +31,7 @@ router.register("processors", ProcessorViewSet, basename="processor")
 
 urlpatterns = [
     path("health/", HealthView.as_view(), name="health"),
+    path("public/mold-rack/slots/<int:pk>/", PublicMoldRackSlotView.as_view(), name="public-mold-rack-slot"),
     path("auth/session/", SessionView.as_view(), name="auth-session"),
     path("auth/login/", LoginView.as_view(), name="auth-login"),
     path("auth/logout/", LogoutView.as_view(), name="auth-logout"),

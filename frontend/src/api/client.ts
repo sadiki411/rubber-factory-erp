@@ -288,6 +288,7 @@ export const slotApi = {
   list: (available = false) =>
     apiFetch<ApiList<RackSlot> | RackSlot[]>(`/api/slots/${queryString({ available: available || undefined })}`).then((payload) => mapList(payload, normalizeSlot)),
   detail: (id: number | string) => apiFetch<RackSlot>(`/api/slots/${id}/`).then(normalizeSlot),
+  publicDetail: (id: number | string) => apiFetch<RackSlot>(`/api/public/mold-rack/slots/${id}/`).then(normalizeSlot),
 }
 
 type MasterRecord = MoldModel | Machine | Processor

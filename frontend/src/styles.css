@@ -101,6 +101,10 @@ button, input, textarea, select { font: inherit; }
 .hero-search-card .ant-input-search-button { height: 54px; }
 .quick-links { display: flex; gap: 10px; margin-top: 16px; }
 .quick-links .ant-btn { color: rgba(255,255,255,.9); border-color: rgba(255,255,255,.32); background: rgba(255,255,255,.08); }
+.dashboard-scan-card { display: flex; align-items: center; gap: 16px; margin-top: 16px; border: 1px solid #d6ebe4; background: linear-gradient(120deg, #f3fbf8 0%, #eef7fb 100%); }
+.dashboard-scan-icon { display: grid; place-items: center; flex: 0 0 48px; width: 48px; height: 48px; border-radius: 14px; color: #12624f; background: #d9f0e8; font-size: 24px; }
+.dashboard-scan-copy { flex: 1; min-width: 0; }
+.dashboard-scan-copy .ant-typography { display: block; margin-bottom: 2px; }
 .dashboard-section { margin-top: 30px; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 13px; }
 .section-heading .ant-typography { margin: 0; }
@@ -798,6 +802,8 @@ button, input, textarea, select { font: inherit; }
   .hero-search-card .ant-input-search-button span:not(.anticon) { display: none; }
   .quick-links { display: grid; grid-template-columns: 1fr 1fr; }
   .quick-links .ant-btn { height: 44px; overflow: hidden; }
+  .dashboard-scan-card { align-items: flex-start; flex-wrap: wrap; }
+  .dashboard-scan-card .ant-btn { width: 100%; }
   .dashboard-section { margin-top: 24px; }
   .result-grid { grid-template-columns: 1fr; }
   .filter-row, .rack-toolbar { grid-template-columns: 1fr; }

@@ -1,10 +1,12 @@
-import { AppstoreOutlined, ArrowRightOutlined, ExportOutlined, HomeOutlined, SearchOutlined, ToolOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Col, Empty, Input, Row, Skeleton, Statistic, Typography } from 'antd'
+import { AppstoreOutlined, ArrowRightOutlined, CameraOutlined, ExportOutlined, HomeOutlined, SearchOutlined, ToolOutlined } from '@ant-design/icons'
+import { Alert, App, Button, Card, Col, Empty, Input, Row, Skeleton, Statistic, Typography } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { moldApi, toList } from '../api/client'
 import { PageTitle } from '../components/PageTitle'
+import { QualityQrScanner } from '../components/QualityQrScanner'
+import { moldRackSlotIdFromUrl } from '../moldRack'
 import { StatusTag } from '../components/StatusTag'
 import type { MoldAsset, MoldStatus } from '../types'
 import { moldCode, moldLocation, moldModelOf } from '../types'
@@ -52,8 +54,10 @@ function ResultCard({ mold }: { mold: MoldAsset }) {
 
 export function DashboardPage() {
   const navigate = useNavigate()
+  const { message } = App.useApp()
   const [query, setQuery] = useState('')
   const [submitted, setSubmitted] = useState('')
+  const [moldRackScannerOpen, setMoldRackScannerOpen] = useState(false)
   const summaryQuery = useQuery({
     queryKey: ['molds', 'summary'],
     queryFn: async () => toList(await moldApi.list({ page_size: 1000 })),
@@ -89,6 +93,15 @@ export function DashboardPage() {
         </div>
       </Card>
 
+      <Card className="dashboard-scan-card" bordered={false}>
+        <div className="dashboard-scan-icon"><CameraOutlined /></div>
+        <div className="dashboard-scan-copy">
+          <Typography.Title level={4}>扫码查模具架库位</Typography.Title>
+          <Typography.Text type="secondary">扫描模具架库位标签，直接打开当前库位和模具资料。</Typography.Text>
+        </div>
+        <Button type="primary" icon={<CameraOutlined />} onClick={() => setMoldRackScannerOpen(true)}>打开扫码</Button>
+      </Card>
+
       {submitted && (
         <section className="dashboard-section">
           <div className="section-heading">
@@ -112,6 +125,29 @@ export function DashboardPage() {
           <Alert type="warning" showIcon title="暂时无法读取状态概览" />
         ) : <StatusSummary molds={summaryQuery.data || []} />}
       </section>
+
+      <QualityQrScanner
+        open={moldRackScannerOpen}
+        title="扫描模具架库位"
+        description="将模具架库位标签二维码放入取景框。App 内扫码会进入可修改页面；普通浏览器仍可直接扫码查看只读详情。"
+        continuous={false}
+        valueNoun="库位二维码"
+        counterUnit="个"
+        invalidMessage="这不是有效的模具架库位二维码，请扫描模具架标签。"
+        manualPlaceholder="粘贴模具架库位二维码网址"
+        videoLabel="模具架库位二维码取景画面"
+        normalizeValue={(value) => String(value || '').trim()}
+        isValidValue={(value) => Boolean(moldRackSlotIdFromUrl(value))}
+        onClose={() => setMoldRackScannerOpen(false)}
+        onScan={(value) => {
+          const slotId = moldRackSlotIdFromUrl(value)
+          if (!slotId) return false
+          setMoldRackScannerOpen(false)
+          message.success('已识别库位，正在打开可操作详情')
+          navigate(`/mold-rack/slots/${slotId}?mode=manage`)
+          return true
+        }}
+      />
     </div>
   )
 }

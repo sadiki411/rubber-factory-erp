@@ -175,6 +175,51 @@ class HealthView(APIView):
         return Response({"status": "ok", "database": "ok"})
 
 
+class PublicMoldRackSlotView(APIView):
+    """The deliberately small, anonymous payload used by printed rack labels."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    @extend_schema(responses=dict)
+    def get(self, request, pk=None):
+        slot = get_object_or_404(
+            RackSlot.objects.select_related(
+                "zone__level__rack",
+                "occupant__mold_model",
+            ),
+            pk=pk,
+        )
+        occupant = getattr(slot, "occupant", None)
+        return Response(
+            {
+                "id": slot.pk,
+                "display_code": slot.display_code,
+                "rack_code": slot.zone.level.rack.code,
+                "level_no": slot.zone.level.level_no,
+                "zone_code": slot.zone.code,
+                "zone_label": slot.zone.label,
+                "position_no": slot.position_no,
+                "stack_level": slot.stack_level,
+                "is_blocked": slot.is_blocked,
+                "blocking_reason": slot.blocking_reason,
+                "occupied": occupant is not None,
+                "mold": (
+                    {
+                        "id": occupant.pk,
+                        "asset_code": occupant.asset_code,
+                        "model_code": occupant.mold_model.code,
+                        "product_name": occupant.mold_model.product_name,
+                        "status": occupant.status,
+                        "status_label": occupant.get_status_display(),
+                    }
+                    if occupant
+                    else None
+                ),
+            }
+        )
+
+
 class FlexiblePageNumberPagination(PageNumberPagination):
     page_size = 30
     page_size_query_param = "page_size"
