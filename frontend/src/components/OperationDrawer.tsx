@@ -19,12 +19,13 @@ const actionMeta: Record<MoldAction, { title: string; submit: string; icon: Reac
 interface Props {
   mold?: MoldAsset
   action?: MoldAction
+  initialSlotId?: number
   open: boolean
   onClose: () => void
   onSuccess?: (mold: MoldAsset) => void
 }
 
-export function OperationDrawer({ mold, action = 'putaway', open, onClose, onSuccess }: Props) {
+export function OperationDrawer({ mold, action = 'putaway', initialSlotId, open, onClose, onSuccess }: Props) {
   const [form] = Form.useForm()
   const queryClient = useQueryClient()
   const { message } = App.useApp()
@@ -35,8 +36,10 @@ export function OperationDrawer({ mold, action = 'putaway', open, onClose, onSuc
     : actionMeta[action]
 
   useEffect(() => {
-    if (open) form.resetFields()
-  }, [form, open, action, mold?.id])
+    if (!open) return
+    form.resetFields()
+    if (initialSlotId && (action === 'putaway' || action === 'move')) form.setFieldValue('slot_id', initialSlotId)
+  }, [form, open, action, mold?.id, initialSlotId])
 
   const slotsQuery = useQuery({
     queryKey: ['slots', 'available'],

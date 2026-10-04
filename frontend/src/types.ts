@@ -171,6 +171,12 @@ export interface RackSummary {
 export interface RackSlot {
   id: number
   code?: string
+  rack_id?: number
+  rack_code?: string
+  level_no?: number
+  zone_id?: number
+  zone_code?: string
+  zone_label?: string
   display_code: string
   position_no: number
   stack_level: number
@@ -178,11 +184,22 @@ export interface RackSlot {
   is_enabled?: boolean
   available?: boolean
   capacity_mode?: number
+  is_blocked?: boolean
   blocking_reason?: string
   mold?: Pick<MoldAsset, 'id' | 'asset_code' | 'status'> & {
     model_code?: string
     product_name?: string
+    status_label?: string
   }
+  occupied?: boolean
+  occupant?: {
+    id: number
+    asset_code: string
+    model_code?: string
+    product_name?: string
+    status?: MoldStatus
+    status_label?: string
+  } | null
 }
 
 export interface RackZone {

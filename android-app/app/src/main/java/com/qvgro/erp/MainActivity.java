@@ -85,6 +85,7 @@ public final class MainActivity extends ComponentActivity {
     private Uri capturedImageUri;
     private File capturedImageFile;
     private PermissionRequest pendingCameraPermissionRequest;
+    private String pendingTrustedStartUrl;
     private boolean rendererGone;
     private long lastBackPressedAt;
 
@@ -119,8 +120,20 @@ public final class MainActivity extends ComponentActivity {
 
         boolean restored = savedInstanceState != null && webView.restoreState(savedInstanceState) != null;
         if (!restored) {
+            pendingTrustedStartUrl = trustedStartUrl(getIntent());
             loadStartPage();
         }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String url = trustedStartUrl(intent);
+        if (url == null || webView == null || rendererGone) {
+            return;
+        }
+        webView.loadUrl(url);
     }
 
     private void configureSystemBars() {
@@ -278,7 +291,17 @@ public final class MainActivity extends ComponentActivity {
             return;
         }
         rendererGone = false;
-        webView.loadUrl(UrlPolicy.APP_URL);
+        String startUrl = pendingTrustedStartUrl;
+        pendingTrustedStartUrl = null;
+        webView.loadUrl(startUrl == null ? UrlPolicy.APP_URL : startUrl);
+    }
+
+    private String trustedStartUrl(Intent intent) {
+        if (intent == null || intent.getData() == null) {
+            return null;
+        }
+        String value = intent.getData().toString();
+        return UrlPolicy.isTrusted(value) ? value : null;
     }
 
     private void retryConnection() {

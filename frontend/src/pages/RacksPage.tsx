@@ -1,9 +1,9 @@
-import { AppstoreOutlined, SearchOutlined } from '@ant-design/icons'
-import { Alert, App, Button, Card, Col, Empty, Input, Row, Select, Skeleton, Space, Statistic, Typography } from 'antd'
+import { AppstoreOutlined, PrinterOutlined, SearchOutlined } from '@ant-design/icons'
+import { Alert, App, Button, Card, Col, Empty, Form, Input, Modal, QRCode, Row, Select, Skeleton, Space, Statistic, Typography } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { moldApi, rackApi, toList } from '../api/client'
+import { moldApi, rackApi, slotApi, toList } from '../api/client'
 import { PageTitle } from '../components/PageTitle'
 import { RackDiagram } from '../components/RackDiagram'
 import { MoldFormDrawer } from '../components/MoldFormDrawer'
@@ -12,6 +12,21 @@ import { RackMoldActionsDrawer } from '../components/RackMoldActionsDrawer'
 import { useMoldDeletion } from '../hooks/useMoldDeletion'
 import type { MoldAsset, RackSlot, RackZone } from '../types'
 import { moldCode, moldLocation } from '../types'
+import { Code128Barcode } from '../components/Code128Barcode'
+import { moldRackLocationDetailUrl } from '../moldRack'
+
+type PrintLayout = 'A4' | 'THERMAL'
+type PrintScope = 'ALL' | 'RACK' | 'CUSTOM'
+
+function slotLabelDescription(slot: RackSlot) {
+  return [
+    slot.rack_code,
+    slot.level_no ? `第${slot.level_no}层` : '',
+    slot.zone_label || slot.zone_code,
+    slot.position_no ? `第${slot.position_no}位` : '',
+    slot.stack_level > 1 ? `叠放第${slot.stack_level}层` : '',
+  ].filter(Boolean).join(' · ')
+}
 
 export function RacksPage() {
   const navigate = useNavigate()
@@ -26,6 +41,12 @@ export function RacksPage() {
   const [managedMoldId, setManagedMoldId] = useState<number>()
   const [managedAction, setManagedAction] = useState<MoldAction>()
   const [editingManagedMold, setEditingManagedMold] = useState(false)
+  const [printOpen, setPrintOpen] = useState(false)
+  const [printLayout, setPrintLayout] = useState<PrintLayout>('THERMAL')
+  const [printScope, setPrintScope] = useState<PrintScope>('ALL')
+  const [printRack, setPrintRack] = useState<string>()
+  const [printSlotIds, setPrintSlotIds] = useState<number[]>([])
+  const [labelSlots, setLabelSlots] = useState<RackSlot[]>([])
   const { confirmDelete, deleting } = useMoldDeletion()
   const racksQuery = useQuery({ queryKey: ['racks'], queryFn: async () => toList(await rackApi.list()) })
   const defaultRack = racksQuery.data?.find((rack) => rack.code === navigationState?.rackCode) || racksQuery.data?.[0]
@@ -35,6 +56,11 @@ export function RacksPage() {
     queryKey: ['racks', effectiveSelectedId, 'layout'],
     queryFn: () => rackApi.layout(effectiveSelectedId!),
     enabled: !!effectiveSelectedId,
+  })
+  const slotsQuery = useQuery({
+    queryKey: ['slots', 'all-for-print'],
+    queryFn: async () => toList(await slotApi.list()),
+    enabled: printOpen || labelSlots.length > 0,
   })
   const managedMoldQuery = useQuery({
     queryKey: ['mold', managedMoldId],
@@ -82,6 +108,28 @@ export function RacksPage() {
     }
   }
 
+  const allSlots = useMemo(() => (slotsQuery.data || []).slice().sort((a, b) => a.display_code.localeCompare(b.display_code, undefined, { numeric: true })), [slotsQuery.data])
+  const printRackCodes = useMemo(() => [...new Set(allSlots.map((slot) => slot.rack_code).filter((code): code is string => !!code))], [allSlots])
+  const startLabelPrint = () => {
+    let selected = allSlots
+    if (printScope === 'RACK') selected = allSlots.filter((slot) => slot.rack_code === printRack)
+    if (printScope === 'CUSTOM') selected = allSlots.filter((slot) => printSlotIds.includes(slot.id))
+    if (!selected.length) {
+      message.warning('请至少选择一个需要打印的库位。')
+      return
+    }
+    setLabelSlots(selected)
+    setPrintOpen(false)
+    const previousStyle = document.getElementById('mold-rack-print-page-style')
+    previousStyle?.remove()
+    const style = document.createElement('style')
+    style.id = 'mold-rack-print-page-style'
+    style.textContent = printLayout === 'THERMAL' ? '@page { size: 70mm 50mm; margin: 0; }' : '@page { size: A4 portrait; margin: 8mm; }'
+    document.head.appendChild(style)
+    window.addEventListener('afterprint', () => style.remove(), { once: true })
+    window.setTimeout(() => window.print(), 120)
+  }
+
   const current = useMemo(() => racksQuery.data?.find((rack) => rack.id === effectiveSelectedId), [racksQuery.data, effectiveSelectedId])
   const layoutCounts = useMemo(() => {
     const slots = layoutQuery.data?.levels.flatMap((level) => level.zones.flatMap((zone) => zone.slots)) || []
@@ -92,7 +140,7 @@ export function RacksPage() {
   }, [layoutQuery.data])
 
   return (
-    <div className="page-container">
+    <div className="page-container mold-rack-page">
       <PageTitle title="货架总览" description="按实际货架结构查看模具位置；浅色格为空位，绿色格为已占用。" />
       <Card className="rack-toolbar-card">
         <div className="rack-toolbar">
@@ -111,6 +159,7 @@ export function RacksPage() {
             enterButton="在货架中定位"
             placeholder="输入模具编号或型号"
           />
+          <Button icon={<PrinterOutlined />} onClick={() => setPrintOpen(true)}>打印库位标签</Button>
         </div>
       </Card>
 
@@ -190,6 +239,24 @@ export function RacksPage() {
           setManagedMoldId(undefined)
         }}
       />
+
+      <div className={`mold-rack-label-sheet print-${printLayout.toLowerCase()}`} aria-hidden="true">
+        {labelSlots.map((slot) => <div className="mold-rack-label" key={slot.id}>
+          <div className="mold-rack-label-codes"><Code128Barcode value={slot.display_code} /><QRCode type="svg" value={moldRackLocationDetailUrl(slot.id)} bordered={false} /></div>
+          <b>{slot.display_code}</b>
+          <span>{slotLabelDescription(slot)}</span>
+        </div>)}
+      </div>
+
+      <Modal className="mold-rack-print-modal" title="打印模具架70×50mm库位标签" open={printOpen} onCancel={() => setPrintOpen(false)} onOk={startLabelPrint} okText="打开打印窗口">
+        <Alert type="info" showIcon message="每个具体库位一张标签，含库位编码、Code 128条形码和扫码后打开模具架库位详情的二维码。二维码绑定库位本身，不随模具更换而变化。" style={{ marginBottom: 16 }} />
+        <Form layout="vertical">
+          <Form.Item label="打印设备"><Select value={printLayout} onChange={setPrintLayout} options={[{ value: 'THERMAL', label: 'TSC TTP-244CE 热敏打印机 · 每页一张70×50mm' }, { value: 'A4', label: 'A4打印机 · 自动排列多张70×50mm标签' }]} /></Form.Item>
+          <Form.Item label="打印范围"><Select value={printScope} onChange={setPrintScope} options={[{ value: 'ALL', label: `全部库位（${allSlots.length}张）` }, { value: 'RACK', label: '按货架打印' }, { value: 'CUSTOM', label: '勾选库位补打' }]} /></Form.Item>
+          {printScope === 'RACK' && <Form.Item label="选择货架" required><Select value={printRack} onChange={setPrintRack} loading={slotsQuery.isLoading} placeholder="请选择货架" options={printRackCodes.map((code) => ({ value: code, label: `${code}（${allSlots.filter((slot) => slot.rack_code === code).length}张）` }))} /></Form.Item>}
+          {printScope === 'CUSTOM' && <Form.Item label="选择需要补打的库位" required><Select mode="multiple" showSearch optionFilterProp="label" value={printSlotIds} onChange={setPrintSlotIds} loading={slotsQuery.isLoading} placeholder="可选择一个或多个库位" options={allSlots.map((slot) => ({ value: slot.id, label: `${slot.display_code} · ${slotLabelDescription(slot)}` }))} /></Form.Item>}
+        </Form>
+      </Modal>
     </div>
   )
 }
