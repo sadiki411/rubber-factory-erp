@@ -53,6 +53,7 @@ import type {
 } from '../types'
 import { QualityQrScanner } from './QualityQrScanner'
 import { QualityEmployeeSelect } from './QualityEmployeeSelect'
+import { QualityManualProcessCardInput } from './QualityManualProcessCardInput'
 
 const DRAFT_KEY = 'erp-quality-weight-shipment-drafts-v2'
 const TOLERANCE_PERCENT = 10
@@ -1930,6 +1931,7 @@ export function QualityWeightShipmentDrawer({
           : '连续扫码时一张流程卡对应一包：重量相同可只填一次，扫码张数自动成为批数；重量不同可切换为逐包填写。每包换算件数超过对应流程卡标准数量 10% 会阻止提交。'}
       />
       {!basketLineMode && <Card size="small" className="quality-weight-scan-card" title="流程卡扫码（有卡产品请逐包扫描）" extra={<Button type="primary" icon={<QrcodeOutlined />} onClick={() => setScannerOpen(true)}>连续扫码</Button>}>
+        <QualityManualProcessCardInput existingValues={scannedCards.map((item) => item.cardNo)} onSubmit={handleShipmentCardScan} />
         {reshipCase ? <Alert
           type="warning"
           showIcon

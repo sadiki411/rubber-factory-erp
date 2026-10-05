@@ -20,6 +20,7 @@ import type {
 } from '../types'
 import { QualityQrScanner } from './QualityQrScanner'
 import { QualityEmployeeSelect } from './QualityEmployeeSelect'
+import { QualityManualProcessCardInput } from './QualityManualProcessCardInput'
 
 type SourceSelection = {
   batch: QualityReturnableBatch
@@ -300,6 +301,7 @@ export function QualityFlowCardReturnDrawer({
     >
       <Alert type="info" showIcon message="一张流程卡追踪一批产品" description="多批退货可连续扫码后统一填写日期和原因；系统仍为每张流程卡建立独立的第1次、第2次、第3次退货记录。" />
       <Button className="quality-flow-card-scan-button" type="primary" size="large" block icon={<QrcodeOutlined />} onClick={() => setScannerOpen(true)}>扫描流程卡二维码</Button>
+      <QualityManualProcessCardInput existingValues={cards.map((item) => item.cardNo)} onSubmit={handleScan} />
 
       {!cards.length ? <Empty description="尚未扫描退回产品的流程卡"><Button type="primary" icon={<CameraOutlined />} onClick={() => setScannerOpen(true)}>开始扫码</Button></Empty> : <List
         className="quality-flow-card-return-list"

@@ -642,6 +642,9 @@ button, input, textarea, select { font: inherit; }
 .quality-qr-scanner-footer .ant-btn { min-height: 48px; }
 @keyframes quality-qr-scan { from { transform: translateY(-78px); } to { transform: translateY(78px); } }
 .quality-flow-card-scan-button { min-height: 48px; margin: 16px 0; }
+.quality-manual-process-card-input { display: grid; gap: 8px; margin: 0 0 16px; padding: 12px; border: 1px solid #dbe8e3; border-radius: 10px; background: #f8fcfa; }
+.quality-manual-process-card-heading { display: grid; gap: 2px; }
+.quality-manual-process-card-input .ant-input, .quality-manual-process-card-input .ant-btn { min-height: 44px; }
 .quality-flow-card-return-drawer .ant-empty .ant-btn { min-height: 44px; }
 .quality-flow-card-return-list { margin: 0 0 18px; }
 .quality-flow-card-return-list .ant-list-item { display: block; padding: 6px 0; border: 0; }
@@ -956,6 +959,8 @@ button, input, textarea, select { font: inherit; }
   .quality-weight-scan-mode .ant-radio-group { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
   .quality-weight-scan-mode .ant-radio-button-wrapper { height: auto; min-height: 44px; padding: 3px 8px; line-height: 36px; text-align: center; white-space: normal; }
   .quality-weight-scan-mode > .ant-btn { min-height: 44px; }
+  .quality-manual-process-card-input .ant-space-compact { width: 100%; }
+  .quality-manual-process-card-input .ant-btn { flex: none; }
   .quality-weight-binding-card .ant-card-head { flex-wrap: wrap; }
   .quality-weight-binding-card .ant-card-extra { margin-inline-start: 0; }
   .quality-weight-binding-card .ant-card-extra .ant-btn { min-height: 44px; }
