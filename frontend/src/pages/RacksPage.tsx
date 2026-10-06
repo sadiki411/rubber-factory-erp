@@ -18,6 +18,12 @@ import { moldRackLocationDetailUrl } from '../moldRack'
 type PrintLayout = 'A4' | 'THERMAL'
 type PrintScope = 'ALL' | 'RACK' | 'CUSTOM'
 
+function chunkPrintLabels<T>(items: T[], size: number) {
+  const rows: T[][] = []
+  for (let index = 0; index < items.length; index += size) rows.push(items.slice(index, index + size))
+  return rows
+}
+
 function slotLabelDescription(slot: RackSlot) {
   return [
     slot.rack_code,
@@ -241,11 +247,19 @@ export function RacksPage() {
       />
 
       <div className={`mold-rack-label-sheet print-${printLayout.toLowerCase()}`} aria-hidden="true">
-        {labelSlots.map((slot) => <div className="mold-rack-label" key={slot.id}>
-          <div className="mold-rack-label-codes"><Code128Barcode value={slot.display_code} /><QRCode type="svg" value={moldRackLocationDetailUrl(slot.id)} bordered={false} /></div>
-          <b>{slot.display_code}</b>
-          <span>{slotLabelDescription(slot)}</span>
-        </div>)}
+        {printLayout === 'THERMAL'
+          ? chunkPrintLabels(labelSlots, 2).map((row, rowIndex) => <div className="thermal-label-row" key={`thermal-${rowIndex}`}>
+            {row.map((slot) => <div className="mold-rack-label" key={slot.id}>
+              <div className="mold-rack-label-codes"><Code128Barcode value={slot.display_code} /><QRCode type="svg" value={moldRackLocationDetailUrl(slot.id)} bordered={false} /></div>
+              <b>{slot.display_code}</b>
+              <span>{slotLabelDescription(slot)}</span>
+            </div>)}
+          </div>)
+          : labelSlots.map((slot) => <div className="mold-rack-label" key={slot.id}>
+            <div className="mold-rack-label-codes"><Code128Barcode value={slot.display_code} /><QRCode type="svg" value={moldRackLocationDetailUrl(slot.id)} bordered={false} /></div>
+            <b>{slot.display_code}</b>
+            <span>{slotLabelDescription(slot)}</span>
+          </div>)}
       </div>
 
       <Modal className="mold-rack-print-modal" title="打印模具架双列40×60mm库位标签" open={printOpen} onCancel={() => setPrintOpen(false)} onOk={startLabelPrint} okText="打开打印窗口">
