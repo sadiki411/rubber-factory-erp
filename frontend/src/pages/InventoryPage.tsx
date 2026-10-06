@@ -26,6 +26,12 @@ type PrintLayout = 'A4' | 'THERMAL'
 type PrintScope = 'ALL' | 'RACK' | 'CUSTOM'
 type LocationScanPurpose = 'LOOKUP' | 'RECEIPT' | 'MOVE'
 
+function chunkPrintLabels<T>(items: T[], size: number) {
+  const rows: T[][] = []
+  for (let index = 0; index < items.length; index += size) rows.push(items.slice(index, index + size))
+  return rows
+}
+
 function qualityTag(value?: InventoryQualityStatus) {
   const meta = value ? QUALITY_META[value] : undefined
   return <Tag color={meta?.color}>{meta?.label || value || '空位'}</Tag>
@@ -444,11 +450,19 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
       </Card>
 
       <div className={`inventory-label-sheet print-${printLayout.toLowerCase()}`} aria-hidden="true">
-        {labelLocations.map((location) => <div className="inventory-label" key={location.id}>
-          <div className="inventory-label-codes"><Code128Barcode value={location.code} /><QRCode type="svg" value={inventoryLocationDetailUrl(location.code)} bordered={false} /></div>
-          <b>{location.code}</b>
-          <span>{location.label || `${location.rack_code} · 第${location.level_no}层 · 第${location.position_no}位`}</span>
-        </div>)}
+        {printLayout === 'THERMAL'
+          ? chunkPrintLabels(labelLocations, 2).map((row, rowIndex) => <div className="thermal-label-row" key={`thermal-${rowIndex}`}>
+            {row.map((location) => <div className="inventory-label" key={location.id}>
+              <div className="inventory-label-codes"><Code128Barcode value={location.code} /><QRCode type="svg" value={inventoryLocationDetailUrl(location.code)} bordered={false} /></div>
+              <b>{location.code}</b>
+              <span>{location.label || `${location.rack_code} · 第${location.level_no}层 · 第${location.position_no}位`}</span>
+            </div>)}
+          </div>)
+          : labelLocations.map((location) => <div className="inventory-label" key={location.id}>
+            <div className="inventory-label-codes"><Code128Barcode value={location.code} /><QRCode type="svg" value={inventoryLocationDetailUrl(location.code)} bordered={false} /></div>
+            <b>{location.code}</b>
+            <span>{location.label || `${location.rack_code} · 第${location.level_no}层 · 第${location.position_no}位`}</span>
+          </div>)}
       </div>
 
       <Modal className="inventory-modal" title="打印双列40×60mm库位标签" open={printOpen} onCancel={() => setPrintOpen(false)} onOk={startLabelPrint} okText="打开打印窗口">
