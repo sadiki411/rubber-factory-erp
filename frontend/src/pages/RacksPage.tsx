@@ -253,9 +253,11 @@ export function RacksPage() {
           ? chunkPrintLabels(labelSlots, 2).map((row, rowIndex) => <div className="thermal-label-row" key={`thermal-${rowIndex}`}>
             {row.map((slot) => <div className="mold-rack-label" key={slot.id}>
               <div className="thermal-label-content">
-                <div className="mold-rack-label-codes"><Code128Barcode value={slot.display_code} /><QRCode type="svg" value={moldRackLocationDetailUrl(slot.id)} bordered={false} /></div>
-                <b>{slot.display_code}</b>
-                <span>{slotLabelDescription(slot)}</span>
+                <div className="thermal-label-artwork">
+                  <div className="mold-rack-label-codes"><Code128Barcode value={slot.display_code} /><QRCode type="svg" value={moldRackLocationDetailUrl(slot.id)} bordered={false} /></div>
+                  <b>{slot.display_code}</b>
+                  <span>{slotLabelDescription(slot)}</span>
+                </div>
               </div>
             </div>)}
           </div>)
