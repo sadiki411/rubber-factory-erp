@@ -17,6 +17,7 @@ import { moldRackLocationDetailUrl } from '../moldRack'
 
 type PrintLayout = 'A4' | 'THERMAL'
 type PrintScope = 'ALL' | 'RACK' | 'CUSTOM'
+type ThermalRotation = 'CW' | 'CCW'
 
 function chunkPrintLabels<T>(items: T[], size: number) {
   const rows: T[][] = []
@@ -49,6 +50,7 @@ export function RacksPage() {
   const [editingManagedMold, setEditingManagedMold] = useState(false)
   const [printOpen, setPrintOpen] = useState(false)
   const [printLayout, setPrintLayout] = useState<PrintLayout>('THERMAL')
+  const [thermalRotation, setThermalRotation] = useState<ThermalRotation>('CW')
   const [printScope, setPrintScope] = useState<PrintScope>('ALL')
   const [printRack, setPrintRack] = useState<string>()
   const [printSlotIds, setPrintSlotIds] = useState<number[]>([])
@@ -246,13 +248,15 @@ export function RacksPage() {
         }}
       />
 
-      <div className={`mold-rack-label-sheet print-${printLayout.toLowerCase()}`} aria-hidden="true">
+      <div className={`mold-rack-label-sheet print-${printLayout.toLowerCase()} rotation-${thermalRotation.toLowerCase()}`} aria-hidden="true">
         {printLayout === 'THERMAL'
           ? chunkPrintLabels(labelSlots, 2).map((row, rowIndex) => <div className="thermal-label-row" key={`thermal-${rowIndex}`}>
             {row.map((slot) => <div className="mold-rack-label" key={slot.id}>
-              <div className="mold-rack-label-codes"><Code128Barcode value={slot.display_code} /><QRCode type="svg" value={moldRackLocationDetailUrl(slot.id)} bordered={false} /></div>
-              <b>{slot.display_code}</b>
-              <span>{slotLabelDescription(slot)}</span>
+              <div className="thermal-label-content">
+                <div className="mold-rack-label-codes"><Code128Barcode value={slot.display_code} /><QRCode type="svg" value={moldRackLocationDetailUrl(slot.id)} bordered={false} /></div>
+                <b>{slot.display_code}</b>
+                <span>{slotLabelDescription(slot)}</span>
+              </div>
             </div>)}
           </div>)
           : labelSlots.map((slot) => <div className="mold-rack-label" key={slot.id}>
@@ -266,6 +270,7 @@ export function RacksPage() {
         <Alert type="info" showIcon message="每个具体库位一张标签，含库位编码、Code 128条形码和扫码后打开模具架库位详情的二维码。二维码绑定库位本身，不随模具更换而变化。" style={{ marginBottom: 16 }} />
         <Form layout="vertical">
           <Form.Item label="打印设备"><Select value={printLayout} onChange={setPrintLayout} options={[{ value: 'THERMAL', label: 'TSC TTP-244CE 热敏打印机 · 每次两张40×60mm' }, { value: 'A4', label: 'A4打印机 · 自动排列多张40×60mm标签' }]} /></Form.Item>
+          <Form.Item label="热敏标签内容方向"><Select value={thermalRotation} onChange={setThermalRotation} options={[{ value: 'CW', label: '横向 · 顺时针旋转90°' }, { value: 'CCW', label: '横向 · 逆时针旋转90°' }]} /></Form.Item>
           <Form.Item label="打印范围"><Select value={printScope} onChange={setPrintScope} options={[{ value: 'ALL', label: `全部库位（${allSlots.length}张）` }, { value: 'RACK', label: '按货架打印' }, { value: 'CUSTOM', label: '勾选库位补打' }]} /></Form.Item>
           {printScope === 'RACK' && <Form.Item label="选择货架" required><Select value={printRack} onChange={setPrintRack} loading={slotsQuery.isLoading} placeholder="请选择货架" options={printRackCodes.map((code) => ({ value: code, label: `${code}（${allSlots.filter((slot) => slot.rack_code === code).length}张）` }))} /></Form.Item>}
           {printScope === 'CUSTOM' && <Form.Item label="选择需要补打的库位" required><Select mode="multiple" showSearch optionFilterProp="label" value={printSlotIds} onChange={setPrintSlotIds} loading={slotsQuery.isLoading} placeholder="可选择一个或多个库位" options={allSlots.map((slot) => ({ value: slot.id, label: `${slot.display_code} · ${slotLabelDescription(slot)}` }))} /></Form.Item>}
