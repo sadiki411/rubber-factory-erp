@@ -22,16 +22,8 @@ const EMPTY_LOCATIONS: InventoryLocation[] = []
 const INVENTORY_SELECT_CLASS_NAMES = { popup: { root: 'inventory-select-popup' } }
 const INVENTORY_SCAN_FORMATS = ['qr_code', 'code_128']
 
-type PrintLayout = 'A4' | 'THERMAL'
 type PrintScope = 'ALL' | 'RACK' | 'CUSTOM'
-type ThermalRotation = 'CW' | 'CCW'
 type LocationScanPurpose = 'LOOKUP' | 'RECEIPT' | 'MOVE'
-
-function chunkPrintLabels<T>(items: T[], size: number) {
-  const rows: T[][] = []
-  for (let index = 0; index < items.length; index += size) rows.push(items.slice(index, index + size))
-  return rows
-}
 
 function qualityTag(value?: InventoryQualityStatus) {
   const meta = value ? QUALITY_META[value] : undefined
@@ -43,8 +35,6 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
   const queryClient = useQueryClient()
   const [query, setQuery] = useState('')
   const [printOpen, setPrintOpen] = useState(false)
-  const [printLayout, setPrintLayout] = useState<PrintLayout>('A4')
-  const [thermalRotation, setThermalRotation] = useState<ThermalRotation>('CW')
   const [printScope, setPrintScope] = useState<PrintScope>('ALL')
   const [printRack, setPrintRack] = useState<string>()
   const [printLocationIds, setPrintLocationIds] = useState<number[]>([])
@@ -293,9 +283,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
     previousStyle?.remove()
     const style = document.createElement('style')
     style.id = 'inventory-print-page-style'
-    style.textContent = printLayout === 'THERMAL'
-      ? '@page { size: 80mm 60mm; margin: 0; }'
-      : '@page { size: A4 portrait; margin: 8mm; }'
+    style.textContent = '@page { size: 70mm 50mm; margin: 0; }'
     document.head.appendChild(style)
     const cleanup = () => style.remove()
     window.addEventListener('afterprint', cleanup, { once: true })
@@ -451,30 +439,23 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
         <Table rowKey="id" size="small" loading={remaindersQuery.isLoading} dataSource={remaindersQuery.data || []} columns={remainderColumns} pagination={{ pageSize: 8 }} scroll={{ x: 900 }} locale={{ emptyText: '暂无冰箱胶料记录' }} />
       </Card>
 
-      <div className={`inventory-label-sheet print-${printLayout.toLowerCase()} rotation-${thermalRotation.toLowerCase()}`} aria-hidden="true">
-        {printLayout === 'THERMAL'
-          ? chunkPrintLabels(labelLocations, 2).map((row, rowIndex) => <div className="thermal-label-row" key={`thermal-${rowIndex}`}>
-            {row.map((location) => <div className="inventory-label" key={location.id}>
-              <div className="thermal-label-content">
-                <div className="thermal-label-artwork">
-                  <div className="inventory-label-codes"><Code128Barcode value={location.code} /><QRCode type="svg" value={inventoryLocationDetailUrl(location.code)} bordered={false} /></div>
-                  <b>{location.code}</b>
-                </div>
+      <div className="inventory-label-sheet print-thermal" aria-hidden="true">
+        {labelLocations.map((location) => <div className="thermal-label-row" key={location.id}>
+          <div className="inventory-label">
+            <div className="thermal-label-content">
+              <div className="thermal-label-artwork">
+                <div className="inventory-label-codes"><Code128Barcode value={location.code} /><QRCode type="svg" value={inventoryLocationDetailUrl(location.code)} bordered={false} /></div>
+                <b>{location.code}</b>
               </div>
-            </div>)}
-          </div>)
-          : labelLocations.map((location) => <div className="inventory-label" key={location.id}>
-            <div className="inventory-label-codes"><Code128Barcode value={location.code} /><QRCode type="svg" value={inventoryLocationDetailUrl(location.code)} bordered={false} /></div>
-            <b>{location.code}</b>
-            <span>{location.label || `${location.rack_code} · 第${location.level_no}层 · 第${location.position_no}位`}</span>
-          </div>)}
+            </div>
+          </div>
+        </div>)}
       </div>
 
-      <Modal className="inventory-modal" title="打印双列40×60mm库位标签" open={printOpen} onCancel={() => setPrintOpen(false)} onOk={startLabelPrint} okText="打开打印窗口">
+      <Modal className="inventory-modal" title="打印70×50mm热敏库位标签" open={printOpen} onCancel={() => setPrintOpen(false)} onOk={startLabelPrint} okText="打开打印窗口">
         <Alert type="info" showIcon message="标签含库位编号、Code 128条形码和可直接打开库位详情的二维码。" style={{ marginBottom: 16 }} />
         <Form layout="vertical">
-          <Form.Item label="打印设备"><Select value={printLayout} onChange={setPrintLayout} options={[{ value: 'A4', label: 'A4打印机 · 自动排列多张40×60标签' }, { value: 'THERMAL', label: '热敏标签机 · 每次两张40×60标签' }]} /></Form.Item>
-          <Form.Item label="热敏标签内容方向"><Select value={thermalRotation} onChange={setThermalRotation} options={[{ value: 'CW', label: '横向 · 顺时针旋转90°' }, { value: 'CCW', label: '横向 · 逆时针旋转90°' }]} /></Form.Item>
+          <Form.Item label="标签规格"><Typography.Text strong>70×50mm · 每次打印一张</Typography.Text></Form.Item>
           <Form.Item label="打印范围"><Select value={printScope} onChange={setPrintScope} options={[{ value: 'ALL', label: `全部库位（${finishedLocations.length}张）` }, { value: 'RACK', label: '按货架打印' }, { value: 'CUSTOM', label: '勾选库位补打' }]} /></Form.Item>
           {printScope === 'RACK' && <Form.Item label="选择货架" required><Select value={printRack} onChange={setPrintRack} placeholder="请选择K01-K09" options={rackCodes.map((code) => ({ value: code, label: `${code}（${finishedLocations.filter((item) => item.rack_code === code).length}张）` }))} /></Form.Item>}
           {printScope === 'CUSTOM' && <Form.Item label="选择需要补打的库位" required><Select mode="multiple" showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} value={printLocationIds} onChange={setPrintLocationIds} placeholder="可选择一个或多个库位" options={finishedLocations.map((location) => ({ value: location.id, label: `${location.code} · ${location.label}` }))} /></Form.Item>}

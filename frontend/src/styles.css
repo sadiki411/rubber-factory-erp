@@ -282,67 +282,50 @@ button, input, textarea, select { font: inherit; }
   .app-sider, .app-header, .inventory-page > *:not(.inventory-label-sheet), .inventory-actions { display: none !important; }
   .app-sider + .ant-layout { margin-left: 0 !important; }
   .inventory-page { display: block; padding: 0; width: auto; }
-  .inventory-label-sheet { margin: 0; }
-  .inventory-label-sheet.print-a4 { display: grid !important; grid-template-columns: repeat(4, 40mm); gap: 4mm 6mm; align-content: start; padding: 0; }
-  .inventory-label-sheet.print-thermal { display: block !important; width: 80mm; padding: 0; }
-  .inventory-label-sheet.print-thermal .thermal-label-row { display: grid; grid-template-columns: repeat(2, 40mm); width: 80mm; height: 59mm; min-height: 59mm; max-height: 59mm; break-inside: avoid; page-break-inside: avoid; overflow: hidden; }
-  .inventory-label-sheet.print-thermal .thermal-label-row:not(:last-child) { break-after: page; page-break-after: always; }
-  .inventory-label-sheet.print-thermal .inventory-label { position: relative; width: 40mm; height: 59mm; margin: 0; border: 0; transform: none; overflow: hidden; }
+  .inventory-label-sheet.print-thermal,
+  .mold-rack-label-sheet.print-thermal { display: block !important; width: 70mm; padding: 0; margin: 0; }
+  .inventory-label-sheet.print-thermal .thermal-label-row,
+  .mold-rack-label-sheet.print-thermal .thermal-label-row { display: block; width: 70mm; height: 50mm; min-height: 50mm; max-height: 50mm; break-inside: avoid; page-break-inside: avoid; break-after: page; page-break-after: always; overflow: hidden; }
+  .inventory-label-sheet.print-thermal .thermal-label-row:last-child,
+  .mold-rack-label-sheet.print-thermal .thermal-label-row:last-child { break-after: auto; page-break-after: auto; }
+  .inventory-label-sheet.print-thermal .inventory-label,
+  .mold-rack-label-sheet.print-thermal .mold-rack-label { position: relative; width: 70mm; height: 50mm; margin: 0; border: 0; transform: none; overflow: hidden; }
   .mold-rack-location-page > *:not(.mold-rack-label-sheet), .mold-rack-location-page .mold-rack-label-sheet { display: none !important; }
   .mold-rack-page > *:not(.mold-rack-label-sheet) { display: none !important; }
-  .mold-rack-label-sheet { margin: 0; }
-  .mold-rack-label-sheet.print-a4 { display: grid !important; grid-template-columns: repeat(4, 40mm); gap: 4mm 6mm; align-content: start; padding: 0; }
-  .mold-rack-label-sheet.print-thermal { display: block !important; width: 80mm; padding: 0; }
-  .mold-rack-label-sheet.print-thermal .thermal-label-row { display: grid; grid-template-columns: repeat(2, 40mm); width: 80mm; height: 59mm; min-height: 59mm; max-height: 59mm; break-inside: avoid; page-break-inside: avoid; overflow: hidden; }
-  .mold-rack-label-sheet.print-thermal .thermal-label-row:not(:last-child) { break-after: page; page-break-after: always; }
-  .mold-rack-label-sheet.print-thermal .mold-rack-label { position: relative; width: 40mm; height: 59mm; margin: 0; border: 0; transform: none; overflow: hidden; }
-
-  /* Keep each rotated artwork inside its own 40mm x 60mm label slot. The
-     outer box owns the slot coordinates; the inner artwork is what rotates. */
   .inventory-label-sheet.print-thermal .thermal-label-content,
   .mold-rack-label-sheet.print-thermal .thermal-label-content {
     position: absolute;
-    width: 38mm;
-    height: 58mm;
-    left: 50%;
-    top: 50%;
-    transform: translate(-50%, -50%);
-    transform-origin: center;
+    inset: 2mm;
+    width: 66mm;
+    height: 46mm;
     overflow: hidden;
   }
   .inventory-label-sheet.print-thermal .thermal-label-artwork,
   .mold-rack-label-sheet.print-thermal .thermal-label-artwork {
-    position: absolute;
-    width: 58mm;
-    height: 38mm;
-    left: 50%;
-    top: 50%;
-    transform: translate(-50%, -50%) rotate(90deg);
-    transform-origin: center;
-    overflow: hidden;
+    position: relative;
+    width: 66mm;
+    height: 46mm;
   }
-  .inventory-label-sheet.print-thermal.rotation-ccw .thermal-label-artwork,
-  .mold-rack-label-sheet.print-thermal.rotation-ccw .thermal-label-artwork { transform: translate(-50%, -50%) rotate(-90deg); }
   .inventory-label-sheet.print-thermal .thermal-label-artwork .inventory-label-codes,
   .mold-rack-label-sheet.print-thermal .thermal-label-artwork .mold-rack-label-codes {
     position: absolute;
     top: 2mm;
     left: 2mm;
     right: 2mm;
-    height: 23mm;
+    height: 28mm;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 17mm;
+    grid-template-columns: minmax(0, 1fr) 23mm;
     align-items: center;
-    gap: 2mm;
+    gap: 3mm;
   }
   .inventory-label-sheet.print-thermal .thermal-label-artwork .inventory-label-codes > .ant-qrcode,
   .inventory-label-sheet.print-thermal .thermal-label-artwork .inventory-label-codes > svg:last-child,
   .mold-rack-label-sheet.print-thermal .thermal-label-artwork .mold-rack-label-codes > .ant-qrcode,
-  .mold-rack-label-sheet.print-thermal .thermal-label-artwork .mold-rack-label-codes > svg:last-child { width: 21mm !important; height: 21mm !important; padding: 0 !important; }
+  .mold-rack-label-sheet.print-thermal .thermal-label-artwork .mold-rack-label-codes > svg:last-child { width: 23mm !important; height: 23mm !important; padding: 0 !important; }
   .inventory-label-sheet.print-thermal .thermal-label-artwork .inventory-code128,
-  .mold-rack-label-sheet.print-thermal .thermal-label-artwork .inventory-code128 { width: 100%; height: 12mm; shape-rendering: crispEdges; }
+  .mold-rack-label-sheet.print-thermal .thermal-label-artwork .inventory-code128 { width: 100%; height: 14mm; shape-rendering: crispEdges; }
   .inventory-label-sheet.print-thermal .thermal-label-artwork > b,
-  .mold-rack-label-sheet.print-thermal .thermal-label-artwork > b { position: absolute; top: 25mm; left: 2mm; right: 2mm; display: block; max-width: calc(100% - 4mm); font-size: 18pt; font-weight: 900; line-height: 1; letter-spacing: 0; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: clip; }
+  .mold-rack-label-sheet.print-thermal .thermal-label-artwork > b { position: absolute; top: 32mm; left: 2mm; right: 2mm; display: block; max-width: calc(100% - 4mm); font-size: 20pt; font-weight: 900; line-height: 1.1; letter-spacing: 0; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: clip; }
 }
 
 .panel-actions { display: flex; justify-content: flex-end; margin: -2px 0 12px; }
