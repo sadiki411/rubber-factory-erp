@@ -295,37 +295,37 @@ button, input, textarea, select { font: inherit; }
   .inventory-label-sheet.print-thermal .thermal-label-content,
   .mold-rack-label-sheet.print-thermal .thermal-label-content {
     position: absolute;
-    inset: 2mm;
-    width: 66mm;
-    height: 46mm;
+    inset: 1mm;
+    width: 68mm;
+    height: 48mm;
     overflow: hidden;
   }
   .inventory-label-sheet.print-thermal .thermal-label-artwork,
   .mold-rack-label-sheet.print-thermal .thermal-label-artwork {
     position: relative;
-    width: 66mm;
-    height: 46mm;
+    width: 68mm;
+    height: 48mm;
   }
   .inventory-label-sheet.print-thermal .thermal-label-artwork .inventory-label-codes,
   .mold-rack-label-sheet.print-thermal .thermal-label-artwork .mold-rack-label-codes {
     position: absolute;
-    top: 2mm;
-    left: 2mm;
-    right: 2mm;
-    height: 28mm;
+    top: 1mm;
+    left: 1mm;
+    right: 1mm;
+    height: 31mm;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 23mm;
+    grid-template-columns: minmax(0, 1fr) 30mm;
     align-items: center;
-    gap: 3mm;
+    gap: 2mm;
   }
   .inventory-label-sheet.print-thermal .thermal-label-artwork .inventory-label-codes > .ant-qrcode,
   .inventory-label-sheet.print-thermal .thermal-label-artwork .inventory-label-codes > svg:last-child,
   .mold-rack-label-sheet.print-thermal .thermal-label-artwork .mold-rack-label-codes > .ant-qrcode,
-  .mold-rack-label-sheet.print-thermal .thermal-label-artwork .mold-rack-label-codes > svg:last-child { width: 23mm !important; height: 23mm !important; padding: 0 !important; }
+  .mold-rack-label-sheet.print-thermal .thermal-label-artwork .mold-rack-label-codes > svg:last-child { width: 30mm !important; height: 30mm !important; padding: 0 !important; }
   .inventory-label-sheet.print-thermal .thermal-label-artwork .inventory-code128,
-  .mold-rack-label-sheet.print-thermal .thermal-label-artwork .inventory-code128 { width: 100%; height: 14mm; shape-rendering: crispEdges; }
+  .mold-rack-label-sheet.print-thermal .thermal-label-artwork .inventory-code128 { width: 100%; height: 20mm; shape-rendering: crispEdges; }
   .inventory-label-sheet.print-thermal .thermal-label-artwork > b,
-  .mold-rack-label-sheet.print-thermal .thermal-label-artwork > b { position: absolute; top: 32mm; left: 2mm; right: 2mm; display: block; max-width: calc(100% - 4mm); font-size: 20pt; font-weight: 900; line-height: 1.1; letter-spacing: 0; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: clip; }
+  .mold-rack-label-sheet.print-thermal .thermal-label-artwork > b { position: absolute; top: 34mm; left: 1mm; right: 1mm; display: block; max-width: calc(100% - 2mm); font-size: 25pt; font-weight: 900; line-height: 1; letter-spacing: 0; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: clip; }
 }
 
 .panel-actions { display: flex; justify-content: flex-end; margin: -2px 0 12px; }
