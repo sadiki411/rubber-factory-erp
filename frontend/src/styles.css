@@ -285,17 +285,15 @@ button, input, textarea, select { font: inherit; }
   .inventory-label-sheet { margin: 0; }
   .inventory-label-sheet.print-a4 { display: grid !important; grid-template-columns: repeat(4, 40mm); gap: 4mm 6mm; align-content: start; padding: 0; }
   .inventory-label-sheet.print-thermal { display: block !important; width: 80mm; padding: 0; }
-  .inventory-label-sheet.print-thermal .thermal-label-row { display: grid; grid-template-columns: repeat(2, 40mm); width: 80mm; height: 60mm; break-inside: avoid; page-break-inside: avoid; break-after: page; page-break-after: always; }
-  .inventory-label-sheet.print-thermal .thermal-label-row:last-child { break-after: auto; page-break-after: auto; }
-  .inventory-label-sheet.print-thermal .inventory-label { margin: 0; border: 0; }
+  .inventory-label-sheet.print-thermal .thermal-label-row { display: grid; grid-template-columns: repeat(2, 40mm); width: 80mm; height: 60mm; break-inside: avoid; page-break-inside: avoid; }
+  .inventory-label-sheet.print-thermal .inventory-label { margin: 0; border: 0; transform: rotate(180deg); transform-origin: center; }
   .mold-rack-location-page > *:not(.mold-rack-label-sheet), .mold-rack-location-page .mold-rack-label-sheet { display: none !important; }
   .mold-rack-page > *:not(.mold-rack-label-sheet) { display: none !important; }
   .mold-rack-label-sheet { margin: 0; }
   .mold-rack-label-sheet.print-a4 { display: grid !important; grid-template-columns: repeat(4, 40mm); gap: 4mm 6mm; align-content: start; padding: 0; }
   .mold-rack-label-sheet.print-thermal { display: block !important; width: 80mm; padding: 0; }
-  .mold-rack-label-sheet.print-thermal .thermal-label-row { display: grid; grid-template-columns: repeat(2, 40mm); width: 80mm; height: 60mm; break-inside: avoid; page-break-inside: avoid; break-after: page; page-break-after: always; }
-  .mold-rack-label-sheet.print-thermal .thermal-label-row:last-child { break-after: auto; page-break-after: auto; }
-  .mold-rack-label-sheet.print-thermal .mold-rack-label { margin: 0; border: 0; }
+  .mold-rack-label-sheet.print-thermal .thermal-label-row { display: grid; grid-template-columns: repeat(2, 40mm); width: 80mm; height: 60mm; break-inside: avoid; page-break-inside: avoid; }
+  .mold-rack-label-sheet.print-thermal .mold-rack-label { margin: 0; border: 0; transform: rotate(180deg); transform-origin: center; }
 }
 
 .panel-actions { display: flex; justify-content: flex-end; margin: -2px 0 12px; }
