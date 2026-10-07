@@ -456,11 +456,8 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
           ? chunkPrintLabels(labelLocations, 2).map((row, rowIndex) => <div className="thermal-label-row" key={`thermal-${rowIndex}`}>
             {row.map((location) => <div className="inventory-label" key={location.id}>
               <div className="thermal-label-content">
-                <div className="thermal-label-artwork">
-                  <div className="inventory-label-codes"><Code128Barcode value={location.code} /><QRCode type="svg" value={inventoryLocationDetailUrl(location.code)} bordered={false} /></div>
-                  <b>{location.code}</b>
-                  <span>{location.label || `${location.rack_code} · 第${location.level_no}层 · 第${location.position_no}位`}</span>
-                </div>
+                <div className="inventory-label-codes"><Code128Barcode value={location.code} /><QRCode type="svg" value={inventoryLocationDetailUrl(location.code)} bordered={false} /></div>
+                <b>{location.code}</b>
               </div>
             </div>)}
           </div>)
