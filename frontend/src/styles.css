@@ -293,7 +293,6 @@ button, input, textarea, select { font: inherit; }
   .mold-rack-label-sheet { margin: 0; }
   .mold-rack-label-sheet.print-a4 { display: grid !important; grid-template-columns: repeat(4, 40mm); gap: 4mm 6mm; align-content: start; padding: 0; }
   .mold-rack-label-sheet.print-thermal { display: block !important; width: 80mm; padding: 0; }
-  .mold-rack-label-sheet.print-thermal { transform: translateY(-8mm); }
   .mold-rack-label-sheet.print-thermal .thermal-label-row { display: grid; grid-template-columns: repeat(2, 40mm); width: 80mm; height: 59mm; min-height: 59mm; max-height: 59mm; break-inside: avoid; page-break-inside: avoid; overflow: hidden; }
   .mold-rack-label-sheet.print-thermal .thermal-label-row:not(:last-child) { break-after: page; page-break-after: always; }
   .mold-rack-label-sheet.print-thermal .mold-rack-label { position: relative; width: 40mm; height: 59mm; margin: 0; border: 0; transform: none; overflow: hidden; }
