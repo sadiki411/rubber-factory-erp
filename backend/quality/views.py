@@ -2821,11 +2821,14 @@ class QualityEmployeeViewSet(NoDeleteModelViewSet):
         # Manual employee records intentionally allow duplicate names.  A
         # quick-entry key is therefore assigned only after we have proved that
         # the typed name identifies at most one existing row.
-        matches = [
-            employee
-            for employee in QualityEmployee.objects.filter(
+        candidates = self._read_with_lock_retry(lambda: list(
+            QualityEmployee.objects.filter(
                 Q(quick_resolve_key=resolve_key) | Q(quick_resolve_key__isnull=True)
             ).order_by("id")
+        ))
+        matches = [
+            employee
+            for employee in candidates
             if employee.quick_resolve_key == resolve_key
             or QualityEmployee.normalize_quick_resolve_key(employee.name) == resolve_key
         ]
@@ -2856,9 +2859,9 @@ class QualityEmployeeViewSet(NoDeleteModelViewSet):
                     created = True
                     break
                 except IntegrityError:
-                    employee = QualityEmployee.objects.filter(
+                    employee = self._read_with_lock_retry(lambda: QualityEmployee.objects.filter(
                         quick_resolve_key=resolve_key
-                    ).first()
+                    ).first())
                     if employee is not None:
                         break
                 except OperationalError as exc:
@@ -2872,7 +2875,7 @@ class QualityEmployeeViewSet(NoDeleteModelViewSet):
                 )
 
         if created:
-            employee.refresh_from_db()
+            self._read_with_lock_retry(employee.refresh_from_db)
             return Response(self.get_serializer(employee).data, status=201)
 
         # Use one conditional UPDATE rather than a read followed by save.  This
@@ -2903,9 +2906,9 @@ class QualityEmployeeViewSet(NoDeleteModelViewSet):
             except IntegrityError:
                 # A concurrent request may have claimed the normalized key for
                 # the same typed identity between the scan and this write.
-                employee = QualityEmployee.objects.get(
+                employee = self._read_with_lock_retry(lambda: QualityEmployee.objects.get(
                     quick_resolve_key=resolve_key
-                )
+                ))
             except OperationalError as exc:
                 if not self._is_sqlite_lock(exc):
                     raise
@@ -2913,7 +2916,7 @@ class QualityEmployeeViewSet(NoDeleteModelViewSet):
                     raise QuickResolveBusy() from exc
         else:
             raise QuickResolveBusy()
-        employee.refresh_from_db()
+        self._read_with_lock_retry(employee.refresh_from_db)
         if not updated or not employee.is_active:
             raise DRFValidationError(
                 {"name": f"员工“{name}”已停用，请先在员工档案中确认并启用。"}
@@ -2926,6 +2929,19 @@ class QualityEmployeeViewSet(NoDeleteModelViewSet):
         return connection.vendor == "sqlite" and any(
             marker in str(exc).lower() for marker in ("locked", "busy")
         )
+
+    def _read_with_lock_retry(self, operation):
+        # SQLite shared-cache connections can lock reads as well as writes.
+        # Cover the initial name lookup and post-write refresh without replaying
+        # the write or changing the request's created/existing response status.
+        for attempt in range(5):
+            try:
+                return operation()
+            except OperationalError as exc:
+                if not self._is_sqlite_lock(exc):
+                    raise
+                if not self._retry_sqlite_lock(attempt):
+                    raise QuickResolveBusy() from exc
 
     @staticmethod
     def _retry_sqlite_lock(attempt):
