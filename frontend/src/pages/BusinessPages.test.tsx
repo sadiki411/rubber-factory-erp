@@ -58,7 +58,10 @@ describe('business data pages on mobile', () => {
   it('renders material and process-card states in order cards and preserves zero', async () => {
     renderPage(<OrdersPage />)
     expect(await screen.findByText('TEST-ORDER-001 / 10')).toBeInTheDocument()
-    expect(apiMocks.listOrders).toHaveBeenCalledWith(expect.objectContaining({ ordering: 'due_date,process_card_status,order_date', status: 'OPEN' }))
+    expect(apiMocks.listOrders).toHaveBeenCalledWith(
+      expect.objectContaining({ ordering: 'due_date,process_card_status,order_date', status: 'OPEN', page: 1, page_size: 20 }),
+      expect.objectContaining({ signal: expect.anything() }),
+    )
     expect(screen.getAllByText('未收到').length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText('0 kg')).toBeInTheDocument()
     expect(screen.getByText('0 张 / 覆盖 0')).toBeInTheDocument()
@@ -90,7 +93,10 @@ describe('business data pages on mobile', () => {
     await user.click(screen.getByRole('combobox', { name: '订单排序' }))
     await user.click(await screen.findByText('流程卡：未齐优先'))
 
-    await waitFor(() => expect(apiMocks.listOrders).toHaveBeenCalledWith(expect.objectContaining({ ordering: 'process_card_status,due_date,order_date' })))
+    await waitFor(() => expect(apiMocks.listOrders).toHaveBeenCalledWith(
+      expect.objectContaining({ ordering: 'process_card_status,due_date,order_date', page: 1, page_size: 20 }),
+      expect.objectContaining({ signal: expect.anything() }),
+    ))
   })
 
   it('shows pending receipt count before opening the mobile receipt tab and renders actionable cards', async () => {
