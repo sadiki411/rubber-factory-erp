@@ -12,6 +12,8 @@ import type {
   InventoryLocation,
   InventoryProduct,
   InventorySummary,
+  PublicInventoryLocation,
+  PublicLocationHistoryEntry,
   MaterialRemainder,
   MaterialRemainderUse,
   Machine,
@@ -290,6 +292,8 @@ export const slotApi = {
     apiFetch<ApiList<RackSlot> | RackSlot[]>(`/api/slots/${queryString({ available: available || undefined })}`).then((payload) => mapList(payload, normalizeSlot)),
   detail: (id: number | string) => apiFetch<RackSlot>(`/api/slots/${id}/`).then(normalizeSlot),
   publicDetail: (id: number | string) => apiFetch<RackSlot>(`/api/public/mold-rack/slots/${id}/`).then(normalizeSlot),
+  publicHistory: (id: number | string, page = 1) =>
+    apiFetch<ApiList<PublicLocationHistoryEntry>>(`/api/public/mold-rack/slots/${id}/history/${queryString({ page })}`),
 }
 
 type MasterRecord = MoldModel | Machine | Processor
@@ -340,6 +344,9 @@ export const productSpecificationApi = {
 }
 
 export const inventoryApi = {
+  publicLocation: (code: string) => apiFetch<PublicInventoryLocation>(`/api/inventory/public/locations/${encodeURIComponent(code)}/`),
+  publicLocationHistory: (code: string, page = 1) =>
+    apiFetch<ApiList<PublicLocationHistoryEntry>>(`/api/inventory/public/locations/${encodeURIComponent(code)}/history/${queryString({ page })}`),
   summary: () => apiFetch<InventorySummary>('/api/inventory/summary/'),
   locations: (filters: { rack?: string; active?: boolean } = {}) =>
     apiFetch<ApiList<InventoryLocation> | InventoryLocation[]>(`/api/inventory/locations/${queryString(filters)}`),

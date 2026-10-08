@@ -2,7 +2,9 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework.test import APITestCase
+from rest_framework.test import APIClient
 
 from orders.models import ProductSpecification
 from quality.models import ProductUnitWeight, QualityEmployee, QualityOrder
@@ -79,6 +81,104 @@ class InventoryApiTests(APITestCase):
         self.assertEqual(container.location.code, "K01-L01-P01")
         self.assertEqual(container.batch.quality_status, InventoryBatch.QualityStatus.PASSED)
         self.assertEqual(InventoryTransaction.objects.filter(transaction_type="RECEIPT").count(), 1)
+
+    def test_public_location_details_are_anonymous_minimal_and_read_only(self):
+        self.receipt(notes="内部备注", source_note="私人来源")
+        anonymous = APIClient()
+        url = f"/api/inventory/public/locations/{self.large.code}/"
+        with self.assertNumQueries(1):
+            response = anonymous.get(url)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(set(payload), {"id", "code", "label", "is_active", "container"})
+        self.assertEqual(payload["container"]["quantity"], 4000)
+        self.assertEqual(set(payload["container"]), {
+            "container_code", "container_type_label", "batch_no", "product_code",
+            "product_name", "specification", "material", "quantity", "quality_status_label",
+            "bag_count", "pieces_per_bag",
+        })
+        for method in (anonymous.post, anonymous.patch, anonymous.delete):
+            self.assertEqual(method(url, {}, format="json").status_code, 405)
+        self.assertIn(anonymous.get("/api/inventory/locations/").status_code, (401, 403))
+
+    def test_public_location_history_keeps_departed_products_and_empty_location_history(self):
+        container_id = self.receipt().json()["id"]
+        outbound = self.client.post("/api/inventory/outbounds/", {
+            "lines": [{"container_id": container_id, "quantity": 4000}],
+            "shipment_ref": "私人出货号", "note": "内部出货备注",
+        }, format="json")
+        self.assertEqual(outbound.status_code, 201, outbound.content)
+        anonymous = APIClient()
+        detail_url = f"/api/inventory/public/locations/{self.large.code}/"
+        self.assertIsNone(anonymous.get(detail_url).json()["container"])
+        before = anonymous.get(f"{detail_url}history/").json()
+        self.assertEqual([row["quantity_change"] for row in before["results"]], [-4000, 4000])
+        self.receipt(batch_no="NEW-BATCH", product={"product_code": "NEW-P", "specification": "362", "material": "EPDM"})
+        self.receipt(batch_no="OTHER-BATCH", container_type="BAG", location_id=self.small.pk)
+        with self.assertNumQueries(3):
+            response = anonymous.get(f"{detail_url}history/")
+        rows = response.json()["results"]
+        self.assertEqual(response.json()["count"], 3)
+        self.assertEqual([row["item_code"] for row in rows], ["NEW-P", "P-100", "P-100"])
+        self.assertEqual(set(rows[0]), {
+            "id", "created_at", "operation_label", "item_code", "item_name",
+            "specification", "material", "batch_no", "container_code", "quantity_change",
+            "from_location", "to_location",
+        })
+        self.assertNotIn("私人", str(response.json()))
+
+    def test_public_location_history_matches_both_move_ends_without_duplicate_same_location_events(self):
+        container_id = self.receipt().json()["id"]
+        target = InventoryLocation.objects.get(code="K02-L01-P01")
+        response = self.client.post(f"/api/inventory/containers/{container_id}/set-quality/", {
+            "quality_status": "PASSED", "inspector_id": self.inspector.pk,
+        }, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        moved = self.client.post(f"/api/inventory/containers/{container_id}/move/", {
+            "location_id": target.pk, "reason": "内部搬运原因",
+        }, format="json")
+        self.assertEqual(moved.status_code, 200, moved.content)
+        anonymous = APIClient()
+        source = anonymous.get(f"/api/inventory/public/locations/{self.large.code}/history/").json()
+        destination = anonymous.get(f"/api/inventory/public/locations/{target.code}/history/").json()
+        self.assertEqual(source["count"], 3)
+        self.assertEqual(destination["count"], 1)
+        self.assertEqual(source["results"][0]["id"], destination["results"][0]["id"])
+        self.assertEqual(destination["results"][0]["from_location"], self.large.code)
+        self.assertEqual(destination["results"][0]["to_location"], target.code)
+        self.assertIsNone(destination["results"][0]["quantity_change"])
+
+    def test_public_location_history_is_bounded_paginated_and_read_only(self):
+        container = InventoryContainer.objects.get(pk=self.receipt().json()["id"])
+        for _ in range(24):
+            InventoryTransaction.objects.create(
+                transaction_type="ADJUST", batch=container.batch, container=container,
+                quantity=0, from_location=self.large, to_location=self.large,
+                created_by=self.user, reason="库存产品资料更正：私人更正说明",
+            )
+        # Tied timestamps still have deterministic newest-id-first ordering.
+        InventoryTransaction.objects.all().update(created_at=timezone.now())
+        url = f"/api/inventory/public/locations/{self.large.code}/history/"
+        anonymous = APIClient()
+        first = anonymous.get(url, {"page_size": 1000}).json()
+        second = anonymous.get(url, {"page": 2}).json()
+        self.assertEqual(first["count"], 25)
+        self.assertEqual(len(first["results"]), 20)
+        self.assertEqual(len(second["results"]), 5)
+        self.assertIsNone(second["next"])
+        ids = [row["id"] for row in first["results"] + second["results"]]
+        self.assertEqual(ids, sorted(set(ids), reverse=True))
+        self.assertEqual(first["results"][0]["operation_label"], "产品资料更正")
+        for method in (anonymous.post, anonymous.patch, anonymous.delete):
+            self.assertEqual(method(url, {}, format="json").status_code, 405)
+
+    def test_public_location_unknown_and_empty_locations(self):
+        anonymous = APIClient()
+        for suffix in ("", "history/"):
+            self.assertEqual(anonymous.get(f"/api/inventory/public/locations/UNKNOWN/{suffix}").status_code, 404)
+        detail_url = f"/api/inventory/public/locations/{self.small.code.lower()}/"
+        self.assertIsNone(anonymous.get(detail_url).json()["container"])
+        self.assertEqual(anonymous.get(f"{detail_url}history/").json()["results"], [])
 
     def test_receipt_reuses_quality_unit_weight_and_saves_an_inventory_override_to_the_same_history(self):
         specification = ProductSpecification.objects.create(

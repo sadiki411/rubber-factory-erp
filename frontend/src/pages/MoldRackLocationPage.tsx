@@ -7,6 +7,7 @@ import { moldApi, slotApi, toList } from '../api/client'
 import { MoldFormDrawer } from '../components/MoldFormDrawer'
 import { OperationDrawer, type MoldAction } from '../components/OperationDrawer'
 import { PageTitle } from '../components/PageTitle'
+import { PublicLocationHistory } from '../components/PublicLocationHistory'
 import { moldCode, moldLocation } from '../types'
 import type { RackSlot } from '../types'
 
@@ -80,13 +81,13 @@ export function MoldRackLocationPage({ readOnly = false }: Props) {
 
   if (!slotId) return <Alert type="error" message="缺少库位编号" />
   if (slotQuery.isLoading) return <div className="page-container"><Skeleton active /></div>
-  if (slotQuery.isError || !slot) return <div className="page-container"><Alert type="error" showIcon title="库位详情读取失败" description={(slotQuery.error as Error)?.message || '库位不存在'} /><Button onClick={() => navigate('/racks')}>返回模具架</Button></div>
+  if (slotQuery.isError || !slot) return <div className="page-container"><Alert type="error" showIcon title="库位详情读取失败" description={(slotQuery.error as Error)?.message || '库位不存在'} />{readOnly ? <Button onClick={() => void slotQuery.refetch()}>重试</Button> : <Button onClick={() => navigate('/racks')}>返回模具架</Button>}</div>
 
   return (
     <div className="page-container mold-rack-location-page">
       <PageTitle
         title={`模具架库位 · ${slot.display_code}`}
-        description={readOnly ? '扫码查看固定库位当前信息（只读）。如需操作，请使用东橡 ERP 安卓 App。' : '扫描标签后可查看该固定库位当前模具，并直接进行入库、下机归位、移库、上机或出库操作。'}
+        description={readOnly ? '扫码查看当前模具和库位历史（只读）。如需操作，请使用东橡 ERP 安卓 App。' : '扫描标签后可查看该固定库位当前模具，并直接进行入库、下机归位、移库、上机或出库操作。'}
         extra={!readOnly && <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/racks')}>返回模具架</Button>}
       />
       <Card className="mold-rack-location-card">
@@ -126,6 +127,8 @@ export function MoldRackLocationPage({ readOnly = false }: Props) {
         </Space>}
         {!slot.mold && slot.is_blocked && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={readOnly ? '该库位当前禁放' : '该库位已禁放，不能执行入库'} />}
       </Card>
+
+      <PublicLocationHistory kind="mold" locationKey={slotId} />
 
       {!readOnly && <Modal title={`选择机上模具 · 归位到 ${slot.display_code}`} open={putawayPickerOpen} onCancel={() => setPutawayPickerOpen(false)} onOk={confirmPutaway} okText="下一步">
         <Alert type="info" showIcon message="确认后会直接打开下机归位操作，目标库位已预填为当前扫码库位。" style={{ marginBottom: 16 }} />

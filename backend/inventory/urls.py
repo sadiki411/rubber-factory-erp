@@ -12,6 +12,8 @@ from .views import (
     InventorySummaryView,
     InventoryTransactionViewSet,
     MaterialRemainderViewSet,
+    PublicInventoryLocationView,
+    PublicInventoryLocationHistoryView,
 )
 
 
@@ -26,6 +28,8 @@ router.register("material-remainders", MaterialRemainderViewSet, basename="mater
 
 
 urlpatterns = [
+    path("public/locations/<str:code>/", PublicInventoryLocationView.as_view(), name="public-inventory-location"),
+    path("public/locations/<str:code>/history/", PublicInventoryLocationHistoryView.as_view(), name="public-inventory-location-history"),
     path("summary/", InventorySummaryView.as_view(), name="inventory-summary"),
     path("availability/", InventoryAvailabilityView.as_view(), name="inventory-availability"),
     path("receipts/", InventoryReceiptView.as_view(), name="inventory-receipt"),

@@ -86,6 +86,43 @@ export interface InventorySummary {
   location_count: number
 }
 
+export interface PublicInventoryLocation {
+  id: number
+  code: string
+  label: string
+  is_active: boolean
+  container: {
+    container_code: string
+    container_type_label: string
+    batch_no: string
+    product_code: string
+    product_name: string
+    specification: string
+    material: string
+    quantity: number
+    quality_status_label: string
+    bag_count: number
+    pieces_per_bag: number | null
+  } | null
+}
+
+export interface PublicLocationHistoryEntry {
+  id: number
+  created_at: string
+  operation_label: string
+  item_code: string
+  item_name: string
+  specification: string
+  material?: string
+  batch_no?: string
+  container_code?: string
+  quantity_change?: number | null
+  from_location: string | null
+  to_location: string | null
+  from_machine?: string | null
+  to_machine?: string | null
+}
+
 export interface InventoryAvailability {
   total_quantity: number
   available_quantity: number

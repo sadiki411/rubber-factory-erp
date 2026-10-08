@@ -26,6 +26,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView, exception_handler as drf_exception_handler
 
 from erp.permissions import is_read_only_user
+from erp.pagination import PublicLocationHistoryPagination
 
 from .imports import commit_batch, create_standard_template, preview_workbook
 from .models import (
@@ -33,6 +34,7 @@ from .models import (
     Machine,
     MoldAsset,
     MoldModel,
+    MoldMovement,
     Processor,
     Rack,
     RackLevel,
@@ -221,6 +223,40 @@ class PublicMoldRackSlotView(APIView):
                 ),
             }
         )
+
+
+class PublicMoldRackSlotHistoryView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    @extend_schema(responses=dict)
+    def get(self, request, pk=None):
+        slot = get_object_or_404(RackSlot, pk=pk)
+        movements = MoldMovement.objects.filter(
+            Q(from_slot=slot) | Q(to_slot=slot)
+        ).select_related(
+            "mold__mold_model", "from_slot__zone__level__rack",
+            "to_slot__zone__level__rack", "from_machine", "to_machine",
+        ).order_by("-created_at", "-id")
+        paginator = PublicLocationHistoryPagination()
+        page = paginator.paginate_queryset(movements, request, view=self)
+        # This is deliberately not MoldMovementSerializer: anonymous visitors
+        # must never receive operator accounts, private notes or processors.
+        return paginator.get_paginated_response([
+            {
+                "id": movement.pk,
+                "created_at": movement.created_at,
+                "operation_label": movement.get_action_display(),
+                "item_code": movement.mold.asset_code,
+                "item_name": movement.mold.mold_model.product_name,
+                "specification": movement.mold.mold_model.code,
+                "from_location": movement.from_slot.display_code if movement.from_slot_id else None,
+                "to_location": movement.to_slot.display_code if movement.to_slot_id else None,
+                "from_machine": movement.from_machine.code if movement.from_machine_id else None,
+                "to_machine": movement.to_machine.code if movement.to_machine_id else None,
+            }
+            for movement in page
+        ])
 
 
 class FlexiblePageNumberPagination(PageNumberPagination):

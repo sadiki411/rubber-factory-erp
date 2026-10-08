@@ -20,26 +20,30 @@ const RacksPage = lazy(() => import('./pages/RacksPage').then((module) => ({ def
 const InventoryPage = lazy(() => import('./pages/InventoryPage').then((module) => ({ default: module.InventoryPage })))
 const InventoryLocationPage = lazy(() => import('./pages/InventoryPage').then((module) => ({ default: module.InventoryLocationPage })))
 const MoldRackLocationPage = lazy(() => import('./pages/MoldRackLocationPage').then((module) => ({ default: module.MoldRackLocationPage })))
+const PublicInventoryLocationPage = lazy(() => import('./pages/PublicInventoryLocationPage').then((module) => ({ default: module.PublicInventoryLocationPage })))
 
 export function App() {
   const location = useLocation()
   const queryClient = useQueryClient()
   const moldRackPath = /^\/mold-rack\/slots\/[^/]+\/?$/.test(location.pathname)
+  const inventoryLocationPath = /^\/inventory\/locations\/[^/]+\/?$/.test(location.pathname)
   const appWebView = /DongXiangERP\//.test(window.navigator.userAgent)
   const manageMoldRack = moldRackPath && appWebView && new URLSearchParams(location.search).get('mode') === 'manage'
+  const publicLocationPath = (moldRackPath && !manageMoldRack) || (inventoryLocationPath && !appWebView)
   const sessionQuery = useQuery({
     queryKey: ['session'],
     queryFn: authApi.session,
-    enabled: !moldRackPath || manageMoldRack,
+    enabled: !publicLocationPath,
     retry: (count, error) => !(error instanceof ApiError && error.status === 401) && count < 2,
     staleTime: 5 * 60 * 1000,
   })
 
-  if (moldRackPath && !manageMoldRack) {
+  if (publicLocationPath) {
     return (
       <Suspense fallback={<div className="route-loading"><Skeleton active /></div>}>
         <Routes>
           <Route path="mold-rack/slots/:slotId" element={<MoldRackLocationPage readOnly />} />
+          <Route path="inventory/locations/:locationCode" element={<PublicInventoryLocationPage />} />
         </Routes>
       </Suspense>
     )

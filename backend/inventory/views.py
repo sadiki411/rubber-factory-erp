@@ -1,12 +1,17 @@
 from django.db import transaction
 from django.db.models import DecimalField, OuterRef, Q, Subquery, Sum
+from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from drf_spectacular.utils import extend_schema
+
+from erp.pagination import PublicLocationHistoryPagination
 
 from .models import (
     InventoryBatch,
@@ -68,6 +73,79 @@ class InventoryLocationViewSet(viewsets.ReadOnlyModelViewSet):
     def bootstrap(self, request):
         created = bootstrap_inventory_locations()
         return Response({"created": created, "locations": self.get_queryset().count()})
+
+
+class PublicInventoryLocationView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    @extend_schema(responses=dict)
+    def get(self, request, code):
+        location = get_object_or_404(
+            InventoryLocation.objects.select_related("inventory_container__batch__product"),
+            code__iexact=code,
+        )
+        container = location.current_container
+        product = container.batch.product if container else None
+        # Never reuse the authenticated serializer here: it contains employee
+        # names and may grow additional internal fields in future.
+        return Response({
+            "id": location.pk,
+            "code": location.code,
+            "label": location.label,
+            "is_active": location.is_active,
+            "container": {
+                "container_code": container.container_code,
+                "container_type_label": container.get_container_type_display(),
+                "batch_no": container.batch.batch_no,
+                "product_code": product.product_code,
+                "product_name": product.product_name,
+                "specification": product.specification,
+                "material": product.material,
+                "quantity": container.quantity,
+                "quality_status_label": container.batch.get_quality_status_display(),
+                "bag_count": container.bag_count,
+                "pieces_per_bag": container.pieces_per_bag,
+            } if container else None,
+        })
+
+
+class PublicInventoryLocationHistoryView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    @extend_schema(responses=dict)
+    def get(self, request, code):
+        location = get_object_or_404(InventoryLocation, code__iexact=code)
+        transactions = InventoryTransaction.objects.filter(
+            Q(from_location=location) | Q(to_location=location)
+        ).select_related(
+            "batch__product", "container", "from_location", "to_location",
+        ).order_by("-created_at", "-id")
+        paginator = PublicLocationHistoryPagination()
+        page = paginator.paginate_queryset(transactions, request, view=self)
+        return paginator.get_paginated_response([
+            {
+                "id": entry.pk,
+                "created_at": entry.created_at,
+                "operation_label": "产品资料更正" if entry.transaction_type == InventoryTransaction.TransactionType.ADJUST
+                and entry.quantity == 0 and entry.reason.startswith("库存产品资料更正：")
+                else entry.get_transaction_type_display(),
+                "item_code": entry.batch.product.product_code,
+                "item_name": entry.batch.product.product_name,
+                "specification": entry.batch.product.specification,
+                "material": entry.batch.product.material,
+                "batch_no": entry.batch.batch_no,
+                "container_code": entry.container.container_code,
+                "quantity_change": -entry.quantity if entry.transaction_type == InventoryTransaction.TransactionType.OUTBOUND
+                else entry.quantity if entry.transaction_type in {
+                    InventoryTransaction.TransactionType.RECEIPT, InventoryTransaction.TransactionType.ADJUST,
+                } else None,
+                "from_location": entry.from_location.code if entry.from_location_id else None,
+                "to_location": entry.to_location.code if entry.to_location_id else None,
+            }
+            for entry in page
+        ])
 
 
 class InventoryProductViewSet(viewsets.ModelViewSet):
