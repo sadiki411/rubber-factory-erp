@@ -5,7 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable
 
 from django.db import IntegrityError, transaction
-from django.db.models import Max, Q, Sum
+from django.db.models import Max, Prefetch, Q, Sum
 from django.utils import timezone
 
 from .models import (
@@ -29,6 +29,27 @@ PENDING_RETURN_STATUSES = (
     QualityReworkCase.Status.WAITING_REINSPECTION,
     QualityReworkCase.Status.WAITING_REWORK,
 )
+
+
+def shipment_reporting_lines():
+    """Load reporting facts without a forward-FK OR per physical card.
+
+    Forward-FK prefetch on large periods can exceed SQLite's expression-depth
+    limit. Join those single-valued relations and prefetch only reverse sets.
+    """
+    return QualityShipmentLine.objects.select_related(
+        "order", "process_card__order", "process_card__product_specification",
+    ).prefetch_related(Prefetch(
+        "order_allocations",
+        queryset=QualityShipmentOrderAllocation.objects.select_related("order"),
+    ))
+
+
+def return_reporting_allocations():
+    return QualityReturnAllocation.objects.select_related(
+        "shipment_line__order", "shipment_line__process_card__order",
+        "shipment_order_allocation__order",
+    )
 
 
 def shipment_inspectors(batch: QualityShipmentBatch | None) -> list[QualityEmployee]:
@@ -125,16 +146,20 @@ def delivered_quantities_by_order(
     if not ids:
         return delivered
 
-    legacy_shipments = QualityShipment.objects.filter(
-        order_id__in=ids
-    ).prefetch_related("reworks")
+    # Balances need scalar facts, not thousands of full order/card/case model
+    # instances and per-instance related managers. Keep the same per-shipment
+    # and per-share clamping rules while reading a bounded set of slim rows.
+    legacy_shipments = (
+        QualityShipment.objects.filter(order_id__in=ids)
+        .order_by()
+        .values("id", "order_id", "shipped_quantity")
+        .annotate(returned=Sum("reworks__returned_quantity"))
+    )
     for shipment in legacy_shipments:
-        returned = sum(
-            int(rework.returned_quantity or 0)
-            for rework in shipment.reworks.all()
-        )
-        delivered[shipment.order_id] += max(
-            0, int(shipment.shipped_quantity or 0) - returned
+        delivered[shipment["order_id"]] += max(
+            0,
+            int(shipment["shipped_quantity"] or 0)
+            - int(shipment["returned"] or 0),
         )
 
     weighted_lines = (
@@ -146,19 +171,87 @@ def delivered_quantities_by_order(
             | Q(order_id__in=ids)
             | Q(process_card__order_id__in=ids)
         )
-        .select_related("order", "process_card__order")
-        .prefetch_related(
-            "order_allocations__return_allocations__case",
-            "rework_cases__shipment_allocations",
-            "rework_allocations__case",
+        .order_by()
+        .values(
+            "id", "order_id", "piece_quantity", "net_weight_kg",
+            "unit_weight_g_snapshot", "process_card__order_id",
+            "process_card__unit_weight_g",
         )
         .distinct()
     )
     if exclude_batch_id is not None:
         weighted_lines = weighted_lines.exclude(batch_id=exclude_batch_id)
 
-    for line in weighted_lines:
-        allocations = list(line.order_allocations.all())
+    lines = list(weighted_lines)
+    line_ids = {line["id"] for line in lines}
+    if not line_ids:
+        return delivered
+    allocations_by_line = {}
+    allocation_ids = set()
+    for allocation in QualityShipmentOrderAllocation.objects.filter(
+        shipment_line_id__in=line_ids
+    ).order_by().values("id", "shipment_line_id", "order_id", "piece_quantity"):
+        allocations_by_line.setdefault(allocation["shipment_line_id"], []).append(allocation)
+        allocation_ids.add(allocation["id"])
+
+    cases_by_line = {}
+    case_ids = set()
+    for case in QualityReworkCase.objects.filter(
+        shipment_line_id__in=line_ids
+    ).order_by().values(
+        "id", "shipment_line_id", "origin", "status",
+        "affected_quantity", "affected_weight_kg",
+    ):
+        cases_by_line.setdefault(case["shipment_line_id"], []).append(case)
+        case_ids.add(case["id"])
+
+    returned_by_share = {}
+    returned_by_line = {}
+    legacy_returned_by_line = {}
+    allocated_case_ids = set()
+    allocated_case_line_pairs = set()
+    # Include all allocations of a directly linked case, not only those on
+    # the current line, so the historical "has any allocation" guard remains
+    # identical. Share FKs also retain their own immutable return association.
+    return_rows = QualityReturnAllocation.objects.filter(
+        Q(shipment_line_id__in=line_ids)
+        | Q(case_id__in=case_ids)
+        | Q(shipment_order_allocation_id__in=allocation_ids)
+    ).order_by().values(
+        "case_id", "shipment_line_id", "shipment_order_allocation_id",
+        "piece_quantity", "case__origin", "case__status",
+    )
+    for item in return_rows:
+        allocated_case_ids.add(item["case_id"])
+        allocated_case_line_pairs.add((item["case_id"], item["shipment_line_id"]))
+        if (
+            item["case__origin"] != QualityReworkCase.Origin.CUSTOMER_RETURN
+            or item["case__status"] == QualityReworkCase.Status.CANCELLED
+        ):
+            continue
+        quantity = int(item["piece_quantity"] or 0)
+        line_id = item["shipment_line_id"]
+        share_id = item["shipment_order_allocation_id"]
+        returned_by_line[line_id] = returned_by_line.get(line_id, 0) + quantity
+        if share_id is None:
+            legacy_returned_by_line[line_id] = legacy_returned_by_line.get(line_id, 0) + quantity
+        else:
+            returned_by_share[share_id] = returned_by_share.get(share_id, 0) + quantity
+
+    def case_quantity(case, unit):
+        if case["affected_quantity"] is not None:
+            return int(case["affected_quantity"])
+        if case["affected_weight_kg"] is not None and unit:
+            return int((
+                Decimal(case["affected_weight_kg"]) * Decimal("1000") / Decimal(unit)
+            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        return 0
+
+    for line in lines:
+        line_id = line["id"]
+        allocations = allocations_by_line.get(line_id, [])
+        cases = cases_by_line.get(line_id, [])
+        unit = line["unit_weight_g_snapshot"] or line["process_card__unit_weight_g"]
         if allocations:
             # New rows are charged to their immutable fulfilment shares.  Old
             # return rows did not carry a share FK; migration gives their line
@@ -166,99 +259,48 @@ def delivered_quantities_by_order(
             # be released without rewriting history.
             legacy_returned = 0
             if len(allocations) == 1:
-                legacy_returned = sum(
-                    int(item.piece_quantity or 0)
-                    for item in line.rework_allocations.all()
+                legacy_returned = legacy_returned_by_line.get(line_id, 0)
+                for case in cases:
                     if (
-                        item.shipment_order_allocation_id is None
-                        and item.case.origin
-                        == QualityReworkCase.Origin.CUSTOMER_RETURN
-                        and item.case.status != QualityReworkCase.Status.CANCELLED
-                    )
-                )
-                unit = line.unit_weight_g_snapshot or (
-                    line.process_card.unit_weight_g
-                    if line.process_card_id
-                    else None
-                )
-                for case in line.rework_cases.all():
-                    if (
-                        case.origin != QualityReworkCase.Origin.CUSTOMER_RETURN
-                        or case.status == QualityReworkCase.Status.CANCELLED
-                        or case.shipment_allocations.all()
+                        case["origin"] != QualityReworkCase.Origin.CUSTOMER_RETURN
+                        or case["status"] == QualityReworkCase.Status.CANCELLED
+                        or case["id"] in allocated_case_ids
                     ):
                         continue
-                    if case.affected_quantity is not None:
-                        legacy_returned += int(case.affected_quantity)
-                    elif case.affected_weight_kg is not None and unit:
-                        legacy_returned += int(
-                            (
-                                Decimal(case.affected_weight_kg)
-                                * Decimal("1000")
-                                / Decimal(unit)
-                            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-                        )
+                    legacy_returned += case_quantity(case, unit)
             for allocation in allocations:
-                if allocation.order_id not in delivered:
+                if allocation["order_id"] not in delivered:
                     continue
-                returned = sum(
-                    int(item.piece_quantity or 0)
-                    for item in allocation.return_allocations.all()
-                    if (
-                        item.case.origin
-                        == QualityReworkCase.Origin.CUSTOMER_RETURN
-                        and item.case.status != QualityReworkCase.Status.CANCELLED
-                    )
-                )
+                returned = returned_by_share.get(allocation["id"], 0)
                 if len(allocations) == 1:
                     returned += legacy_returned
-                delivered[allocation.order_id] += max(
-                    0, int(allocation.piece_quantity) - returned
+                delivered[allocation["order_id"]] += max(
+                    0, int(allocation["piece_quantity"]) - returned
                 )
             continue
 
         # Rolling-upgrade safety: a confirmed line created before the data
         # migration (or restored from an old partial backup) still counts by
         # its historical direct order until it is backfilled.
-        order_id = line.order_id or (
-            line.process_card.order_id if line.process_card_id else None
-        )
+        order_id = line["order_id"] or line["process_card__order_id"]
         if order_id not in delivered:
             continue
-        returned = 0
-        unit = line.unit_weight_g_snapshot or (
-            line.process_card.unit_weight_g if line.process_card_id else None
-        )
-        for case in line.rework_cases.all():
+        returned = returned_by_line.get(line_id, 0)
+        for case in cases:
             if (
-                case.origin != QualityReworkCase.Origin.CUSTOMER_RETURN
-                or case.status == QualityReworkCase.Status.CANCELLED
-                or any(
-                    allocation.shipment_line_id == line.pk
-                    for allocation in case.shipment_allocations.all()
-                )
+                case["origin"] != QualityReworkCase.Origin.CUSTOMER_RETURN
+                or case["status"] == QualityReworkCase.Status.CANCELLED
+                or (case["id"], line_id) in allocated_case_line_pairs
             ):
                 continue
-            if case.affected_quantity is not None:
-                returned += int(case.affected_quantity)
-            elif case.affected_weight_kg is not None and unit:
-                returned += int(
-                    (
-                        Decimal(case.affected_weight_kg)
-                        * Decimal("1000")
-                        / Decimal(unit)
-                    ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-                )
-        returned += sum(
-            int(allocation.piece_quantity or 0)
-            for allocation in line.rework_allocations.all()
-            if (
-                allocation.case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
-                and allocation.case.status != QualityReworkCase.Status.CANCELLED
-            )
-        )
+            returned += case_quantity(case, unit)
+        quantity = line["piece_quantity"]
+        if quantity is None and unit and line["net_weight_kg"]:
+            quantity = int((
+                Decimal(line["net_weight_kg"]) * Decimal("1000") / Decimal(unit)
+            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
         delivered[order_id] += max(
-            0, shipment_line_piece_quantity(line) - returned
+            0, max(0, int(quantity or 0)) - returned
         )
     return delivered
 

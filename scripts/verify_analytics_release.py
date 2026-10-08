@@ -12,7 +12,7 @@ import statistics
 import time
 
 from django.contrib.auth import get_user_model
-from django.db import connection
+from django.db import connection, reset_queries
 from django.db.models import Sum
 from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIRequestFactory, force_authenticate
@@ -45,7 +45,7 @@ def invoke(view, path, params):
 
 
 def emit(name, value):
-    print(name, json.dumps(value, ensure_ascii=False, default=str), flush=True)
+    print(name, json.dumps(value, ensure_ascii=False, default=str, indent=2), flush=True)
 
 
 params = {"date_from": DATE_FROM.isoformat(), "date_to": DATE_TO.isoformat()}
@@ -63,6 +63,7 @@ emit("SCALE", {
     "confirmed_pieces_all_time": QualityShipmentLine.objects.filter(batch__status="CONFIRMED").aggregate(total=Sum("piece_quantity"))["total"],
 })
 for name, fn in targets.items():
+    reset_queries()
     start = time.perf_counter()
     with CaptureQueriesContext(connection) as ctx:
         result = fn()

@@ -54,6 +54,7 @@ from .services import (
     delivered_quantities_by_order,
     find_process_card,
     replace_process_card,
+    return_reporting_allocations,
     reship_return_case,
     returnable_groups_for_batch,
     serialize_order_allocation_plan,
@@ -61,6 +62,7 @@ from .services import (
     shipment_inspectors,
     set_return_case_inspectors,
     shipment_return_groups,
+    shipment_reporting_lines,
     shipment_unit_allocations,
     sync_order_status_from_delivery,
 )
@@ -4002,9 +4004,7 @@ class QualitySummaryView(APIView):
                 "inspectors",
                 Prefetch(
                     "lines",
-                    queryset=QualityShipmentLine.objects.select_related(
-                        "order", "process_card__order"
-                    ).prefetch_related("order_allocations__order"),
+                    queryset=shipment_reporting_lines(),
                 ),
             )
         )
@@ -4042,9 +4042,7 @@ class QualitySummaryView(APIView):
                     .select_related("rework_employee"),
                     to_attr="period_attempts",
                 ),
-                "shipment_allocations__shipment_line__order",
-                "shipment_allocations__shipment_line__process_card__order",
-                "shipment_allocations__shipment_order_allocation__order",
+                Prefetch("shipment_allocations", queryset=return_reporting_allocations()),
             )
             .distinct()
         )

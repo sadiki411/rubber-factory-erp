@@ -15,7 +15,10 @@ from quality.models import (
     QualityShipmentBatch,
     ReturnRework,
 )
-from quality.services import delivered_quantities_by_order, shipment_inspectors, shipment_line_piece_quantity
+from quality.services import (
+    delivered_quantities_by_order, return_reporting_allocations,
+    shipment_inspectors, shipment_line_piece_quantity, shipment_reporting_lines,
+)
 
 from .models import ManualFinancialEntry, ManualPerformanceEntry
 
@@ -642,9 +645,7 @@ def build_quality_employee_details(
         .select_related("inspector", "order")
         .prefetch_related(
             "inspectors",
-            "lines__order",
-            "lines__process_card__order",
-            "lines__order_allocations__order",
+            Prefetch("lines", queryset=shipment_reporting_lines()),
         )
         .distinct()
     )
@@ -792,9 +793,7 @@ def build_quality_employee_details(
             "process_card__order",
         )
         .prefetch_related(
-            "shipment_allocations__shipment_line__order",
-            "shipment_allocations__shipment_line__process_card__order",
-            "shipment_allocations__shipment_order_allocation__order",
+            Prefetch("shipment_allocations", queryset=return_reporting_allocations()),
         )
     )
     for case in responsible_cases:
@@ -853,9 +852,7 @@ def build_quality_employee_details(
             "case__process_card__order",
         )
         .prefetch_related(
-            "case__shipment_allocations__shipment_line__order",
-            "case__shipment_allocations__shipment_line__process_card__order",
-            "case__shipment_allocations__shipment_order_allocation__order",
+            Prefetch("case__shipment_allocations", queryset=return_reporting_allocations()),
         )
     )
     for attempt in attempts:
@@ -1063,10 +1060,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         .select_related("inspector")
         .prefetch_related(
             "inspectors",
-            "lines__order",
-            "lines__process_card__order",
-            "lines__process_card__product_specification",
-            "lines__order_allocations__order",
+            Prefetch("lines", queryset=shipment_reporting_lines()),
         )
     )
     reworks = list(
@@ -1108,9 +1102,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                 .select_related("rework_employee"),
                 to_attr="period_attempts",
             ),
-            "shipment_allocations__shipment_line__order",
-            "shipment_allocations__shipment_line__process_card__order",
-            "shipment_allocations__shipment_order_allocation__order",
+            Prefetch("shipment_allocations", queryset=return_reporting_allocations()),
         )
         .distinct()
     )
