@@ -1,5 +1,5 @@
 import { EditOutlined, FileExcelOutlined, HistoryOutlined, PlusOutlined, SearchOutlined, WarningOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Empty, Grid, Input, List, Select, Space, Table, Tabs, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Empty, Grid, Input, List, Pagination, Select, Space, Table, Tabs, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import dayjs from 'dayjs'
@@ -11,7 +11,7 @@ import { BusinessImportHistoryDrawer } from '../components/BusinessImportHistory
 import { MaterialReceiptDrawer } from '../components/MaterialReceiptDrawer'
 import { OrderFormDrawer } from '../components/OrderFormDrawer'
 import { PageTitle } from '../components/PageTitle'
-import type { MaterialReceipt, Order, OrderMaterialStatus, OrderProcessCardStatus, OrderStatus } from '../types'
+import type { ApiList, MaterialReceipt, Order, OrderMaterialStatus, OrderProcessCardStatus, OrderStatus } from '../types'
 
 type OrderTab = 'orders-open' | 'orders-completed' | 'orders-cancelled' | 'receipts'
 
@@ -96,6 +96,8 @@ export function OrdersPage() {
   const [materialStatus, setMaterialStatus] = useState<OrderMaterialStatus | ''>('')
   const [processCardStatus, setProcessCardStatus] = useState<OrderProcessCardStatus | ''>('')
   const [ordering, setOrdering] = useState(DEFAULT_ORDERING)
+  const [orderPage, setOrderPage] = useState(1)
+  const [orderPageSize, setOrderPageSize] = useState(20)
   const [receiptQuery, setReceiptQuery] = useState('')
   const [receiptLink, setReceiptLink] = useState<'' | 'linked' | 'unlinked'>('')
   const [editing, setEditing] = useState<Order>()
@@ -106,23 +108,32 @@ export function OrdersPage() {
   const [importHistoryOpen, setImportHistoryOpen] = useState(false)
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 300)
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(query.trim())
+      setOrderPage(1)
+    }, 300)
     return () => window.clearTimeout(timer)
   }, [query])
 
   const orderStatus: OrderStatus = activeTab === 'orders-completed' ? 'COMPLETED' : activeTab === 'orders-cancelled' ? 'CANCELLED' : 'OPEN'
   const showingOrders = activeTab !== 'receipts'
   const ordersQuery = useQuery({
-    queryKey: ['orders', { query: debouncedQuery, orderStatus, productionRequired, materialStatus, processCardStatus, ordering }],
-    queryFn: async () => toList(await orderApi.list({
-      q: debouncedQuery || undefined,
-      status: orderStatus,
-      production_required: productionRequired === '' ? undefined : productionRequired === 'yes',
-      material_status: materialStatus || undefined,
-      process_card_status: processCardStatus || undefined,
-      ordering,
-      page_size: 1000,
-    })),
+    queryKey: ['orders', { query: debouncedQuery, orderStatus, productionRequired, materialStatus, processCardStatus, ordering, orderPage, orderPageSize }],
+    queryFn: async ({ signal }): Promise<ApiList<Order>> => {
+      const payload = await orderApi.list({
+        q: debouncedQuery || undefined,
+        status: orderStatus,
+        production_required: productionRequired === '' ? undefined : productionRequired === 'yes',
+        material_status: materialStatus || undefined,
+        process_card_status: processCardStatus || undefined,
+        ordering,
+        page: orderPage,
+        page_size: orderPageSize,
+      }, { signal })
+      return Array.isArray(payload)
+        ? { count: payload.length, next: null, previous: null, results: payload }
+        : payload
+    },
     enabled: showingOrders,
   })
   const orderOptionsQuery = useQuery({
@@ -156,6 +167,8 @@ export function OrdersPage() {
     setReceiptFormOpen(true)
   }
   const receipts = receiptsQuery.data || []
+  const orders = ordersQuery.data?.results || []
+  const orderTotal = ordersQuery.data?.count ?? orders.length
   const unlinkedReceiptCount = unlinkedReceiptsQuery.data || 0
   const orderingLevels = ordering.split(',').filter(Boolean).slice(0, 3)
 
@@ -167,6 +180,7 @@ export function OrdersPage() {
       const field = token.replace(/^-/, '')
       return values.findIndex((candidate) => candidate.replace(/^-/, '') === field) === tokenIndex
     })
+    setOrderPage(1)
     setOrdering(deduplicated.join(',') || DEFAULT_ORDERING)
   }
 
@@ -232,7 +246,10 @@ export function OrdersPage() {
       <Tabs
         className="business-page-tabs"
         activeKey={activeTab}
-        onChange={(key) => setActiveTab(key as OrderTab)}
+        onChange={(key) => {
+          setOrderPage(1)
+          setActiveTab(key as OrderTab)
+        }}
         items={[
           { key: 'orders-open', label: '进行中订单' },
           { key: 'orders-completed', label: '已完成订单' },
@@ -246,14 +263,14 @@ export function OrdersPage() {
           <Card className="filter-card">
             <div className="business-filter-row order-filter-row">
               <Input allowClear prefix={<SearchOutlined />} placeholder="搜索订单号、项次、产品、规格、材质或批次" value={query} onChange={(event) => setQuery(event.target.value)} />
-              <Select value={productionRequired} onChange={setProductionRequired} options={[{ value: '', label: '全部生产安排' }, { value: 'yes', label: '需要生产' }, { value: 'no', label: '无需生产' }]} />
-              <Select value={materialStatus} onChange={setMaterialStatus} options={[{ value: '', label: '全部胶料状态' }, ...Object.entries(MATERIAL_META).map(([value, meta]) => ({ value, label: meta.text }))]} />
-              <Select value={processCardStatus} onChange={setProcessCardStatus} options={[{ value: '', label: '全部流程卡状态' }, ...Object.entries(PROCESS_CARD_META).map(([value, meta]) => ({ value, label: meta.text }))]} />
+              <Select value={productionRequired} onChange={(value) => { setOrderPage(1); setProductionRequired(value) }} options={[{ value: '', label: '全部生产安排' }, { value: 'yes', label: '需要生产' }, { value: 'no', label: '无需生产' }]} />
+              <Select value={materialStatus} onChange={(value) => { setOrderPage(1); setMaterialStatus(value) }} options={[{ value: '', label: '全部胶料状态' }, ...Object.entries(MATERIAL_META).map(([value, meta]) => ({ value, label: meta.text }))]} />
+              <Select value={processCardStatus} onChange={(value) => { setOrderPage(1); setProcessCardStatus(value) }} options={[{ value: '', label: '全部流程卡状态' }, ...Object.entries(PROCESS_CARD_META).map(([value, meta]) => ({ value, label: meta.text }))]} />
               <Select<string>
                 aria-label="订单排序"
                 value={SORT_PRESETS.some((item) => item.value === ordering) ? ordering : undefined}
                 placeholder="自定义排序"
-                onChange={setOrdering}
+                onChange={(value) => { setOrderPage(1); setOrdering(value) }}
                 options={SORT_PRESETS}
               />
             </div>
@@ -279,10 +296,11 @@ export function OrdersPage() {
           </Card>
           {ordersQuery.isError && <Alert className="business-page-alert" type="error" showIcon title="订单读取失败" description={(ordersQuery.error as Error).message} />}
           {mobile ? (
-            <List
+            <>
+              <List
               className="mobile-record-list business-mobile-list"
               loading={ordersQuery.isLoading}
-              dataSource={ordersQuery.data || []}
+              dataSource={orders}
               locale={{ emptyText: <Empty description="暂无订单" /> }}
               renderItem={(record) => (
                 <List.Item>
@@ -316,18 +334,36 @@ export function OrdersPage() {
                   </Card>
                 </List.Item>
               )}
-            />
+              />
+              {orderTotal > orderPageSize && (
+                <Pagination
+                  current={orderPage}
+                  pageSize={orderPageSize}
+                  total={orderTotal}
+                  showSizeChanger
+                  showTotal={(total) => `共 ${total} 条`}
+                  onChange={(page, pageSize) => {
+                    setOrderPage(pageSize === orderPageSize ? page : 1)
+                    setOrderPageSize(pageSize)
+                  }}
+                />
+              )}
+            </>
           ) : (
             <Card className="data-card" styles={{ body: { padding: 0 } }}>
               <Table
                 rowKey="id"
                 loading={ordersQuery.isLoading}
-                dataSource={ordersQuery.data || []}
+                dataSource={orders}
                 columns={columns}
                 scroll={{ x: 2680 }}
-                pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
-                onChange={(_, __, sorter) => {
+                pagination={{ current: orderPage, pageSize: orderPageSize, total: orderTotal, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
+                onChange={(pagination, __, sorter) => {
+                  const nextPageSize = pagination.pageSize || orderPageSize
+                  setOrderPage(nextPageSize === orderPageSize ? (pagination.current || 1) : 1)
+                  setOrderPageSize(nextPageSize)
                   if (Array.isArray(sorter) || !sorter.field || !sorter.order) return
+                  setOrderPage(1)
                   if (sorter.field === 'order_date') setOrdering(`${sorter.order === 'ascend' ? 'order_date' : '-order_date'},due_date,process_card_status`)
                   if (sorter.field === 'due_date') setOrdering(`${sorter.order === 'ascend' ? 'due_date' : '-due_date'},process_card_status,order_date`)
                 }}

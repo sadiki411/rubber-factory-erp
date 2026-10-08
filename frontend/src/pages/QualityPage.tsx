@@ -14,7 +14,7 @@ import { Alert, App, AutoComplete, Button, Card, Col, DatePicker, Empty, Grid, I
 import type { TableColumnsType } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { orderApi, productionApi, qualityApi, qualityWorkflowApi, toList } from '../api/client'
 import {
@@ -182,6 +182,9 @@ export function QualityPage() {
   const [deliveryStatus, setDeliveryStatus] = useState('')
   const [specificationFilter, setSpecificationFilter] = useState('')
   const [materialFilter, setMaterialFilter] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [debouncedSpecificationFilter, setDebouncedSpecificationFilter] = useState('')
+  const [debouncedMaterialFilter, setDebouncedMaterialFilter] = useState('')
   const [inspectorFilter, setInspectorFilter] = useState<number>()
   const [ordering, setOrdering] = useState('-shipment_date')
   const [activeTab, setActiveTab] = useState('workflow')
@@ -211,6 +214,15 @@ export function QualityPage() {
   const reworksTab = activeTab === 'reworks'
   const ordersTab = activeTab === 'orders'
   const orderDataEnabled = workflowTab || dailyTab || ordersTab || Boolean(shipmentForm)
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(query.trim())
+      setDebouncedSpecificationFilter(specificationFilter.trim())
+      setDebouncedMaterialFilter(materialFilter.trim())
+    }, 350)
+    return () => window.clearTimeout(timer)
+  }, [query, specificationFilter, materialFilter])
 
   const openShipmentForm = (shipment?: QualityShipment) => {
     setShipmentSessionKey((value) => value + 1)
@@ -255,14 +267,14 @@ export function QualityPage() {
     enabled: orderDataEnabled,
   })
   const shipmentLedgerQuery = useQuery({
-    queryKey: ['quality', 'shipment-ledger', { dateFrom, dateTo, dueDateFrom, dueDateTo, query, shipmentStatus, orderStatus, deliveryStatus, specificationFilter, materialFilter, inspectorFilter, ordering }],
-    queryFn: async () => toList(await qualityApi.listShipmentLedger({
-      q: query,
+    queryKey: ['quality', 'shipment-ledger', { dateFrom, dateTo, dueDateFrom, dueDateTo, debouncedQuery, shipmentStatus, orderStatus, deliveryStatus, debouncedSpecificationFilter, debouncedMaterialFilter, inspectorFilter, ordering }],
+    queryFn: async ({ signal }) => toList(await qualityApi.listShipmentLedger({
+      q: debouncedQuery,
       shipment_status: shipmentStatus,
       order_status: orderStatus || undefined,
       delivery_status: deliveryStatus || undefined,
-      specification: specificationFilter || undefined,
-      material: materialFilter || undefined,
+      specification: debouncedSpecificationFilter || undefined,
+      material: debouncedMaterialFilter || undefined,
       inspector: inspectorFilter,
       date_from: dateFrom,
       date_to: dateTo,
@@ -270,7 +282,7 @@ export function QualityPage() {
       due_date_to: dueDateTo,
       ordering,
       page_size: 200,
-    })),
+    }, { signal })),
     enabled: workflowTab || dailyTab,
   })
   const shipmentOptionsQuery = useQuery({
@@ -279,31 +291,31 @@ export function QualityPage() {
     enabled: workflowTab || dailyTab || reworksTab || Boolean(shipmentForm),
   })
   const reworksQuery = useQuery({
-    queryKey: ['quality', 'reworks', { dateFrom, dateTo, query }],
-    queryFn: async () => toList(await qualityApi.listReworks({ q: query, date_from: dateFrom, date_to: dateTo, page_size: 200 })),
+    queryKey: ['quality', 'reworks', { dateFrom, dateTo, debouncedQuery }],
+    queryFn: async () => toList(await qualityApi.listReworks({ q: debouncedQuery, date_from: dateFrom, date_to: dateTo, page_size: 200 })),
     enabled: reworksTab,
   })
   const processCardsQuery = useQuery({
-    queryKey: ['quality', 'process-cards', { query, specificationFilter, materialFilter }],
-    queryFn: async () => toList(await qualityWorkflowApi.listProcessCards({ q: query, specification: specificationFilter || undefined, material: materialFilter || undefined, page_size: 200 })),
+    queryKey: ['quality', 'process-cards', { debouncedQuery, debouncedSpecificationFilter, debouncedMaterialFilter }],
+    queryFn: async ({ signal }) => toList(await qualityWorkflowApi.listProcessCards({ q: debouncedQuery, specification: debouncedSpecificationFilter || undefined, material: debouncedMaterialFilter || undefined, page_size: 200 }, { signal })),
     retry: false,
     enabled: workflowTab || Boolean(replacementOpen),
   })
   const unitWeightsQuery = useQuery({
-    queryKey: ['quality', 'unit-weights', query],
-    queryFn: async () => toList(await qualityWorkflowApi.listUnitWeights({ q: query, page_size: 200 })),
+    queryKey: ['quality', 'unit-weights', debouncedQuery],
+    queryFn: async () => toList(await qualityWorkflowApi.listUnitWeights({ q: debouncedQuery, page_size: 200 })),
     retry: false,
     enabled: workflowTab,
   })
   const batchesQuery = useQuery({
-    queryKey: ['quality', 'shipment-batches', { dateFrom, dateTo, dueDateFrom, dueDateTo, query, shipmentStatus, orderStatus, deliveryStatus, specificationFilter, materialFilter, inspectorFilter, ordering }],
-    queryFn: async () => toList(await qualityWorkflowApi.listShipmentBatches({
-      q: query,
+    queryKey: ['quality', 'shipment-batches', { dateFrom, dateTo, dueDateFrom, dueDateTo, debouncedQuery, shipmentStatus, orderStatus, deliveryStatus, debouncedSpecificationFilter, debouncedMaterialFilter, inspectorFilter, ordering }],
+    queryFn: async ({ signal }) => toList(await qualityWorkflowApi.listShipmentBatches({
+      q: debouncedQuery,
       status: shipmentStatus,
       order_status: orderStatus || undefined,
       delivery_status: deliveryStatus || undefined,
-      specification: specificationFilter || undefined,
-      material: materialFilter || undefined,
+      specification: debouncedSpecificationFilter || undefined,
+      material: debouncedMaterialFilter || undefined,
       inspector: inspectorFilter,
       date_from: dateFrom,
       date_to: dateTo,
@@ -311,7 +323,7 @@ export function QualityPage() {
       due_date_to: dueDateTo,
       ordering,
       page_size: 200,
-    })),
+    }, { signal })),
     retry: false,
     enabled: workflowTab,
   })

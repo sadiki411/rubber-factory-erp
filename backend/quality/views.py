@@ -209,16 +209,27 @@ class ProcessCardViewSet(WorkflowModelViewSet):
         specification = str(
             self.request.query_params.get("specification", "")
         ).strip()
-        if specification:
-            queryset = queryset.filter(
-                Q(specification_snapshot__icontains=specification)
-                | Q(order__specification__icontains=specification)
-            )
         material = str(self.request.query_params.get("material", "")).strip()
-        if material:
+        if specification and material:
             queryset = queryset.filter(
-                Q(material_snapshot__icontains=material)
-                | Q(order__material__icontains=material)
+                Q(
+                    specification_snapshot__iexact=specification,
+                    material_snapshot__iexact=material,
+                )
+                | Q(
+                    order__specification__iexact=specification,
+                    order__material__iexact=material,
+                )
+            )
+        elif specification:
+            queryset = queryset.filter(
+                Q(specification_snapshot__iexact=specification)
+                | Q(order__specification__iexact=specification)
+            )
+        elif material:
+            queryset = queryset.filter(
+                Q(material_snapshot__iexact=material)
+                | Q(order__material__iexact=material)
             )
         status = str(self.request.query_params.get("status", "")).strip().upper()
         if status:
@@ -712,31 +723,11 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 due_filter |= Q(**lookups)
             queryset = queryset.filter(due_filter).distinct()
 
-        material = str(params.get("material", "")).strip()
-        if material:
-            queryset = queryset.filter(
-                Q(material_snapshot__icontains=material)
-                | Q(order__material__icontains=material)
-                | Q(lines__material_snapshot__icontains=material)
-                | Q(lines__order__material__icontains=material)
-                | Q(lines__order_allocations__material_snapshot__icontains=material)
-                | Q(lines__order_allocations__order__material__icontains=material)
-                | Q(lines__process_card__material_snapshot__icontains=material)
-                | Q(lines__process_card__order__material__icontains=material)
-            ).distinct()
-
         specification = str(params.get("specification", "")).strip()
-        if specification:
-            queryset = queryset.filter(
-                Q(specification_snapshot__icontains=specification)
-                | Q(order__specification__icontains=specification)
-                | Q(lines__specification_snapshot__icontains=specification)
-                | Q(lines__order__specification__icontains=specification)
-                | Q(lines__order_allocations__specification_snapshot__icontains=specification)
-                | Q(lines__order_allocations__order__specification__icontains=specification)
-                | Q(lines__process_card__specification_snapshot__icontains=specification)
-                | Q(lines__process_card__order__specification__icontains=specification)
-            ).distinct()
+        material = str(params.get("material", "")).strip()
+        product_filter = _weighted_product_filter(specification, material)
+        if product_filter is not None:
+            queryset = queryset.filter(product_filter).distinct()
 
         order_value = str(
             params.get(
@@ -3056,6 +3047,120 @@ def _weighted_shipment_queryset():
     )
 
 
+def _weighted_product_filter(specification, material):
+    """Match one exact product identity across a weighted shipment graph.
+
+    Each OR branch keeps specification and material on the same source row.
+    Applying two independent reverse-relation filters can otherwise let the
+    specification come from one shipment line and the material from another.
+    """
+
+    specification = str(specification or "").strip()
+    material = str(material or "").strip()
+    if not specification and not material:
+        return None
+    sources = (
+        ("specification_snapshot", "material_snapshot"),
+        ("order__specification", "order__material"),
+        ("lines__specification_snapshot", "lines__material_snapshot"),
+        ("lines__order__specification", "lines__order__material"),
+        (
+            "lines__order_allocations__specification_snapshot",
+            "lines__order_allocations__material_snapshot",
+        ),
+        (
+            "lines__order_allocations__order__specification",
+            "lines__order_allocations__order__material",
+        ),
+        (
+            "lines__process_card__specification_snapshot",
+            "lines__process_card__material_snapshot",
+        ),
+        (
+            "lines__process_card__order__specification",
+            "lines__process_card__order__material",
+        ),
+    )
+    combined = None
+    for specification_field, material_field in sources:
+        source = Q()
+        if specification:
+            source &= Q(**{f"{specification_field}__iexact": specification})
+        if material:
+            source &= Q(**{f"{material_field}__iexact": material})
+        combined = source if combined is None else combined | source
+    return combined
+
+
+def _product_identity_matches(
+    specification_value,
+    material_value,
+    specification_filter="",
+    material_filter="",
+):
+    specification_filter = str(specification_filter or "").strip().casefold()
+    material_filter = str(material_filter or "").strip().casefold()
+    return (
+        not specification_filter
+        or str(specification_value or "").strip().casefold() == specification_filter
+    ) and (
+        not material_filter
+        or str(material_value or "").strip().casefold() == material_filter
+    )
+
+
+def _line_product_components(line, batch):
+    """Return product-specific quantity/weight slices for one shipment line."""
+
+    allocations = list(line.order_allocations.all())
+    if allocations:
+        return [
+            {
+                "line": line,
+                "order": allocation.order,
+                "product_name": allocation.order.product_name,
+                "specification": (
+                    allocation.specification_snapshot
+                    or allocation.order.specification
+                ),
+                "material": (
+                    allocation.material_snapshot or allocation.order.material
+                ),
+                "piece_quantity": int(allocation.piece_quantity or 0),
+                "net_weight_kg": Decimal(allocation.net_weight_kg or 0),
+            }
+            for allocation in allocations
+        ]
+
+    card = line.process_card if line.process_card_id else None
+    order = _line_order(line) or batch.order
+    return [
+        {
+            "line": line,
+            "order": order,
+            "product_name": (
+                (card.product_name_snapshot if card else "")
+                or (order.product_name if order else "")
+                or batch.product_name_snapshot
+            ),
+            "specification": (
+                line.specification_snapshot
+                or (card.specification_snapshot if card else "")
+                or (order.specification if order else "")
+                or batch.specification_snapshot
+            ),
+            "material": (
+                line.material_snapshot
+                or (card.material_snapshot if card else "")
+                or (order.material if order else "")
+                or batch.material_snapshot
+            ),
+            "piece_quantity": _line_piece_quantity(line),
+            "net_weight_kg": Decimal(line.net_weight_kg or 0),
+        }
+    ]
+
+
 def _unique_ledger_values(values):
     result = []
     seen = set()
@@ -3158,6 +3263,7 @@ def _legacy_ledger_row(shipment, request, delivery_statuses):
         "product_names": _unique_ledger_values([order.product_name]),
         "specifications": _unique_ledger_values([order.specification]),
         "materials": _unique_ledger_values([order.material]),
+        "_product_pairs": [f"{order.specification}\0{order.material}"],
         "inspectors": QualityEmployeeSerializer(
             people, many=True, context={"request": request}
         ).data,
@@ -3191,33 +3297,74 @@ def _legacy_ledger_row(shipment, request, delivery_statuses):
     return row
 
 
-def _weighted_ledger_row(batch, request, delivery_statuses):
-    lines = _batch_lines(batch)
-    orders = _batch_orders(batch, lines)
+def _weighted_ledger_row(
+    batch,
+    request,
+    delivery_statuses,
+    *,
+    specification_filter="",
+    material_filter="",
+):
+    all_lines = _batch_lines(batch)
+    filter_active = bool(specification_filter or material_filter)
+    components = [
+        component
+        for line in all_lines
+        for component in _line_product_components(line, batch)
+    ]
+    matched_components = [
+        component
+        for component in components
+        if _product_identity_matches(
+            component["specification"],
+            component["material"],
+            specification_filter,
+            material_filter,
+        )
+    ]
+    display_components = matched_components if filter_active else components
+    line_by_id = {
+        component["line"].pk: component["line"]
+        for component in display_components
+    }
+    lines = list(line_by_id.values())
+    if filter_active:
+        orders = []
+        seen_order_ids = set()
+        for component in display_components:
+            order = component["order"]
+            if order is None or order.pk in seen_order_ids:
+                continue
+            seen_order_ids.add(order.pk)
+            orders.append(order)
+        if not orders and batch.order_id and _product_identity_matches(
+            batch.order.specification,
+            batch.order.material,
+            specification_filter,
+            material_filter,
+        ):
+            orders = [batch.order]
+    else:
+        orders = _batch_orders(batch, all_lines)
     people = list(batch.inspectors.all())
     if not people and batch.inspector_id:
         people = [batch.inspector]
     people = list({person.pk: person for person in people}.values())
-    product_names = [batch.product_name_snapshot]
-    specifications = [batch.specification_snapshot]
-    materials = [batch.material_snapshot]
-    for line in lines:
-        order = _line_order(line)
-        card = line.process_card if line.process_card_id else None
-        product_names.append(
-            (card.product_name_snapshot if card else "")
-            or (order.product_name if order else "")
-        )
-        specifications.append(
-            line.specification_snapshot
-            or (card.specification_snapshot if card else "")
-            or (order.specification if order else "")
-        )
-        materials.append(
-            line.material_snapshot
-            or (card.material_snapshot if card else "")
-            or (order.material if order else "")
-        )
+    product_names = [component["product_name"] for component in display_components]
+    specifications = [component["specification"] for component in display_components]
+    materials = [component["material"] for component in display_components]
+    if not components:
+        product_names.append(batch.product_name_snapshot)
+        specifications.append(batch.specification_snapshot)
+        materials.append(batch.material_snapshot)
+    product_pairs = _unique_ledger_values(
+        f'{component["specification"]}\0{component["material"]}'
+        for component in display_components
+    )
+    if not product_pairs and not components:
+        product_pairs = [
+            f"{batch.specification_snapshot}\0{batch.material_snapshot}"
+        ]
     record = QualityShipmentBatchSerializer(
         batch, context={"request": request}
     ).data
@@ -3230,11 +3377,25 @@ def _weighted_ledger_row(batch, request, delivery_statuses):
                 if case.status != QualityReworkCase.Status.CANCELLED
             }
         )
+    relevant_line_ids = set(line_by_id)
     rework_cases.update(
         {
             case.pk: case
             for case in batch.rework_cases.all()
             if case.status != QualityReworkCase.Status.CANCELLED
+            and (
+                not filter_active
+                or case.shipment_line_id in relevant_line_ids
+                or (
+                    case.shipment_line_id is None
+                    and _product_identity_matches(
+                        batch.specification_snapshot,
+                        batch.material_snapshot,
+                        specification_filter,
+                        material_filter,
+                    )
+                )
+            )
         }
     )
     rework_cases = list(rework_cases.values())
@@ -3269,14 +3430,24 @@ def _weighted_ledger_row(batch, request, delivery_statuses):
         "product_names": _unique_ledger_values(product_names),
         "specifications": _unique_ledger_values(specifications),
         "materials": _unique_ledger_values(materials),
+        "_product_pairs": product_pairs,
         "inspectors": QualityEmployeeSerializer(
             people, many=True, context={"request": request}
         ).data,
-        "shipped_quantity": sum(_line_piece_quantity(line) for line in lines),
+        "shipped_quantity": sum(
+            int(component["piece_quantity"] or 0)
+            for component in display_components
+        ),
         "returned_quantity": returned_quantity,
         "rework_count": rework_count,
         "net_weight_kg": format(
-            sum((Decimal(line.net_weight_kg or 0) for line in lines), Decimal("0")),
+            sum(
+                (
+                    Decimal(component["net_weight_kg"] or 0)
+                    for component in display_components
+                ),
+                Decimal("0"),
+            ),
             ".3f",
         ),
         "line_count": len(lines),
@@ -3401,6 +3572,8 @@ class QualityShipmentLedgerView(APIView):
         date_from, date_to = _date_range(params)
         due_from = _parsed_date(str(params.get("due_date_from", "")).strip(), "due_date_from")
         due_to = _parsed_date(str(params.get("due_date_to", "")).strip(), "due_date_to")
+        specification = str(params.get("specification", "")).strip()
+        material = str(params.get("material", "")).strip()
         if due_from and due_to and due_from > due_to:
             raise DRFValidationError({"due_date_to": "交期结束日期不能早于开始日期。"})
 
@@ -3411,6 +3584,10 @@ class QualityShipmentLedgerView(APIView):
             legacy = legacy.filter(shipment_date__gte=date_from)
         if date_to:
             legacy = legacy.filter(shipment_date__lte=date_to)
+        if specification:
+            legacy = legacy.filter(order__specification__iexact=specification)
+        if material:
+            legacy = legacy.filter(order__material__iexact=material)
 
         weighted = _weighted_shipment_queryset().filter(status__in=weighted_statuses)
         if date_from:
@@ -3429,6 +3606,9 @@ class QualityShipmentLedgerView(APIView):
                     shipment_date__isnull=True,
                 )
             weighted = weighted.filter(date_filter)
+        product_filter = _weighted_product_filter(specification, material)
+        if product_filter is not None:
+            weighted = weighted.filter(product_filter).distinct()
 
         legacy_rows = list(legacy)
         weighted_rows = list(weighted)
@@ -3451,7 +3631,13 @@ class QualityShipmentLedgerView(APIView):
                 for shipment in legacy_rows
             ),
             *(
-                _weighted_ledger_row(batch, request, delivery_statuses)
+                _weighted_ledger_row(
+                    batch,
+                    request,
+                    delivery_statuses,
+                    specification_filter=specification,
+                    material_filter=material,
+                )
                 for batch in weighted_rows
             ),
         ]
@@ -3483,22 +3669,17 @@ class QualityShipmentLedgerView(APIView):
                 )
             rows = [row for row in rows if due_matches(row)]
 
-        material = str(params.get("material", "")).strip().casefold()
-        if material:
-            rows = [
-                row
-                for row in rows
-                if any(material in value.casefold() for value in row["materials"])
-            ]
-
-        specification = str(params.get("specification", "")).strip().casefold()
-        if specification:
+        if specification or material:
             rows = [
                 row
                 for row in rows
                 if any(
-                    specification in value.casefold()
-                    for value in row["specifications"]
+                    _product_identity_matches(
+                        *pair.split("\0", 1),
+                        specification,
+                        material,
+                    )
+                    for pair in row["_product_pairs"]
                 )
             ]
 
@@ -3553,6 +3734,7 @@ class QualityShipmentLedgerView(APIView):
         rows = populated + missing
         for row in rows:
             row.pop("_search_text", None)
+            row.pop("_product_pairs", None)
 
         paginator = QualityPagination()
         page = paginator.paginate_queryset(rows, request, view=self)

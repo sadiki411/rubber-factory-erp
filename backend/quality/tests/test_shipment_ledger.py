@@ -237,7 +237,7 @@ class ShipmentLedgerApiTests(QualityTestMixin, TestCase):
             {"q": "赵品检"},
             {"inspector": second.pk},
             {"order": self.order.pk},
-            {"material": "NBR"},
+            {"material": "NBR-70"},
             {"specification": "20x30"},
             {"order_status": "OPEN"},
             {"delivery_status": "PARTIAL"},
@@ -253,6 +253,86 @@ class ShipmentLedgerApiTests(QualityTestMixin, TestCase):
                 self.assertEqual(response.status_code, 200, response.content)
                 self.assertEqual(
                     [row["id"] for row in response_results(response)], [batch.pk]
+                )
+
+    def test_product_filters_are_exact_same_product_and_trim_mixed_batch_summary(self):
+        other_product = ProductSpecification.objects.create(
+            product_name="密封圈B",
+            specification="20x300",
+            material="VMQ-60",
+        )
+        other_order = QualityOrder.objects.create(
+            order_no="ORD-LEDGER-OTHER",
+            item_no="1",
+            product_name=other_product.product_name,
+            specification=other_product.specification,
+            material=other_product.material,
+            product_specification=other_product,
+            order_quantity=50,
+            order_date=timezone.localdate(),
+            due_date=self.due_date,
+            created_by=self.user,
+        )
+        batch = self.create_weighted_batch(
+            status=QualityShipmentBatch.Status.DRAFT,
+            shipment_no="QS-LEDGER-MIXED-PRODUCT",
+        )
+        QualityShipmentLine.objects.create(
+            batch=batch,
+            order=other_order,
+            product_specification=other_product,
+            specification_snapshot=other_order.specification,
+            material_snapshot=other_order.material,
+            net_weight_kg=Decimal("0.150"),
+            unit_weight_g_snapshot=Decimal("3.00000"),
+            piece_quantity=50,
+        )
+        QualityShipmentBatch.objects.filter(pk=batch.pk).update(
+            status=QualityShipmentBatch.Status.CONFIRMED
+        )
+
+        exact = self.client.get(
+            "/api/quality/shipment-ledger/",
+            {
+                "specification": "20x30",
+                "material": "NBR-70",
+                "page_size": 1000,
+            },
+        )
+        self.assertEqual(exact.status_code, 200, exact.content)
+        row = next(
+            item
+            for item in response_results(exact)
+            if item["key"] == f"WEIGHTED:{batch.pk}"
+        )
+        self.assertEqual(row["product_names"], ["密封圈A"])
+        self.assertEqual(row["specifications"], ["20x30"])
+        self.assertEqual(row["materials"], ["NBR-70"])
+        self.assertEqual(row["order_nos"], [self.order.order_no])
+        self.assertEqual(row["shipped_quantity"], 100)
+        self.assertEqual(row["net_weight_kg"], "0.250")
+        self.assertEqual(row["line_count"], 1)
+
+        for filters in (
+            {"specification": "20x3"},
+            {"specification": "20x30", "material": "VMQ-60"},
+        ):
+            with self.subTest(filters=filters):
+                ledger = self.client.get(
+                    "/api/quality/shipment-ledger/",
+                    {**filters, "page_size": 1000},
+                )
+                self.assertNotIn(
+                    f"WEIGHTED:{batch.pk}",
+                    [item["key"] for item in response_results(ledger)],
+                )
+                batches = self.client.get(
+                    "/api/quality/shipment-batches/",
+                    {**filters, "page_size": 1000},
+                )
+                self.assertNotIn(
+                    batch.pk,
+                    [item["id"] for item in response_results(batches)],
                 )
 
     def test_process_card_only_batch_resolves_order_for_ledger_and_filters(self):

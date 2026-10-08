@@ -380,7 +380,7 @@ export interface OrderFilters {
 }
 
 export const orderApi = {
-  list: (filters: OrderFilters = {}) => apiFetch<ApiList<Order> | Order[]>(`/api/orders/orders/${queryString(filters)}`),
+  list: (filters: OrderFilters = {}, init: RequestInit = {}) => apiFetch<ApiList<Order> | Order[]>(`/api/orders/orders/${queryString(filters)}`, init),
   detail: (id: number | string) => apiFetch<Order>(`/api/orders/orders/${id}/`),
   create: (body: Partial<Order>) => apiFetch<Order>('/api/orders/orders/', {
     method: 'POST', body: JSON.stringify(body),
@@ -609,8 +609,8 @@ export const qualityApi = {
 
   listShipments: (filters: QualityListFilters = {}) =>
     apiFetch<ApiList<QualityShipment> | QualityShipment[]>(`/api/quality/shipments/${queryString(filters)}`),
-  listShipmentLedger: (filters: QualityListFilters = {}) =>
-    apiFetch<ApiList<QualityShipmentLedgerRow> | QualityShipmentLedgerRow[]>(`/api/quality/shipment-ledger/${queryString(filters)}`),
+  listShipmentLedger: (filters: QualityListFilters = {}, init: RequestInit = {}) =>
+    apiFetch<ApiList<QualityShipmentLedgerRow> | QualityShipmentLedgerRow[]>(`/api/quality/shipment-ledger/${queryString(filters)}`, init),
   createShipment: (body: Record<string, unknown>) => apiFetch<QualityShipment>('/api/quality/shipments/', {
     method: 'POST',
     body: JSON.stringify(body),
@@ -653,15 +653,15 @@ export const qualityWorkflowApi = {
     apiFetch<ApiList<QualityUnitWeight> | QualityUnitWeight[]>(`/api/quality/product-unit-weights/${queryString(filters)}`),
   createUnitWeight: (body: Partial<QualityUnitWeight>) => apiFetch<QualityUnitWeight>('/api/quality/product-unit-weights/', { method: 'POST', body: JSON.stringify(body) }),
   updateUnitWeight: (id: number | string, body: Partial<QualityUnitWeight>) => apiFetch<QualityUnitWeight>(`/api/quality/product-unit-weights/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
-  listProcessCards: (filters: QualityListFilters = {}) =>
-    apiFetch<ApiList<QualityProcessCard> | QualityProcessCard[]>(`/api/quality/process-cards/${queryString(filters)}`),
+  listProcessCards: (filters: QualityListFilters = {}, init: RequestInit = {}) =>
+    apiFetch<ApiList<QualityProcessCard> | QualityProcessCard[]>(`/api/quality/process-cards/${queryString(filters)}`, init),
   createProcessCard: (body: Record<string, unknown>) => apiFetch<QualityProcessCard>('/api/quality/process-cards/', { method: 'POST', body: JSON.stringify(body) }),
   updateProcessCard: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityProcessCard>(`/api/quality/process-cards/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
   scanProcessCard: (code: string) =>
     apiFetch<QualityProcessCardScanResult>(`/api/quality/process-cards/scan/${queryString({ code })}`),
   replaceProcessCard: (id: number | string, body: { new_card_no: string; notes?: string }) =>
     apiFetch<QualityProcessCard>(`/api/quality/process-cards/${id}/replace/`, { method: 'POST', body: JSON.stringify(body) }),
-  listShipmentBatches: (filters: QualityListFilters = {}) => apiFetch<ApiList<QualityShipmentBatch> | QualityShipmentBatch[]>(`/api/quality/shipment-batches/${queryString(filters)}`),
+  listShipmentBatches: (filters: QualityListFilters = {}, init: RequestInit = {}) => apiFetch<ApiList<QualityShipmentBatch> | QualityShipmentBatch[]>(`/api/quality/shipment-batches/${queryString(filters)}`, init),
   listShipmentCandidates: (filters: QualityListFilters = {}) =>
     apiFetch<ApiList<QualityShipmentCandidate> | QualityShipmentCandidate[]>(`/api/quality/shipment-batches/candidates/${queryString(filters)}`),
   previewShipmentAllocation: (body: { order_id: number; piece_quantity: number }) =>
