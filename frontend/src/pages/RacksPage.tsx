@@ -1,5 +1,5 @@
 import { AppstoreOutlined, PrinterOutlined, SearchOutlined } from '@ant-design/icons'
-import { Alert, App, Button, Card, Col, Empty, Form, Input, Modal, QRCode, Row, Select, Skeleton, Space, Statistic, Typography } from 'antd'
+import { Alert, App, Button, Card, Col, Empty, Form, Input, Modal, Row, Select, Skeleton, Space, Statistic, Typography } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -12,7 +12,7 @@ import { RackMoldActionsDrawer } from '../components/RackMoldActionsDrawer'
 import { useMoldDeletion } from '../hooks/useMoldDeletion'
 import type { MoldAsset, RackSlot, RackZone } from '../types'
 import { moldCode, moldLocation } from '../types'
-import { Code128Barcode } from '../components/Code128Barcode'
+import { ThermalLocationLabel } from '../components/ThermalLocationLabel'
 import { moldRackLocationDetailUrl } from '../moldRack'
 
 type PrintScope = 'ALL' | 'RACK' | 'CUSTOM'
@@ -239,16 +239,7 @@ export function RacksPage() {
       />
 
       <div className="mold-rack-label-sheet print-thermal" aria-hidden="true">
-        {labelSlots.map((slot) => <div className="thermal-label-row" key={slot.id}>
-          <div className="mold-rack-label">
-            <div className="thermal-label-content">
-              <div className="thermal-label-artwork">
-                <div className="mold-rack-label-codes"><Code128Barcode value={slot.display_code} /><QRCode type="svg" value={moldRackLocationDetailUrl(slot.id)} bordered={false} /></div>
-                <b>{slot.display_code}</b>
-              </div>
-            </div>
-          </div>
-        </div>)}
+        {labelSlots.map((slot) => <ThermalLocationLabel key={slot.id} kind="mold-rack" code={slot.display_code} detailUrl={moldRackLocationDetailUrl(slot.id)} />)}
       </div>
 
       <Modal className="mold-rack-print-modal" title="打印模具架70×50mm热敏库位标签" open={printOpen} onCancel={() => setPrintOpen(false)} onOk={startLabelPrint} okText="打开打印窗口">

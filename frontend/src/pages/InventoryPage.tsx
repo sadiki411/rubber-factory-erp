@@ -1,12 +1,12 @@
 import { CameraOutlined, EditOutlined, InboxOutlined, MinusCircleOutlined, PlusOutlined, PrinterOutlined, QrcodeOutlined, SearchOutlined, SwapOutlined } from '@ant-design/icons'
-import { Alert, App, Button, Card, Col, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, QRCode, Row, Select, Space, Statistic, Table, Tag, Typography } from 'antd'
+import { Alert, App, Button, Card, Col, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Row, Select, Space, Statistic, Table, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { inventoryApi, orderApi, toList } from '../api/client'
 import { qualityApi } from '../api/client'
-import { Code128Barcode } from '../components/Code128Barcode'
+import { ThermalLocationLabel } from '../components/ThermalLocationLabel'
 import { PageTitle } from '../components/PageTitle'
 import { QualityQrScanner } from '../components/QualityQrScanner'
 import { inventoryLocationDetailUrl, isInventoryLocationCode, normalizeInventoryLocationCode } from '../inventory'
@@ -440,16 +440,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
       </Card>
 
       <div className="inventory-label-sheet print-thermal" aria-hidden="true">
-        {labelLocations.map((location) => <div className="thermal-label-row" key={location.id}>
-          <div className="inventory-label">
-            <div className="thermal-label-content">
-              <div className="thermal-label-artwork">
-                <div className="inventory-label-codes"><Code128Barcode value={location.code} /><QRCode type="svg" value={inventoryLocationDetailUrl(location.code)} bordered={false} /></div>
-                <b>{location.code}</b>
-              </div>
-            </div>
-          </div>
-        </div>)}
+        {labelLocations.map((location) => <ThermalLocationLabel key={location.id} kind="inventory" code={location.code} detailUrl={inventoryLocationDetailUrl(location.code)} />)}
       </div>
 
       <Modal className="inventory-modal" title="打印70×50mm热敏库位标签" open={printOpen} onCancel={() => setPrintOpen(false)} onOk={startLabelPrint} okText="打开打印窗口">
