@@ -103,7 +103,7 @@ function cardForOrder(order: QualityOrder, shipments: QualityShipment[], reworks
   const status = remainingQuantity <= 0 ? 'SHIPPED' : reworkCount ? 'REWORK' : shippedQuantity ? 'PARTIAL' : 'READY'
   return {
     key: `${order.id}`,
-    cardNo: order.process_card_text?.split(/[\n,，;]/)[0]?.trim() || `PC-${order.order_no}-${order.item_no || order.id}`,
+    cardNo: '订单待发需求（未登记物理卡）',
     order,
     processCard: undefined,
     quantity,
@@ -122,6 +122,7 @@ function cardForOrder(order: QualityOrder, shipments: QualityShipment[], reworks
 }
 
 function statusTag(card: WorkflowCard) {
+  if (!card.processCard) return <Tag>订单待发需求</Tag>
   if (card.overdue) return <Tag color="error">逾期待出货</Tag>
   if (card.missingDate) return <Tag color="warning">待补出货日期</Tag>
   const labels = { READY: '待出货', PARTIAL: '部分出货', REWORK: '返工中', SHIPPED: '已完成' } as const
@@ -270,6 +271,7 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
   const [timelineCard, setTimelineCard] = useState<WorkflowCard>()
   const [processCardForm, setProcessCardForm] = useState<QualityProcessCard | null | undefined>(undefined)
   const cards = useMemo(() => {
+    if (loading) return []
     if (!processCards.length) {
       const keyword = searchText.trim().toLowerCase()
       const fallbackOrders = keyword
@@ -302,26 +304,26 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
       const missingDate = shippedWeightKg > 0 && batches.some((batch) => !batch.shipment_date && (batch.lines || []).some((line) => String(line.process_card_id || line.process_card?.id) === String(item.id)))
       return { key: String(item.id), cardNo: item.card_no, processCard: item, order, quantity, shippedQuantity, remainingQuantity, unitWeightG, expectedWeightKg: expectedWeightKg(remainingQuantity, unitWeightG), shippedWeightKg, maxAllowedWeightKg, dueDate, reworkCount, missingDate, overdue: Boolean(remainingQuantity && due?.isValid() && due.isBefore(dayjs().startOf('day'))), status: remainingQuantity <= 0 ? 'SHIPPED' : reworkCount ? 'REWORK' : shippedQuantity ? 'PARTIAL' : 'READY' } satisfies WorkflowCard
     }).filter(Boolean).filter((item) => (item as WorkflowCard).quantity > 0) as WorkflowCard[]
-  }, [orders, processCards, reworks, reworkCases, shipments, batches, searchText])
+  }, [orders, processCards, reworks, reworkCases, shipments, batches, searchText, loading])
   const visibleCards = useMemo(() => onlyAlerts ? cards.filter((card) => card.overdue || card.missingDate || card.reworkCount > 0) : cards, [cards, onlyAlerts])
   const selectedCards = cards.filter((card) => card.processCard && selectedKeys.includes(card.key))
-  const pendingCards = cards.filter((card) => card.remainingQuantity > 0)
+  const pendingCards = cards.filter((card) => card.processCard && card.remainingQuantity > 0)
   const missingDateCount = cards.filter((card) => card.missingDate).length
-  const pendingReworkCount = reworks.filter((item) => item.status !== 'COMPLETED').length + reworkCases.filter((item) => !['COMPLETED', 'SCRAPPED', 'CANCELLED'].includes(item.status)).length
+  const pendingReworkCount = reworks.filter((item) => item.status !== 'COMPLETED').length + reworkCases.filter((item) => !['RESHIPPED', 'COMPLETED', 'SCRAPPED', 'CANCELLED'].includes(item.status)).length
   const openBasket = () => {
     setBasketSessionKey((value) => value + 1)
     setBasketOpen(true)
   }
 
   const columns: TableColumnsType<WorkflowCard> = [
-    { title: '流程卡', key: 'card', fixed: 'left', width: 190, render: (_, card) => <Space direction="vertical" size={0}><Button type="link" className="table-primary-link" onClick={() => { setTimelineCard(card); onOpenTimeline(card) }}><strong>{card.cardNo}</strong><br /><Typography.Text type="secondary">{card.order.order_no} / {card.order.item_no || '-'}</Typography.Text></Button>{onSaveProcessCard && <Button type="link" size="small" icon={<EditOutlined />} onClick={() => setProcessCardForm(processCards.find((item) => String(item.id) === card.key) || null)}>编辑</Button>}</Space> },
+    { title: '流程卡 / 待发需求', key: 'card', fixed: 'left', width: 190, render: (_, card) => <Space direction="vertical" size={0}><Button type="link" disabled={!card.processCard} className="table-primary-link" onClick={() => { setTimelineCard(card); onOpenTimeline(card) }}><strong>{card.cardNo}</strong><br /><Typography.Text type="secondary">{card.order.order_no} / {card.order.item_no || '-'}</Typography.Text></Button>{onSaveProcessCard && card.processCard && <Button type="link" size="small" icon={<EditOutlined />} onClick={() => setProcessCardForm(card.processCard)}>编辑</Button>}</Space> },
     { title: '产品 / 规格', key: 'product', width: 190, render: (_, card) => <span>{card.order.product_name || '-'}<br /><Typography.Text type="secondary">{card.order.specification} · {card.order.material}</Typography.Text></span> },
     { title: '计划 / 剩余', key: 'quantity', width: 130, render: (_, card) => <span>{qualityNumber(card.quantity)}<br /><Typography.Text type="secondary">剩余 {qualityNumber(card.remainingQuantity)}</Typography.Text></span> },
     { title: '单重 / 出货kg', key: 'weight', width: 160, render: (_, card) => <span>{card.unitWeightG ? `${qualityNumber(card.unitWeightG, 4)} g` : <Tag color="warning">待补单重</Tag>}<br /><Typography.Text type="secondary">已发 {card.shippedWeightKg.toFixed(3)} · 剩余理论 {card.expectedWeightKg === null ? '-' : `${card.expectedWeightKg.toFixed(3)} kg`}</Typography.Text></span> },
     { title: '交期', dataIndex: 'dueDate', width: 110, render: (value) => formatQualityDate(value) },
     { title: '状态', key: 'status', width: 130, render: (_, card) => statusTag(card) },
     { title: '返工', dataIndex: 'reworkCount', width: 80, render: (value) => value ? <Badge count={value} overflowCount={99} color="#c4433b" /> : '-' },
-    { title: '操作', key: 'actions', fixed: 'right', width: 170, render: (_, card) => <Space size={2}><Button type="link" size="small" disabled={!card.processCard || !card.remainingQuantity || !card.unitWeightG} onClick={() => { setSelectedKeys([card.key]); openBasket() }}>加入出货篮</Button><Button type="link" size="small" onClick={() => { setTimelineCard(card); onOpenTimeline(card) }}>时间线</Button></Space> },
+    { title: '操作', key: 'actions', fixed: 'right', width: 170, render: (_, card) => <Space size={2}><Button type="link" size="small" disabled={!card.processCard || !card.remainingQuantity || !card.unitWeightG} onClick={() => { setSelectedKeys([card.key]); openBasket() }}>加入出货篮</Button><Button type="link" size="small" disabled={!card.processCard} onClick={() => { setTimelineCard(card); onOpenTimeline(card) }}>时间线</Button></Space> },
   ]
   const rowSelection: TableProps<WorkflowCard>['rowSelection'] = { selectedRowKeys: selectedKeys, onChange: setSelectedKeys, getCheckboxProps: (card) => ({ disabled: !card.processCard || !card.remainingQuantity || !card.unitWeightG }) }
   return (

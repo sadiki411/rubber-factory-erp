@@ -24,6 +24,7 @@ const apiMocks = vi.hoisted(() => ({
   listUnitWeights: vi.fn(),
   listShipmentBatches: vi.fn(),
   listReworkCases: vi.fn(),
+  getShipmentBatch: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -36,6 +37,7 @@ vi.mock('../api/client', () => ({
   },
   orderApi: { list: apiMocks.listOrders },
   qualityWorkflowApi: {
+    getShipmentBatch: apiMocks.getShipmentBatch,
     listProcessCards: apiMocks.listProcessCards,
     listUnitWeights: apiMocks.listUnitWeights,
     listShipmentBatches: apiMocks.listShipmentBatches,
@@ -80,6 +82,7 @@ const weightedBatch = {
 
 describe('QualityPage unified shipment ledger', () => {
   beforeEach(() => {
+    apiMocks.getShipmentBatch.mockResolvedValue(weightedBatch)
     apiMocks.summary.mockResolvedValue({
       totals: { inspection_quantity: 0, shipped_quantity: 300, returned_quantity: 0, reworked_quantity: 0, shipment_count: 1 },
       daily_trend: [], order_stats: [],
@@ -130,6 +133,7 @@ describe('QualityPage unified shipment ledger', () => {
 
     await userEvent.setup().click(screen.getAllByRole('button', { name: /查看明细/ })[0])
     expect(await screen.findByText('批次详情 QS-20260820-WEIGHT')).toBeInTheDocument()
+    expect(apiMocks.getShipmentBatch).toHaveBeenCalledWith(1)
   })
 
   it('passes keyword and status filters to the unified ledger and batch APIs', async () => {

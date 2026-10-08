@@ -4,11 +4,12 @@ import {
   ClockCircleOutlined,
   DollarOutlined,
   EditOutlined,
+  EyeOutlined,
   FormOutlined,
   SendOutlined,
   TeamOutlined,
 } from '@ant-design/icons'
-import { Alert, App, Button, Card, Col, DatePicker, Empty, Grid, Popconfirm, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
+import { Alert, App, Button, Card, Col, DatePicker, Drawer, Empty, Grid, Popconfirm, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -20,7 +21,9 @@ import { PageTitle } from '../components/PageTitle'
 import type {
   AnalyticsOperatorPerformance,
   AnalyticsOrderPerformance,
+  AnalyticsQualityProductPerformance,
   AnalyticsQualityEmployeePerformance,
+  AnalyticsQualityWorkRecord,
   AnalyticsStationPerformance,
   Machine,
   ManualFinancialEntry,
@@ -33,6 +36,7 @@ function numberValue(value: number | string | null | undefined) {
 }
 
 function numberText(value: number | string | null | undefined, digits = 0) {
+  if (value === null || value === undefined || value === '') return '—'
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed.toLocaleString('zh-CN', { maximumFractionDigits: digits }) : '—'
 }
@@ -67,19 +71,27 @@ export function AnalyticsPage() {
   const screens = Grid.useBreakpoint()
   const mobile = screens.md === false
   const [month, setMonth] = useState<Dayjs>(dayjs().startOf('month'))
-  const [group, setGroup] = useState('')
-  const [machineId, setMachineId] = useState<number | undefined>()
+  const [group, setGroup] = useState(new URLSearchParams(window.location.search).get('group') || '')
+  const [machineId, setMachineId] = useState<number | undefined>(() => Number(new URLSearchParams(window.location.search).get('machine_id')) || undefined)
+  const [activeTab, setActiveTab] = useState(new URLSearchParams(window.location.search).get('tab') || (new URLSearchParams(window.location.search).has('employee_id') ? 'quality' : 'production'))
   const [performanceForm, setPerformanceForm] = useState<{ entry?: ManualPerformanceEntry }>()
   const [financialForm, setFinancialForm] = useState<{ entry?: ManualFinancialEntry }>()
-  const monthText = month.format('YYYY-MM')
-  const dateFrom = month.startOf('month').format('YYYY-MM-DD')
-  const dateTo = month.isSame(dayjs(), 'month') ? dayjs().format('YYYY-MM-DD') : month.endOf('month').format('YYYY-MM-DD')
+  const [qualityDetailEmployeeId, setQualityDetailEmployeeId] = useState<number | undefined>(() => Number(new URLSearchParams(window.location.search).get('employee_id')) || undefined)
+  const [qualityProductFilter, setQualityProductFilter] = useState<string | undefined>(new URLSearchParams(window.location.search).get('product_filter') || undefined)
+  const [customRange, setCustomRange] = useState<[Dayjs, Dayjs] | undefined>(() => {
+    const params = new URLSearchParams(window.location.search)
+    const from = dayjs(params.get('date_from'))
+    const to = dayjs(params.get('date_to'))
+    return params.has('date_from') && params.has('date_to') && from.isValid() && to.isValid() ? [from, to] : undefined
+  })
+  const dateFrom = (customRange?.[0] || month.startOf('month')).format('YYYY-MM-DD')
+  const dateTo = customRange?.[1].format('YYYY-MM-DD') || (month.isSame(dayjs(), 'month') ? dayjs().format('YYYY-MM-DD') : month.endOf('month').format('YYYY-MM-DD'))
 
   const dashboardQuery = useQuery({
-    queryKey: ['analytics', 'dashboard', { monthText, group, machineId }],
-    queryFn: () => analyticsApi.dashboard({ month: monthText, group: group || undefined, machine_id: machineId }),
+    queryKey: ['analytics', 'dashboard', { dateFrom, dateTo, group, machineId }],
+    queryFn: () => analyticsApi.dashboard({ date_from: dateFrom, date_to: dateTo, group: group || undefined, machine_id: machineId }),
     refetchInterval: 60_000,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
   })
   const stationsQuery = useQuery({ queryKey: ['production', 'stations'], queryFn: async () => toList(await productionApi.stations()) })
   const machinesQuery = useQuery({ queryKey: ['machines'], queryFn: async () => toList(await masterApi<Machine>('machines').list()) })
@@ -87,13 +99,25 @@ export function AnalyticsPage() {
   const manualQuery = useQuery({
     queryKey: ['analytics', 'manual-entries', dateFrom, dateTo, group, machineId],
     queryFn: async () => toList(await analyticsApi.listManualEntries({ date_from: dateFrom, date_to: dateTo, group: group || undefined, machine_id: machineId, include_voided: true, page_size: 1000 })),
+    enabled: activeTab === 'manual',
   })
   const financialQuery = useQuery({
     queryKey: ['analytics', 'financial-entries', dateFrom, dateTo, group, machineId],
     queryFn: async () => toList(await analyticsApi.listFinancialEntries({ date_from: dateFrom, date_to: dateTo, group: group || undefined, machine_id: machineId, include_voided: true, page_size: 1000 })),
+    enabled: activeTab === 'manual',
+  })
+  const qualityDetailQuery = useQuery({
+    queryKey: ['analytics', 'quality-employee-details', qualityDetailEmployeeId, dateFrom, dateTo],
+    queryFn: () => analyticsApi.qualityEmployeeDetails({
+      quality_employee_id: qualityDetailEmployeeId!,
+      date_from: dateFrom,
+      date_to: dateTo,
+    }),
+    enabled: Boolean(qualityDetailEmployeeId),
   })
 
   const data = dashboardQuery.data
+  const qualityDetailEmployee = data?.quality_employee_performance.find((row) => row.employee_id === qualityDetailEmployeeId)
   const machines = machinesQuery.data || []
   const employees = employeesQuery.data || []
   const groups = useMemo(() => Array.from(new Set((stationsQuery.data || []).map((item) => item.group).filter(Boolean))).sort(), [stationsQuery.data])
@@ -104,8 +128,21 @@ export function AnalyticsPage() {
 
   const finance = data?.finance
   const financeTotal = finance?.total
+  const hasFinanceRecords = Boolean(data?.sources.finance.total)
   const production = data?.production.total
   const quality = data?.quality.total
+  const qualityAttribution = data?.quality_attribution
+  const workRecords = (qualityDetailQuery.data?.records || []).filter((row) => !qualityProductFilter || JSON.stringify([row.product_name, row.specification, row.material]) === qualityProductFilter)
+  const returnParams = new URLSearchParams({ date_from: dateFrom, date_to: dateTo, tab: activeTab })
+  if (group) returnParams.set('group', group)
+  if (machineId) returnParams.set('machine_id', String(machineId))
+  if (qualityDetailEmployeeId) returnParams.set('employee_id', String(qualityDetailEmployeeId))
+  if (qualityProductFilter) returnParams.set('product_filter', qualityProductFilter)
+  const analyticsReturn = encodeURIComponent(`/analytics?${returnParams}`)
+  const orderLink = (id: number) => `/orders?order_id=${id}&return_to=${analyticsReturn}`
+  const sourceLink = (row: AnalyticsQualityWorkRecord) => row.shipment_batch_id
+    ? `/quality?shipment_batch_id=${row.shipment_batch_id}&date_from=${dateFrom}&date_to=${dateTo}&return_to=${analyticsReturn}`
+    : `/quality?q=${encodeURIComponent(row.source_no)}&date_from=${dateFrom}&date_to=${dateTo}&return_to=${analyticsReturn}`
   const profitMargin = financeTotal?.profit_margin
 
   const voidPerformance = useMutation({
@@ -165,20 +202,91 @@ export function AnalyticsPage() {
   const qualityEmployeeColumns: TableColumnsType<AnalyticsQualityEmployeePerformance> = [
     { title: '员工', key: 'employee', fixed: 'left', width: 150, render: (_, row) => <span><strong>{row.name || '未填写'}</strong><br /><Typography.Text type="secondary">{row.employee_no || row.team || '-'}</Typography.Text></span> },
     { title: '来源', dataIndex: 'source', width: 125, render: (value) => <SourceTag source={value} /> },
-    { title: '质检 / 合格 / 不良', key: 'inspection', width: 175, render: (_, row) => `${numberText(row.inspection_quantity)} / ${numberText(row.qualified_quantity)} / ${numberText(row.defective_quantity)}` },
-    { title: '出货', dataIndex: 'shipped_quantity', width: 100, render: (value) => numberText(value) },
+    { title: '质检 / 合格 / 不良', key: 'inspection', width: 175, render: (_, row) => row.inspection_record_count ? `${numberText(row.inspection_quantity)} / ${numberText(row.qualified_quantity)} / ${numberText(row.defective_quantity)}` : <Typography.Text type="secondary">未登记</Typography.Text> },
+    { title: '归属出货', dataIndex: 'shipped_quantity', width: 105, render: (value) => numberText(value) },
+    { title: '参与出货', dataIndex: 'participated_shipped_quantity', width: 105, render: (value, row) => <span>{numberText(value)}{row.collaborative_shipped_quantity ? <><br /><Typography.Text type="warning">协作未分摊 {numberText(row.collaborative_shipped_quantity)}</Typography.Text></> : null}</span> },
     { title: '责任退回', dataIndex: 'responsible_return_quantity', width: 110, render: (value) => <span className={value ? 'quality-danger-text' : ''}>{numberText(value)}</span> },
     { title: '返工 / 合格 / 报废', key: 'rework', width: 175, render: (_, row) => `${numberText(row.reworked_quantity)} / ${numberText(row.recovered_quantity)} / ${numberText(row.scrap_quantity)}` },
     { title: '一次合格率', dataIndex: 'first_pass_rate', width: 115, render: rateText },
     { title: '返工通过率', dataIndex: 'rework_pass_rate', width: 115, render: rateText },
+    { title: '明细', key: 'detail', fixed: 'right', width: 120, render: (_, row) => <Button type="link" icon={<EyeOutlined />} disabled={!row.employee_id} onClick={() => { setQualityDetailEmployeeId(row.employee_id!); setQualityProductFilter(undefined) }}>查看工作明细</Button> },
   ]
+  const qualityProductColumns: TableColumnsType<AnalyticsQualityProductPerformance> = [
+    { title: '产品 / 规格 / 材质', key: 'product', fixed: 'left', width: 250, render: (_, row) => <span><strong>{row.product_name || '未关联产品'}</strong><br /><Typography.Text type="secondary">{row.specification || '未关联规格'} · {row.material || '未关联材质'}</Typography.Text></span> },
+    { title: '归属出货', dataIndex: 'attributed_shipped_quantity', width: 110, render: (value) => numberText(value) },
+    { title: '参与出货', dataIndex: 'participated_shipped_quantity', width: 110, render: (value) => numberText(value) },
+    { title: '责任退回', dataIndex: 'responsible_return_quantity', width: 110, render: (value) => numberText(value) },
+    { title: '返工处理', dataIndex: 'reworked_quantity', width: 110, render: (value) => numberText(value) },
+    { title: '原始记录', dataIndex: 'record_count', width: 100, render: (value) => `${numberText(value)} 条` },
+  ]
+  const qualityWorkColumns: TableColumnsType<AnalyticsQualityWorkRecord> = [
+    { title: '业务日期', dataIndex: 'business_date', fixed: 'left', width: 110 },
+    { title: '操作', dataIndex: 'event_type_display', width: 120, render: (value, row) => <span><Tag color={row.event_type === 'SHIPMENT' ? 'blue' : row.event_type === 'REWORK' || row.event_type === 'MANUAL_REWORK' ? 'orange' : 'red'}>{value}</Tag>{row.return_round ? <Typography.Text type="secondary">第{row.return_round}轮</Typography.Text> : null}</span> },
+    { title: '产品 / 规格 / 材质', key: 'product', width: 240, render: (_, row) => <span>{row.product_name || '未关联产品'}<br /><Typography.Text type="secondary">{row.specification || '未关联规格'} · {row.material || '未关联材质'}</Typography.Text></span> },
+    { title: '订单 / 项次', key: 'order', width: 200, render: (_, row) => <span>{row.order_id ? <a href={orderLink(row.order_id)}>{row.order_no} / {row.item_no || '未记录'}</a> : row.order_no || '未关联订单'}</span> },
+    { title: '流程卡 / 原始单据', key: 'source', width: 230, render: (_, row) => <span>{row.process_card_no || '无流程卡'}<br /><a href={sourceLink(row)}>{row.source_no}</a></span> },
+    { title: '重量 / 状态', key: 'status', width: 125, render: (_, row) => <span>{row.net_weight_kg == null ? '重量未记录' : `${numberText(row.net_weight_kg, 3)} kg`}<br />{row.status || '历史记录'}</span> },
+    { title: '归属 / 参与件数', key: 'quantity', width: 150, render: (_, row) => <span><strong>{numberText(row.attributed_quantity)}</strong> / {numberText(row.participated_quantity)}{row.attribution_status === 'COLLABORATIVE_UNALLOCATED' ? <><br /><Tag color="warning">协作未分摊</Tag></> : null}</span> },
+    { title: '质检 / 合格 / 不良', key: 'inspection', width: 170, render: (_, row) => row.inspection_quantity == null ? <Typography.Text type="secondary">未登记</Typography.Text> : `${numberText(row.inspection_quantity)} / ${numberText(row.qualified_quantity)} / ${numberText(row.defective_quantity)}` },
+    { title: '退回 / 返工 / 合格 / 报废', key: 'rework', width: 210, render: (_, row) => `${numberText(row.returned_quantity)} / ${numberText(row.reworked_quantity)} / ${numberText(row.recovered_quantity)} / ${numberText(row.scrap_quantity)}` },
+  ]
+  const qualityEmployeeSection = mobile ? (
+    <div className="analytics-quality-mobile-list">
+      {(data?.quality_employee_performance || []).map((row) => <Card key={row.employee_id || row.name} size="small" className="analytics-quality-mobile-card">
+        <div className="record-card-heading"><div><Typography.Title level={4}>{row.name || '未填写'}</Typography.Title><Typography.Text type="secondary">{row.employee_no || row.team || '未记录员工编号'}</Typography.Text></div><SourceTag source={row.source} /></div>
+        <div className="analytics-quality-mobile-grid">
+          <span><small>质检 / 合格 / 不良</small><b>{row.inspection_record_count ? `${numberText(row.inspection_quantity)} / ${numberText(row.qualified_quantity)} / ${numberText(row.defective_quantity)}` : '未登记'}</b></span>
+          <span><small>归属出货</small><b>{numberText(row.shipped_quantity)} 件</b></span>
+          <span><small>参与出货</small><b>{numberText(row.participated_shipped_quantity)} 件</b></span>
+          <span><small>责任退回</small><b className={row.responsible_return_quantity ? 'quality-danger-text' : ''}>{numberText(row.responsible_return_quantity)} 件</b></span>
+          <span><small>返工 / 合格 / 报废</small><b>{numberText(row.reworked_quantity)} / {numberText(row.recovered_quantity)} / {numberText(row.scrap_quantity)}</b></span>
+          <span><small>一次 / 返工通过率</small><b>{rateText(row.first_pass_rate)} / {rateText(row.rework_pass_rate)}</b></span>
+        </div>
+        {!!row.collaborative_shipped_quantity && <Typography.Text type="warning">协作未分摊 {numberText(row.collaborative_shipped_quantity)} 件</Typography.Text>}
+        <Button block icon={<EyeOutlined />} disabled={!row.employee_id} onClick={() => { setQualityDetailEmployeeId(row.employee_id!); setQualityProductFilter(undefined) }}>查看产品和原始单据</Button>
+      </Card>)}
+      {!data?.quality_employee_performance?.length && <Empty description="所选期间暂无员工品检、出货或返工记录" />}
+    </div>
+  ) : <Table rowKey={(row) => row.employee_id || row.name} dataSource={data?.quality_employee_performance || []} columns={qualityEmployeeColumns} scroll={{ x: 1260 }} pagination={{ pageSize: 15 }} />
+  const qualityProductSection = mobile ? (
+    <div className="analytics-quality-mobile-list">
+      {(qualityDetailQuery.data?.product_stats || []).map((row) => <Card key={`${row.product_name}-${row.specification}-${row.material}`} size="small" className="analytics-quality-mobile-card">
+        <div><strong>{row.product_name || '未关联产品'}</strong><br /><Typography.Text type="secondary">{row.specification || '未关联规格'} · {row.material || '未关联材质'}</Typography.Text></div>
+        <div className="analytics-quality-mobile-grid">
+          <span><small>归属 / 参与出货</small><b>{numberText(row.attributed_shipped_quantity)} / {numberText(row.participated_shipped_quantity)}</b></span>
+          <span><small>责任退回 / 返工</small><b>{numberText(row.responsible_return_quantity)} / {numberText(row.reworked_quantity)}</b></span>
+          <span><small>原始记录</small><b>{numberText(row.record_count)} 条</b></span>
+        </div>
+      </Card>)}
+      {!qualityDetailQuery.isLoading && !qualityDetailQuery.data?.product_stats.length && <Empty description="所选期间没有该员工的产品记录" />}
+    </div>
+  ) : <Table rowKey={(row) => `${row.product_name}-${row.specification}-${row.material}`} dataSource={qualityDetailQuery.data?.product_stats || []} columns={qualityProductColumns} loading={qualityDetailQuery.isLoading} pagination={{ pageSize: 10 }} scroll={{ x: 790 }} locale={{ emptyText: '所选期间没有该员工的产品记录' }} />
+  const qualityWorkSection = mobile ? (
+    <div className="analytics-quality-mobile-list">
+      {workRecords.map((row) => <Card key={row.record_key} size="small" className="analytics-quality-mobile-card">
+        <div className="record-card-heading"><div><strong>{row.business_date}</strong><br /><Typography.Text type="secondary">{row.product_name || '未关联产品'} · {row.specification || '未关联规格'} · {row.material || '未关联材质'}</Typography.Text></div><Tag color={row.event_type === 'SHIPMENT' ? 'blue' : row.event_type === 'REWORK' || row.event_type === 'MANUAL_REWORK' ? 'orange' : 'red'}>{row.event_type_display}</Tag></div>
+        <Typography.Text>{row.order_no || '未关联订单'} · 项次 {row.item_no || '未记录'}</Typography.Text>
+        <Typography.Text type="secondary">{row.process_card_no || '无流程卡'} · {row.source_no}</Typography.Text>
+        <div className="analytics-quality-mobile-grid">
+          <span><small>归属 / 参与件数</small><b>{numberText(row.attributed_quantity)} / {numberText(row.participated_quantity)}</b></span>
+          <span><small>质检 / 合格 / 不良</small><b>{row.inspection_quantity == null ? '未登记' : `${numberText(row.inspection_quantity)} / ${numberText(row.qualified_quantity)} / ${numberText(row.defective_quantity)}`}</b></span>
+          <span><small>退回 / 返工 / 合格 / 报废</small><b>{numberText(row.returned_quantity)} / {numberText(row.reworked_quantity)} / {numberText(row.recovered_quantity)} / {numberText(row.scrap_quantity)}</b></span>
+        </div>
+        {row.return_round ? <Typography.Text type="secondary">第 {row.return_round} 轮</Typography.Text> : null}
+        {row.attribution_status === 'COLLABORATIVE_UNALLOCATED' ? <Tag color="warning">协作未分摊</Tag> : null}
+        <Space wrap><Button href={sourceLink(row)}>查看原单</Button>{row.order_id && <Button href={orderLink(row.order_id)}>查看订单项次</Button>}</Space>
+      </Card>)}
+      {qualityDetailQuery.isLoading ? <Typography.Text>正在读取原始操作记录…</Typography.Text> : !workRecords.length && <Empty description="所选条件没有原始操作记录" />}
+    </div>
+  ) : <Table rowKey="record_key" dataSource={workRecords} columns={qualityWorkColumns} loading={qualityDetailQuery.isLoading} pagination={{ pageSize: 15, showSizeChanger: true }} scroll={{ x: 1555 }} locale={{ emptyText: qualityDetailQuery.isLoading ? '正在读取原始操作记录…' : '所选条件没有原始操作记录' }} />
   const orderColumns: TableColumnsType<AnalyticsOrderPerformance> = [
-    { title: '订单号', dataIndex: 'order_no', fixed: 'left', width: 175, render: (value) => <strong>{value}</strong> },
+    { title: '订单号 / 项次', key: 'order', fixed: 'left', width: 190, render: (_, row) => <span>{row.order_id ? <a href={orderLink(row.order_id)}>{row.order_no} / {row.item_no || '未记录'}</a> : row.order_no}</span> },
     { title: '产品 / 规格', key: 'product', width: 190, render: (_, row) => <span>{row.product_name || '-'}<br /><Typography.Text type="secondary">{row.specification || '-'} · {row.material || '-'}</Typography.Text></span> },
     { title: '关联方式', dataIndex: 'link_type', width: 120, render: (value) => <Tag color={value === 'ORDER' ? 'blue' : 'default'}>{value === 'ORDER' ? '订单主档关联' : '历史订单号匹配'}</Tag> },
     { title: '来源', dataIndex: 'source', width: 125, render: (value) => <SourceTag source={value} /> },
     { title: '生产模数', dataIndex: 'produced_mold_count', width: 110, render: (value) => numberText(value) },
     { title: '质检 / 出货', key: 'quality', width: 130, render: (_, row) => `${numberText(row.inspection_quantity)} / ${numberText(row.shipped_quantity)}` },
+    { title: '全生命周期净交付 / 剩余', key: 'delivery', width: 175, render: (_, row) => `${numberText(row.net_delivered_quantity)} / ${numberText(row.remaining_quantity)}` },
     { title: '退回 / 报废', key: 'returns', width: 130, render: (_, row) => `${numberText(row.returned_quantity)} / ${numberText(row.scrap_quantity)}` },
     { title: '一次合格率', dataIndex: 'first_pass_rate', width: 115, render: rateText },
     { title: '收入 / 利润', key: 'finance', width: 170, render: (_, row) => <span>{moneyText(row.revenue)}<br /><strong className={numberValue(row.profit) < 0 ? 'negative-value' : 'profit-value'}>{moneyText(row.profit)}</strong></span> },
@@ -224,7 +332,8 @@ export function AnalyticsPage() {
 
       <Card className="filter-card analytics-filter-card">
         <div className="analytics-filter-row">
-          <DatePicker picker="month" allowClear={false} value={month} format="YYYY年M月" onChange={(value) => value && setMonth(value)} />
+          <DatePicker picker="month" allowClear={false} value={month} format="YYYY年M月" onChange={(value) => { if (value) { setMonth(value); setCustomRange(undefined) } }} />
+          <DatePicker.RangePicker value={customRange} presets={[{ label: '今天', value: [dayjs(), dayjs()] }, { label: '近7天', value: [dayjs().subtract(6, 'day'), dayjs()] }, { label: '本月', value: [dayjs().startOf('month'), dayjs()] }]} onChange={(value) => setCustomRange(value?.[0] && value?.[1] ? [value[0], value[1]] : undefined)} placeholder={['自定义开始日期', '自定义结束日期']} />
           <Select value={group} onChange={(value) => { setGroup(value); setMachineId(undefined) }} options={[{ value: '', label: '全部机台分组' }, ...groups.map((value) => ({ value, label: `${value}组` }))]} />
           <Select allowClear value={machineId} placeholder="全部机台" onChange={setMachineId} options={visibleMachines.map((item) => ({ value: item.id, label: `${item.code} · ${item.name}` }))} />
           <Typography.Text type="secondary">每60秒自动刷新 · {data?.period.date_from || dateFrom} 至 {data?.period.date_to || dateTo}</Typography.Text>
@@ -236,9 +345,9 @@ export function AnalyticsPage() {
       {(group || machineId) && <Alert className="analytics-alert" type="info" showIcon title="机台筛选口径" description="分组和机台筛选只作用于生产及关联收支；品检、出货和返工没有机台字段，仍显示同一日期范围的全厂数据。" />}
 
       <Row gutter={[14, 14]} className="analytics-finance-kpis">
-        <Col xs={12} lg={6}><Card className="analytics-kpi income"><Statistic title="合计收入" value={numberValue(financeTotal?.revenue)} precision={2} prefix="¥" /></Card></Col>
-        <Col xs={12} lg={6}><Card className="analytics-kpi cost"><Statistic title="合计成本" value={numberValue(financeTotal?.total_cost)} precision={2} prefix="¥" /></Card></Col>
-        <Col xs={12} lg={6}><Card className={`analytics-kpi profit ${numberValue(financeTotal?.profit) < 0 ? 'loss' : ''}`}><Statistic title="合计利润" value={numberValue(financeTotal?.profit)} precision={2} prefix="¥" /></Card></Col>
+        <Col xs={12} lg={6}><Card className="analytics-kpi income"><Statistic title="合计收入" value={hasFinanceRecords ? numberValue(financeTotal?.revenue) : '未录入'} precision={2} prefix={hasFinanceRecords ? '¥' : undefined} /></Card></Col>
+        <Col xs={12} lg={6}><Card className="analytics-kpi cost"><Statistic title="合计成本" value={hasFinanceRecords ? numberValue(financeTotal?.total_cost) : '未录入'} precision={2} prefix={hasFinanceRecords ? '¥' : undefined} /></Card></Col>
+        <Col xs={12} lg={6}><Card className={`analytics-kpi profit ${numberValue(financeTotal?.profit) < 0 ? 'loss' : ''}`}><Statistic title="合计利润" value={hasFinanceRecords ? numberValue(financeTotal?.profit) : '暂无结算记录'} precision={2} prefix={hasFinanceRecords ? '¥' : undefined} /></Card></Col>
         <Col xs={12} lg={6}><Card className="analytics-kpi margin"><Statistic title="利润率" value={profitMargin === null || profitMargin === undefined ? '—' : numberValue(profitMargin)} suffix={profitMargin === null || profitMargin === undefined ? undefined : '%'} precision={2} /></Card></Col>
       </Row>
       {!!data?.production.unsettled_completed_run_count && (
@@ -253,11 +362,18 @@ export function AnalyticsPage() {
       <Row gutter={[14, 14]} className="analytics-operation-kpis">
         <Col xs={12} lg={8} xl={4}><Card><Statistic title="生产模数" value={production?.produced_mold_count || 0} suffix="模" prefix={<BarChartOutlined />} /></Card></Col>
         <Col xs={12} lg={8} xl={4}><Card><Statistic title="自动机台效率" value={data?.production.automatic.efficiency_percent === null || data?.production.automatic.efficiency_percent === undefined ? '—' : numberValue(data.production.automatic.efficiency_percent)} suffix={data?.production.automatic.efficiency_percent === null || data?.production.automatic.efficiency_percent === undefined ? undefined : '%'} precision={2} prefix={<ClockCircleOutlined />} /></Card></Col>
-        <Col xs={12} lg={8} xl={4}><Card><Statistic title="质检数量" value={quality?.inspection_quantity || 0} suffix="件" prefix={<AuditOutlined />} /></Card></Col>
+        <Col xs={12} lg={8} xl={4}><Card><Statistic title="质检数量" value={quality?.inspection_record_count ? quality.inspection_quantity : '未登记'} suffix={quality?.inspection_record_count ? '件' : undefined} prefix={<AuditOutlined />} /></Card></Col>
         <Col xs={12} lg={8} xl={4}><Card><Statistic title="出货数量" value={quality?.shipped_quantity || 0} suffix="件" prefix={<SendOutlined />} /></Card></Col>
         <Col xs={12} lg={8} xl={4}><Card><Statistic title="一次合格率" value={quality?.first_pass_rate === null || quality?.first_pass_rate === undefined ? '—' : numberValue(quality.first_pass_rate)} suffix={quality?.first_pass_rate === null || quality?.first_pass_rate === undefined ? undefined : '%'} precision={2} prefix={<TeamOutlined />} /></Card></Col>
-        <Col xs={12} lg={8} xl={4}><Card><Statistic title="退回率" value={quality?.return_rate === null || quality?.return_rate === undefined ? '—' : numberValue(quality.return_rate)} suffix={quality?.return_rate === null || quality?.return_rate === undefined ? undefined : '%'} precision={2} /></Card></Col>
+        <Col xs={12} lg={8} xl={4}><Card><Statistic title="当期退回 / 出货比" value={quality?.return_rate === null || quality?.return_rate === undefined ? '—' : numberValue(quality.return_rate)} suffix={quality?.return_rate === null || quality?.return_rate === undefined ? undefined : '%'} precision={2} /></Card></Col>
       </Row>
+      {!!qualityAttribution && (qualityAttribution.unassigned_employee_quantity > 0 || qualityAttribution.collaborative_unallocated_quantity > 0 || qualityAttribution.other_unattributed_quantity > 0) && <Alert
+        className="analytics-alert"
+        type="warning"
+        showIcon
+        title="全厂出货与员工归属差额已拆分"
+        description={`全厂 ${numberText(qualityAttribution.factory_shipped_quantity)} 件 = 员工已归属 ${numberText(qualityAttribution.employee_attributed_quantity)} 件 + 未填写人员 ${numberText(qualityAttribution.unassigned_employee_quantity)} 件 + 协作未分摊 ${numberText(qualityAttribution.collaborative_unallocated_quantity)} 件${qualityAttribution.other_unattributed_quantity ? ` + 其他待核对 ${numberText(qualityAttribution.other_unattributed_quantity)} 件` : ''}。协作记录没有明确比例时不平均分配。`}
+      />}
 
       <div className="analytics-source-strip">
         {(['production', 'quality', 'rework', 'finance'] as const).map((key) => {
@@ -274,9 +390,9 @@ export function AnalyticsPage() {
       <Card className="analytics-chart-card analytics-profit-trend-card" title="每日收入 · 成本 · 利润趋势"><DailyProfitChart rows={data?.daily_trend || []} /></Card>
 
       <Card className="analytics-tabs-card data-card">
-        <Tabs items={[
+        <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
           { key: 'production', label: '生产绩效', children: <div className="analytics-tab-content"><Row gutter={[16, 16]}><Col xs={24} xl={10}><Card title="人员模数排行"><RankBarChart items={(data?.operator_performance || []).map((row) => ({ key: row.operator, label: row.operator, value: row.total_mold_count, detail: `${row.production_days}天 · 日均${numberText(row.average_daily_mold_count, 2)}`, source: row.source }))} valueSuffix=" 模" /></Card></Col><Col xs={24} xl={14}><Card title="机台效率与利润" styles={{ body: { padding: 0 } }}><Table rowKey={(row) => row.machine_id || row.station_id || row.machine_code} dataSource={data?.station_performance || []} columns={stationColumns} scroll={{ x: 1130 }} pagination={{ pageSize: 10 }} /></Card></Col></Row><Card className="analytics-detail-table" title="人员绩效明细" styles={{ body: { padding: 0 } }}><Table rowKey="operator" dataSource={data?.operator_performance || []} columns={operatorColumns} scroll={{ x: 1080 }} pagination={{ pageSize: 15 }} /></Card></div> },
-          { key: 'quality', label: '品检与返工绩效', children: <div className="analytics-tab-content"><Row gutter={[16, 16]}><Col xs={24} xl={12}><Card title="品检 / 返工工作量排行"><RankBarChart items={(data?.quality_employee_performance || []).map((row) => ({ key: row.employee_id || row.name, label: row.name, value: row.inspection_quantity + row.reworked_quantity, detail: `质检${numberText(row.inspection_quantity)} · 返工${numberText(row.reworked_quantity)}`, source: row.source }))} valueSuffix=" 件" /></Card></Col><Col xs={24} xl={12}><Card title="退回原因排行与占比"><RankBarChart items={(data?.defect_reason_breakdown || []).map((row) => ({ key: row.reason_category, label: row.reason_category_display || row.reason_category, value: row.returned_quantity, detail: `占退回 ${rateText(row.share_of_returns)} · 返工通过 ${rateText(row.rework_pass_rate)}`, source: row.source }))} valueSuffix=" 件" emptyText="所选期间暂无退回原因数据" /></Card></Col></Row><Card className="analytics-detail-table" title="员工绩效明细" styles={{ body: { padding: 0 } }}><Table rowKey={(row) => row.employee_id || row.name} dataSource={data?.quality_employee_performance || []} columns={qualityEmployeeColumns} scroll={{ x: 1150 }} pagination={{ pageSize: 15 }} /></Card></div> },
+          { key: 'quality', label: '品检与返工绩效', children: <div className="analytics-tab-content"><Row gutter={[16, 16]}><Col xs={24} xl={12}><Card title="品检出货 / 返工工作量排行"><RankBarChart items={(data?.quality_employee_performance || []).filter((row) => row.shipped_quantity + row.reworked_quantity > 0).map((row) => ({ key: row.employee_id || row.name, label: row.name, value: row.shipped_quantity + row.reworked_quantity, detail: `归属出货${numberText(row.shipped_quantity)} · 返工${numberText(row.reworked_quantity)}`, source: row.source }))} valueSuffix=" 件" emptyText="所选期间暂无已归属员工的出货或返工数据" /></Card></Col><Col xs={24} xl={12}><Card title="退回原因排行与占比"><RankBarChart items={(data?.defect_reason_breakdown || []).map((row) => ({ key: row.reason_category, label: row.reason_category_display || row.reason_category, value: row.returned_quantity, detail: `占退回 ${rateText(row.share_of_returns)} · 返工通过 ${rateText(row.rework_pass_rate)}`, source: row.source }))} valueSuffix=" 件" emptyText="所选期间暂无退回原因数据" /></Card></Col></Row><Card className="analytics-detail-table" title="员工绩效明细" styles={{ body: { padding: 0 } }}>{qualityEmployeeSection}</Card></div> },
           { key: 'orders', label: '订单联动', children: <div className="analytics-tab-content"><Alert className="analytics-alert" type="info" showIcon title="优先按订单主档关联" description="新记录通过订单 ID 精确联动；旧历史没有订单关联时继续按订单号匹配，并在表中标明关联方式。" /><Card styles={{ body: { padding: 0 } }}><Table rowKey="row_key" dataSource={data?.order_performance || []} columns={orderColumns} scroll={{ x: 1370 }} pagination={{ pageSize: 15 }} /></Card></div> },
           { key: 'manual', label: '手工补录', children: <div className="analytics-tab-content"><div className="section-heading"><div><Typography.Title level={3}>补录与作废记录</Typography.Title><Typography.Text type="secondary">补录可编辑；删除采用作废方式保留审计历史。</Typography.Text></div><Space wrap><Button icon={<FormOutlined />} onClick={() => setPerformanceForm({})}>补录绩效</Button><Button type="primary" icon={<DollarOutlined />} onClick={() => setFinancialForm({})}>记录收支</Button></Space></div>{manualSection}</div> },
         ]} />
@@ -284,6 +400,28 @@ export function AnalyticsPage() {
 
       <ManualPerformanceDrawer open={!!performanceForm} entry={performanceForm?.entry} machines={machines} employees={employees} onClose={() => setPerformanceForm(undefined)} />
       <ManualFinancialDrawer open={!!financialForm} entry={financialForm?.entry} machines={machines} onClose={() => setFinancialForm(undefined)} />
+      <Drawer
+        open={!!qualityDetailEmployee}
+        onClose={() => setQualityDetailEmployeeId(undefined)}
+        width="min(1180px, 100vw)"
+        title={qualityDetailEmployee ? `${qualityDetailEmployee.name} · 产品与原始单据明细` : '员工工作明细'}
+      >
+        <Alert
+          type="info"
+          showIcon
+          title={`统计范围：${dateFrom} 至 ${dateTo}`}
+          description="归属出货可以与全厂合计相加；参与出货用于说明员工参与过该批次，协作但没有明确比例时不会平均分配。重量出货没有独立首次检验记录时显示“未登记”。"
+          style={{ marginBottom: 16 }}
+        />
+        {qualityDetailQuery.isError && <Alert type="error" showIcon title="员工工作明细读取失败" description={(qualityDetailQuery.error as Error).message} style={{ marginBottom: 16 }} />}
+        <Card title="按产品规格汇总" styles={{ body: { padding: 0 } }}>
+          {qualityProductSection}
+        </Card>
+        <Card title="原始操作单据" styles={{ body: { padding: 0 } }} style={{ marginTop: 16 }}>
+          <Select allowClear value={qualityProductFilter} onChange={setQualityProductFilter} placeholder="全部产品规格 / 材质" style={{ width: '100%', marginBottom: 12 }} options={(qualityDetailQuery.data?.product_stats || []).map((row) => ({ value: JSON.stringify([row.product_name, row.specification, row.material]), label: `${row.product_name || '未关联产品'} · ${row.specification || '未关联规格'} · ${row.material || '未关联材质'}` }))} />
+          {qualityWorkSection}
+        </Card>
+      </Drawer>
     </div>
   )
 }

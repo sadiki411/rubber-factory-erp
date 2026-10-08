@@ -17,8 +17,9 @@ from .serializers import (
     DashboardQuerySerializer,
     ManualFinancialEntrySerializer,
     ManualPerformanceEntrySerializer,
+    QualityEmployeeDetailQuerySerializer,
 )
-from .services import build_dashboard
+from .services import build_dashboard, build_quality_employee_details
 
 
 class AnalyticsDashboardView(APIView):
@@ -36,6 +37,14 @@ class AnalyticsDashboardView(APIView):
             financial_entries, many=True, context={"request": request}
         ).data
         return Response(payload)
+
+
+class QualityEmployeeDetailView(APIView):
+    @extend_schema(parameters=[QualityEmployeeDetailQuerySerializer], responses=dict)
+    def get(self, request):
+        query = QualityEmployeeDetailQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        return Response(build_quality_employee_details(**query.validated_data))
 
 
 class AnalyticsPagination(PageNumberPagination):

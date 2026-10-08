@@ -526,6 +526,7 @@ export function QualityWeightShipmentDrawer({
   const shipmentCheckRequestRef = useRef(0)
   const entrySessionRef = useRef(0)
   const submittingRef = useRef(false)
+  const operationKeyRef = useRef('')
   const [reshipCase, setReshipCase] = useState<QualityReworkCase>()
 
   const stableLineSeeds = lineSeeds || EMPTY_LINE_SEEDS
@@ -776,6 +777,7 @@ export function QualityWeightShipmentDrawer({
     if (!open) return
     entrySessionRef.current += 1
     submittingRef.current = false
+    operationKeyRef.current = activeBatch?.client_key || `quality-weight-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     form.resetFields()
     const source = shipment || activeBatch
     const sourceOrder = source && 'order' in source ? source.order : undefined
@@ -908,6 +910,10 @@ export function QualityWeightShipmentDrawer({
 
     const local = localDuplicateRecord(number, shipment, activeBatch, existingShipments, existingBatches)
     if (local) {
+      if (local.record && 'client_key' in local.record && local.record.client_key === operationKeyRef.current && local.status === 'CONFIRMED') {
+        setDuplicate(false)
+        return false
+      }
       if (local.status === 'DRAFT' && local.record) {
         const record = local.record as QualityShipmentBatch
         draftMatchRef.current = record
@@ -936,6 +942,12 @@ export function QualityWeightShipmentDrawer({
       const found = weighted?.shipment || legacy?.shipment
       const exists = Boolean(weighted?.exists || weighted?.duplicate || legacy?.exists || legacy?.duplicate)
       if (requestId !== shipmentCheckRequestRef.current || number !== text(form.getFieldValue('shipment_no'))) return false
+      if (found && 'client_key' in found && found.client_key === operationKeyRef.current && found.status === 'CONFIRMED') {
+        setDuplicate(false)
+        setDraftMatch(undefined)
+        draftMatchRef.current = undefined
+        return false
+      }
       if (exists && found && 'status' in found && String(found.status || '').toUpperCase() === 'DRAFT') {
         const record = found as QualityShipmentBatch
         draftMatchRef.current = record
@@ -1488,7 +1500,8 @@ export function QualityWeightShipmentDrawer({
     const localMatch = shipmentNo
       ? localDuplicateRecord(shipmentNo, shipment, activeBatch, existingShipments, existingBatches)
       : undefined
-    if ((localMatch && localMatch.status !== 'DRAFT' && !editingDraft && !editingConfirmed) || duplicateFound) {
+    const sameOperation = localMatch?.record && 'client_key' in localMatch.record && localMatch.record.client_key === operationKeyRef.current
+    if ((localMatch && !sameOperation && localMatch.status !== 'DRAFT' && !editingDraft && !editingConfirmed) || duplicateFound) {
       message.error('出货单号已存在且已确认或已作废，请更换后再提交。')
       return
     }
@@ -1584,7 +1597,7 @@ export function QualityWeightShipmentDrawer({
       piece_quantity: amendedSingleLine?.quantity ?? (isLineMode ? undefined : topPieces),
       inspector_ids: inspectorSelection,
       inspector_id: inspectorSelection[0] ?? null,
-      client_key: activeBatch?.client_key || `quality-weight-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      client_key: activeBatch?.client_key || operationKeyRef.current,
       backfill_reason: text(values.backfill_reason),
       notes: text(values.notes),
       amend_reason: amendConfirmed ? text(values.amend_reason) : undefined,
@@ -1805,7 +1818,7 @@ export function QualityWeightShipmentDrawer({
       process_card_shipment_quantity: draftLines.length ? undefined : draftProcessCardQuantity,
       inspector_ids: inspectorSelection,
       inspector_id: inspectorSelection[0] ?? null,
-      client_key: activeBatch?.client_key || `quality-weight-draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      client_key: activeBatch?.client_key || operationKeyRef.current,
       notes: text(values.notes),
       lines: draftLines,
     }

@@ -801,6 +801,15 @@ button, input, textarea, select { font: inherit; }
 .analytics-manual-mobile .ant-card { border: 1px solid #e1e9e7; }
 .analytics-manual-mobile .ant-card.voided { opacity: .65; background: #f2f4f3; }
 .analytics-manual-mobile .ant-card-body { display: grid; gap: 9px; }
+.analytics-quality-mobile-list { display: grid; gap: 12px; padding: 12px; }
+.analytics-quality-mobile-card { border-color: #dce8e4; }
+.analytics-quality-mobile-card > .ant-card-body { display: grid; gap: 10px; }
+.analytics-quality-mobile-card .record-card-heading { align-items: flex-start; }
+.analytics-quality-mobile-card .record-card-heading > div { min-width: 0; }
+.analytics-quality-mobile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.analytics-quality-mobile-grid > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 9px; border: 1px solid #e2ece8; border-radius: 9px; background: #f8fbfa; }
+.analytics-quality-mobile-grid small { color: #71857f; font-size: 11px; }
+.analytics-quality-mobile-grid b { color: #204f43; overflow-wrap: anywhere; }
 
 
 @media (max-width: 991px) {

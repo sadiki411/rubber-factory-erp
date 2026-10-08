@@ -178,7 +178,7 @@ describe('QualityWorkflowManagement', () => {
     expect(within(drawer).getAllByText('300 件').length).toBeGreaterThan(0)
     expect(within(drawer).getAllByText('7.500 kg').length).toBeGreaterThan(0)
     expect(within(drawer).getByText('上午出货，客户自提')).toBeInTheDocument()
-    expect(within(drawer).getByText('出货明细（1行）')).toBeInTheDocument()
+    expect(within(drawer).getByText('物理出货来源（1行）')).toBeInTheDocument()
     expect(within(drawer).getByLabelText('品检员（选填，可多选）')).toBeInTheDocument()
   })
 
@@ -241,7 +241,7 @@ describe('QualityWorkflowManagement', () => {
     fireEvent.click(screen.getByRole('button', { name: allocatedBatch.shipment_no }))
     const drawer = screen.getByRole('dialog')
 
-    expect(within(drawer).getByText('本批已自动分配到 2 个订单')).toBeInTheDocument()
+    expect(within(drawer).getByText('本批已实际分摊到 2 个订单项次')).toBeInTheDocument()
     expect(within(drawer).getAllByText(/XB-202608-001 \/ 30/).length).toBeGreaterThan(0)
     expect(within(drawer).getAllByText(/XB-202608-002 \/ 40/).length).toBeGreaterThan(0)
     expect(within(drawer).getAllByText('100 件').length).toBeGreaterThan(0)
@@ -250,7 +250,69 @@ describe('QualityWorkflowManagement', () => {
     expect(within(drawer).getAllByText('5.000 kg').length).toBeGreaterThan(0)
     expect(within(drawer).getAllByText('自动分配订单').length).toBeGreaterThanOrEqual(2)
     expect(within(drawer).queryByText('1 批')).not.toBeInTheDocument()
-    expect(within(drawer).getByText('出货与订单分配明细（2行）')).toBeInTheDocument()
+    expect(within(drawer).getByText('物理出货来源（2行）')).toBeInTheDocument()
+  })
+
+  it('separates one physical shipment source from its persisted order allocations', () => {
+    const matchingOrder: QualityOrder = {
+      ...order,
+      id: 102,
+      order_no: 'XB-202608-002',
+      item_no: '40',
+      due_date: '2026-08-18',
+    }
+    const allocatedBatch: QualityShipmentBatch = {
+      ...batch,
+      lines: [{
+        ...batch.lines![0],
+        piece_quantity: 300,
+        net_weight_kg: '7.500',
+        order_allocations: [
+          {
+            id: 801,
+            shipment_line_id: 601,
+            order_id: order.id,
+            order,
+            order_no_snapshot: order.order_no,
+            item_no_snapshot: order.item_no,
+            specification_snapshot: order.specification,
+            material_snapshot: order.material,
+            piece_quantity: 100,
+            net_weight_kg: '2.500',
+            is_overflow: false,
+          },
+          {
+            id: 802,
+            shipment_line_id: 601,
+            order_id: matchingOrder.id,
+            order: matchingOrder,
+            order_no_snapshot: matchingOrder.order_no,
+            item_no_snapshot: matchingOrder.item_no,
+            specification_snapshot: matchingOrder.specification,
+            material_snapshot: matchingOrder.material,
+            piece_quantity: 200,
+            net_weight_kg: '5.000',
+            is_overflow: true,
+          },
+        ],
+      }],
+    }
+    renderManagement({ batches: [allocatedBatch] })
+
+    fireEvent.click(screen.getByRole('tab', { name: '重量出货批次（1）' }))
+    fireEvent.click(screen.getByRole('button', { name: allocatedBatch.shipment_no }))
+    const drawer = screen.getByRole('dialog')
+
+    expect(within(drawer).getByText('本批已实际分摊到 2 个订单项次')).toBeInTheDocument()
+    expect(within(drawer).getByText('物理出货来源（1行）')).toBeInTheDocument()
+    expect(within(drawer).getByText('实际订单分摊（2项）')).toBeInTheDocument()
+    expect(within(drawer).getAllByText(/XB-202608-001/).length).toBeGreaterThan(0)
+    expect(within(drawer).getAllByText(/XB-202608-002/).length).toBeGreaterThan(0)
+    expect(within(drawer).getAllByText('100 件').length).toBeGreaterThan(0)
+    expect(within(drawer).getAllByText('200 件').length).toBeGreaterThan(0)
+    expect(within(drawer).getAllByText('2.500 kg').length).toBeGreaterThan(0)
+    expect(within(drawer).getAllByText('5.000 kg').length).toBeGreaterThan(0)
+    expect(within(drawer).getByText('允许超量')).toBeInTheDocument()
   })
 
   it('opens the same details from both the line-count and inspector actions', () => {

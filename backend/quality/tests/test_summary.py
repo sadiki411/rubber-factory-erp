@@ -11,6 +11,7 @@ from quality.models import (
     QualityReworkCase,
     QualityShipmentBatch,
     QualityShipmentLine,
+    QualityShipmentOrderAllocation,
 )
 
 from .helpers import QualityTestMixin
@@ -145,7 +146,7 @@ class QualitySummaryApiTests(QualityTestMixin, TestCase):
         reworker = employee_stats[self.reworker.employee_no]
         self.assertEqual(reworker["reworked_quantity"], 20)
 
-    def test_summary_zero_denominators_return_zero_rates(self):
+    def test_summary_zero_denominators_return_unknown_rates(self):
         day = timezone.localdate() - timedelta(days=30)
         response = self.client.get(
             "/api/quality/summary/",
@@ -153,9 +154,9 @@ class QualitySummaryApiTests(QualityTestMixin, TestCase):
         )
         self.assertEqual(response.status_code, 200, response.content)
         totals = response.json()["totals"]
-        self.assert_decimal_value(totals["first_pass_rate"], 0)
-        self.assert_decimal_value(totals["return_rate"], 0)
-        self.assert_decimal_value(totals["rework_pass_rate"], 0)
+        self.assertIsNone(totals["first_pass_rate"])
+        self.assertIsNone(totals["return_rate"])
+        self.assertIsNone(totals["rework_pass_rate"])
 
     def test_summary_includes_only_confirmed_weighted_batches_once(self):
         today = timezone.localdate()
@@ -253,15 +254,78 @@ class QualitySummaryApiTests(QualityTestMixin, TestCase):
         }
         primary = employees[self.inspector.employee_no]
         secondary = employees[second_inspector.employee_no]
-        self.assertEqual(primary["shipped_quantity"], 71)
+        self.assertEqual(primary["shipped_quantity"], 20)
         self.assertEqual(primary["shipment_count"], 2)
         self.assertEqual(primary["inspection_days"], 1)
-        self.assertEqual(secondary["shipped_quantity"], 50)
+        self.assertEqual(primary["participated_shipped_quantity"], 121)
+        self.assertEqual(primary["collaborative_shipped_quantity"], 101)
+        self.assertEqual(secondary["shipped_quantity"], 0)
+        self.assertEqual(secondary["participated_shipped_quantity"], 101)
+        self.assertEqual(secondary["collaborative_shipped_quantity"], 101)
         self.assertEqual(secondary["shipment_count"], 1)
         self.assertEqual(secondary["inspection_days"], 1)
-        self.assertEqual(
-            primary["shipped_quantity"] + secondary["shipped_quantity"], 121
+        self.assertEqual(payload["shipment_attribution"]["employee_attributed_quantity"], 20)
+        self.assertEqual(payload["shipment_attribution"]["collaborative_unallocated_quantity"], 101)
+
+    def test_summary_uses_actual_order_allocations_not_physical_source_order(self):
+        today = timezone.localdate()
+        target = type(self.order).objects.create(
+            order_no=self.order.order_no,
+            item_no="4",
+            product_name=self.order.product_name,
+            specification=self.order.specification,
+            material=self.order.material,
+            order_quantity=500,
+            order_date=today,
+            created_by=self.user,
         )
+        self.order.item_no = "6"
+        self.order.save(update_fields=["item_no"])
+        batch = QualityShipmentBatch.objects.create(
+            shipment_no="SHP-SUM-NESTED-ALLOCATION",
+            shipment_date=today,
+            order=self.order,
+            inspector=self.inspector,
+            status=QualityShipmentBatch.Status.CONFIRMED,
+            created_by=self.user,
+        )
+        line = QualityShipmentLine.objects.create(
+            batch=batch,
+            order=self.order,
+            net_weight_kg=Decimal("0.100"),
+            piece_quantity=100,
+            unit_weight_g_snapshot=Decimal("1"),
+        )
+        QualityShipmentOrderAllocation.objects.create(
+            shipment_line=line,
+            order=self.order,
+            sequence=1,
+            piece_start=0,
+            piece_end=60,
+            piece_quantity=60,
+            net_weight_kg=Decimal("0.060"),
+        )
+        QualityShipmentOrderAllocation.objects.create(
+            shipment_line=line,
+            order=target,
+            sequence=2,
+            piece_start=60,
+            piece_end=100,
+            piece_quantity=40,
+            net_weight_kg=Decimal("0.040"),
+        )
+
+        payload = self.client.get(
+            "/api/quality/summary/",
+            {"date_from": today.isoformat(), "date_to": today.isoformat()},
+        ).json()
+        rows = {row["order_id"]: row for row in payload["order_stats"]}
+
+        self.assertEqual(rows[self.order.pk]["shipped_quantity"], 60)
+        self.assertEqual(rows[target.pk]["shipped_quantity"], 40)
+        self.assertEqual(rows[self.order.pk]["item_no"], "6")
+        self.assertEqual(rows[target.pk]["item_no"], "4")
+        self.assertEqual(payload["totals"]["shipped_quantity"], 100)
 
     def test_summary_and_ledger_include_whole_batch_return_and_every_rework_round(self):
         today = timezone.localdate()

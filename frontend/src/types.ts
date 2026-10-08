@@ -1233,6 +1233,10 @@ export interface QualityShipmentOrderAllocation {
   shipment_line_id?: string | number | null
   order_id: number
   order?: QualityOrder | null
+  order_no_snapshot?: string
+  item_no_snapshot?: string
+  specification_snapshot?: string
+  material_snapshot?: string
   piece_quantity: number
   net_weight_kg?: number | string | null
   sequence?: number | null
@@ -1507,6 +1511,9 @@ export interface QualityDailyTrend {
 }
 
 export interface QualityOrderStatistics {
+  item_no: string
+  net_delivered_quantity: number
+  remaining_quantity: number
   order_id: number
   order_no: string
   batch_no: string
@@ -1539,6 +1546,9 @@ export interface QualityEmployeeStatistics {
   qualified_quantity: number
   defective_quantity: number
   shipped_quantity: number
+  participated_shipped_quantity: number
+  collaborative_shipped_quantity: number
+  inspection_record_count: number
   inspection_days: number
   shipment_count: number
   responsible_return_quantity: number
@@ -1562,11 +1572,13 @@ export interface QualitySummary {
     recovered_quantity: number
     scrap_quantity: number
     shipment_count: number
+    inspection_record_count: number
     order_count: number
     first_pass_rate: number | string
     return_rate: number | string
     rework_pass_rate: number | string
   }
+  shipment_attribution: AnalyticsShipmentAttribution
   daily_trend: QualityDailyTrend[]
   order_stats: QualityOrderStatistics[]
   employee_stats: QualityEmployeeStatistics[]
@@ -1606,6 +1618,7 @@ export interface AnalyticsQualityMetrics {
   reworked_quantity: number
   recovered_quantity: number
   scrap_quantity: number
+  inspection_record_count?: number
   first_pass_rate?: number | string | null
   return_rate?: number | string | null
   rework_pass_rate?: number | string | null
@@ -1677,6 +1690,9 @@ export interface AnalyticsQualityEmployeePerformance extends AnalyticsQualityMet
   team: string
   role?: QualityEmployeeRole | null
   responsible_return_quantity: number
+  participated_shipped_quantity: number
+  collaborative_shipped_quantity: number
+  inspection_record_count: number
   handled_returned_quantity: number
   rework_hours: number | string
   inspection_days: number
@@ -1701,9 +1717,13 @@ export interface AnalyticsDefectReason {
 }
 
 export interface AnalyticsOrderPerformance extends AnalyticsQualityMetrics, AnalyticsFinanceMetrics {
+  order_quantity?: number | null
+  net_delivered_quantity?: number | null
+  remaining_quantity?: number | null
   row_key: string
   order_id?: number | null
   order_no: string
+  item_no: string
   product_name: string
   specification: string
   material: string
@@ -1716,6 +1736,64 @@ export interface AnalyticsOrderPerformance extends AnalyticsQualityMetrics, Anal
   manual_record_count: number
   source: AnalyticsSource
   link_type?: 'ORDER' | 'LEGACY' | string
+}
+
+export interface AnalyticsShipmentAttribution {
+  factory_shipped_quantity: number
+  employee_attributed_quantity: number
+  unassigned_employee_quantity: number
+  collaborative_unallocated_quantity: number
+  other_unattributed_quantity: number
+}
+
+export interface AnalyticsQualityWorkRecord {
+  net_weight_kg?: number | string | null
+  status?: string
+  record_key: string
+  business_date: string
+  event_type: 'SHIPMENT' | 'RETURN_RESPONSIBILITY' | 'REWORK' | 'MANUAL_QUALITY' | 'MANUAL_REWORK'
+  event_type_display: string
+  role: 'INSPECTOR' | 'RESPONSIBLE_INSPECTOR' | 'REWORKER'
+  product_name: string
+  specification: string
+  material: string
+  order_id?: number | null
+  order_no: string
+  item_no: string
+  process_card_no: string
+  source_no: string
+  source_type: string
+  shipment_batch_id?: number | string | null
+  quantity: number
+  attributed_quantity: number
+  participated_quantity: number
+  inspection_quantity?: number | null
+  qualified_quantity?: number | null
+  defective_quantity?: number | null
+  returned_quantity: number
+  reworked_quantity: number
+  recovered_quantity: number
+  scrap_quantity: number
+  return_round?: number | null
+  attribution_status: 'ATTRIBUTED' | 'COLLABORATIVE_UNALLOCATED'
+}
+
+export interface AnalyticsQualityProductPerformance {
+  product_name: string
+  specification: string
+  material: string
+  attributed_shipped_quantity: number
+  participated_shipped_quantity: number
+  responsible_return_quantity: number
+  reworked_quantity: number
+  record_count: number
+}
+
+export interface AnalyticsQualityEmployeeDetail {
+  period: { date_from: string; date_to: string }
+  employee: Pick<QualityEmployee, 'id' | 'employee_no' | 'name' | 'team' | 'role'>
+  product_stats: AnalyticsQualityProductPerformance[]
+  records: AnalyticsQualityWorkRecord[]
 }
 
 export interface ManualPerformanceEntry {
@@ -1787,6 +1865,7 @@ export interface AnalyticsDashboard {
     rework_date: string
     order_link: string
     quality_filter_scope: string
+    employee_shipment_attribution: string
     zero_denominator_rate: null
   }
   sources: Record<string, { automatic: number; manual: number; total: number; [key: string]: number }>
@@ -1817,6 +1896,7 @@ export interface AnalyticsDashboard {
     shipment_count: number
     rework_count: number
   }
+  quality_attribution: AnalyticsShipmentAttribution
   daily_trend: AnalyticsDailyTrend[]
   operator_performance: AnalyticsOperatorPerformance[]
   station_performance: AnalyticsStationPerformance[]

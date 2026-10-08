@@ -103,11 +103,22 @@ export function ShipmentBatchReviewDrawer({
   const firstLine = lines[0]
   const firstCard = firstLine?.process_card
   const order = item?.order || firstLine?.order || firstCard?.order
-  const linkedOrders = [...new Map([
+  const sourceOrders = [...new Map([
     item?.order,
     ...lines.map((line) => line.order || line.process_card?.order),
   ].filter((linked): linked is QualityOrder => Boolean(linked)).map((linked) => [linked.id, linked])).values()]
-  const hasAutoAllocation = lines.some(lineHasAutoAllocationNote)
+  const persistedAllocations = lines.flatMap((line) =>
+    (line.order_allocations || []).map((allocation) => ({ line, allocation })),
+  )
+  // Older releases represented automatic distribution as several physical
+  // lines. Keep that display fallback while preferring the immutable nested
+  // allocation rows written by current confirmations.
+  const legacyAllocationLines = lines.filter((line) => !line.process_card_id && lineHasAutoAllocationNote(line))
+  const hasOrderAllocations = persistedAllocations.length > 0
+  const hasAutoAllocation = hasOrderAllocations || legacyAllocationLines.length > 0
+  const allocatedOrderCount = hasOrderAllocations
+    ? new Set(persistedAllocations.map(({ allocation }) => allocation.order_id)).size
+    : new Set(legacyAllocationLines.map((line) => line.order_id).filter(Boolean)).size
   const productSpecification = item?.product_specification
   const productName = item?.product_name_snapshot
     || item?.product_name
@@ -187,6 +198,28 @@ export function ShipmentBatchReviewDrawer({
     { title: '流程卡标准', dataIndex: 'process_card_shipment_quantity', width: 115, render: (value) => valueText(value, ' 件/批') },
     { title: '出货 / 分配件数', dataIndex: 'piece_quantity', width: 125, render: (value, line) => !line.process_card_id && hasAutoAllocation ? <strong>{valueText(value, ' 件')}</strong> : valueText(value, ' 件') },
     { title: '分配净重', dataIndex: 'net_weight_kg', width: 110, render: (value, line) => !line.process_card_id && hasAutoAllocation ? <strong>{valueText(value, ' kg')}</strong> : valueText(value, ' kg') },
+  ]
+
+  const allocationColumns: TableColumnsType<(typeof persistedAllocations)[number]> = [
+    {
+      title: '实际分摊订单 / 项次',
+      key: 'order',
+      width: 230,
+      render: (_, { allocation }) => <span>
+        <strong>{allocation.order_no_snapshot || allocation.order?.order_no || `订单#${allocation.order_id}`}</strong>
+        <br />
+        <Typography.Text type="secondary">项次 {allocation.item_no_snapshot || allocation.order?.item_no || '-'}</Typography.Text>
+      </span>,
+    },
+    {
+      title: '规格 / 材质',
+      key: 'product',
+      width: 210,
+      render: (_, { allocation }) => `${allocation.specification_snapshot || allocation.order?.specification || '-'} · ${allocation.material_snapshot || allocation.order?.material || '-'}`,
+    },
+    { title: '分摊件数', key: 'quantity', width: 115, render: (_, { allocation }) => <strong>{valueText(allocation.piece_quantity, ' 件')}</strong> },
+    { title: '分摊重量', key: 'weight', width: 115, render: (_, { allocation }) => valueText(allocation.net_weight_kg, ' kg') },
+    { title: '说明', key: 'overflow', width: 110, render: (_, { allocation }) => allocation.is_overflow ? <Tag color="orange">允许超量</Tag> : <Tag color="blue">按交期分配</Tag> },
   ]
 
   useEffect(() => {
@@ -285,16 +318,22 @@ export function ShipmentBatchReviewDrawer({
       className="quality-batch-allocation-alert"
       type="info"
       showIcon
-      message={`本批已自动分配到 ${linkedOrders.length} 个订单`}
+      message={`本批已实际分摊到 ${allocatedOrderCount} 个订单项次`}
       description={<Space direction="vertical" size={2}>
-        {lines.filter((line) => !line.process_card_id).map((line) => {
-          const lineOrder = line.order
-          return <span key={line.id}>
-            <Tag color="blue">自动分配订单</Tag>
-            {lineOrder?.order_no || `订单#${line.order_id || '-'}`} / {lineOrder?.item_no || '-'}：
-            <strong>{valueText(line.piece_quantity, ' 件')}</strong> · {valueText(line.net_weight_kg, ' kg')}
-          </span>
-        })}
+        {hasOrderAllocations
+          ? persistedAllocations.map(({ line, allocation }) => <span key={`${line.id}-${allocation.id || allocation.order_id}`}>
+            <Tag color="blue">实际分摊</Tag>
+            {allocation.order_no_snapshot || allocation.order?.order_no || `订单#${allocation.order_id}`} / {allocation.item_no_snapshot || allocation.order?.item_no || '-'}：
+            <strong>{valueText(allocation.piece_quantity, ' 件')}</strong> · {valueText(allocation.net_weight_kg, ' kg')}
+          </span>)
+          : legacyAllocationLines.map((line) => {
+            const lineOrder = line.order
+            return <span key={line.id}>
+              <Tag color="blue">历史自动分配</Tag>
+              {lineOrder?.order_no || `订单#${line.order_id || '-'}`} / {lineOrder?.item_no || '-'}：
+              <strong>{valueText(line.piece_quantity, ' 件')}</strong> · {valueText(line.net_weight_kg, ' kg')}
+            </span>
+          })}
       </Space>}
     />}
     <Descriptions
@@ -305,7 +344,7 @@ export function ShipmentBatchReviewDrawer({
         { key: 'shipmentNo', label: '出货单号', children: <strong>{item?.shipment_no || '-'}</strong> },
         { key: 'shipmentDate', label: '出货日期', children: dateText(item?.shipment_date) },
         { key: 'status', label: '状态', children: <Tag color={item?.status === 'CONFIRMED' ? 'success' : item?.status === 'VOID' ? 'default' : 'warning'}>{shipmentStatusText(item?.status)}</Tag> },
-        { key: 'order', label: '订单 / 项次', children: order ? `${order.order_no} / ${order.item_no || '-'}` : '-' },
+        { key: 'order', label: '物理来源订单 / 项次', children: order ? `${order.order_no} / ${order.item_no || '-'}` : '-' },
         { key: 'dueDate', label: '交期', children: dateText(order?.due_date) },
         { key: 'product', label: '产品', children: productName },
         { key: 'specification', label: '规格', children: specification },
@@ -319,16 +358,22 @@ export function ShipmentBatchReviewDrawer({
         { key: 'totalWeight', label: '累计净重', children: valueText(totalNetWeight, ' kg') },
         ...(hasAutoAllocation ? [{
           key: 'allocatedOrders',
-          label: '自动分配订单',
-          children: linkedOrders.map((linked) => `${linked.order_no} / ${linked.item_no || '-'}`).join('；') || '-',
+          label: '实际分摊订单',
+          children: hasOrderAllocations
+            ? [...new Map(persistedAllocations.map(({ allocation }) => [allocation.order_id, `${allocation.order_no_snapshot || allocation.order?.order_no || `订单#${allocation.order_id}`} / ${allocation.item_no_snapshot || allocation.order?.item_no || '-'}`])).values()].join('；')
+            : sourceOrders.map((linked) => `${linked.order_no} / ${linked.item_no || '-'}`).join('；') || '-',
           span: 3,
         }] : []),
         { key: 'notes', label: '备注', children: item?.notes || '-', span: 3 },
       ]}
     />
     {lines.length > 0 && <>
-      <Divider titlePlacement="start">{hasAutoAllocation ? '出货与订单分配明细' : '出货明细'}（{lines.length}行）</Divider>
+      <Divider titlePlacement="start">物理出货来源（{lines.length}行）</Divider>
       <Table rowKey="id" size="small" dataSource={lines} columns={lineColumns} pagination={false} scroll={{ x: 1225 }} />
+    </>}
+    {hasOrderAllocations && <>
+      <Divider titlePlacement="start">实际订单分摊（{persistedAllocations.length}项）</Divider>
+      <Table rowKey={({ line, allocation }) => `${line.id}-${allocation.id || allocation.order_id}`} size="small" dataSource={persistedAllocations} columns={allocationColumns} pagination={false} scroll={{ x: 780 }} />
     </>}
     <Divider titlePlacement="start">{item?.status === 'CONFIRMED' ? '补录或修改品检员' : item?.status === 'VOID' ? '记录状态' : '补充出货资料'}</Divider>
     {item?.status === 'VOID'

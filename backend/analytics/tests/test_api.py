@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -29,6 +30,33 @@ from quality.models import (
 
 
 class AnalyticsApiTests(TestCase):
+    def test_employee_details_remain_read_only_and_do_not_create_business_records(self):
+        from erp.permissions import READ_ONLY_GROUP_NAME
+
+        day = timezone.localdate()
+        self.create_automatic_records(day)
+        self.user.groups.add(Group.objects.create(name=READ_ONLY_GROUP_NAME))
+        counts = (QualityShipment.objects.count(), QualityShipmentBatch.objects.count(), QualityReworkCase.objects.count())
+        response = self.client.get("/api/analytics/quality-employee-details/", {"date_from": day.isoformat(), "date_to": day.isoformat(), "quality_employee_id": self.inspector.pk})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(counts, (QualityShipment.objects.count(), QualityShipmentBatch.objects.count(), QualityReworkCase.objects.count()))
+        write = self.client.post("/api/analytics/manual-entries/", {}, format="json")
+        self.assertEqual(write.status_code, 403, write.content)
+
+    def test_employee_source_details_include_legacy_returns_and_match_dashboard(self):
+        day = timezone.localdate()
+        self.create_automatic_records(day)
+        filters = {"date_from": day.isoformat(), "date_to": day.isoformat()}
+        dashboard = self.client.get("/api/analytics/dashboard/", filters).json()
+        for person in (self.inspector, self.reworker):
+            detail_response = self.client.get("/api/analytics/quality-employee-details/", dict(filters, quality_employee_id=person.pk))
+            self.assertEqual(detail_response.status_code, 200, detail_response.content)
+            detail = detail_response.json()
+            employee = next(row for row in dashboard["quality_employee_performance"] if row["employee_id"] == person.pk)
+            self.assertEqual(sum(row["responsible_return_quantity"] for row in detail["product_stats"]), employee["responsible_return_quantity"])
+            self.assertEqual(sum(row["reworked_quantity"] for row in detail["product_stats"]), employee["reworked_quantity"])
+            self.assertTrue(any(row["source_type"] == "LEGACY_REWORK" for row in detail["records"]))
+
     @classmethod
     def setUpTestData(cls):
         cls.user = get_user_model().objects.create_user(
@@ -556,8 +584,11 @@ class AnalyticsApiTests(TestCase):
             row["employee_no"]: row
             for row in payload["quality_employee_performance"]
         }
-        self.assertEqual(employees[self.inspector.employee_no]["shipped_quantity"], 150)
-        self.assertEqual(employees[second_inspector.employee_no]["shipped_quantity"], 150)
+        self.assertEqual(employees[self.inspector.employee_no]["shipped_quantity"], 0)
+        self.assertEqual(employees[second_inspector.employee_no]["shipped_quantity"], 0)
+        self.assertEqual(employees[self.inspector.employee_no]["participated_shipped_quantity"], 300)
+        self.assertEqual(employees[second_inspector.employee_no]["participated_shipped_quantity"], 300)
+        self.assertEqual(payload["quality_attribution"]["collaborative_unallocated_quantity"], 300)
 
         orders = {
             row["order_id"]: row
@@ -574,6 +605,37 @@ class AnalyticsApiTests(TestCase):
         self.assertEqual(orders[target.pk]["recovered_quantity"], 48)
         self.assertEqual(orders[self.order.pk]["scrap_quantity"], 8)
         self.assertEqual(orders[target.pk]["scrap_quantity"], 12)
+
+        detail_response = self.client.get(
+            "/api/analytics/quality-employee-details/",
+            {
+                "date_from": day.isoformat(),
+                "date_to": day.isoformat(),
+                "quality_employee_id": self.inspector.pk,
+            },
+        )
+        self.assertEqual(detail_response.status_code, 200, detail_response.content)
+        detail = detail_response.json()
+        self.assertEqual(detail["employee"]["id"], self.inspector.pk)
+        product = detail["product_stats"][0]
+        self.assertEqual(product["attributed_shipped_quantity"], 0)
+        self.assertEqual(product["participated_shipped_quantity"], 300)
+        self.assertEqual(product["responsible_return_quantity"], 100)
+        shipment_records = [
+            row for row in detail["records"] if row["event_type"] == "SHIPMENT"
+        ]
+        self.assertEqual(sum(row["participated_quantity"] for row in shipment_records), 300)
+        self.assertEqual(
+            {row["order_id"] for row in shipment_records},
+            {self.order.pk, target.pk},
+        )
+        self.assertTrue(
+            all(
+                row["attribution_status"] == "COLLABORATIVE_UNALLOCATED"
+                and row["inspection_quantity"] is None
+                for row in shipment_records
+            )
+        )
 
     def test_dashboard_includes_whole_batch_returns_and_r1_r2_r3(self):
         day = timezone.localdate()
@@ -686,7 +748,7 @@ class AnalyticsApiTests(TestCase):
         self.assertEqual(reason["returned_quantity"], 100)
         self.assertEqual(reason["reworked_quantity"], 300)
 
-    def test_multi_inspector_legacy_shipment_is_split_without_double_counting(self):
+    def test_multi_inspector_legacy_shipment_is_participation_not_guessed_split(self):
         day = timezone.localdate()
         second = QualityEmployee.objects.create(
             employee_no="QC-A02",
@@ -714,8 +776,11 @@ class AnalyticsApiTests(TestCase):
             row["employee_no"]: row
             for row in payload["quality_employee_performance"]
         }
-        self.assertEqual(employees["QC-A01"]["shipped_quantity"], 40)
-        self.assertEqual(employees["QC-A02"]["shipped_quantity"], 40)
+        self.assertEqual(employees["QC-A01"]["shipped_quantity"], 0)
+        self.assertEqual(employees["QC-A02"]["shipped_quantity"], 0)
+        self.assertEqual(employees["QC-A01"]["participated_shipped_quantity"], 80)
+        self.assertEqual(employees["QC-A02"]["participated_shipped_quantity"], 80)
+        self.assertEqual(payload["quality_attribution"]["collaborative_unallocated_quantity"], 80)
         self.assertEqual(payload["quality"]["automatic"]["shipped_quantity"], 80)
 
     def test_manual_crud_soft_void_restore_and_validation(self):

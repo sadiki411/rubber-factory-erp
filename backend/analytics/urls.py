@@ -5,6 +5,7 @@ from .views import (
     AnalyticsDashboardView,
     ManualFinancialEntryViewSet,
     ManualPerformanceEntryViewSet,
+    QualityEmployeeDetailView,
 )
 
 
@@ -19,5 +20,10 @@ router.register(
 
 urlpatterns = [
     path("dashboard/", AnalyticsDashboardView.as_view(), name="analytics-dashboard"),
+    path(
+        "quality-employee-details/",
+        QualityEmployeeDetailView.as_view(),
+        name="analytics-quality-employee-details",
+    ),
     path("", include(router.urls)),
 ]

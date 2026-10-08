@@ -7,12 +7,15 @@ from django.utils import timezone
 
 from production.models import ProductionDailyLog, ProductionRun
 from quality.models import (
+    QualityEmployee,
+    QualityOrder,
     QualityReworkAttempt,
     QualityReworkCase,
     QualityShipment,
     QualityShipmentBatch,
     ReturnRework,
 )
+from quality.services import delivered_quantities_by_order, shipment_inspectors, shipment_line_piece_quantity
 
 from .models import ManualFinancialEntry, ManualPerformanceEntry
 
@@ -254,6 +257,7 @@ def _order_row(
     *,
     row_key,
     order_id=None,
+    item_no="",
     link_type="LEGACY",
     product_name="",
     specification="",
@@ -264,6 +268,7 @@ def _order_row(
         "order_id": order_id,
         "link_type": link_type,
         "order_no": order_no,
+        "item_no": item_no or "",
         "product_name": product_name or "",
         "specification": specification or "",
         "material": material or "",
@@ -295,6 +300,7 @@ def _ensure_order_row(
     *,
     order_id=None,
     order_no="",
+    item_no="",
     product_name="",
     specification="",
     material="",
@@ -309,6 +315,7 @@ def _ensure_order_row(
             normalized_order_no,
             row_key=row_key,
             order_id=order_id,
+            item_no=item_no,
             link_type="ORDER" if order_id else "LEGACY",
             product_name=product_name,
             specification=specification,
@@ -316,6 +323,7 @@ def _ensure_order_row(
         ),
     )
     for field, value in (
+        ("item_no", item_no),
         ("product_name", product_name),
         ("specification", specification),
         ("material", material),
@@ -333,6 +341,7 @@ def _production_order_reference(run):
         return {
             "order_id": run.order_id,
             "order_no": run.order.order_no,
+            "item_no": run.order.item_no,
             "product_name": run.order.product_name or fallback_product_name,
             "specification": run.order.specification or run.specification,
             "material": run.order.material or run.material,
@@ -340,6 +349,7 @@ def _production_order_reference(run):
     return {
         "order_id": None,
         "order_no": run.order_no,
+        "item_no": "",
         "product_name": fallback_product_name,
         "specification": run.specification,
         "material": run.material,
@@ -368,6 +378,7 @@ def _order_reference(order, run):
     return {
         "order_id": order.pk,
         "order_no": order.order_no,
+        "item_no": order.item_no,
         "product_name": order.product_name or fallback_product_name,
         "specification": order.specification or run.specification,
         "material": order.material or run.material,
@@ -409,6 +420,9 @@ def _employee_row(employee=None, staff_name=""):
         "qualified_quantity": 0,
         "defective_quantity": 0,
         "shipped_quantity": 0,
+        "participated_shipped_quantity": 0,
+        "collaborative_shipped_quantity": 0,
+        "inspection_record_count": 0,
         "responsible_return_quantity": 0,
         "handled_returned_quantity": 0,
         "reworked_quantity": 0,
@@ -538,6 +552,474 @@ def _financial_queryset(date_from, date_to, *, group=None, machine_id=None):
             machine__production_station__group__iexact=group
         )
     return queryset.order_by("occurred_on", "id")
+
+
+def build_quality_employee_details(
+    *,
+    date_from,
+    date_to,
+    quality_employee_id,
+    specification=None,
+    material=None,
+    **_unused,
+):
+    """Build an on-demand employee -> product -> source-document audit view.
+
+    The dashboard intentionally stays compact. This service is called only
+    when a user opens one employee's detail, and it never manufactures missing
+    inspection quantities or divides collaborative work without a stored rule.
+    """
+
+    employee = QualityEmployee.objects.get(pk=quality_employee_id)
+    specification_filter = str(specification or "").strip().casefold()
+    material_filter = str(material or "").strip().casefold()
+    records = []
+
+    def append_record(record):
+        if specification_filter and str(record.get("specification") or "").strip().casefold() != specification_filter:
+            return
+        if material_filter and str(record.get("material") or "").strip().casefold() != material_filter:
+            return
+        records.append(record)
+
+    legacy_shipments = list(
+        QualityShipment.objects.filter(
+            shipment_date__gte=date_from,
+            shipment_date__lte=date_to,
+        )
+        .filter(Q(inspector_id=employee.pk) | Q(inspectors=employee))
+        .select_related("order", "inspector")
+        .prefetch_related("inspectors")
+        .distinct()
+    )
+    for shipment in legacy_shipments:
+        people = shipment_inspectors(shipment)
+        collaborative = len(people) > 1
+        quantity = int(shipment.shipped_quantity or 0)
+        order = shipment.order
+        append_record(
+            {
+                "record_key": f"legacy-shipment:{shipment.pk}",
+                "business_date": shipment.shipment_date.isoformat(),
+                "event_type": "SHIPMENT",
+                "event_type_display": "历史出货",
+                "role": "INSPECTOR",
+                "product_name": order.product_name or "",
+                "specification": order.specification or "",
+                "material": order.material or "",
+                "order_id": order.pk,
+                "order_no": order.order_no,
+                "item_no": order.item_no or "",
+                "process_card_no": "",
+                "source_no": shipment.shipment_no,
+                "source_type": "LEGACY_SHIPMENT",
+                "shipment_batch_id": None,
+                "quantity": quantity,
+                "attributed_quantity": 0 if collaborative else quantity,
+                "participated_quantity": quantity,
+                "inspection_quantity": None if collaborative else int(shipment.inspection_quantity or 0),
+                "qualified_quantity": None if collaborative else int(shipment.qualified_quantity or 0),
+                "defective_quantity": None if collaborative else int(shipment.defective_quantity or 0),
+                "status": "LEGACY",
+                "returned_quantity": 0,
+                "reworked_quantity": 0,
+                "recovered_quantity": 0,
+                "scrap_quantity": 0,
+                "return_round": None,
+                "attribution_status": (
+                    "COLLABORATIVE_UNALLOCATED" if collaborative else "ATTRIBUTED"
+                ),
+            }
+        )
+
+    weighted_batches = list(
+        QualityShipmentBatch.objects.filter(
+            status=QualityShipmentBatch.Status.CONFIRMED,
+            shipment_date__gte=date_from,
+            shipment_date__lte=date_to,
+        )
+        .filter(Q(inspector_id=employee.pk) | Q(inspectors=employee))
+        .select_related("inspector", "order")
+        .prefetch_related(
+            "inspectors",
+            "lines__order",
+            "lines__process_card__order",
+            "lines__order_allocations__order",
+        )
+        .distinct()
+    )
+    for batch in weighted_batches:
+        people = shipment_inspectors(batch)
+        collaborative = len(people) > 1
+        for line in batch.lines.all():
+            card = line.process_card if line.process_card_id else None
+            allocations = list(line.order_allocations.all())
+            components = [
+                {
+                    "order": allocation.order,
+                    "quantity": int(allocation.piece_quantity or 0),
+                    "specification": allocation.specification_snapshot
+                    or allocation.order.specification,
+                    "material": allocation.material_snapshot
+                    or allocation.order.material,
+                    "key": allocation.pk,
+                    "net_weight_kg": allocation.net_weight_kg,
+                }
+                for allocation in allocations
+            ]
+            if not components:
+                order = line.order or (card.order if card else None) or batch.order
+                components = [
+                    {
+                        "order": order,
+                        "quantity": shipment_line_piece_quantity(line),
+                        "specification": line.specification_snapshot
+                        or (card.specification_snapshot if card else "")
+                        or (order.specification if order else "")
+                        or batch.specification_snapshot,
+                        "material": line.material_snapshot
+                        or (card.material_snapshot if card else "")
+                        or (order.material if order else "")
+                        or batch.material_snapshot,
+                        "key": "source",
+                        "net_weight_kg": line.net_weight_kg,
+                    }
+                ]
+            for component in components:
+                order = component["order"]
+                quantity = component["quantity"]
+                append_record(
+                    {
+                        "record_key": f"weighted-shipment:{batch.pk}:{line.pk}:{component['key']}",
+                        "business_date": batch.shipment_date.isoformat(),
+                        "event_type": "SHIPMENT",
+                        "event_type_display": "重量出货",
+                        "role": "INSPECTOR",
+                        "product_name": (
+                            (order.product_name if order else "")
+                            or (card.product_name_snapshot if card else "")
+                            or batch.product_name_snapshot
+                        ),
+                        "specification": component["specification"],
+                        "material": component["material"],
+                        "order_id": order.pk if order else None,
+                        "order_no": order.order_no if order else "",
+                        "item_no": order.item_no if order else "",
+                        "process_card_no": card.card_no if card else "",
+                        "source_no": batch.shipment_no,
+                        "source_type": "WEIGHTED_SHIPMENT",
+                        "shipment_batch_id": batch.pk,
+                        "quantity": quantity,
+                        "net_weight_kg": component["net_weight_kg"],
+                        "status": batch.status,
+                        "attributed_quantity": 0 if collaborative else quantity,
+                        "participated_quantity": quantity,
+                        # The weighted workflow records shipping output, not a
+                        # separate first-inspection measurement.
+                        "inspection_quantity": None,
+                        "qualified_quantity": None,
+                        "defective_quantity": None,
+                        "returned_quantity": 0,
+                        "reworked_quantity": 0,
+                        "recovered_quantity": 0,
+                        "scrap_quantity": 0,
+                        "return_round": None,
+                        "attribution_status": (
+                            "COLLABORATIVE_UNALLOCATED"
+                            if collaborative
+                            else "ATTRIBUTED"
+                        ),
+                    }
+                )
+
+    legacy_reworks = ReturnRework.objects.filter(
+        rework_date__gte=date_from,
+        rework_date__lte=date_to,
+    ).filter(
+        Q(responsible_inspector_id=employee.pk) | Q(rework_employee_id=employee.pk)
+    ).select_related("shipment__order")
+    for rework in legacy_reworks:
+        order = rework.shipment.order
+        for role in ("RESPONSIBLE_INSPECTOR", "REWORKER"):
+            responsible = role == "RESPONSIBLE_INSPECTOR"
+            person_id = rework.responsible_inspector_id if responsible else rework.rework_employee_id
+            if person_id != employee.pk:
+                continue
+            quantity = int((rework.returned_quantity if responsible else rework.reworked_quantity) or 0)
+            append_record({
+                "record_key": f"legacy-rework:{rework.pk}:{role}",
+                "business_date": rework.rework_date.isoformat(),
+                "event_type": "RETURN_RESPONSIBILITY" if responsible else "REWORK",
+                "event_type_display": "历史责任退回" if responsible else "历史返工处理",
+                "role": role,
+                "product_name": order.product_name or "",
+                "specification": order.specification or "",
+                "material": order.material or "",
+                "order_id": order.pk,
+                "order_no": order.order_no,
+                "item_no": order.item_no or "",
+                "process_card_no": "",
+                "source_no": rework.shipment.shipment_no,
+                "source_type": "LEGACY_REWORK",
+                "shipment_batch_id": None,
+                "quantity": quantity,
+                "attributed_quantity": quantity,
+                "participated_quantity": quantity,
+                "inspection_quantity": None,
+                "qualified_quantity": None,
+                "defective_quantity": None,
+                "returned_quantity": quantity if responsible else 0,
+                "reworked_quantity": 0 if responsible else quantity,
+                "recovered_quantity": 0 if responsible else int(rework.recovered_quantity or 0),
+                "scrap_quantity": 0 if responsible else int(rework.scrap_quantity or 0),
+                "return_round": None,
+                "attribution_status": "ATTRIBUTED",
+                "status": rework.status,
+            })
+
+    responsible_cases = list(
+        QualityReworkCase.objects.exclude(status=QualityReworkCase.Status.CANCELLED)
+        .filter(
+            responsible_inspector_id=employee.pk,
+            opened_on__gte=date_from,
+            opened_on__lte=date_to,
+            origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+        )
+        .select_related(
+            "shipment_batch",
+            "shipment_line__order",
+            "shipment_line__process_card__order",
+            "process_card__order",
+        )
+        .prefetch_related(
+            "shipment_allocations__shipment_line__order",
+            "shipment_allocations__shipment_line__process_card__order",
+            "shipment_allocations__shipment_order_allocation__order",
+        )
+    )
+    for case in responsible_cases:
+        shares = _rework_case_order_shares(case)
+        returned = _rework_case_returned_quantity(case)
+        split = _split_integer_by_order_shares(returned, shares)
+        for order, quantity in split:
+            append_record(
+                {
+                    "record_key": f"return:{case.pk}:{order.pk}",
+                    "business_date": case.opened_on.isoformat(),
+                    "event_type": "RETURN_RESPONSIBILITY",
+                    "event_type_display": "责任退回",
+                    "role": "RESPONSIBLE_INSPECTOR",
+                    "product_name": order.product_name or "",
+                    "specification": order.specification or "",
+                    "material": order.material or "",
+                    "order_id": order.pk,
+                    "order_no": order.order_no,
+                    "item_no": order.item_no or "",
+                    "process_card_no": (
+                        case.process_card.card_no if case.process_card_id else ""
+                    ),
+                    "source_no": case.case_no,
+                    "source_type": "REWORK_CASE",
+                    "status": case.status,
+                    "shipment_batch_id": case.shipment_batch_id,
+                    "quantity": quantity,
+                    "attributed_quantity": quantity,
+                    "participated_quantity": quantity,
+                    "inspection_quantity": None,
+                    "qualified_quantity": None,
+                    "defective_quantity": None,
+                    "returned_quantity": quantity,
+                    "reworked_quantity": 0,
+                    "recovered_quantity": 0,
+                    "scrap_quantity": 0,
+                    "return_round": case.return_round,
+                    "attribution_status": "ATTRIBUTED",
+                }
+            )
+
+    attempts = list(
+        QualityReworkAttempt.objects.exclude(
+            status=QualityReworkCase.Status.CANCELLED
+        )
+        .filter(
+            rework_employee_id=employee.pk,
+            attempt_date__gte=date_from,
+            attempt_date__lte=date_to,
+        )
+        .select_related(
+            "case__shipment_batch",
+            "case__shipment_line__order",
+            "case__shipment_line__process_card__order",
+            "case__process_card__order",
+        )
+        .prefetch_related(
+            "case__shipment_allocations__shipment_line__order",
+            "case__shipment_allocations__shipment_line__process_card__order",
+            "case__shipment_allocations__shipment_order_allocation__order",
+        )
+    )
+    for attempt in attempts:
+        case = attempt.case
+        shares = _rework_case_order_shares(case)
+        reworked = int(attempt.reworked_quantity or 0)
+        recovered = int(attempt.recovered_quantity or 0)
+        scrap = int(attempt.scrap_quantity or 0)
+        reworked_split = dict(_split_integer_by_order_shares(reworked, shares))
+        recovered_split = dict(_split_integer_by_order_shares(recovered, shares))
+        scrap_split = dict(_split_integer_by_order_shares(scrap, shares))
+        for order, _ in shares:
+            quantity = reworked_split.get(order, 0)
+            append_record(
+                {
+                    "record_key": f"rework:{attempt.pk}:{order.pk}",
+                    "business_date": attempt.attempt_date.isoformat(),
+                    "event_type": "REWORK",
+                    "event_type_display": "返工处理",
+                    "role": "REWORKER",
+                    "product_name": order.product_name or "",
+                    "specification": order.specification or "",
+                    "material": order.material or "",
+                    "order_id": order.pk,
+                    "order_no": order.order_no,
+                    "item_no": order.item_no or "",
+                    "process_card_no": (
+                        case.process_card.card_no if case.process_card_id else ""
+                    ),
+                    "source_no": case.case_no,
+                    "source_type": "REWORK_ATTEMPT",
+                    "status": attempt.status,
+                    "shipment_batch_id": case.shipment_batch_id,
+                    "quantity": quantity,
+                    "attributed_quantity": quantity,
+                    "participated_quantity": quantity,
+                    "inspection_quantity": None,
+                    "qualified_quantity": None,
+                    "defective_quantity": None,
+                    "returned_quantity": 0,
+                    "reworked_quantity": quantity,
+                    "recovered_quantity": recovered_split.get(order, 0),
+                    "scrap_quantity": scrap_split.get(order, 0),
+                    "return_round": case.return_round,
+                    "attribution_status": "ATTRIBUTED",
+                }
+            )
+
+    manual_entries = list(
+        ManualPerformanceEntry.objects.filter(
+            quality_employee_id=employee.pk,
+            entry_date__gte=date_from,
+            entry_date__lte=date_to,
+            voided_at__isnull=True,
+            entry_type__in=[
+                ManualPerformanceEntry.EntryType.QUALITY,
+                ManualPerformanceEntry.EntryType.REWORK,
+            ],
+        ).order_by("entry_date", "id")
+    )
+    for entry in manual_entries:
+        is_quality = entry.entry_type == ManualPerformanceEntry.EntryType.QUALITY
+        quantity = int(
+            entry.shipped_quantity if is_quality else entry.reworked_quantity or 0
+        )
+        append_record(
+            {
+                "record_key": f"manual:{entry.pk}",
+                "business_date": entry.entry_date.isoformat(),
+                "event_type": "MANUAL_QUALITY" if is_quality else "MANUAL_REWORK",
+                "event_type_display": "品检手工补录" if is_quality else "返工手工补录",
+                "role": "INSPECTOR" if is_quality else "REWORKER",
+                "product_name": "",
+                "specification": "",
+                "material": "",
+                "order_id": None,
+                "order_no": entry.order_no or "",
+                "item_no": "",
+                "process_card_no": "",
+                "source_no": f"手工补录#{entry.pk}",
+                "source_type": "MANUAL",
+                "shipment_batch_id": None,
+                "quantity": quantity,
+                "attributed_quantity": quantity,
+                "participated_quantity": quantity,
+                "inspection_quantity": (
+                    int(entry.inspection_quantity or 0) if is_quality else None
+                ),
+                "qualified_quantity": (
+                    int(entry.qualified_quantity or 0) if is_quality else None
+                ),
+                "defective_quantity": (
+                    int(entry.defective_quantity or 0) if is_quality else None
+                ),
+                "returned_quantity": 0,
+                "reworked_quantity": 0 if is_quality else int(entry.reworked_quantity or 0),
+                "recovered_quantity": 0 if is_quality else int(entry.recovered_quantity or 0),
+                "scrap_quantity": 0 if is_quality else int(entry.scrap_quantity or 0),
+                "status": "MANUAL",
+                "return_round": None,
+                "attribution_status": "ATTRIBUTED",
+            }
+        )
+
+    records.sort(
+        key=lambda row: (row["business_date"], row["source_no"], row["record_key"]),
+        reverse=True,
+    )
+    products = {}
+    for record in records:
+        key = (
+            record["product_name"],
+            record["specification"],
+            record["material"],
+        )
+        row = products.setdefault(
+            key,
+            {
+                "product_name": key[0],
+                "specification": key[1],
+                "material": key[2],
+                "attributed_shipped_quantity": 0,
+                "participated_shipped_quantity": 0,
+                "responsible_return_quantity": 0,
+                "reworked_quantity": 0,
+                "record_count": 0,
+            },
+        )
+        if record["event_type"] in {"SHIPMENT", "MANUAL_QUALITY"}:
+            row["attributed_shipped_quantity"] += int(
+                record["attributed_quantity"] or 0
+            )
+            row["participated_shipped_quantity"] += int(
+                record["participated_quantity"] or 0
+            )
+        row["responsible_return_quantity"] += int(
+            record["returned_quantity"] or 0
+        )
+        row["reworked_quantity"] += int(record["reworked_quantity"] or 0)
+        row["record_count"] += 1
+
+    return {
+        "period": {
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+        },
+        "employee": {
+            "id": employee.pk,
+            "employee_no": employee.employee_no,
+            "name": employee.name,
+            "team": employee.team,
+            "role": employee.role,
+        },
+        "product_stats": sorted(
+            products.values(),
+            key=lambda row: (
+                -row["attributed_shipped_quantity"],
+                -row["reworked_quantity"],
+                row["specification"],
+                row["material"],
+            ),
+        ),
+        "records": records,
+    }
 
 
 def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=None):
@@ -826,21 +1308,9 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                 _add_finance(row, finance)
                 row["_run_ids"].add(run.pk)
 
-    def _split_quantity(quantity, people):
-        """Split one quantity across unique participating inspectors."""
-        unique = {}
-        for person in people:
-            if person is not None:
-                unique[person.pk] = person
-        people = list(unique.values())
-        if not people:
-            return []
-        quantity = max(0, int(quantity or 0))
-        base, remainder = divmod(quantity, len(people))
-        return [
-            (person, base + (1 if index < remainder else 0))
-            for index, person in enumerate(people)
-        ]
+    attributed_shipped_quantity = 0
+    unassigned_shipped_quantity = 0
+    collaborative_unallocated_quantity = 0
 
     for shipment in shipments:
         values = {
@@ -852,27 +1322,29 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         _add_quality(automatic_quality, values)
         _add_quality(daily[shipment.shipment_date], values)
 
-        people = list(shipment.inspectors.all())
-        if not people and shipment.inspector:
-            people = [shipment.inspector]
-        # Allocate each metric once across the participating inspectors.  The
-        # company/order totals above remain unchanged and are never multiplied
-        # by the number of people.
-        for person in {item.pk: item for item in people}.values():
+        people = shipment_inspectors(shipment)
+        shipment_quantity = int(shipment.shipped_quantity or 0)
+        if not people:
+            unassigned_shipped_quantity += shipment_quantity
+        elif len(people) > 1:
+            collaborative_unallocated_quantity += shipment_quantity
+        else:
+            attributed_shipped_quantity += shipment_quantity
+        for person in people:
             employee_key = _employee_key(person)
             employee = employees.setdefault(employee_key, _employee_row(person))
-            for field in (
-                "inspection_quantity",
-                "qualified_quantity",
-                "defective_quantity",
-                "shipped_quantity",
-            ):
-                allocated = _split_quantity(values[field], people)
-                person_value = next(
-                    (amount for target, amount in allocated if target.pk == person.pk),
-                    0,
-                )
-                employee[field] += person_value
+            employee["participated_shipped_quantity"] += shipment_quantity
+            employee["inspection_record_count"] += int(len(people) == 1)
+            if len(people) > 1:
+                employee["collaborative_shipped_quantity"] += shipment_quantity
+            else:
+                for field in (
+                    "inspection_quantity",
+                    "qualified_quantity",
+                    "defective_quantity",
+                    "shipped_quantity",
+                ):
+                    employee[field] += int(values[field] or 0)
             employee["inspection_days"].add(shipment.shipment_date)
             employee["automatic_record_count"] += 1
 
@@ -881,6 +1353,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             orders,
             order_id=order.pk,
             order_no=order.order_no,
+            item_no=order.item_no,
             product_name=order.product_name,
             specification=order.specification,
             material=order.material,
@@ -893,9 +1366,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         # several orders.  Physical/company/day/inspector totals are recorded
         # once per line; only the order view is split by fulfilment allocation.
         lines = list(batch.lines.all())
-        people = list(getattr(batch, "inspectors", []).all()) if hasattr(batch, "inspectors") else []
-        if not people and getattr(batch, "inspector", None):
-            people = [batch.inspector]
+        people = shipment_inspectors(batch)
         for line in lines:
             card = line.process_card
             quantity = getattr(line, "calculated_piece_quantity", None)
@@ -914,10 +1385,20 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             _add_quality(automatic_quality, values)
             _add_quality(daily[batch.shipment_date], values)
 
-            for person, allocated in _split_quantity(quantity, people):
+            if not people:
+                unassigned_shipped_quantity += int(quantity or 0)
+            elif len(people) > 1:
+                collaborative_unallocated_quantity += int(quantity or 0)
+            else:
+                attributed_shipped_quantity += int(quantity or 0)
+            for person in people:
                 employee_key = _employee_key(person)
                 employee = employees.setdefault(employee_key, _employee_row(person))
-                employee["shipped_quantity"] += allocated
+                employee["participated_shipped_quantity"] += int(quantity or 0)
+                if len(people) > 1:
+                    employee["collaborative_shipped_quantity"] += int(quantity or 0)
+                else:
+                    employee["shipped_quantity"] += int(quantity or 0)
                 employee["inspection_days"].add(batch.shipment_date)
                 employee["automatic_record_count"] += 1
 
@@ -968,6 +1449,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                     orders,
                     order_id=order.pk,
                     order_no=share["order_no"],
+                    item_no=order.item_no,
                     product_name=order.product_name,
                     specification=share["specification"],
                     material=share["material"],
@@ -1048,6 +1530,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                 orders,
                 order_id=order.pk,
                 order_no=order.order_no,
+                item_no=order.item_no,
                 product_name=order.product_name,
                 specification=order.specification,
                 material=order.material,
@@ -1192,6 +1675,11 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                 "shipped_quantity",
             ):
                 employee[field] += int(getattr(entry, field) or 0)
+            employee["participated_shipped_quantity"] += int(
+                entry.shipped_quantity or 0
+            )
+            employee["inspection_record_count"] += 1
+            attributed_shipped_quantity += int(entry.shipped_quantity or 0)
             employee["inspection_days"].add(entry.entry_date)
             employee["manual_record_count"] += 1
             if order_row is not None:
@@ -1331,7 +1819,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         employee_payload.append(row)
     employee_payload.sort(
         key=lambda item: (
-            -(item["inspection_quantity"] + item["reworked_quantity"]),
+            -(item["shipped_quantity"] + item["reworked_quantity"]),
             item["employee_no"],
             item["name"],
         )
@@ -1352,8 +1840,18 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         reason_payload.append(row)
     reason_payload.sort(key=lambda item: -item["returned_quantity"])
 
+    linked_orders = {
+        order.pk: order for order in QualityOrder.objects.filter(
+            pk__in=[row["order_id"] for row in orders.values() if row["order_id"]]
+        )
+    }
+    delivery_balances = delivered_quantities_by_order(linked_orders)
     order_payload = []
     for row in orders.values():
+        linked_order = linked_orders.get(row["order_id"])
+        row["net_delivered_quantity"] = delivery_balances.get(row["order_id"])
+        row["order_quantity"] = linked_order.order_quantity if linked_order else None
+        row["remaining_quantity"] = max(0, linked_order.order_quantity - row["net_delivered_quantity"]) if linked_order else None
         row["production_run_count"] = len(row.pop("_run_ids"))
         for field in FINANCE_FIELDS:
             row[field] = _decimal_text(row[field])
@@ -1442,8 +1940,9 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         payload["profit_margin"] = _rate(source["profit"], source["revenue"])
         return payload
 
-    def quality_source(source):
+    def quality_source(source, inspection_record_count=0):
         payload = dict(source)
+        payload["inspection_record_count"] = int(inspection_record_count or 0)
         payload["first_pass_rate"] = _rate(
             payload["qualified_quantity"], payload["inspection_quantity"]
         )
@@ -1472,6 +1971,10 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             "未关联历史及手工补录按legacy:规范化订单号单独归集"
         ),
         "quality_filter_scope": "品检与返工数据仅按日期筛选；无机台关联，machine/group筛选不作用于品质数据",
+        "employee_shipment_attribution": (
+            "单人出货全量归属该员工；未填写人员单列；多人协作且没有明确分配明细时"
+            "仅记录参与量并列为协作未分摊，不平均猜测"
+        ),
         "zero_denominator_rate": None,
     }
 
@@ -1544,11 +2047,31 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             "total": finance_source(combined_finance),
         },
         "quality": {
-            "automatic": quality_source(automatic_quality),
-            "manual": quality_source(manual_quality),
-            "total": quality_source(combined_quality),
+            "automatic": quality_source(automatic_quality, len(shipments)),
+            "manual": quality_source(
+                manual_quality,
+                manual_counts[ManualPerformanceEntry.EntryType.QUALITY],
+            ),
+            "total": quality_source(
+                combined_quality,
+                len(shipments)
+                + manual_counts[ManualPerformanceEntry.EntryType.QUALITY],
+            ),
             "shipment_count": len(shipments) + len(weighted_batches),
             "rework_count": len(reworks) + new_rework_count,
+        },
+        "quality_attribution": {
+            "factory_shipped_quantity": combined_quality["shipped_quantity"],
+            "employee_attributed_quantity": attributed_shipped_quantity,
+            "unassigned_employee_quantity": unassigned_shipped_quantity,
+            "collaborative_unallocated_quantity": collaborative_unallocated_quantity,
+            "other_unattributed_quantity": max(
+                0,
+                combined_quality["shipped_quantity"]
+                - attributed_shipped_quantity
+                - unassigned_shipped_quantity
+                - collaborative_unallocated_quantity,
+            ),
         },
         "daily_trend": daily_payload,
         "operator_performance": operator_payload,

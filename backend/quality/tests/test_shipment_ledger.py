@@ -2,6 +2,8 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.test import TestCase
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from molds.models import MoldModel
@@ -19,6 +21,38 @@ from .helpers import QualityTestMixin, response_results
 
 
 class ShipmentLedgerApiTests(QualityTestMixin, TestCase):
+    def test_source_filter_paginates_only_the_requested_ledger(self):
+        batch = self.create_weighted_batch()
+        legacy = self.create_shipment()
+        for source, expected_id in (("WEIGHTED", batch.pk), ("LEGACY", legacy.pk)):
+            response = self.client.get("/api/quality/shipment-ledger/", {"source_type": source, "compact": True, "page_size": 1})
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertEqual(response.json()["count"], 1)
+            self.assertEqual(response.json()["results"][0]["source_type"], source)
+            self.assertEqual(response.json()["results"][0]["source_id"], expected_id)
+
+    def test_compact_ledger_keeps_totals_and_pagination_without_per_batch_detail_queries(self):
+        for index in range(10):
+            self.create_weighted_batch(shipment_no=f"QS-COMPACT-{index:03}")
+        with CaptureQueriesContext(connection) as small_queries:
+            small = self.client.get("/api/quality/shipment-ledger/", {"compact": True, "page_size": 5})
+        self.assertEqual(small.status_code, 200, small.content)
+        payload = small.json()
+        self.assertEqual(payload["count"], 10)
+        self.assertEqual(len(payload["results"]), 5)
+        self.assertTrue(payload["next"])
+        self.assertTrue(all(row["batch"] is None and row["record"] is None for row in payload["results"]))
+        self.assertEqual(sum(row["shipped_quantity"] for row in payload["results"]), 500)
+        for index in range(10, 50):
+            self.create_weighted_batch(shipment_no=f"QS-COMPACT-{index:03}")
+        with CaptureQueriesContext(connection) as large_queries:
+            large = self.client.get("/api/quality/shipment-ledger/", {"compact": True, "page_size": 5, "page": 2})
+        self.assertEqual(large.status_code, 200, large.content)
+        self.assertEqual(large.json()["count"], 50)
+        self.assertLessEqual(len(large_queries), len(small_queries) + 2)
+        current_first = self.client.get("/api/quality/shipment-ledger/", {"compact": True, "page_size": 5}).json()
+        self.assertTrue(set(row["source_id"] for row in current_first["results"]).isdisjoint(row["source_id"] for row in large.json()["results"]))
+
     def setUp(self):
         super().setUp()
         self.due_date = timezone.localdate() + timedelta(days=7)

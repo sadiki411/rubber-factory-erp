@@ -532,6 +532,23 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(screen.getByLabelText(/相同称重批数/)).toHaveValue('')
   }, 120_000)
 
+  it('retains the same operation identity and inputs after a failed confirmation', async () => {
+    const user = userEvent.setup()
+    const onSubmit = vi.fn().mockRejectedValueOnce(new Error('模拟保存超时')).mockResolvedValue({ id: 501 })
+    renderDrawer(onSubmit, { initialOrderId: order.id })
+    fireEvent.change(screen.getByLabelText('成品单重(g/件)'), { target: { value: '25' } })
+    fireEvent.change(screen.getByLabelText('单批实称净重(kg)'), { target: { value: '2.5' } })
+    fireEvent.change(screen.getByLabelText('流程卡出货数量'), { target: { value: '100' } })
+    fireEvent.change(screen.getByLabelText(/相同称重批数/), { target: { value: '1' } })
+    await user.click(screen.getByRole('button', { name: '确认出货' }))
+    expect(await screen.findByText('模拟保存超时')).toBeInTheDocument()
+    expect(screen.getByLabelText('单批实称净重(kg)')).toHaveValue('2.500')
+    await user.click(screen.getByRole('button', { name: '确认出货' }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2))
+    expect(onSubmit.mock.calls[0][0].client_key).toBeTruthy()
+    expect(onSubmit.mock.calls[1][0].client_key).toBe(onSubmit.mock.calls[0][0].client_key)
+  }, 30_000)
+
   it('rejects an already bound process card before it can enter a new shipment', async () => {
     const user = userEvent.setup()
     const cardNo = '04-M003-2608210031'

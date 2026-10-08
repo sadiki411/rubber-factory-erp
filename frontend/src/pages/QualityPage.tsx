@@ -10,7 +10,7 @@ import {
   SendOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
-import { Alert, App, AutoComplete, Button, Card, Col, DatePicker, Empty, Grid, Input, Progress, Row, Select, Skeleton, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
+import { Alert, App, AutoComplete, Button, Card, Col, DatePicker, Empty, Grid, Input, Pagination, Progress, Row, Select, Skeleton, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -80,6 +80,7 @@ const ROLE_META: Record<QualityEmployeeRole, { text: string; color: string }> = 
 }
 
 function rateText(value: number | string | null | undefined) {
+  if (value === null || value === undefined || value === '') return '—'
   const parsed = Number(value)
   return Number.isFinite(parsed) ? `${parsed.toFixed(2)}%` : '-'
 }
@@ -174,9 +175,14 @@ export function QualityPage() {
   const mobile = screens.md === false
   const queryClient = useQueryClient()
   const { message } = App.useApp()
-  const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs().startOf('month'), dayjs().endOf('month')])
+  const [range, setRange] = useState<[Dayjs, Dayjs]>(() => {
+    const params = new URLSearchParams(window.location.search)
+    const from = dayjs(params.get('date_from'))
+    const to = dayjs(params.get('date_to'))
+    return params.has('date_from') && params.has('date_to') && from.isValid() && to.isValid() ? [from, to] : [dayjs().startOf('month'), dayjs()]
+  })
   const [dueRange, setDueRange] = useState<[Dayjs, Dayjs] | null>(null)
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(new URLSearchParams(window.location.search).get('q') || '')
   const [shipmentStatus, setShipmentStatus] = useState('CONFIRMED')
   const [orderStatus, setOrderStatus] = useState('')
   const [deliveryStatus, setDeliveryStatus] = useState('')
@@ -187,10 +193,18 @@ export function QualityPage() {
   const [debouncedMaterialFilter, setDebouncedMaterialFilter] = useState('')
   const [inspectorFilter, setInspectorFilter] = useState<number>()
   const [ordering, setOrdering] = useState('-shipment_date')
+  const [ledgerPage, setLedgerPage] = useState(1)
+  const [ledgerPageSize, setLedgerPageSize] = useState(20)
   const [activeTab, setActiveTab] = useState('workflow')
   const [shipmentForm, setShipmentForm] = useState<{ shipment?: QualityShipment }>()
   const [shipmentSessionKey, setShipmentSessionKey] = useState(0)
   const [batchReviewItem, setBatchReviewItem] = useState<QualityShipmentBatch>()
+  const [linkedBatchId, setLinkedBatchId] = useState(() => Number(new URLSearchParams(window.location.search).get('shipment_batch_id')) || undefined)
+  const linkedBatchQuery = useQuery({
+    queryKey: ['quality', 'shipment-batch-detail', linkedBatchId],
+    queryFn: () => qualityWorkflowApi.getShipmentBatch(linkedBatchId!),
+    enabled: Boolean(linkedBatchId),
+  })
   const [batchAmendItem, setBatchAmendItem] = useState<QualityShipmentBatch>()
   const [returnReworkOpen, setReturnReworkOpen] = useState(false)
   const [flowCardReturnOpen, setFlowCardReturnOpen] = useState(false)
@@ -207,6 +221,7 @@ export function QualityPage() {
   const [reworkCustomerFilter, setReworkCustomerFilter] = useState('')
   const dateFrom = range[0].format('YYYY-MM-DD')
   const dateTo = range[1].format('YYYY-MM-DD')
+  const searchUpdating = query.trim() !== debouncedQuery || specificationFilter.trim() !== debouncedSpecificationFilter || materialFilter.trim() !== debouncedMaterialFilter
   const dueDateFrom = dueRange?.[0].format('YYYY-MM-DD')
   const dueDateTo = dueRange?.[1].format('YYYY-MM-DD')
   const workflowTab = activeTab === 'workflow'
@@ -220,9 +235,10 @@ export function QualityPage() {
       setDebouncedQuery(query.trim())
       setDebouncedSpecificationFilter(specificationFilter.trim())
       setDebouncedMaterialFilter(materialFilter.trim())
+      setLedgerPage(1)
     }, 350)
     return () => window.clearTimeout(timer)
-  }, [query, specificationFilter, materialFilter])
+  }, [query, specificationFilter, materialFilter, dateFrom, dateTo, dueDateFrom, dueDateTo, shipmentStatus, orderStatus, deliveryStatus, inspectorFilter, ordering])
 
   const openShipmentForm = (shipment?: QualityShipment) => {
     setShipmentSessionKey((value) => value + 1)
@@ -267,8 +283,9 @@ export function QualityPage() {
     enabled: orderDataEnabled,
   })
   const shipmentLedgerQuery = useQuery({
-    queryKey: ['quality', 'shipment-ledger', { dateFrom, dateTo, dueDateFrom, dueDateTo, debouncedQuery, shipmentStatus, orderStatus, deliveryStatus, debouncedSpecificationFilter, debouncedMaterialFilter, inspectorFilter, ordering }],
-    queryFn: async ({ signal }) => toList(await qualityApi.listShipmentLedger({
+    queryKey: ['quality', 'shipment-ledger', { dateFrom, dateTo, dueDateFrom, dueDateTo, debouncedQuery, shipmentStatus, orderStatus, deliveryStatus, debouncedSpecificationFilter, debouncedMaterialFilter, inspectorFilter, ordering, ledgerPage, ledgerPageSize, workflowTab }],
+    queryFn: async ({ signal }) => qualityApi.listShipmentLedger({
+      source_type: workflowTab ? 'WEIGHTED' : undefined,
       q: debouncedQuery,
       shipment_status: shipmentStatus,
       order_status: orderStatus || undefined,
@@ -281,8 +298,10 @@ export function QualityPage() {
       due_date_from: dueDateFrom,
       due_date_to: dueDateTo,
       ordering,
-      page_size: 200,
-    }, { signal })),
+      compact: true,
+      page: ledgerPage,
+      page_size: ledgerPageSize,
+    }, { signal }),
     enabled: workflowTab || dailyTab,
   })
   const shipmentOptionsQuery = useQuery({
@@ -346,7 +365,8 @@ export function QualityPage() {
 
   const employees = useMemo(() => employeesQuery.data || [], [employeesQuery.data])
   const orders = useMemo(() => ordersQuery.data || [], [ordersQuery.data])
-  const shipmentLedger = useMemo(() => shipmentLedgerQuery.data || [], [shipmentLedgerQuery.data])
+  const shipmentLedger = useMemo(() => shipmentLedgerQuery.data ? toList(shipmentLedgerQuery.data) : [], [shipmentLedgerQuery.data])
+  const ledgerTotal = Array.isArray(shipmentLedgerQuery.data) ? shipmentLedgerQuery.data.length : shipmentLedgerQuery.data?.count || 0
   const shipmentOptions = shipmentOptionsQuery.data || []
   const reworks = reworksQuery.data || []
   const processCards = useMemo(() => processCardsQuery.data || [], [processCardsQuery.data])
@@ -360,6 +380,7 @@ export function QualityPage() {
   const reworkCases = useMemo(() => reworkCasesQuery.data || [], [reworkCasesQuery.data])
   const summary = summaryQuery.data
   const totals = summary?.totals
+  const shipmentAttribution = summary?.shipment_attribution
   const specificationOptions = useMemo(() => [...new Set([
     ...orders.map((order) => order.specification),
     ...processCards.map((card) => card.specification_snapshot),
@@ -404,6 +425,7 @@ export function QualityPage() {
     if (reworksTab) tasks.push(reworksQuery.refetch())
     await Promise.all([
       ...tasks,
+      queryClient.invalidateQueries({ queryKey: ['quality', 'shipment-batch-detail'] }),
       queryClient.invalidateQueries({ queryKey: ['quality', 'returnable-batches'] }),
       queryClient.invalidateQueries({ queryKey: ['analytics'] }),
       queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
@@ -518,8 +540,7 @@ export function QualityPage() {
   const ledgerValues = (values?: Array<string | null | undefined>) => [...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))]
   const openLedgerDetail = (row: QualityShipmentLedgerRow) => {
     if (row.source_type === 'WEIGHTED') {
-      const batch = row.batch || shipmentBatches.find((item) => String(item.id) === String(row.source_id))
-      if (batch) setBatchReviewItem(batch)
+      setLinkedBatchId(Number(row.source_id))
       return
     }
     if (row.shipment) openShipmentForm(row.shipment)
@@ -579,19 +600,20 @@ export function QualityPage() {
   ]
 
   const orderColumns: TableColumnsType<OrderRow> = [
-    { title: '订单 / 批次', key: 'order', fixed: 'left', width: 190, render: (_, row) => <span><strong>{row.order.order_no}</strong><br /><Typography.Text type="secondary">{row.order.batch_no}</Typography.Text></span> },
+    { title: '订单 / 项次 / 批次', key: 'order', fixed: 'left', width: 190, render: (_, row) => <span><strong>{row.order.order_no} / {row.order.item_no || '未记录'}</strong><br /><Typography.Text type="secondary">{row.order.batch_no}</Typography.Text></span> },
     { title: '产品 / 规格', key: 'product', width: 200, render: (_, row) => <span>{row.order.product_code} · {row.order.product_name}<br /><Typography.Text type="secondary">{row.order.specification} · {row.order.material}</Typography.Text></span> },
     { title: '订单数量', key: 'order_quantity', width: 105, render: (_, row) => qualityNumber(row.order.order_quantity) },
     { title: '状态', key: 'status', width: 95, render: (_, row) => <Tag color={ORDER_STATUS_META[row.order.status].color}>{row.order.status_display || ORDER_STATUS_META[row.order.status].text}</Tag> },
     { title: '质检数量', key: 'inspection', width: 105, render: (_, row) => qualityNumber(row.stats?.inspection_quantity) },
-    { title: '出货数量', key: 'shipped', width: 105, render: (_, row) => qualityNumber(row.stats?.shipped_quantity) },
+    { title: '当期累计出货', key: 'shipped', width: 115, render: (_, row) => qualityNumber(row.stats?.shipped_quantity) },
+    { title: '全生命周期净交付 / 剩余', key: 'delivery', width: 175, render: (_, row) => row.stats ? `${qualityNumber(row.stats.net_delivered_quantity)} / ${qualityNumber(row.stats.remaining_quantity)}` : '—' },
     { title: '退货数量', key: 'returned', width: 105, render: (_, row) => <span className={row.stats?.returned_quantity ? 'quality-danger-text' : ''}>{qualityNumber(row.stats?.returned_quantity)}</span> },
     { title: '返工数量', key: 'reworked', width: 105, render: (_, row) => qualityNumber(row.stats?.reworked_quantity) },
     { title: '一次合格率', key: 'first_pass', width: 120, render: (_, row) => rateText(row.stats?.first_pass_rate) },
-    { title: '退货率', key: 'return_rate', width: 100, render: (_, row) => <span className={Number(row.stats?.return_rate || 0) > 0 ? 'quality-danger-text' : ''}>{rateText(row.stats?.return_rate)}</span> },
+    { title: '当期退回/出货比', key: 'return_rate', width: 145, render: (_, row) => <span className={Number(row.stats?.return_rate || 0) > 0 ? 'quality-danger-text' : ''}>{rateText(row.stats?.return_rate)}</span> },
     { title: '返工通过率', key: 'rework_pass', width: 120, render: (_, row) => rateText(row.stats?.rework_pass_rate) },
     { title: '返工次数', key: 'rework_count', width: 110, render: (_, row) => reworkCountTag(row.stats?.rework_count || 0) },
-    { title: '操作', key: 'action', fixed: 'right', width: 100, render: () => <Button type="link" onClick={() => navigate('/orders')}>订单管理</Button> },
+    { title: '操作', key: 'action', fixed: 'right', width: 100, render: (_, row) => <Button type="link" onClick={() => navigate(`/orders?order_id=${row.order.id}`)}>订单管理</Button> },
   ]
 
   const employeeColumns: TableColumnsType<QualityEmployee> = [
@@ -609,9 +631,11 @@ export function QualityPage() {
       <Table<T> rowKey={rowKey} loading={loading} dataSource={rows} columns={columns} scroll={{ x: scrollX }} pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }} locale={{ emptyText }} />
     </Card>
   )
-  const renderShipmentLedger = (rows: QualityShipmentLedgerRow[], loading: boolean, emptyText: string) => mobile
-    ? <ShipmentLedgerMobileList rows={rows} loading={loading} onOpen={openLedgerDetail} emptyText={emptyText} />
-    : tableCard(rows, ledgerColumns, loading, 'key', 1765, emptyText)
+  const renderShipmentLedger = (rows: QualityShipmentLedgerRow[], loading: boolean, emptyText: string) => <>
+    {shipmentLedgerQuery.error && <Alert type="error" showIcon message="出货查询失败，不代表没有记录" description={(shipmentLedgerQuery.error as Error).message} action={<Button onClick={() => void shipmentLedgerQuery.refetch()}>重试查询</Button>} />}
+    {mobile ? <ShipmentLedgerMobileList rows={searchUpdating ? [] : rows} loading={loading || searchUpdating} onOpen={openLedgerDetail} emptyText={emptyText} /> : <Card className="data-card" styles={{ body: { padding: 0 } }}><Table rowKey="key" loading={loading || searchUpdating} dataSource={searchUpdating ? [] : rows} columns={ledgerColumns} scroll={{ x: 1765 }} pagination={false} locale={{ emptyText: loading || searchUpdating ? '正在查询出货记录…' : shipmentLedgerQuery.error ? '查询失败，请重试' : emptyText }} /></Card>}
+    <Pagination current={ledgerPage} pageSize={ledgerPageSize} total={ledgerTotal} onChange={(page, pageSize) => { setLedgerPage(page); setLedgerPageSize(pageSize) }} showSizeChanger showTotal={(total) => `共 ${total} 条`} style={{ marginTop: 16 }} />
+  </>
 
   const tabItems = [
     {
@@ -689,7 +713,7 @@ export function QualityPage() {
   // Their errors are shown inside the workflow tab, while the legacy quality
   // dashboard remains usable.
   const resetFilters = () => {
-    setRange([dayjs().startOf('month'), dayjs().endOf('month')])
+    setRange([dayjs().startOf('month'), dayjs()])
     setDueRange(null)
     setQuery('')
     setShipmentStatus('CONFIRMED')
@@ -702,13 +726,17 @@ export function QualityPage() {
   }
 
   const anyError = summaryQuery.error || employeesQuery.error || ordersQuery.error || shipmentLedgerQuery.error || reworksQuery.error
+  const analysisReturn = new URLSearchParams(window.location.search).get('return_to') || ''
+  const analysisLink = /^\/analytics(?:\?|$)/.test(analysisReturn) ? analysisReturn : `/analytics?date_from=${dateFrom}&date_to=${dateTo}&tab=quality`
 
   return (
     <div className="page-container quality-page">
+      {linkedBatchQuery.isLoading && <Alert type="info" title="正在读取指定出货单…" />}
+      {linkedBatchQuery.isError && <Alert type="error" title="指定出货单读取失败" description={(linkedBatchQuery.error as Error).message} action={<Button onClick={() => void linkedBatchQuery.refetch()}>重试</Button>} />}
       <PageTitle
         title="品检出货与退货返工"
         description="记录每日质检与出货、每次退货返工和订单批次；员工绩效与跨模块趋势统一在“数据分析”查看。"
-        extra={<Space wrap><Button icon={<QrcodeOutlined />} onClick={openFlowCardReturn}>扫码登记退货</Button><Button onClick={() => setReturnReworkOpen(true)}>登记整批退货返工（无扫码）</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => openShipmentForm()}>新增出货</Button></Space>}
+        extra={<Space wrap><Button href={analysisLink}>{analysisReturn ? '返回原分析筛选' : '查看本期品检分析'}</Button><Button icon={<QrcodeOutlined />} onClick={openFlowCardReturn}>扫码登记退货</Button><Button onClick={() => setReturnReworkOpen(true)}>登记整批退货返工（无扫码）</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => openShipmentForm()}>新增出货</Button></Space>}
       />
 
       <Card className="filter-card quality-filter-card">
@@ -736,11 +764,18 @@ export function QualityPage() {
       {anyError && <Alert className="quality-page-alert" type="error" showIcon title="部分品检数据读取失败" description={(anyError as Error).message} />}
 
       <Row gutter={[14, 14]} className="quality-kpis">
-        <Col xs={12} md={6}><Card className="quality-kpi inspection"><Statistic title="质检数量" value={totals?.inspection_quantity || 0} suffix="件" prefix={<AuditOutlined />} /><span>一次合格率 {rateText(totals?.first_pass_rate)}</span></Card></Col>
+        <Col xs={12} md={6}><Card className="quality-kpi inspection"><Statistic title="质检数量" value={totals?.inspection_record_count ? totals.inspection_quantity : '未登记'} suffix={totals?.inspection_record_count ? '件' : undefined} prefix={<AuditOutlined />} /><span>一次合格率 {rateText(totals?.first_pass_rate)}</span></Card></Col>
         <Col xs={12} md={6}><Card className="quality-kpi shipment"><Statistic title="出货数量" value={totals?.shipped_quantity || 0} suffix="件" prefix={<SendOutlined />} /><span>共 {qualityNumber(totals?.shipment_count)} 批出货</span></Card></Col>
-        <Col xs={12} md={6}><Card className="quality-kpi return"><Statistic title="退货数量" value={totals?.returned_quantity || 0} suffix="件" prefix={<WarningOutlined />} /><span>退货率 {rateText(totals?.return_rate)}</span></Card></Col>
+        <Col xs={12} md={6}><Card className="quality-kpi return"><Statistic title="退货数量" value={totals?.returned_quantity || 0} suffix="件" prefix={<WarningOutlined />} /><span>当期退回/出货比 {rateText(totals?.return_rate)}</span></Card></Col>
         <Col xs={12} md={6}><Card className="quality-kpi rework"><Statistic title="返工处理数量" value={totals?.reworked_quantity || 0} suffix="件" prefix={<CheckCircleOutlined />} /><span>返工通过率 {rateText(totals?.rework_pass_rate)}</span></Card></Col>
       </Row>
+      {!!shipmentAttribution && (shipmentAttribution.unassigned_employee_quantity > 0 || shipmentAttribution.collaborative_unallocated_quantity > 0 || shipmentAttribution.other_unattributed_quantity > 0) && <Alert
+        className="quality-page-alert"
+        type="warning"
+        showIcon
+        title="员工出货归属尚未完全登记"
+        description={`全厂出货 ${qualityNumber(shipmentAttribution.factory_shipped_quantity)} 件 = 已归属员工 ${qualityNumber(shipmentAttribution.employee_attributed_quantity)} 件 + 未填写人员 ${qualityNumber(shipmentAttribution.unassigned_employee_quantity)} 件 + 协作未分摊 ${qualityNumber(shipmentAttribution.collaborative_unallocated_quantity)} 件${shipmentAttribution.other_unattributed_quantity ? ` + 其他待核对 ${qualityNumber(shipmentAttribution.other_unattributed_quantity)} 件` : ''}。未填写或协作不明的数量不会被平均猜给员工。`}
+      />}
 
       <Card className="quality-tabs-card data-card">
         <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems} />
@@ -777,13 +812,14 @@ export function QualityPage() {
         }}
       />
       <ShipmentBatchReviewDrawer
-        open={!!batchReviewItem}
-        item={batchReviewItem}
+        open={!!batchReviewItem || !!linkedBatchQuery.data && !!linkedBatchId}
+        item={batchReviewItem || linkedBatchQuery.data}
         employees={employees}
-        onClose={() => setBatchReviewItem(undefined)}
+        onClose={() => { setBatchReviewItem(undefined); setLinkedBatchId(undefined) }}
         onSaved={async () => refreshAfterShipmentInBackground()}
         onAmend={(item) => {
           setBatchReviewItem(undefined)
+          setLinkedBatchId(undefined)
           setBatchAmendItem(item)
         }}
       />

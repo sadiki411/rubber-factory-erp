@@ -77,6 +77,24 @@ class DashboardQuerySerializer(serializers.Serializer):
         return attrs
 
 
+class QualityEmployeeDetailQuerySerializer(DashboardQuerySerializer):
+    quality_employee_id = serializers.IntegerField(min_value=1)
+    specification = serializers.CharField(required=False, allow_blank=True)
+    material = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if not QualityEmployee.objects.filter(
+            pk=attrs["quality_employee_id"]
+        ).exists():
+            raise serializers.ValidationError(
+                {"quality_employee_id": "所选员工不存在。"}
+            )
+        attrs["specification"] = str(attrs.get("specification", "") or "").strip()
+        attrs["material"] = str(attrs.get("material", "") or "").strip()
+        return attrs
+
+
 class SoftVoidSerializerMixin:
     def get_created_by_name(self, obj) -> str:
         return obj.created_by.get_full_name() or obj.created_by.get_username()

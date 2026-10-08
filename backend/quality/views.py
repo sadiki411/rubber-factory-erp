@@ -58,6 +58,7 @@ from .services import (
     returnable_groups_for_batch,
     serialize_order_allocation_plan,
     shipment_line_piece_quantity,
+    shipment_inspectors,
     set_return_case_inspectors,
     shipment_return_groups,
     shipment_unit_allocations,
@@ -3304,6 +3305,7 @@ def _weighted_ledger_row(
     *,
     specification_filter="",
     material_filter="",
+    include_details=True,
 ):
     all_lines = _batch_lines(batch)
     filter_active = bool(specification_filter or material_filter)
@@ -3367,7 +3369,7 @@ def _weighted_ledger_row(
         ]
     record = QualityShipmentBatchSerializer(
         batch, context={"request": request}
-    ).data
+    ).data if include_details else None
     rework_cases = {}
     for line in lines:
         rework_cases.update(
@@ -3569,6 +3571,13 @@ class QualityShipmentLedgerView(APIView):
     def get(self, request):
         params = request.query_params
         weighted_statuses, include_legacy = self._shipment_statuses(params)
+        source_type = str(params.get("source_type", "")).strip().upper()
+        if source_type not in {"", "WEIGHTED", "LEGACY"}:
+            raise DRFValidationError({"source_type": "无效的出货来源类型。"})
+        if source_type == "WEIGHTED":
+            include_legacy = False
+        elif source_type == "LEGACY":
+            weighted_statuses = set()
         date_from, date_to = _date_range(params)
         due_from = _parsed_date(str(params.get("due_date_from", "")).strip(), "due_date_from")
         due_to = _parsed_date(str(params.get("due_date_to", "")).strip(), "due_date_to")
@@ -3637,6 +3646,7 @@ class QualityShipmentLedgerView(APIView):
                     delivery_statuses,
                     specification_filter=specification,
                     material_filter=material,
+                    include_details=str(params.get("compact", "")).lower() not in {"1", "true", "yes"},
                 )
                 for batch in weighted_rows
             ),
@@ -3802,7 +3812,10 @@ def _integer(value):
 
 def _rate(numerator, denominator):
     if not denominator:
-        return "0.00"
+        # A missing denominator is not a measured zero rate. Returning null
+        # keeps historical rows without measurements from looking like a
+        # genuine 0% result.
+        return None
     value = Decimal(numerator or 0) / Decimal(denominator) * Decimal("100")
     return format(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "f")
 
@@ -3818,6 +3831,32 @@ def _empty_quantities():
         "recovered_quantity": 0,
         "scrap_quantity": 0,
     }
+
+
+def _empty_employee_quantities():
+    return {
+        "inspection_quantity": 0,
+        "qualified_quantity": 0,
+        "defective_quantity": 0,
+        # Additive, attributable output. Collaborative rows without a stored
+        # allocation are deliberately excluded instead of divided by guesswork.
+        "shipped_quantity": 0,
+        # Participation is operational context and must not be summed across
+        # employees to produce a company total.
+        "participated_shipped_quantity": 0,
+        "collaborative_shipped_quantity": 0,
+        "inspection_record_count": 0,
+        "inspection_days": 0,
+        "shipment_count": 0,
+        "responsible_return_quantity": 0,
+        "reworked_quantity": 0,
+        "recovered_quantity": 0,
+        "scrap_quantity": 0,
+    }
+
+
+def _shipment_people(record):
+    return shipment_inspectors(record)
 
 
 def _rework_case_order(case):
@@ -3949,7 +3988,7 @@ class QualitySummaryView(APIView):
                     "lines",
                     queryset=QualityShipmentLine.objects.select_related(
                         "order", "process_card__order"
-                    ),
+                    ).prefetch_related("order_allocations__order"),
                 ),
             )
         )
@@ -4028,15 +4067,22 @@ class QualitySummaryView(APIView):
                 quantity = weighted_line_quantity(line, batch)
                 batch_quantity += quantity
                 card = line.process_card if line.process_card_id else None
-                order = line.order or (card.order if card else None) or batch.order
-                if order is not None:
-                    order_quantities[order.pk] = (
-                        order_quantities.get(order.pk, 0) + quantity
-                    )
-            people = list(batch.inspectors.all())
-            if not people and batch.inspector_id:
-                people = [batch.inspector]
-            people = list({person.pk: person for person in people}.values())
+                allocations = list(line.order_allocations.all())
+                if allocations:
+                    # The physical source remains on the shipment line, while
+                    # order fulfilment belongs to these immutable allocations.
+                    for allocation in allocations:
+                        order_quantities[allocation.order_id] = (
+                            order_quantities.get(allocation.order_id, 0)
+                            + int(allocation.piece_quantity or 0)
+                        )
+                else:
+                    order = line.order or (card.order if card else None) or batch.order
+                    if order is not None:
+                        order_quantities[order.pk] = (
+                            order_quantities.get(order.pk, 0) + quantity
+                        )
+            people = _shipment_people(batch)
             weighted_rows.append((batch, batch_quantity, order_quantities, people))
 
         shipment_totals = shipments.aggregate(
@@ -4089,6 +4135,9 @@ class QualitySummaryView(APIView):
             {
                 "shipment_count": _integer(shipment_totals["shipment_count"])
                 + len(weighted_rows),
+                "inspection_record_count": _integer(
+                    shipment_totals["shipment_count"]
+                ),
                 "order_count": len(order_ids),
                 "first_pass_rate": _rate(
                     totals["qualified_quantity"], totals["inspection_quantity"]
@@ -4249,6 +4298,7 @@ class QualitySummaryView(APIView):
                 "order_no", "batch_no", "id"
             )
         }
+        delivery_balances = delivered_quantities_by_order(orders)
         order_stats = []
         for order_id, order in orders.items():
             row = order_quantities[order_id]
@@ -4256,6 +4306,9 @@ class QualitySummaryView(APIView):
                 {
                     "order_id": order.pk,
                     "order_no": order.order_no,
+                    "item_no": order.item_no,
+                    "net_delivered_quantity": delivery_balances[order_id],
+                    "remaining_quantity": max(0, int(order.order_quantity or 0) - delivery_balances[order_id]),
                     "batch_no": order.batch_no,
                     "product_code": order.product_code,
                     "product_name": order.product_name,
@@ -4276,52 +4329,65 @@ class QualitySummaryView(APIView):
 
         employee_quantities = {}
         employee_inspection_dates = {}
-        for employee_id, shipment_date in shipments.values_list(
-            "inspector_id", "shipment_date"
-        ).distinct():
-            employee_inspection_dates.setdefault(employee_id, set()).add(shipment_date)
-        for item in shipments.values("inspector_id").annotate(
-            inspection_quantity=Sum("inspection_quantity"),
-            qualified_quantity=Sum("qualified_quantity"),
-            defective_quantity=Sum("defective_quantity"),
-            shipped_quantity=Sum("shipped_quantity"),
-            inspection_days=Count("shipment_date", distinct=True),
-            shipment_count=Count("id"),
+        attributed_shipped_quantity = 0
+        unassigned_shipped_quantity = 0
+        collaborative_unallocated_quantity = 0
+
+        # Legacy rows can also contain a multi-inspector relation. Iterate the
+        # hydrated records so legacy and weighted shipments follow one rule:
+        # one person is attributable; several people are participation only
+        # until the business stores an explicit split.
+        for shipment in shipments.select_related("inspector").prefetch_related(
+            "inspectors"
         ):
-            employee_quantities[item["inspector_id"]] = {
-                "inspection_quantity": _integer(item["inspection_quantity"]),
-                "qualified_quantity": _integer(item["qualified_quantity"]),
-                "defective_quantity": _integer(item["defective_quantity"]),
-                "shipped_quantity": _integer(item["shipped_quantity"]),
-                "inspection_days": _integer(item["inspection_days"]),
-                "shipment_count": _integer(item["shipment_count"]),
-                "responsible_return_quantity": 0,
-                "reworked_quantity": 0,
-                "recovered_quantity": 0,
-                "scrap_quantity": 0,
-            }
+            people = _shipment_people(shipment)
+            quantity = int(shipment.shipped_quantity or 0)
+            if not people:
+                unassigned_shipped_quantity += quantity
+                continue
+            collaborative = len(people) > 1
+            if collaborative:
+                collaborative_unallocated_quantity += quantity
+            else:
+                attributed_shipped_quantity += quantity
+            for person in people:
+                row = employee_quantities.setdefault(
+                    person.pk, _empty_employee_quantities()
+                )
+                row["participated_shipped_quantity"] += quantity
+                row["shipment_count"] += 1
+                row["inspection_record_count"] += int(not collaborative)
+                employee_inspection_dates.setdefault(person.pk, set()).add(
+                    shipment.shipment_date
+                )
+                if collaborative:
+                    row["collaborative_shipped_quantity"] += quantity
+                    continue
+                row["inspection_quantity"] += int(
+                    shipment.inspection_quantity or 0
+                )
+                row["qualified_quantity"] += int(shipment.qualified_quantity or 0)
+                row["defective_quantity"] += int(shipment.defective_quantity or 0)
+                row["shipped_quantity"] += quantity
         for batch, batch_quantity, _, people in weighted_rows:
             if not people:
+                unassigned_shipped_quantity += batch_quantity
                 continue
-            base, remainder = divmod(batch_quantity, len(people))
-            for index, person in enumerate(people):
+            collaborative = len(people) > 1
+            if collaborative:
+                collaborative_unallocated_quantity += batch_quantity
+            else:
+                attributed_shipped_quantity += batch_quantity
+            for person in people:
                 row = employee_quantities.setdefault(
-                    person.pk,
-                    {
-                        "inspection_quantity": 0,
-                        "qualified_quantity": 0,
-                        "defective_quantity": 0,
-                        "shipped_quantity": 0,
-                        "inspection_days": 0,
-                        "shipment_count": 0,
-                        "responsible_return_quantity": 0,
-                        "reworked_quantity": 0,
-                        "recovered_quantity": 0,
-                        "scrap_quantity": 0,
-                    },
+                    person.pk, _empty_employee_quantities()
                 )
-                row["shipped_quantity"] += base + (1 if index < remainder else 0)
+                row["participated_shipped_quantity"] += batch_quantity
                 row["shipment_count"] += 1
+                if collaborative:
+                    row["collaborative_shipped_quantity"] += batch_quantity
+                else:
+                    row["shipped_quantity"] += batch_quantity
                 employee_inspection_dates.setdefault(person.pk, set()).add(
                     batch.shipment_date
                 )
@@ -4329,19 +4395,7 @@ class QualitySummaryView(APIView):
             responsible_return_quantity=Sum("returned_quantity")
         ):
             row = employee_quantities.setdefault(
-                item["responsible_inspector_id"],
-                {
-                    "inspection_quantity": 0,
-                    "qualified_quantity": 0,
-                    "defective_quantity": 0,
-                    "shipped_quantity": 0,
-                    "inspection_days": 0,
-                    "shipment_count": 0,
-                    "responsible_return_quantity": 0,
-                    "reworked_quantity": 0,
-                    "recovered_quantity": 0,
-                    "scrap_quantity": 0,
-                },
+                item["responsible_inspector_id"], _empty_employee_quantities()
             )
             row["responsible_return_quantity"] = _integer(
                 item["responsible_return_quantity"]
@@ -4352,19 +4406,7 @@ class QualitySummaryView(APIView):
             scrap_quantity=Sum("scrap_quantity"),
         ):
             row = employee_quantities.setdefault(
-                item["rework_employee_id"],
-                {
-                    "inspection_quantity": 0,
-                    "qualified_quantity": 0,
-                    "defective_quantity": 0,
-                    "shipped_quantity": 0,
-                    "inspection_days": 0,
-                    "shipment_count": 0,
-                    "responsible_return_quantity": 0,
-                    "reworked_quantity": 0,
-                    "recovered_quantity": 0,
-                    "scrap_quantity": 0,
-                },
+                item["rework_employee_id"], _empty_employee_quantities()
             )
             for key in ("reworked_quantity", "recovered_quantity", "scrap_quantity"):
                 row[key] = _integer(item[key])
@@ -4376,19 +4418,7 @@ class QualitySummaryView(APIView):
                 and case.responsible_inspector_id
             ):
                 row = employee_quantities.setdefault(
-                    case.responsible_inspector_id,
-                    {
-                        "inspection_quantity": 0,
-                        "qualified_quantity": 0,
-                        "defective_quantity": 0,
-                        "shipped_quantity": 0,
-                        "inspection_days": 0,
-                        "shipment_count": 0,
-                        "responsible_return_quantity": 0,
-                        "reworked_quantity": 0,
-                        "recovered_quantity": 0,
-                        "scrap_quantity": 0,
-                    },
+                    case.responsible_inspector_id, _empty_employee_quantities()
                 )
                 row["responsible_return_quantity"] += (
                     _rework_case_returned_quantity(case)
@@ -4397,19 +4427,7 @@ class QualitySummaryView(APIView):
                 if not attempt.rework_employee_id:
                     continue
                 row = employee_quantities.setdefault(
-                    attempt.rework_employee_id,
-                    {
-                        "inspection_quantity": 0,
-                        "qualified_quantity": 0,
-                        "defective_quantity": 0,
-                        "shipped_quantity": 0,
-                        "inspection_days": 0,
-                        "shipment_count": 0,
-                        "responsible_return_quantity": 0,
-                        "reworked_quantity": 0,
-                        "recovered_quantity": 0,
-                        "scrap_quantity": 0,
-                    },
+                    attempt.rework_employee_id, _empty_employee_quantities()
                 )
                 for key, value in _rework_attempt_quantities(attempt).items():
                     row[key] += value
@@ -4453,6 +4471,19 @@ class QualitySummaryView(APIView):
                     "date_to": date_to.isoformat(),
                 },
                 "totals": totals,
+                "shipment_attribution": {
+                    "factory_shipped_quantity": totals["shipped_quantity"],
+                    "employee_attributed_quantity": attributed_shipped_quantity,
+                    "unassigned_employee_quantity": unassigned_shipped_quantity,
+                    "collaborative_unallocated_quantity": collaborative_unallocated_quantity,
+                    "other_unattributed_quantity": max(
+                        0,
+                        totals["shipped_quantity"]
+                        - attributed_shipped_quantity
+                        - unassigned_shipped_quantity
+                        - collaborative_unallocated_quantity,
+                    ),
+                },
                 "daily_trend": list(daily.values()),
                 "order_stats": order_stats,
                 "employee_stats": employee_stats,

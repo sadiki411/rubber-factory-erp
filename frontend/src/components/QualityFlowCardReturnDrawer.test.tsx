@@ -93,6 +93,8 @@ describe('QualityFlowCardReturnDrawer scan performance', () => {
 
     expect(await screen.findByText(cardNo)).toBeInTheDocument()
     expect(screen.getByText('校验中')).toBeInTheDocument()
+    expect(screen.getByText('正在核对原出货责任品检员')).toBeInTheDocument()
+    expect(screen.queryByText('责任品检员已从原出货自动带入')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /确认登记/ })).toBeDisabled()
     expect(apiMocks.listReturnableBatches).not.toHaveBeenCalled()
 
@@ -117,6 +119,7 @@ describe('QualityFlowCardReturnDrawer scan performance', () => {
     })
 
     expect(await screen.findByText('已锁定原出货')).toBeInTheDocument()
+    expect(screen.getByText('责任品检员已从原出货自动带入')).toBeInTheDocument()
     expect(screen.getByText(/原出货 QS-20260927-BA598527/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /确认登记/ })).toBeEnabled()
     expect(apiMocks.listReturnableBatches).not.toHaveBeenCalled()
@@ -136,7 +139,7 @@ describe('QualityFlowCardReturnDrawer scan performance', () => {
     await waitFor(() => expect(apiMocks.listReturnableBatches).toHaveBeenCalledWith({ page_size: 200 }))
   })
 
-  it('removes a card again when background validation rejects it', async () => {
+  it('retains failed cards for explicit retry without falling back to first binding', async () => {
     const user = userEvent.setup()
     const cardNo = '04-M003-2608270088'
     apiMocks.scanProcessCard.mockRejectedValue(new Error('服务器校验失败'))
@@ -145,8 +148,14 @@ describe('QualityFlowCardReturnDrawer scan performance', () => {
     await user.type(await screen.findByPlaceholderText('输入退货流程卡'), cardNo)
     await user.click(screen.getByRole('button', { name: '加入退货卡' }))
 
-    await waitFor(() => expect(screen.queryByText(cardNo)).not.toBeInTheDocument())
-    expect(await screen.findByText('尚未扫描退回产品的流程卡')).toBeInTheDocument()
+    expect(await screen.findByText('核对失败')).toBeInTheDocument()
+    expect(screen.getByText(cardNo)).toBeInTheDocument()
+    expect(screen.queryByText('首次绑定')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /确认登记/ })).toBeDisabled()
     expect(apiMocks.listReturnableBatches).not.toHaveBeenCalled()
+    apiMocks.scanProcessCard.mockResolvedValue({ found: false, card_no: cardNo, binding_required: true })
+    await user.click(screen.getByRole('button', { name: '重试此卡' }))
+    expect(await screen.findByText('首次绑定')).toBeInTheDocument()
+    expect(apiMocks.scanProcessCard).toHaveBeenCalledTimes(2)
   })
 })

@@ -1,6 +1,7 @@
 import type {
   ApiList,
   AnalyticsDashboard,
+  AnalyticsQualityEmployeeDetail,
   BusinessImportCommitResult,
   BusinessImportHistoryDetail,
   BusinessImportHistorySummary,
@@ -556,6 +557,8 @@ export const productionImportApi = {
 }
 
 export interface QualityListFilters {
+  compact?: boolean
+  source_type?: 'WEIGHTED' | 'LEGACY'
   q?: string
   status?: string
   shipment_status?: string
@@ -752,9 +755,17 @@ export interface AnalyticsEntryFilters extends AnalyticsFilters {
   page_size?: number
 }
 
+export interface AnalyticsQualityDetailFilters extends AnalyticsFilters {
+  quality_employee_id: number
+  specification?: string
+  material?: string
+}
+
 export const analyticsApi = {
   dashboard: (filters: AnalyticsFilters = {}) =>
     apiFetch<AnalyticsDashboard>(`/api/analytics/dashboard/${queryString(filters)}`),
+  qualityEmployeeDetails: (filters: AnalyticsQualityDetailFilters) =>
+    apiFetch<AnalyticsQualityEmployeeDetail>(`/api/analytics/quality-employee-details/${queryString(filters)}`),
   listManualEntries: (filters: AnalyticsEntryFilters = {}) =>
     apiFetch<ApiList<ManualPerformanceEntry> | ManualPerformanceEntry[]>(`/api/analytics/manual-entries/${queryString(filters)}`),
   createManualEntry: (body: Record<string, unknown>) => apiFetch<ManualPerformanceEntry>('/api/analytics/manual-entries/', {

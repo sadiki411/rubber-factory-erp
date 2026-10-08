@@ -25,6 +25,75 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
     card_endpoint = "/api/quality/process-cards/"
     return_endpoint = "/api/quality/rework-cases/"
 
+    def test_real_sample_allocation_return_reship_matches_all_boards(self):
+        """T01-T03: physical quantity is counted once; balances use item shares."""
+        day = timezone.localdate().isoformat()
+        self.order.order_no = "04-A001-2606150001"
+        self.order.item_no = "6"
+        self.order.specification = "QTMF-14-8"
+        self.order.material = "N6094"
+        self.order.order_quantity = 4211
+        self.order.save()
+        target = QualityOrder.objects.create(
+            order_no=self.order.order_no, item_no="4",
+            specification=self.order.specification, material=self.order.material,
+            product_name=self.order.product_name, order_quantity=71579,
+            order_date=timezone.localdate(), created_by=self.user,
+        )
+        card = ProcessCard.objects.create(
+            card_no="04-M003-2607080061", order=self.order, quantity=8082,
+            unit_weight_g=Decimal("1.12600"), created_by=self.user,
+        )
+        draft = self.client.post(self.batch_endpoint, {
+            "shipment_no": "QS-TEST-8082", "shipment_date": day,
+            "inspector_ids": [self.inspector.pk],
+            "lines": [{"process_card_id": card.pk, "net_weight_kg": "9.100", "piece_quantity": 8082}],
+        }, format="json")
+        self.assertEqual(draft.status_code, 201, draft.content)
+        batch_id = draft.json()["id"]
+        confirmed = self.client.post(f"{self.batch_endpoint}{batch_id}/confirm/", {}, format="json")
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        allocations = QualityShipmentOrderAllocation.objects.filter(shipment_line__batch_id=batch_id)
+        self.assertEqual(dict(allocations.values_list("order_id", "piece_quantity")), {self.order.pk: 4211, target.pk: 3871})
+        self.assertEqual(dict(allocations.values_list("order_id", "net_weight_kg")), {self.order.pk: Decimal("4.741"), target.pk: Decimal("4.359")})
+
+        def check(gross, returned, net):
+            filters = {"date_from": day, "date_to": day}
+            summary = self.client.get("/api/quality/summary/", filters).json()
+            dashboard = self.client.get("/api/analytics/dashboard/", filters).json()
+            expected_net = {self.order.pk: 4211 if net else 0, target.pk: 3871 if net else 0}
+            expected_gross = {self.order.pk: 4211 * gross, target.pk: 3871 * gross}
+            expected_returns = {self.order.pk: 4211 * returned, target.pk: 3871 * returned}
+            self.assertEqual(summary["totals"]["shipped_quantity"], 8082 * gross)
+            self.assertEqual(dashboard["quality"]["total"]["shipped_quantity"], 8082 * gross)
+            self.assertEqual(summary["totals"]["returned_quantity"], 8082 * returned)
+            self.assertEqual(dashboard["quality"]["total"]["returned_quantity"], 8082 * returned)
+            for rows in (summary["order_stats"], dashboard["order_performance"]):
+                by_id = {row["order_id"]: row for row in rows}
+                for order in (self.order, target):
+                    row = by_id[order.pk]
+                    self.assertEqual(row["item_no"], order.item_no)
+                    self.assertEqual(row["shipped_quantity"], expected_gross[order.pk])
+                    self.assertEqual(row["returned_quantity"], expected_returns[order.pk])
+                    self.assertEqual(row["net_delivered_quantity"], expected_net[order.pk])
+                    self.assertEqual(row["remaining_quantity"], order.order_quantity - expected_net[order.pk])
+                    detail = self.client.get(f"/api/orders/orders/{order.pk}/").json()
+                    self.assertEqual(detail["weighted_shipped_quantity"], expected_net[order.pk])
+            employee = next(row for row in dashboard["quality_employee_performance"] if row["employee_id"] == self.inspector.pk)
+            work = self.client.get("/api/analytics/quality-employee-details/", dict(filters, quality_employee_id=self.inspector.pk)).json()
+            self.assertEqual(employee["shipped_quantity"], 8082 * gross)
+            self.assertEqual(sum(row["attributed_shipped_quantity"] for row in work["product_stats"]), employee["shipped_quantity"])
+            self.assertEqual(sum(row["responsible_return_quantity"] for row in work["product_stats"]), employee["responsible_return_quantity"])
+            self.assertEqual(delivered_quantities_by_order(expected_net), expected_net)
+
+        check(1, 0, True)
+        first_return = self.scan_return(card.card_no)
+        self.assertEqual(first_return.status_code, 201, first_return.content)
+        check(1, 1, False)
+        reship = self.client.post(f"{self.return_endpoint}{first_return.json()['id']}/reship/", {"inspector_ids": [self.inspector.pk]}, format="json")
+        self.assertEqual(reship.status_code, 201, reship.content)
+        check(2, 1, True)
+
     def create_confirmed_repeat(
         self, *, count=2, shipment_no="QS-CARD-TRACK", order_quantity=20_000
     ):

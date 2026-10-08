@@ -87,6 +87,7 @@ function ProcessCardStatusTag({ status = 'NOT_RECEIVED' }: { status?: OrderProce
 }
 
 export function OrdersPage() {
+  const analysisReturn = new URLSearchParams(window.location.search).get('return_to') || ''
   const screens = Grid.useBreakpoint()
   const mobile = screens.md === false
   const [query, setQuery] = useState('')
@@ -106,6 +107,12 @@ export function OrdersPage() {
   const [receiptFormOpen, setReceiptFormOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [importHistoryOpen, setImportHistoryOpen] = useState(false)
+  const targetOrderId = Number(new URLSearchParams(window.location.search).get('order_id')) || undefined
+  const targetOrderQuery = useQuery({
+    queryKey: ['orders', 'detail', targetOrderId],
+    queryFn: () => orderApi.detail(targetOrderId!),
+    enabled: Boolean(targetOrderId),
+  })
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -238,10 +245,13 @@ export function OrdersPage() {
 
   return (
     <div className="page-container orders-page">
+      {targetOrderId && <Card title="已定位到指定订单项次" style={{ marginBottom: 16 }}>
+        {targetOrderQuery.isError ? <Alert type="error" title="指定订单读取失败" description={(targetOrderQuery.error as Error).message} action={<Button onClick={() => void targetOrderQuery.refetch()}>重试</Button>} /> : <Table rowKey="id" dataSource={targetOrderQuery.data ? [targetOrderQuery.data] : []} columns={columns} loading={targetOrderQuery.isLoading} pagination={false} scroll={{ x: 1800 }} />}
+      </Card>}
       <PageTitle
         title="订单管理"
         description="统一管理订单、胶料到料和流程卡状态；空值表示尚未登记，实际为零时会明确显示 0。"
-        extra={<Space wrap><Button icon={<HistoryOutlined />} onClick={() => setImportHistoryOpen(true)}>导入记录</Button><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入订单 / 发料单</Button>{showingOrders ? <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增订单</Button> : <Button type="primary" icon={<PlusOutlined />} onClick={() => openReceiptForm()}>新增发料记录</Button>}</Space>}
+        extra={<Space wrap>{/^\/analytics(?:\?|$)/.test(analysisReturn) && <Button href={analysisReturn}>返回原分析筛选</Button>}<Button icon={<HistoryOutlined />} onClick={() => setImportHistoryOpen(true)}>导入记录</Button><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入订单 / 发料单</Button>{showingOrders ? <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增订单</Button> : <Button type="primary" icon={<PlusOutlined />} onClick={() => openReceiptForm()}>新增发料记录</Button>}</Space>}
       />
       <Tabs
         className="business-page-tabs"
