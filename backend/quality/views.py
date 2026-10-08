@@ -54,6 +54,7 @@ from .services import (
     delivered_quantities_by_order,
     find_process_card,
     replace_process_card,
+    reporting_related_rows,
     return_reporting_allocations,
     reship_return_case,
     returnable_groups_for_batch,
@@ -3897,8 +3898,7 @@ def _rework_case_order_shares(case):
     """Return the physical batch's immutable piece shares by order."""
 
     shares = {}
-    allocation_manager = getattr(case, "shipment_allocations", None)
-    allocations = list(allocation_manager.all()) if allocation_manager else []
+    allocations = reporting_related_rows(case, "shipment_allocations")
     for allocation in allocations:
         line = allocation.shipment_line
         order = (
@@ -4001,10 +4001,11 @@ class QualitySummaryView(APIView):
             )
             .select_related("inspector", "order")
             .prefetch_related(
-                "inspectors",
+                Prefetch("inspectors", to_attr="report_inspectors"),
                 Prefetch(
                     "lines",
                     queryset=shipment_reporting_lines(),
+                    to_attr="report_lines",
                 ),
             )
         )
@@ -4042,7 +4043,7 @@ class QualitySummaryView(APIView):
                     .select_related("rework_employee"),
                     to_attr="period_attempts",
                 ),
-                Prefetch("shipment_allocations", queryset=return_reporting_allocations()),
+                Prefetch("shipment_allocations", queryset=return_reporting_allocations(), to_attr="report_shipment_allocations"),
             )
             .distinct()
         )
@@ -4077,11 +4078,11 @@ class QualitySummaryView(APIView):
         for batch in weighted_batches:
             batch_quantity = 0
             order_quantities = {}
-            for line in batch.lines.all():
+            for line in reporting_related_rows(batch, "lines"):
                 quantity = weighted_line_quantity(line, batch)
                 batch_quantity += quantity
                 card = line.process_card if line.process_card_id else None
-                allocations = list(line.order_allocations.all())
+                allocations = reporting_related_rows(line, "order_allocations")
                 if allocations:
                     # The physical source remains on the shipment line, while
                     # order fulfilment belongs to these immutable allocations.

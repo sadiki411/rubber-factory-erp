@@ -42,6 +42,7 @@ def shipment_reporting_lines():
     ).prefetch_related(Prefetch(
         "order_allocations",
         queryset=QualityShipmentOrderAllocation.objects.select_related("order"),
+        to_attr="report_order_allocations",
     ))
 
 
@@ -50,6 +51,15 @@ def return_reporting_allocations():
         "shipment_line__order", "shipment_line__process_card__order",
         "shipment_order_allocation__order",
     )
+
+
+def reporting_related_rows(instance, relation):
+    """Read reporting lists directly, falling back for ordinary business rows."""
+    cached = getattr(instance, f"report_{relation}", None)
+    if cached is not None:
+        return cached
+    manager = getattr(instance, relation, None)
+    return list(manager.all()) if manager is not None else []
 
 
 def shipment_inspectors(batch: QualityShipmentBatch | None) -> list[QualityEmployee]:
@@ -63,7 +73,7 @@ def shipment_inspectors(batch: QualityShipmentBatch | None) -> list[QualityEmplo
 
     if batch is None:
         return []
-    people = list(batch.inspectors.all())
+    people = list(reporting_related_rows(batch, "inspectors"))
     if batch.inspector_id:
         primary = batch.inspector
         people = [primary, *[person for person in people if person.pk != primary.pk]]

@@ -17,7 +17,8 @@ from quality.models import (
     ReturnRework,
 )
 from quality.services import (
-    delivered_quantities_by_order, return_reporting_allocations, shipment_reporting_lines,
+    delivered_quantities_by_order, reporting_related_rows, return_reporting_allocations,
+    shipment_inspectors, shipment_reporting_lines,
 )
 
 from .helpers import QualityTestMixin
@@ -285,3 +286,20 @@ class DeliveryBalanceTests(QualityTestMixin, TestCase):
                 allocation.shipment_line.process_card.order.pk == self.order.pk
                 for case in loaded_cases for allocation in case.shipment_allocations.all()
             ))
+
+    def test_reporting_lists_are_read_without_constructing_related_querysets(self):
+        line = self.line()
+        self.share(line)
+        line.batch.inspectors.add(self.inspector)
+        batch = QualityShipmentBatch.objects.prefetch_related(
+            Prefetch("inspectors", to_attr="report_inspectors"),
+            Prefetch("lines", queryset=shipment_reporting_lines(), to_attr="report_lines"),
+        ).get(pk=line.batch_id)
+        with self.assertNumQueries(0):
+            self.assertEqual(shipment_inspectors(batch), [self.inspector])
+            rows = reporting_related_rows(batch, "lines")
+            self.assertIs(rows, batch.report_lines)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(reporting_related_rows(rows[0], "order_allocations")[0].piece_quantity, 100)
+        # Ordinary business objects still use the actual relation as before.
+        self.assertEqual(reporting_related_rows(line, "order_allocations")[0].piece_quantity, 100)

@@ -16,7 +16,7 @@ from quality.models import (
     ReturnRework,
 )
 from quality.services import (
-    delivered_quantities_by_order, return_reporting_allocations,
+    delivered_quantities_by_order, reporting_related_rows, return_reporting_allocations,
     shipment_inspectors, shipment_line_piece_quantity, shipment_reporting_lines,
 )
 
@@ -97,8 +97,7 @@ def _rework_case_order(case):
 
 def _rework_case_order_shares(case):
     shares = {}
-    allocation_manager = getattr(case, "shipment_allocations", None)
-    allocations = list(allocation_manager.all()) if allocation_manager else []
+    allocations = reporting_related_rows(case, "shipment_allocations")
     for allocation in allocations:
         shipment_order_allocation = getattr(
             allocation, "shipment_order_allocation", None
@@ -644,17 +643,17 @@ def build_quality_employee_details(
         .filter(Q(inspector_id=employee.pk) | Q(inspectors=employee))
         .select_related("inspector", "order")
         .prefetch_related(
-            "inspectors",
-            Prefetch("lines", queryset=shipment_reporting_lines()),
+            Prefetch("inspectors", to_attr="report_inspectors"),
+            Prefetch("lines", queryset=shipment_reporting_lines(), to_attr="report_lines"),
         )
         .distinct()
     )
     for batch in weighted_batches:
         people = shipment_inspectors(batch)
         collaborative = len(people) > 1
-        for line in batch.lines.all():
+        for line in reporting_related_rows(batch, "lines"):
             card = line.process_card if line.process_card_id else None
-            allocations = list(line.order_allocations.all())
+            allocations = reporting_related_rows(line, "order_allocations")
             components = [
                 {
                     "order": allocation.order,
@@ -793,7 +792,7 @@ def build_quality_employee_details(
             "process_card__order",
         )
         .prefetch_related(
-            Prefetch("shipment_allocations", queryset=return_reporting_allocations()),
+            Prefetch("shipment_allocations", queryset=return_reporting_allocations(), to_attr="report_shipment_allocations"),
         )
     )
     for case in responsible_cases:
@@ -852,7 +851,7 @@ def build_quality_employee_details(
             "case__process_card__order",
         )
         .prefetch_related(
-            Prefetch("case__shipment_allocations", queryset=return_reporting_allocations()),
+            Prefetch("case__shipment_allocations", queryset=return_reporting_allocations(), to_attr="report_shipment_allocations"),
         )
     )
     for attempt in attempts:
@@ -1059,8 +1058,8 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         )
         .select_related("inspector")
         .prefetch_related(
-            "inspectors",
-            Prefetch("lines", queryset=shipment_reporting_lines()),
+            Prefetch("inspectors", to_attr="report_inspectors"),
+            Prefetch("lines", queryset=shipment_reporting_lines(), to_attr="report_lines"),
         )
     )
     reworks = list(
@@ -1102,7 +1101,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                 .select_related("rework_employee"),
                 to_attr="period_attempts",
             ),
-            Prefetch("shipment_allocations", queryset=return_reporting_allocations()),
+            Prefetch("shipment_allocations", queryset=return_reporting_allocations(), to_attr="report_shipment_allocations"),
         )
         .distinct()
     )
@@ -1357,7 +1356,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         # A batch may contain several physical lines and each line may fulfil
         # several orders.  Physical/company/day/inspector totals are recorded
         # once per line; only the order view is split by fulfilment allocation.
-        lines = list(batch.lines.all())
+        lines = reporting_related_rows(batch, "lines")
         people = shipment_inspectors(batch)
         for line in lines:
             card = line.process_card
@@ -1395,7 +1394,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                 employee["automatic_record_count"] += 1
 
             order_shares = {}
-            allocations = list(line.order_allocations.all())
+            allocations = reporting_related_rows(line, "order_allocations")
             for allocation in allocations:
                 order = allocation.order
                 share = order_shares.setdefault(
