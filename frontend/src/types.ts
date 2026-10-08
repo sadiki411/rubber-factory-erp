@@ -4,6 +4,7 @@ export interface User {
   id: number
   username: string
   display_name?: string
+  read_only?: boolean
 }
 
 export type InventoryQualityStatus = 'WAITING' | 'PASSED' | 'FAILED' | 'HOLD'

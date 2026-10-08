@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import connections
@@ -14,6 +15,7 @@ from django.test import SimpleTestCase, TransactionTestCase, override_settings
 
 from molds.models import Rack
 from production.models import ProductionStation
+from erp.permissions import READ_ONLY_GROUP_NAME
 
 
 @contextmanager
@@ -173,3 +175,24 @@ class InitializationCommandTests(TransactionTestCase):
         self.assertTrue(
             get_user_model().objects.get(username="erp-shared").check_password("new-password")
         )
+
+
+class ReadOnlyUserCommandTests(TransactionTestCase):
+    def test_command_creates_non_admin_user_in_only_read_only_group(self):
+        call_command(
+            "create_readonly_user",
+            username="gpt-audit",
+            password="temporary-password",
+            verbosity=0,
+        )
+
+        user = get_user_model().objects.get(username="gpt-audit")
+        self.assertTrue(user.is_active)
+        self.assertFalse(user.is_staff)
+        self.assertFalse(user.is_superuser)
+        self.assertTrue(user.check_password("temporary-password"))
+        self.assertEqual(
+            list(user.groups.values_list("name", flat=True)),
+            [READ_ONLY_GROUP_NAME],
+        )
+        self.assertTrue(Group.objects.filter(name=READ_ONLY_GROUP_NAME).exists())

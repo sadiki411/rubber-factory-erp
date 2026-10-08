@@ -25,6 +25,8 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView, exception_handler as drf_exception_handler
 
+from erp.permissions import is_read_only_user
+
 from .imports import commit_batch, create_standard_template, preview_workbook
 from .models import (
     ImportBatch,
@@ -103,6 +105,7 @@ def _user_payload(user):
         "id": user.pk,
         "username": user.get_username(),
         "display_name": user.get_full_name() or user.get_username(),
+        "read_only": is_read_only_user(user),
     }
 
 

@@ -13,7 +13,7 @@ import {
   SettingOutlined,
   ToolOutlined,
 } from '@ant-design/icons'
-import { Avatar, Button, Drawer, Dropdown, Grid, Layout, Menu, Space, Typography } from 'antd'
+import { Alert, Avatar, Button, Drawer, Dropdown, Grid, Layout, Menu, Space, Tag, Typography } from 'antd'
 import { useMemo, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import type { User } from '../types'
@@ -105,10 +105,12 @@ export function AppShell({ user, onLogout }: Props) {
             <Button type="text" className="user-button">
               <Avatar size="small">{(user?.display_name || user?.username || '管').slice(0, 1)}</Avatar>
               <span className="user-name">{user?.display_name || user?.username || '管理员'}</span>
+              {user?.read_only && <Tag color="blue">只读</Tag>}
             </Button>
           </Dropdown>
         </Header>
         <Content className="app-content">
+          {user?.read_only && <Alert banner showIcon type="info" message="当前为GPT只读测试账号：可以查看全部业务数据，不能新增、修改或删除。" />}
           <Outlet />
         </Content>
       </Layout>
