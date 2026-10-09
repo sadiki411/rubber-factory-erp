@@ -383,9 +383,13 @@ describe('QualityWeightShipmentDrawer', () => {
     fireEvent.change(weightInputs[1], { target: { value: '2.5' } })
     await waitFor(() => expect(apiMocks.previewShipmentAllocation).toHaveBeenLastCalledWith({ order_id: order.id, piece_quantity: 196 }))
     expect(screen.getByText('按重量明细顺序跨订单分配')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '确认出货' }))
+    const confirmButton = screen.getByRole('button', { name: '确认出货' })
+    // Allocation rendering and the debounced number check finish separately.
+    // A CI click while the number check still disables the button is ignored.
+    await waitFor(() => expect(confirmButton).toBeEnabled())
+    await user.click(confirmButton)
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1), { timeout: 15_000 })
     const payload = onSubmit.mock.calls[0][0]
     expect(payload.process_card_bindings).toEqual([
       { card_no: cards[0], shipment_unit_no: 1, order_id: order.id },
