@@ -90,6 +90,7 @@ export function OrdersPage() {
   const analysisReturn = new URLSearchParams(window.location.search).get('return_to') || ''
   const screens = Grid.useBreakpoint()
   const mobile = screens.md === false
+  const compactTable = screens.xxl === false
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
   const [activeTab, setActiveTab] = useState<OrderTab>('orders-open')
@@ -115,17 +116,20 @@ export function OrdersPage() {
   })
 
   useEffect(() => {
+    const nextQuery = query.trim()
+    if (nextQuery === debouncedQuery) return
     const timer = window.setTimeout(() => {
-      setDebouncedQuery(query.trim())
+      setDebouncedQuery(nextQuery)
       setOrderPage(1)
     }, 300)
     return () => window.clearTimeout(timer)
-  }, [query])
+  }, [query, debouncedQuery])
 
   const orderStatus: OrderStatus = activeTab === 'orders-completed' ? 'COMPLETED' : activeTab === 'orders-cancelled' ? 'CANCELLED' : 'OPEN'
   const showingOrders = activeTab !== 'receipts'
+  const orderQueryFilters = { query: debouncedQuery, orderStatus, productionRequired, materialStatus, processCardStatus, ordering }
   const ordersQuery = useQuery({
-    queryKey: ['orders', { query: debouncedQuery, orderStatus, productionRequired, materialStatus, processCardStatus, ordering, orderPage, orderPageSize }],
+    queryKey: ['orders', orderQueryFilters, orderPage, orderPageSize],
     queryFn: async ({ signal }): Promise<ApiList<Order>> => {
       const payload = await orderApi.list({
         q: debouncedQuery || undefined,
@@ -141,6 +145,13 @@ export function OrdersPage() {
         ? { count: payload.length, next: null, previous: null, results: payload }
         : payload
     },
+    // Retain a page's total/rows during pagination only, not after changing
+    // product/status filters. This keeps the pager stable without showing
+    // another search's results as if they belonged to the new filter.
+    placeholderData: (previousData, previousQuery) => (
+      JSON.stringify(previousQuery?.queryKey[1]) === JSON.stringify(orderQueryFilters)
+        ? previousData : undefined
+    ),
     enabled: showingOrders,
   })
   const orderOptionsQuery = useQuery({
@@ -192,10 +203,10 @@ export function OrdersPage() {
   }
 
   const columns: TableColumnsType<Order> = [
-    { title: '订单号 / 项次', key: 'order', fixed: 'left', width: 205, render: (_, row) => <Button type="link" className="table-primary-link" onClick={() => openForm(row)}>{row.order_no}{row.item_no ? ` / ${row.item_no}` : ''}</Button> },
-    { title: '流程卡', key: 'process_card', width: 190, render: (_, row) => <span>{exactOrderValue(row.process_card_text)}{(row.process_card_count !== null && row.process_card_count !== undefined) || (row.process_card_covered_quantity !== null && row.process_card_covered_quantity !== undefined) ? <><br /><Typography.Text type="secondary">{exactOrderValue(row.process_card_count, ' 张')} · 覆盖 {exactOrderValue(row.process_card_covered_quantity)}</Typography.Text></> : null}<br /><ProcessCardStatusTag status={row.process_card_status} /></span> },
-    { title: '规格 / 产品', key: 'specification', width: 220, render: (_, row) => <span>{row.specification || '-'}<br /><Typography.Text type="secondary">{row.product_name || row.product_code || '-'}</Typography.Text></span> },
-    { title: '材质', dataIndex: 'material', width: 125, render: (value) => value || '-' },
+    { title: '订单号 / 项次', key: 'order', fixed: mobile ? undefined : 'left', width: compactTable ? 150 : 205, render: (_, row) => <Button type="link" className="table-primary-link" onClick={() => openForm(row)}>{row.order_no}{row.item_no ? ` / ${row.item_no}` : ''}</Button> },
+    { title: '流程卡', key: 'process_card', fixed: mobile ? undefined : 'left', width: compactTable ? 130 : 190, render: (_, row) => <span>{exactOrderValue(row.process_card_text)}{(row.process_card_count !== null && row.process_card_count !== undefined) || (row.process_card_covered_quantity !== null && row.process_card_covered_quantity !== undefined) ? <><br /><Typography.Text type="secondary">{exactOrderValue(row.process_card_count, ' 张')} · 覆盖 {exactOrderValue(row.process_card_covered_quantity)}</Typography.Text></> : null}<br /><ProcessCardStatusTag status={row.process_card_status} /></span> },
+    { title: '规格 / 产品', key: 'specification', fixed: mobile ? undefined : 'left', width: compactTable ? 135 : 220, render: (_, row) => <span>{row.specification || '-'}<br /><Typography.Text type="secondary">{row.product_name || row.product_code || '-'}</Typography.Text></span> },
+    { title: '材质', dataIndex: 'material', fixed: mobile ? undefined : 'left', width: compactTable ? 85 : 125, render: (value) => value || '-' },
     {
       title: '交期',
       dataIndex: 'due_date',
@@ -227,8 +238,9 @@ export function OrdersPage() {
     { title: '最后更新', key: 'last_updated', width: 155, render: (_, row) => formattedTimestamp(row.last_data_updated_at || row.updated_at) },
     { title: '胶料状态', dataIndex: 'material_status', width: 100, render: (value) => <MaterialStatusTag status={value} /> },
     { title: '订单状态', dataIndex: 'status', width: 100, render: (value: OrderStatus, row) => <Tag color={ORDER_STATUS_META[value]?.color}>{row.status_display || ORDER_STATUS_META[value]?.text || value}</Tag> },
-    { title: '操作', key: 'action', fixed: 'right', width: 80, render: (_, row) => <Button type="link" icon={<EditOutlined />} onClick={() => openForm(row)}>编辑</Button> },
+    { title: '操作', key: 'action', fixed: mobile ? undefined : 'right', width: 90, render: (_, row) => <Button type="link" className="table-primary-link" icon={<EditOutlined />} onClick={() => openForm(row)}>编辑</Button> },
   ]
+  const orderScrollWidth = columns.reduce((total, column) => total + Number(column.width || 0), 0)
   const receiptColumns: TableColumnsType<MaterialReceipt> = [
     { title: '关联状态', key: 'linked', fixed: 'left', width: 115, render: (_, row) => row.order_id || row.order ? <Tag color="success">已关联订单</Tag> : <Tag color="error" icon={<WarningOutlined />}>待关联</Tag> },
     { title: '订单号 / 项次', key: 'order', fixed: 'left', width: 205, render: (_, row) => <Button type="link" className="table-primary-link" onClick={() => openReceiptForm(row)}>{row.order?.order_no || row.order_no || '未填写'}{row.order?.item_no || row.item_no ? ` / ${row.order?.item_no || row.item_no}` : ''}</Button> },
@@ -246,7 +258,7 @@ export function OrdersPage() {
   return (
     <div className="page-container orders-page">
       {targetOrderId && <Card title="已定位到指定订单项次" style={{ marginBottom: 16 }}>
-        {targetOrderQuery.isError ? <Alert type="error" title="指定订单读取失败" description={(targetOrderQuery.error as Error).message} action={<Button onClick={() => void targetOrderQuery.refetch()}>重试</Button>} /> : <Table rowKey="id" dataSource={targetOrderQuery.data ? [targetOrderQuery.data] : []} columns={columns} loading={targetOrderQuery.isLoading} pagination={false} scroll={{ x: 1800 }} />}
+        {targetOrderQuery.isError ? <Alert type="error" title="指定订单读取失败" description={(targetOrderQuery.error as Error).message} action={<Button onClick={() => void targetOrderQuery.refetch()}>重试</Button>} /> : <Table className="orders-table" rowKey="id" dataSource={targetOrderQuery.data ? [targetOrderQuery.data] : []} columns={columns} loading={targetOrderQuery.isLoading} pagination={false} sticky={{ offsetHeader: mobile ? 56 : 64 }} scroll={{ x: orderScrollWidth }} />}
       </Card>}
       <PageTitle
         title="订单管理"
@@ -309,7 +321,7 @@ export function OrdersPage() {
             <>
               <List
               className="mobile-record-list business-mobile-list"
-              loading={ordersQuery.isLoading}
+              loading={ordersQuery.isFetching}
               dataSource={orders}
               locale={{ emptyText: <Empty description="暂无订单" /> }}
               renderItem={(record) => (
@@ -345,12 +357,15 @@ export function OrdersPage() {
                 </List.Item>
               )}
               />
-              {orderTotal > orderPageSize && (
+              {orderTotal > 0 && (
                 <Pagination
+                  className="orders-pagination"
                   current={orderPage}
                   pageSize={orderPageSize}
                   total={orderTotal}
                   showSizeChanger
+                  responsive
+                  showLessItems
                   showTotal={(total) => `共 ${total} 条`}
                   onChange={(page, pageSize) => {
                     setOrderPage(pageSize === orderPageSize ? page : 1)
@@ -362,16 +377,22 @@ export function OrdersPage() {
           ) : (
             <Card className="data-card" styles={{ body: { padding: 0 } }}>
               <Table
+                className="orders-table"
                 rowKey="id"
-                loading={ordersQuery.isLoading}
+                loading={ordersQuery.isFetching}
                 dataSource={orders}
                 columns={columns}
-                scroll={{ x: 2680 }}
+                scroll={{ x: orderScrollWidth }}
+                sticky={{ offsetHeader: 64 }}
                 pagination={{ current: orderPage, pageSize: orderPageSize, total: orderTotal, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
-                onChange={(pagination, __, sorter) => {
-                  const nextPageSize = pagination.pageSize || orderPageSize
-                  setOrderPage(nextPageSize === orderPageSize ? (pagination.current || 1) : 1)
-                  setOrderPageSize(nextPageSize)
+                onChange={(pagination, __, sorter, extra) => {
+                  if (extra.action === 'paginate') {
+                    const nextPageSize = pagination.pageSize || orderPageSize
+                    setOrderPage(nextPageSize === orderPageSize ? (pagination.current || 1) : 1)
+                    setOrderPageSize(nextPageSize)
+                    return
+                  }
+                  if (extra.action !== 'sort') return
                   if (Array.isArray(sorter) || !sorter.field || !sorter.order) return
                   setOrderPage(1)
                   if (sorter.field === 'order_date') setOrdering(`${sorter.order === 'ascend' ? 'order_date' : '-order_date'},due_date,process_card_status`)

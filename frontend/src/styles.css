@@ -395,6 +395,11 @@ button, input, textarea, select { font: inherit; }
 .order-mobile-statuses { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 5px; }
 .order-mobile-statuses span { display: flex; align-items: center; gap: 5px; }
 .order-mobile-statuses small { color: #728680; }
+.orders-table { isolation: isolate; }
+.orders-table .ant-table-cell-fix-start, .orders-table .ant-table-cell-fix-left { overflow-wrap: anywhere; }
+.orders-table .table-primary-link { height: auto; max-width: 100%; padding-inline: 0; white-space: normal; text-align: left; }
+.orders-table .table-primary-link > span { overflow-wrap: anywhere; }
+.orders-pagination { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px 0; margin-top: 16px; }
 .order-balance-summary { margin-bottom: 18px; }
 .business-import-upload { display: grid; gap: 12px; margin-top: 18px; }
 .business-import-preview { margin-top: 24px; }
@@ -837,6 +842,11 @@ button, input, textarea, select { font: inherit; }
 .analytics-quality-mobile-grid b { color: #204f43; overflow-wrap: anywhere; }
 
 
+@media (min-width: 768px) and (max-width: 1279px) {
+  .order-filter-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .order-filter-row > .ant-input-affix-wrapper { grid-column: 1 / -1; }
+}
+
 @media (max-width: 991px) {
   .app-header { padding: 0 16px; }
   .page-container { padding: 22px 18px; }
@@ -918,6 +928,9 @@ button, input, textarea, select { font: inherit; }
   .business-data-drawer .ant-select-single .ant-select-selector { min-height: 44px; align-items: center; }
   .business-mobile-grid { grid-template-columns: 1fr; }
   .order-mobile-card .business-mobile-grid, .receipt-mobile-card .business-mobile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .orders-pagination { justify-content: center; }
+  .orders-pagination .ant-pagination-options { display: block; margin-inline-start: 0; }
+  .orders-pagination .ant-pagination-item, .orders-pagination .ant-pagination-prev, .orders-pagination .ant-pagination-next { min-width: 40px; min-height: 40px; line-height: 38px; }
   .production-specification-reference-grid { grid-template-columns: 1fr; }
   .production-kpi .ant-card-body { padding: 14px; }
   .production-kpi .ant-statistic-title { font-size: 12px; }
