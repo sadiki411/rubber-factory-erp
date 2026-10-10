@@ -12,6 +12,39 @@ from django.utils import timezone
 from molds.models import TimeStampedModel
 
 
+def _requires_historical_entry_reason(instance, date_field, *, approximate_field=None):
+    """Require a reason for history entry/date correction, not ordinary updates.
+
+    A valid record does not become a backfill merely because time has passed.
+    Compare with persisted facts so this also works after reloading the record,
+    while retaining validation for new rows, date changes and reason removal.
+    """
+    event_date = getattr(instance, date_field)
+    historical = event_date is not None and event_date < timezone.localdate()
+    fields = [date_field, "backfill_reason"]
+    if approximate_field is not None:
+        historical = historical or event_date is None or getattr(instance, approximate_field)
+        fields.append(approximate_field)
+    if not historical or str(instance.backfill_reason or "").strip():
+        return False
+    if instance._state.adding:
+        return True
+    previous = (
+        type(instance)._base_manager.using(instance._state.db)
+        .filter(pk=instance.pk).values(*fields).first()
+    )
+    if previous is None:
+        return True
+    return (
+        previous[date_field] != event_date
+        or bool(str(previous["backfill_reason"] or "").strip())
+        or (
+            approximate_field is not None
+            and previous[approximate_field] != getattr(instance, approximate_field)
+        )
+    )
+
+
 class QualityEmployee(TimeStampedModel):
     class Role(models.TextChoices):
         PRODUCTION = "PRODUCTION", "前端生产"
@@ -644,7 +677,7 @@ class ProductUnitWeight(TimeStampedModel):
             errors["unit_weight_g"] = (
                 "Enter unit weight, or enter sample count and sample total weight."
             )
-        if self.measured_on and self.measured_on < timezone.localdate() and not str(self.backfill_reason or "").strip():
+        if _requires_historical_entry_reason(self, "measured_on"):
             errors["backfill_reason"] = "A reason is required when entering a historical measurement."
         self.backfill_reason = str(self.backfill_reason or "").strip()
         self.notes = str(self.notes or "").strip()
@@ -827,7 +860,7 @@ class ProcessCard(TimeStampedModel):
             errors["material_issue_weight_kg"] = "Material issue weight cannot be negative."
         if self.reprint_count < 0:
             errors["reprint_count"] = "Reprint count cannot be negative."
-        if self.received_on and self.received_on < timezone.localdate() and not str(self.backfill_reason or "").strip():
+        if _requires_historical_entry_reason(self, "received_on"):
             errors["backfill_reason"] = "A reason is required when entering a historical process card."
         for field_name in ("source_order_no", "product_code_snapshot", "formula_code_snapshot", "special_requirements", "qr_text", "backfill_reason"):
             setattr(self, field_name, str(getattr(self, field_name, "") or "").strip())
@@ -1148,7 +1181,7 @@ class QualityShipmentBatch(TimeStampedModel):
             errors["shipment_no"] = "Shipment batch number is required."
         if self.status == self.Status.CONFIRMED and self.shipment_date is None:
             errors["shipment_date"] = "A confirmed shipment must have an actual date."
-        if self.shipment_date and self.shipment_date < timezone.localdate() and not str(self.backfill_reason or "").strip():
+        if _requires_historical_entry_reason(self, "shipment_date"):
             errors["backfill_reason"] = "A reason is required when entering a historical shipment."
         if self.inspector_id:
             role = QualityEmployee.objects.filter(pk=self.inspector_id).values_list(
@@ -2000,9 +2033,8 @@ class QualityReworkCase(TimeStampedModel):
                 errors["affected_weight_kg"] = "累计客户退回重量不能超过该出货行净重。"
             if self.affected_quantity is not None and line.piece_quantity is not None and returned_qty + self.affected_quantity > line.piece_quantity:
                 errors["affected_quantity"] = "累计客户退回件数不能超过该出货行件数。"
-        if (
-            (self.opened_on is None or self.date_is_approximate or self.opened_on < timezone.localdate())
-            and not str(self.backfill_reason or "").strip()
+        if _requires_historical_entry_reason(
+            self, "opened_on", approximate_field="date_is_approximate",
         ):
             errors["backfill_reason"] = "A reason is required when entering a historical rework case."
         if self.responsible_inspector_id:
@@ -2256,7 +2288,7 @@ class QualityReworkAttempt(TimeStampedModel):
                     errors["input_weight_kg"] = "整批退货的本轮投入重量必须等于原整批净重。"
                 if Decimal(self.reworked_weight_kg or 0) != expected_weight:
                     errors["reworked_weight_kg"] = "整批退货的本轮返工重量必须等于原整批净重。"
-        if self.attempt_date and self.attempt_date < timezone.localdate() and not str(self.backfill_reason or "").strip():
+        if _requires_historical_entry_reason(self, "attempt_date"):
             errors["backfill_reason"] = "A reason is required when entering a historical rework attempt."
         if self.rework_employee_id:
             role = QualityEmployee.objects.filter(pk=self.rework_employee_id).values_list(

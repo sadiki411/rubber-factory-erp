@@ -1,4 +1,6 @@
+from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.db.models import Sum
 from django.test import TestCase
@@ -283,6 +285,140 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
         self.assertEqual(second.json()["responsible_inspector_id"], second_inspector.pk)
         first_case = QualityReworkCase.objects.get(pk=first.json()["id"])
         self.assertEqual(first_case.responsible_inspector_id, self.inspector.pk)
+
+    def test_cross_day_reship_and_multiple_rounds_preserve_dates_and_inspectors(self):
+        day = timezone.localdate()
+        batch = self.create_confirmed_repeat(count=1)
+        batch.inspector = self.inspector
+        batch.save(update_fields=["inspector", "updated_at"])
+        batch.inspectors.set([self.inspector])
+        bound = self.bind(batch, [{"shipment_unit_no": 1, "card_no": "CARD-CROSS-DAY"}])
+        self.assertEqual(bound.status_code, 200, bound.content)
+        first = self.scan_return("CARD-CROSS-DAY", opened_on=day.isoformat())
+        self.assertEqual(first.status_code, 201, first.content)
+        next_inspector = QualityEmployee.objects.create(
+            employee_no="QC-CROSS-DAY", name="返工重新出货品检", role=QualityEmployee.Role.INSPECTOR,
+        )
+        with patch("django.utils.timezone.localdate", return_value=day + timedelta(days=3)):
+            scan = self.client.get(f"{self.card_endpoint}scan/", {"code": "CARD-CROSS-DAY"})
+            self.assertEqual(scan.status_code, 200, scan.content)
+            self.assertEqual(scan.json()["active_card"]["current_return"]["id"], first.json()["id"])
+            reship = self.client.post(
+                f"{self.return_endpoint}{first.json()['id']}/reship/",
+                {"inspector_ids": [next_inspector.pk]}, format="json",
+            )
+        self.assertEqual(reship.status_code, 201, reship.content)
+        case = QualityReworkCase.objects.get(pk=first.json()["id"])
+        self.assertEqual(case.opened_on, day)
+        self.assertEqual(case.closed_on, day + timedelta(days=3))
+        self.assertEqual(case.backfill_reason, "")
+        self.assertEqual(case.responsible_inspector_id, self.inspector.pk)
+        self.assertEqual(case.shipment_batch_id, batch.pk)
+        self.assertEqual(case.reshipment_batch_id, reship.json()["id"])
+        self.assertEqual(case.affected_quantity, 1_000)
+        self.assertEqual(case.affected_weight_kg, Decimal("10.000"))
+        self.assertEqual(reship.json()["inspectors"][0]["id"], next_inspector.pk)
+        self.assertEqual(reship.json()["shipped_quantity"], 1_000)
+        binding = ProcessCardUnitBinding.objects.get(process_card__card_no="CARD-CROSS-DAY")
+        self.assertEqual(binding.shipment_batch_id, reship.json()["id"])
+        self.assertEqual(delivered_quantities_by_order([self.order.pk])[self.order.pk], 1_000)
+
+        with patch("django.utils.timezone.localdate", return_value=day + timedelta(days=4)):
+            second = self.scan_return("CARD-CROSS-DAY", opened_on=(day + timedelta(days=4)).isoformat())
+        self.assertEqual(second.status_code, 201, second.content)
+        self.assertEqual(second.json()["return_round"], 2)
+        self.assertEqual(second.json()["responsible_inspector_id"], next_inspector.pk)
+        with patch("django.utils.timezone.localdate", return_value=day + timedelta(days=6)):
+            second_reship = self.client.post(
+                f"{self.return_endpoint}{second.json()['id']}/reship/",
+                {"inspector_ids": [self.inspector.pk]}, format="json",
+            )
+        self.assertEqual(second_reship.status_code, 201, second_reship.content)
+        second_case = QualityReworkCase.objects.get(pk=second.json()["id"])
+        self.assertEqual(second_case.opened_on, day + timedelta(days=4))
+        self.assertEqual(second_case.responsible_inspector_id, next_inspector.pk)
+        self.assertEqual(second_case.backfill_reason, "")
+        totals = order_delivery_totals([self.order.pk])[self.order.pk]
+        self.assertEqual(totals["gross_shipped_quantity"], 3_000)
+        self.assertEqual(totals["returned_quantity"], 2_000)
+        self.assertEqual(totals["effective_delivered_quantity"], 1_000)
+
+    def test_cross_day_return_can_be_cancelled_without_historical_entry_reason(self):
+        day = timezone.localdate()
+        batch = self.create_confirmed_repeat(count=1)
+        self.bind(batch, [{"shipment_unit_no": 1, "card_no": "CARD-CROSS-DAY-CANCEL"}])
+        returned = self.scan_return("CARD-CROSS-DAY-CANCEL")
+        self.assertEqual(returned.status_code, 201, returned.content)
+        with patch("django.utils.timezone.localdate", return_value=day + timedelta(days=3)):
+            response = self.client.patch(
+                f"{self.return_endpoint}{returned.json()['id']}/",
+                {"status": QualityReworkCase.Status.CANCELLED}, format="json",
+            )
+        self.assertEqual(response.status_code, 200, response.content)
+        case = QualityReworkCase.objects.get(pk=returned.json()["id"])
+        self.assertEqual(case.opened_on, day)
+        self.assertEqual(case.backfill_reason, "")
+        self.assertIsNone(case.reshipment_batch_id)
+        self.assertEqual(ProcessCard.objects.get(card_no="CARD-CROSS-DAY-CANCEL").status, ProcessCard.Status.SHIPPED)
+
+    def test_cross_day_reship_failure_rolls_back_batch_allocations_and_binding(self):
+        day = timezone.localdate()
+        batch = self.create_confirmed_repeat(count=1)
+        self.bind(batch, [{"shipment_unit_no": 1, "card_no": "CARD-CROSS-DAY-ROLLBACK"}])
+        returned = self.scan_return("CARD-CROSS-DAY-ROLLBACK")
+        self.assertEqual(returned.status_code, 201, returned.content)
+        counts = [model.objects.count() for model in (
+            QualityShipmentBatch, QualityShipmentLine, QualityShipmentOrderAllocation,
+        )]
+        with patch("django.utils.timezone.localdate", return_value=day + timedelta(days=3)), patch(
+            "quality.models.QualityReworkCase.save", side_effect=ValueError("模拟末尾保存失败"),
+        ):
+            response = self.client.post(
+                f"{self.return_endpoint}{returned.json()['id']}/reship/",
+                {"inspector_ids": [self.inspector.pk]}, format="json",
+            )
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(counts, [model.objects.count() for model in (
+            QualityShipmentBatch, QualityShipmentLine, QualityShipmentOrderAllocation,
+        )])
+        case = QualityReworkCase.objects.get(pk=returned.json()["id"])
+        self.assertEqual(case.status, QualityReworkCase.Status.WAITING_REWORK)
+        self.assertIsNone(case.reshipment_batch_id)
+        self.assertIsNone(case.closed_on)
+        binding = ProcessCardUnitBinding.objects.get(process_card__card_no="CARD-CROSS-DAY-ROLLBACK")
+        self.assertEqual(binding.shipment_batch_id, batch.pk)
+        self.assertEqual(binding.piece_quantity, 1_000)
+        self.assertEqual(binding.net_weight_kg, Decimal("10.000"))
+        self.assertEqual(delivered_quantities_by_order([self.order.pk])[self.order.pk], 0)
+
+    def test_new_historical_return_and_reship_still_require_reasons(self):
+        day = timezone.localdate()
+        batch = self.create_confirmed_repeat(count=1)
+        self.bind(batch, [{"shipment_unit_no": 1, "card_no": "CARD-CROSS-DAY-HISTORY"}])
+        with patch("django.utils.timezone.localdate", return_value=day + timedelta(days=3)):
+            invalid = self.scan_return("CARD-CROSS-DAY-HISTORY", opened_on=(day + timedelta(days=1)).isoformat())
+            self.assertEqual(invalid.status_code, 400, invalid.content)
+            self.assertIn("backfill_reason", invalid.json())
+            self.assertFalse(QualityReworkCase.objects.exists())
+            returned = self.scan_return(
+                "CARD-CROSS-DAY-HISTORY", opened_on=(day + timedelta(days=1)).isoformat(),
+                backfill_reason="补录纸质退货记录",
+            )
+            self.assertEqual(returned.status_code, 201, returned.content)
+            endpoint = f"{self.return_endpoint}{returned.json()['id']}/reship/"
+            invalid_reship = self.client.post(endpoint, {
+                "shipment_date": (day + timedelta(days=2)).isoformat(),
+                "inspector_ids": [self.inspector.pk],
+            }, format="json")
+            self.assertEqual(invalid_reship.status_code, 400, invalid_reship.content)
+            valid_reship = self.client.post(endpoint, {
+                "shipment_date": (day + timedelta(days=2)).isoformat(),
+                "inspector_ids": [self.inspector.pk], "notes": "补录昨天重新出货",
+            }, format="json")
+        self.assertEqual(valid_reship.status_code, 201, valid_reship.content)
+        self.assertEqual(valid_reship.json()["backfill_reason"], "补录昨天重新出货")
+        case = QualityReworkCase.objects.get(pk=returned.json()["id"])
+        self.assertEqual(case.backfill_reason, "补录纸质退货记录")
 
     def test_scanned_return_rejects_manual_attempt_and_requires_next_scan(self):
         batch = self.create_confirmed_repeat(count=1)

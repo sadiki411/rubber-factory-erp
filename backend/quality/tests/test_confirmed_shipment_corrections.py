@@ -1,5 +1,6 @@
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -205,6 +206,54 @@ class ConfirmedShipmentCorrectionApiTests(QualityTestMixin, TestCase):
         batch.refresh_from_db()
         self.assertEqual(batch.status, QualityShipmentBatch.Status.CONFIRMED)
         self.assertEqual(batch.backfill_reason, "修改称重后重新核对历史出货记录")
+
+    def test_cross_day_weight_correction_requires_amend_reason_not_backfill_reason(self):
+        day = timezone.localdate()
+        batch = self.create_confirmed_repeat(
+            bindings=[{"card_no": "CARD-CROSS-DAY-AMEND", "shipment_unit_no": 1}],
+        )
+        original_no = batch.shipment_no
+        with patch("django.utils.timezone.localdate", return_value=day + timedelta(days=3)):
+            missing_reason = self.client.post(
+                f"{self.endpoint}{batch.pk}/amend/", {"single_batch_net_weight_kg": "9.000"},
+                format="json",
+            )
+            self.assertEqual(missing_reason.status_code, 400, missing_reason.content)
+            response = self.amend(
+                batch, single_batch_net_weight_kg="9.000",
+                lines=[{"order_id": self.order.pk}],
+            )
+        self.assertEqual(response.status_code, 200, response.content)
+        batch.refresh_from_db()
+        self.assertEqual(batch.shipment_date, day)
+        self.assertEqual(batch.shipment_no, original_no)
+        self.assertEqual(batch.backfill_reason, "")
+        self.assertEqual(batch.net_weight_kg, Decimal("9.000"))
+        self.assertEqual(batch.shipped_quantity, 900)
+        binding = batch.process_card_bindings.get()
+        self.assertEqual(binding.process_card.card_no, "CARD-CROSS-DAY-AMEND")
+        self.assertEqual(binding.piece_quantity, 900)
+        self.assertEqual(binding.net_weight_kg, Decimal("9.000"))
+        self.assertEqual(batch.revisions.count(), 1)
+
+    def test_cross_day_void_requires_void_reason_not_backfill_reason(self):
+        day = timezone.localdate()
+        batch = self.create_confirmed_repeat(
+            bindings=[{"card_no": "CARD-CROSS-DAY-VOID", "shipment_unit_no": 1}],
+        )
+        with patch("django.utils.timezone.localdate", return_value=day + timedelta(days=3)):
+            endpoint = f"{self.endpoint}{batch.pk}/void-confirmed/"
+            missing_reason = self.client.post(endpoint, {}, format="json")
+            self.assertEqual(missing_reason.status_code, 400, missing_reason.content)
+            response = self.client.post(endpoint, {"void_reason": "纠正误登记"}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, QualityShipmentBatch.Status.VOID)
+        self.assertEqual(batch.shipment_date, day)
+        self.assertEqual(batch.backfill_reason, "")
+        self.assertFalse(batch.process_card_bindings.exists())
+        self.assertEqual(batch.revisions.count(), 1)
+        self.assertEqual(delivered_quantities_by_order([self.order.pk])[self.order.pk], 0)
 
     def test_amend_can_preserve_replace_and_explicitly_clear_scan_bindings(self):
         self.order.order_quantity = 5_000
