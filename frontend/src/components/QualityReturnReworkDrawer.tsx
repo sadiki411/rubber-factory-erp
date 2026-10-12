@@ -27,7 +27,7 @@ import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { qualityWorkflowApi } from '../api/client'
 import { QualityEmployeeSelect } from './QualityEmployeeSelect'
-import { formatQualityDate, qualityNumber, reworkCaseSourceTitle } from '../quality'
+import { COMMON_RETURN_REASONS, formatQualityDate, qualityNumber, reworkCaseSourceTitle } from '../quality'
 import type {
   ApiList,
   QualityEmployee,
@@ -230,7 +230,7 @@ export function QualityReturnReworkDrawer({ open, employees = [], onClose, onSav
         </Row>
         {historical && <Form.Item name="backfill_reason" label="补录原因" rules={[{ required: true, whitespace: true, message: '补录历史日期时请填写原因' }]}><Input placeholder="例如：当天漏记，现按退货单补录" /></Form.Item>}
         <Form.Item name="reason_category" label="原因分类" rules={[{ required: true }]}><Select options={RETURN_REASON_CATEGORY_OPTIONS} /></Form.Item>
-        <Form.Item label="常用退货原因" extra="点击可直接带入，仍可在下方修改。"><Button htmlType="button" onClick={() => form.setFieldsValue({ reason_category: 'STICKING', reason: '粘皮' })}>粘皮</Button></Form.Item>
+        <Form.Item label="常用退货原因" extra="点击可直接带入，仍可在下方修改。"><Space wrap>{COMMON_RETURN_REASONS.map((item) => <Button key={item.name} htmlType="button" onClick={() => form.setFieldsValue({ reason_category: item.category, reason: item.name })}>{item.name}</Button>)}</Space></Form.Item>
         {sourceInspectors.length ? <Alert
           type="success"
           showIcon
@@ -471,7 +471,7 @@ export function QualityReworkCaseDetailDrawer({ open, item, employees = [], onCl
             <Col xs={24} sm={12}><Form.Item name="reason_category" label="原因分类" rules={[{ required: true, message: '请选择原因分类' }]}><Select options={RETURN_REASON_CATEGORY_OPTIONS} /></Form.Item></Col>
           </Row>
           {historical && <Form.Item name="backfill_reason" label="历史日期说明" rules={[{ required: true, whitespace: true, message: '修改历史日期记录时请填写说明' }]}><Input placeholder="例如：当天漏记，现根据退货单更正" /></Form.Item>}
-          <Form.Item label="常用退货原因" extra="点击可直接带入，仍可在下方修改。"><Button htmlType="button" onClick={() => form.setFieldsValue({ reason_category: 'STICKING', reason: '粘皮' })}>粘皮</Button></Form.Item>
+          <Form.Item label="常用退货原因" extra="点击可直接带入，仍可在下方修改。"><Space wrap>{COMMON_RETURN_REASONS.map((item) => <Button key={item.name} htmlType="button" onClick={() => form.setFieldsValue({ reason_category: item.category, reason: item.name })}>{item.name}</Button>)}</Space></Form.Item>
           <Form.Item name="reason" label="问题描述（选填）"><Input.TextArea rows={3} maxLength={500} showCount placeholder="例如：粘皮" /></Form.Item>
           <Form.Item name="notes" label="备注（选填）"><Input.TextArea rows={2} maxLength={500} showCount /></Form.Item>
         </Form>

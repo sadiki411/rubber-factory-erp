@@ -117,6 +117,18 @@ describe('QualityReturnReworkDrawer', () => {
     expect(onSaved).toHaveBeenCalled()
   })
 
+  it.each(['拔破', '空洞', '脏', '变形'])('offers %s as a common reason and persists the selected description', async (reason) => {
+    renderWithQuery(<QualityReturnReworkDrawer open onClose={vi.fn()} onSaved={vi.fn()} onBackfillShipment={vi.fn()} />)
+    await screen.findByText(/04-A001-2607040001 \/ 11/)
+    fireEvent.click(screen.getByRole('button', { name: '选择一整批退货' }))
+    fireEvent.click(screen.getByRole('button', { name: reason === '脏' ? reason : new RegExp(reason.split('').join('\\s*')) }))
+    expect(screen.getByLabelText(/问题描述/)).toHaveValue(reason)
+    fireEvent.click(screen.getByRole('button', { name: '确认登记整批退货' }))
+    await waitFor(() => expect(apiMocks.createReworkCase).toHaveBeenCalledWith(
+      expect.objectContaining({ reason_category: 'APPEARANCE', reason }),
+    ))
+  })
+
   it('closes immediately after the return is saved without waiting for a slow list refresh', async () => {
     const refreshNeverFinishes = new Promise<void>(() => undefined)
     const onSaved = vi.fn(() => refreshNeverFinishes)

@@ -1,5 +1,13 @@
 import dayjs from 'dayjs'
-import type { QualityOrder, QualityProcessCard, QualityReworkCase } from './types'
+import type { QualityOrder, QualityProcessCard, QualityReworkCase, ReturnReasonCategory } from './types'
+
+export const COMMON_RETURN_REASONS: { name: string; category: ReturnReasonCategory }[] = [
+  { name: '粘皮', category: 'STICKING' },
+  { name: '拔破', category: 'APPEARANCE' },
+  { name: '空洞', category: 'APPEARANCE' },
+  { name: '脏', category: 'APPEARANCE' },
+  { name: '变形', category: 'APPEARANCE' },
+]
 
 function finiteNonNegative(...values: number[]) {
   return values.every((value) => Number.isFinite(value) && value >= 0)

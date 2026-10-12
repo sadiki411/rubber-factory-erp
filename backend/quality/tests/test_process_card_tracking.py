@@ -573,6 +573,29 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
             0,
         )
 
+    def test_added_reasons_can_be_saved_as_primary_and_secondary_return_tags(self):
+        batch = self.create_confirmed_repeat(count=4)
+        names = ("拔破", "空洞", "脏", "变形")
+        reasons = [DefectReason.objects.get(name=name) for name in names]
+        binding = self.bind(batch, [
+            {"shipment_unit_no": index + 1, "card_no": f"CARD-NEW-REASON-{index}"}
+            for index in range(4)
+        ])
+        self.assertEqual(binding.status_code, 200, binding.content)
+        for index, primary in enumerate(reasons):
+            secondary = reasons[(index + 1) % len(reasons)]
+            with self.subTest(reason=primary.name):
+                created = self.scan_return(
+                    f"CARD-NEW-REASON-{index}", primary_reason_id=primary.pk,
+                    secondary_reason_ids=[secondary.pk],
+                )
+                self.assertEqual(created.status_code, 201, created.content)
+                self.assertEqual(created.json()["primary_reason_detail"]["name"], primary.name)
+                self.assertEqual(created.json()["secondary_reason_details"][0]["name"], secondary.name)
+                case = QualityReworkCase.objects.get(pk=created.json()["id"])
+                self.assertEqual(case.primary_reason_id, primary.pk)
+                self.assertEqual(list(case.secondary_reasons.values_list("pk", flat=True)), [secondary.pk])
+
     def test_reason_tags_multi_inspectors_and_filters(self):
         batch = self.create_confirmed_repeat(count=1)
         self.bind(batch, [{"shipment_unit_no": 1, "card_no": "CARD-FILTER-7788"}])

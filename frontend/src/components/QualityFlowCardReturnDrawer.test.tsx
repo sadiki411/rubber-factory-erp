@@ -125,6 +125,38 @@ describe('QualityFlowCardReturnDrawer scan performance', () => {
     expect(apiMocks.listReturnableBatches).not.toHaveBeenCalled()
   })
 
+  it('offers the added reasons as primary and secondary tags and submits their IDs', async () => {
+    const user = userEvent.setup()
+    const reasons = ['拔破', '空洞', '脏', '变形'].map((name, index) => ({ id: index + 1, name, is_active: true }))
+    apiMocks.listReturnReasons.mockResolvedValue(reasons)
+    apiMocks.scanProcessCard.mockResolvedValue({
+      found: true,
+      scanned_card: {
+        id: 220, card_no: 'CARD-REASONS', order_id: 107,
+        unit_binding: {
+          shipment_batch_id: 386, shipment_unit_no: 1,
+          inspectors: [{ id: 1, name: '王品检' }],
+        },
+      },
+    })
+    renderDrawer()
+    await user.type(await screen.findByPlaceholderText('输入退货流程卡'), 'CARD-REASONS')
+    await user.click(screen.getByRole('button', { name: '加入退货卡' }))
+    await screen.findByText('已锁定原出货')
+    await user.click(screen.getByLabelText('主要退货原因'))
+    for (const reason of reasons) expect(await screen.findByText(reason.name)).toBeInTheDocument()
+    await user.click(screen.getByText('拔破'))
+    await user.click(screen.getByLabelText(/次要问题标签/))
+    await user.click(screen.getAllByText('空洞').at(-1)!)
+    await user.click(screen.getAllByText('脏').at(-1)!)
+    await user.click(screen.getAllByText('变形').at(-1)!)
+    await user.click(screen.getByText('本次共同信息'))
+    await user.click(screen.getByRole('button', { name: /确认登记/ }))
+    await waitFor(() => expect(apiMocks.scanReturn).toHaveBeenCalledWith(
+      expect.objectContaining({ primary_reason_id: 1, secondary_reason_ids: [2, 3, 4] }),
+    ))
+  })
+
   it('loads historical candidates only after a validated card really has no binding', async () => {
     const user = userEvent.setup()
     const cardNo = '04-M003-2608270099'
