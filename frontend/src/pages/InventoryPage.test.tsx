@@ -229,4 +229,30 @@ describe('InventoryPage mobile inventory forms', () => {
       unit_weight_g: 10.855, quantity: 78, location_id: 150,
     })
   }, 30_000)
+
+  it('requires weight-change confirmation for a matching manually entered product too', async () => {
+    apiMocks.products.mockResolvedValue([{
+      id: 28, product_code: '350', product_name: '350', specification: '350', material: 'N7006A',
+      unit_weight_g: '10.85500', effective_unit_weight_g: '10.85500', is_active: true,
+    }])
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><InventoryPage /></App></QueryClientProvider>)
+    await user.click(await screen.findByRole('button', { name: '查看' }))
+    await user.click(await screen.findByRole('button', { name: /在此库位入库/ }))
+    const dialog = await screen.findByRole('dialog')
+    for (const [label, value] of [['产品编号', '350'], ['规格', '350'], ['材质', 'N7006A']]) {
+      await user.click(within(dialog).getByRole('textbox', { name: label }))
+      await user.paste(value)
+    }
+    await user.type(within(dialog).getByRole('spinbutton', { name: '成品单重(g)' }), '11')
+    await user.type(within(dialog).getByRole('spinbutton', { name: '总数量（件）' }), '78')
+    expect(await within(dialog).findByText('已找到已有产品：350 · N7006A')).toBeInTheDocument()
+    expect(Number((within(dialog).getByRole('spinbutton', { name: '成品单重(g)' }) as HTMLInputElement).value)).toBe(11)
+    await user.click(within(dialog).getByRole('button', { name: '确认入库' }))
+    expect((await screen.findAllByText('确认更新产品默认单重')).length).toBeGreaterThan(0)
+    expect(apiMocks.receipt).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: '返回检查' }))
+    expect(apiMocks.receipt).not.toHaveBeenCalled()
+  }, 30_000)
 })

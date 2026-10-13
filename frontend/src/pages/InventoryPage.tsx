@@ -315,9 +315,10 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
   const submitReceipt = async () => {
     const values = await receiptForm.validateFields()
     const productId = values.product_id
-    const previousWeight = Number(selectedProduct?.effective_unit_weight_g ?? selectedProduct?.latest_quality_unit_weight_g ?? selectedProduct?.unit_weight_g)
+    const matchedProduct = selectedProduct || existingManualProduct
+    const previousWeight = Number(matchedProduct?.effective_unit_weight_g ?? matchedProduct?.latest_quality_unit_weight_g ?? matchedProduct?.unit_weight_g)
     const nextWeight = Number(values.unit_weight_g)
-    if (productId && Number.isFinite(previousWeight) && previousWeight > 0 && Number.isFinite(nextWeight) && nextWeight > 0 && previousWeight !== nextWeight) {
+    if (matchedProduct && Number.isFinite(previousWeight) && previousWeight > 0 && Number.isFinite(nextWeight) && nextWeight > 0 && previousWeight !== nextWeight) {
       const confirmed = await new Promise<boolean>((resolve) => modal.confirm({
         title: '确认更新产品默认单重',
         content: `原单重 ${previousWeight}g，本次填写 ${nextWeight}g。确认入库后，新单重会保存到品检出货的产品单重历史，并成为以后出货的默认值。`,
