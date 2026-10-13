@@ -112,9 +112,30 @@ class InventoryBatchSerializer(serializers.ModelSerializer):
         return obj.containers.filter(status=InventoryContainer.Status.ACTIVE).count()
 
 
+class InventoryReceiptProductSerializer(serializers.ModelSerializer):
+    """Receipt identity may already exist; it is not a product-create request."""
+
+    class Meta:
+        model = InventoryProduct
+        fields = [
+            "product_code", "product_name", "specification", "material",
+            "unit_weight_g", "product_specification", "notes",
+        ]
+        # The service reuses an exact existing identity atomically. Keep the
+        # dictionary serializer's uniqueness checks for actual product edits.
+        validators = []
+
+    def validate(self, attrs):
+        for field in ("product_code", "product_name", "specification", "material"):
+            attrs[field] = str(attrs.get(field) or "").strip()
+        if not any(attrs[field] for field in ("product_code", "product_name", "specification")):
+            raise serializers.ValidationError("产品编号、产品名称、规格至少填写一项。")
+        return attrs
+
+
 class InventoryReceiptSerializer(serializers.Serializer):
     product_id = serializers.IntegerField(required=False, allow_null=True)
-    product = InventoryProductSerializer(required=False)
+    product = InventoryReceiptProductSerializer(required=False)
     unit_weight_g = serializers.DecimalField(
         max_digits=14, decimal_places=5, required=False, allow_null=True,
         min_value=Decimal("0.00001"),
@@ -133,6 +154,16 @@ class InventoryReceiptSerializer(serializers.Serializer):
     bag_count = serializers.IntegerField(required=False, min_value=1, default=1)
     pieces_per_bag = serializers.IntegerField(required=False, min_value=1, allow_null=True)
     quantity = serializers.IntegerField(min_value=1)
+
+    def validate_product_id(self, value):
+        if value is not None and not InventoryProduct.objects.filter(pk=value, is_active=True).exists():
+            raise serializers.ValidationError("选择的已有产品不存在或已停用，请重新选择。")
+        return value
+
+    def validate_location_id(self, value):
+        if not InventoryLocation.objects.filter(pk=value, is_active=True).exists():
+            raise serializers.ValidationError("目标库位不存在或已停用，请重新选择。")
+        return value
 
     def validate(self, attrs):
         if not attrs.get("product_id") and not attrs.get("product"):

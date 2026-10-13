@@ -56,6 +56,9 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
   const [moveForm] = Form.useForm()
   const [productCorrectionForm] = Form.useForm()
   const selectedProductId = Form.useWatch<number | undefined>('product_id', receiptForm)
+  const receiptProductCode = Form.useWatch<string>('product_code', receiptForm)
+  const receiptSpecification = Form.useWatch<string>('specification', receiptForm)
+  const receiptMaterial = Form.useWatch<string>('material', receiptForm)
   const summaryQuery = useQuery({ queryKey: ['inventory', 'summary'], queryFn: inventoryApi.summary })
   const locationsQuery = useQuery({
     queryKey: ['inventory', 'locations'],
@@ -167,6 +170,15 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
   const finishedLocations = useMemo(() => locations.filter((location) => location.rack_type !== 'FRIDGE'), [locations])
   const products = useMemo(() => productsQuery.data || [], [productsQuery.data])
   const selectedProduct = useMemo(() => products.find((item) => item.id === selectedProductId), [products, selectedProductId])
+  const existingManualProduct = useMemo(() => {
+    if (selectedProductId) return undefined
+    const code = (receiptProductCode || '').trim()
+    const specification = (receiptSpecification || '').trim()
+    const material = (receiptMaterial || '').trim()
+    if (!code && !specification) return undefined
+    return products.find((item) => item.product_code === code
+      && item.specification === specification && item.material === material)
+  }, [products, selectedProductId, receiptProductCode, receiptSpecification, receiptMaterial])
   const rackCodes = useMemo(() => [...new Set(finishedLocations.map((location) => location.rack_code))], [finishedLocations])
   const routedLocationCode = normalizeInventoryLocationCode(initialLocationCode)
   const routedLocation = routedLocationCode ? finishedLocations.find((item) => item.code === routedLocationCode) : undefined
@@ -481,6 +493,14 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
           <Form.Item label="已有产品" name="product_id"><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} onChange={selectReceiptProduct} placeholder="选择后自动带出产品资料和最新单重" options={products.map((item) => ({ value: item.id, label: `${item.product_code || item.product_name || '-'} · ${item.specification} · ${item.material || '-'}` }))} /></Form.Item>
           <Row gutter={12}><Col xs={24} sm={12}><Form.Item label="产品编号" name="product_code"><Input readOnly={!!selectedProductId} /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="产品名称" name="product_name"><Input readOnly={!!selectedProductId} /></Form.Item></Col></Row>
           <Row gutter={12}><Col xs={24} sm={12}><Form.Item label="规格" name="specification"><Input readOnly={!!selectedProductId} /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="材质" name="material"><Input readOnly={!!selectedProductId} /></Form.Item></Col></Row>
+          {existingManualProduct && <Alert
+            type={existingManualProduct.is_active ? 'info' : 'warning'} showIcon
+            message={`已找到已有产品：${existingManualProduct.specification || existingManualProduct.product_code} · ${existingManualProduct.material || '未填材质'}`}
+            description={existingManualProduct.is_active
+              ? <><div>本次入库会复用已有产品资料，另建库存批次，不会重复建档。</div><Button size="small" onClick={() => selectReceiptProduct(existingManualProduct.id)} style={{ marginTop: 8 }}>带入已有产品资料和单重</Button></>
+              : '该产品资料已停用，请先确认产品资料后再入库。'}
+            style={{ marginBottom: 16 }}
+          />}
           <Row gutter={12}><Col xs={24} sm={8}><Form.Item label="成品单重(g)" name="unit_weight_g" extra={selectedProductId ? '自动带出品检出货最近确认的单重；修改后会写入同一单重历史。' : '可选填；能唯一匹配产品规格资料时会同步到品检出货。'}><InputNumber min={0.00001} precision={5} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="容器类型" name="container_type" rules={[{ required: true }]}><Select options={[{ value: 'BAG', label: '袋' }, { value: 'BASKET', label: '筐' }]} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="库位" required><div className="inventory-scan-field"><Form.Item name="location_id" noStyle rules={[{ required: true, message: '请选择库位' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} options={finishedLocations.filter((item) => !item.container).map((item) => ({ value: item.id, label: `${item.code}${item.allows_basket ? ' · 可放筐/袋' : ' · 袋位'}` }))} /></Form.Item><Button aria-label="扫描入库库位" icon={<CameraOutlined />} onClick={() => setScanPurpose('RECEIPT')}>扫码</Button></div></Form.Item></Col></Row>
           <Row gutter={12}><Col xs={24} sm={8}><Form.Item label="总数量（件）" name="quantity" rules={[{ required: true, type: 'number', min: 1 }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="筐内/容器袋数" name="bag_count"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="每袋数量" name="pieces_per_bag"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col></Row>
           <Row gutter={12}><Col xs={24} sm={6}><Form.Item label="质量状态" name="quality_status" rules={[{ required: true }]}><Select options={Object.entries(QUALITY_META).map(([value, meta]) => ({ value, label: meta.label }))} /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="品检员（已检时必填）" name="inspector_id"><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} loading={employeesQuery.isLoading} options={(employeesQuery.data || []).map((employee: QualityEmployee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} /></Form.Item></Col><Col xs={24} sm={6}><Form.Item label="库存批次号" name="batch_no"><Input placeholder="留空自动生成" /></Form.Item></Col></Row>

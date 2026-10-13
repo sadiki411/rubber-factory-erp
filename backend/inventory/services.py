@@ -89,18 +89,29 @@ def _matching_product_specification(product):
 def _product_from_payload(data):
     product_id = data.get("product_id")
     if product_id:
-        product = InventoryProduct.objects.get(pk=product_id)
+        product = InventoryProduct.objects.get(pk=product_id, is_active=True)
     else:
         product_data = data.get("product") or {}
-        product = InventoryProduct.objects.create(
-            product_code=product_data.get("product_code", ""),
+        identity = {
+            field: str(product_data.get(field) or "").strip()
+            for field in ("product_code", "specification", "material")
+        }
+        defaults = dict(
             product_name=product_data.get("product_name", ""),
-            specification=product_data.get("specification", ""),
-            material=product_data.get("material", ""),
             unit_weight_g=product_data.get("unit_weight_g"),
-            product_specification_id=product_data.get("product_specification"),
+            product_specification=product_data.get("product_specification"),
             notes=product_data.get("notes", ""),
         )
+        if identity["product_code"] or identity["specification"]:
+            # A repeat receipt creates another batch/container, not another
+            # product. Match the database's exact three-field identity only;
+            # never merge different materials/codes or rewrite old metadata.
+            product, _ = InventoryProduct.objects.get_or_create(**identity, defaults=defaults)
+        else:
+            # Name-only temporary products have no unique identity to reuse.
+            product = InventoryProduct.objects.create(**identity, **defaults)
+        if not product.is_active:
+            raise ValueError("相同产品资料已停用，请先确认产品资料后再入库。")
 
     fields = []
     if not product.product_specification_id:

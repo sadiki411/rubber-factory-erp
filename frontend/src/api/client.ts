@@ -83,7 +83,7 @@ function readCookie(name: string) {
   return item ? decodeURIComponent(item.split('=').slice(1).join('=')) : ''
 }
 
-function errorMessage(data: any, fallback: string) {
+function errorMessage(data: any, fallback: string): string {
   if (typeof data === 'string') {
     const value = data.trim()
     return value.startsWith('<!DOCTYPE') || value.startsWith('<html') ? fallback : value
@@ -92,8 +92,12 @@ function errorMessage(data: any, fallback: string) {
   if (typeof data?.message === 'string') return data.message
   if (typeof data?.error === 'string') return data.error
   if (data && typeof data === 'object') {
-    const first = Object.values(data).flat()[0]
-    if (typeof first === 'string') return first
+    for (const value of Object.values(data)) {
+      // Nested serializer errors (product -> non_field_errors, outbound
+      // lines, etc.) must remain readable instead of becoming "请求失败".
+      const nested = errorMessage(value, '')
+      if (nested) return nested
+    }
   }
   return fallback
 }

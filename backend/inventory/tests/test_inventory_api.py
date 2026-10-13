@@ -82,6 +82,112 @@ class InventoryApiTests(APITestCase):
         self.assertEqual(container.batch.quality_status, InventoryBatch.QualityStatus.PASSED)
         self.assertEqual(InventoryTransaction.objects.filter(transaction_type="RECEIPT").count(), 1)
 
+    def test_repeated_manual_receipt_reuses_product_and_creates_separate_stock_batches(self):
+        first = self.receipt(batch_no="")
+        self.assertEqual(first.status_code, 201, first.content)
+        target = InventoryLocation.objects.get(code="K01-L01-P02")
+        second = self.receipt(batch_no="", location_id=target.pk, quantity=600)
+        self.assertEqual(second.status_code, 201, second.content)
+        first_container = InventoryContainer.objects.get(pk=first.json()["id"])
+        second_container = InventoryContainer.objects.get(pk=second.json()["id"])
+        self.assertEqual(first_container.batch.product_id, second_container.batch.product_id)
+        self.assertNotEqual(first_container.batch_id, second_container.batch_id)
+        self.assertNotEqual(first_container.container_code, second_container.container_code)
+        self.assertEqual(InventoryProduct.objects.count(), 1)
+        self.assertEqual(InventoryBatch.objects.count(), 2)
+        self.assertEqual(InventoryTransaction.objects.filter(transaction_type="RECEIPT").count(), 2)
+        self.assertEqual(first_container.quantity + second_container.quantity, 4600)
+
+    def test_manual_repeat_normalizes_identity_without_overwriting_existing_name_or_notes(self):
+        self.receipt()
+        original = InventoryProduct.objects.get()
+        original.notes = "原产品说明"
+        original.save()
+        response = self.receipt(
+            batch_no="REPEAT-TRIM",
+            location_id=self.small.pk,
+            container_type="BAG",
+            product={
+                "product_code": " P-100 ", "specification": " 100A ", "material": " NBR ",
+                "product_name": "本次不同写法", "notes": "不应覆盖历史说明",
+                "unit_weight_g": "2.75000",
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        original.refresh_from_db()
+        self.assertEqual(InventoryProduct.objects.count(), 1)
+        self.assertEqual(original.product_name, "产品100")
+        self.assertEqual(original.notes, "原产品说明")
+        self.assertEqual(original.unit_weight_g, Decimal("2.75000"))
+
+    def test_manual_receipts_do_not_merge_different_materials_or_product_codes(self):
+        self.receipt()
+        for index, fields in enumerate((
+            {"product_code": "P-100", "specification": "100A", "material": "EPDM"},
+            {"product_code": "P-OTHER", "specification": "100A", "material": "NBR"},
+        ), start=2):
+            response = self.receipt(
+                batch_no=f"DISTINCT-{index}",
+                location_id=InventoryLocation.objects.get(code=f"K01-L01-P0{index}").pk,
+                product=fields,
+            )
+            self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(InventoryProduct.objects.count(), 3)
+
+    def test_name_only_receipts_do_not_guess_an_existing_product_identity(self):
+        first = self.receipt(product={"product_name": "临时产品"})
+        second = self.receipt(
+            product={"product_name": "临时产品"}, batch_no="NAME-ONLY-002",
+            location_id=self.small.pk, container_type="BAG",
+        )
+        self.assertEqual(first.status_code, 201, first.content)
+        self.assertEqual(second.status_code, 201, second.content)
+        self.assertEqual(InventoryProduct.objects.count(), 2)
+
+    def test_receipt_rejects_empty_identity_invalid_references_and_inactive_products_without_writes(self):
+        original = InventoryProduct.objects.create(product_code="P-100", specification="100A", material="NBR", is_active=False)
+        for overrides, expected in (
+            ({"product_id": original.pk}, "已停用"),
+            ({"product_id": 999999}, "不存在"),
+            ({"location_id": 999999}, "库位不存在"),
+            ({"product": {"product_name": " ", "specification": " "}}, "至少填写一项"),
+            ({}, "已停用"),
+        ):
+            with self.subTest(overrides=overrides):
+                response = self.receipt(**overrides)
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn(expected, str(response.json()))
+        self.assertEqual(InventoryProduct.objects.count(), 1)
+        self.assertFalse(InventoryBatch.objects.exists())
+        self.assertFalse(InventoryContainer.objects.exists())
+        self.assertFalse(InventoryTransaction.objects.exists())
+
+    def test_product_dictionary_still_rejects_duplicate_identity(self):
+        self.receipt()
+        response = self.client.post("/api/inventory/products/", {
+            "product_code": "P-100", "specification": "100A", "material": "NBR",
+        }, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(InventoryProduct.objects.count(), 1)
+
+    def test_receipt_accepts_an_explicit_valid_product_specification(self):
+        specification = ProductSpecification.objects.create(specification="100A", material="NBR")
+        response = self.receipt(product={
+            "product_code": "P-100", "specification": "100A", "material": "NBR",
+            "product_specification": specification.pk,
+        })
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(InventoryProduct.objects.get().product_specification_id, specification.pk)
+
+    def test_repeat_on_occupied_location_does_not_add_stock(self):
+        self.receipt()
+        response = self.receipt(batch_no="REPEAT-OCCUPIED")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("目标库位已经有在用容器", str(response.json()))
+        self.assertEqual(InventoryProduct.objects.count(), 1)
+        self.assertEqual(InventoryBatch.objects.count(), 1)
+        self.assertEqual(InventoryTransaction.objects.count(), 1)
+
     def test_public_location_details_are_anonymous_minimal_and_read_only(self):
         self.receipt(notes="内部备注", source_note="私人来源")
         anonymous = APIClient()

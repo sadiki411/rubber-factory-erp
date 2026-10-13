@@ -17,6 +17,7 @@ const apiMocks = vi.hoisted(() => ({
   locations: vi.fn(),
   containers: vi.fn(),
   products: vi.fn(),
+  receipt: vi.fn(),
   correctContainerProduct: vi.fn(),
   materialRemainders: vi.fn(),
   listEmployees: vi.fn(),
@@ -32,7 +33,7 @@ vi.mock('../api/client', () => ({
     correctContainerProduct: apiMocks.correctContainerProduct,
     materialRemainders: apiMocks.materialRemainders,
     bootstrap: vi.fn(),
-    receipt: vi.fn(),
+    receipt: apiMocks.receipt,
     outbound: vi.fn(),
     setQuality: vi.fn(),
     createMaterialRemainder: vi.fn(),
@@ -64,6 +65,7 @@ describe('InventoryPage mobile inventory forms', () => {
     apiMocks.locations.mockResolvedValue([lastLocation])
     apiMocks.containers.mockResolvedValue([])
     apiMocks.products.mockResolvedValue([])
+    apiMocks.receipt.mockReset().mockResolvedValue({ id: 83 })
     apiMocks.correctContainerProduct.mockResolvedValue({})
     apiMocks.materialRemainders.mockResolvedValue([])
     apiMocks.listEmployees.mockResolvedValue([])
@@ -174,5 +176,57 @@ describe('InventoryPage mobile inventory forms', () => {
       material: 'NBR',
       reason: '入库时漏填',
     })))
+  }, 30_000)
+
+  it('warns when manual identity already exists and offers its recorded product data and weight', async () => {
+    apiMocks.products.mockResolvedValue([{
+      id: 28, product_code: '350', product_name: '350', specification: '350', material: 'N7006A',
+      unit_weight_g: '10.85500', effective_unit_weight_g: '10.85500', is_active: true,
+    }])
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><InventoryPage /></App></QueryClientProvider>)
+    await user.click(await screen.findByRole('button', { name: /直接入库/ }))
+    const dialog = await screen.findByRole('dialog')
+    await user.type(within(dialog).getByRole('textbox', { name: '产品编号' }), '350')
+    await user.type(within(dialog).getByRole('textbox', { name: '规格' }), '350')
+    const material = within(dialog).getByRole('textbox', { name: '材质' })
+    await user.type(material, 'N7200')
+    expect(within(dialog).queryByText(/已找到已有产品/)).not.toBeInTheDocument()
+    await user.clear(material)
+    await user.type(material, 'N7006A')
+    expect(await within(dialog).findByText('已找到已有产品：350 · N7006A')).toBeInTheDocument()
+    expect(within(dialog).getByText(/本次入库会复用已有产品资料/)).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: '带入已有产品资料和单重' }))
+    expect(within(dialog).queryByText(/已找到已有产品/)).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('textbox', { name: '产品名称' })).toHaveValue('350')
+    expect(within(dialog).getByRole('textbox', { name: '规格' })).toHaveAttribute('readonly')
+    expect(Number((within(dialog).getByRole('spinbutton', { name: '成品单重(g)' }) as HTMLInputElement).value)).toBe(10.855)
+  }, 30_000)
+
+  it('still permits manual repeat receipt without requiring the operator to select the existing product', async () => {
+    apiMocks.products.mockResolvedValue([{
+      id: 28, product_code: '350', product_name: '350', specification: '350', material: 'N7006A',
+      unit_weight_g: '10.85500', effective_unit_weight_g: '10.85500', is_active: true,
+    }])
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><InventoryPage /></App></QueryClientProvider>)
+    await user.click(await screen.findByRole('button', { name: '查看' }))
+    await user.click(await screen.findByRole('button', { name: /在此库位入库/ }))
+    const dialog = await screen.findByRole('dialog')
+    for (const label of ['产品编号', '产品名称', '规格']) {
+      await user.click(within(dialog).getByRole('textbox', { name: label }))
+      await user.paste('350')
+    }
+    await user.type(within(dialog).getByRole('textbox', { name: '材质' }), 'N7006A')
+    await user.type(within(dialog).getByRole('spinbutton', { name: '成品单重(g)' }), '10.855')
+    await user.type(within(dialog).getByRole('spinbutton', { name: '总数量（件）' }), '78')
+    await user.click(within(dialog).getByRole('button', { name: '确认入库' }))
+    await waitFor(() => expect(apiMocks.receipt).toHaveBeenCalled())
+    expect(apiMocks.receipt.mock.calls[0][0]).toMatchObject({
+      product_id: undefined, product: expect.objectContaining({ product_code: '350', specification: '350', material: 'N7006A' }),
+      unit_weight_g: 10.855, quantity: 78, location_id: 150,
+    })
   }, 30_000)
 })
