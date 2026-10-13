@@ -81,6 +81,22 @@ class ProductionCounterLedgerApiTests(ProductionTestMixin, TestCase):
         self.assertTrue(created.json()["production_enabled"])
         self.assertTrue(created.json()["employee_no"])
 
+    def test_defective_quantity_distinguishes_omitted_null_and_confirmed_zero(self):
+        run = self.create_task()
+        for count, extra, expected in (
+            (10, {}, "UNRECORDED"),
+            (20, {"defective_quantity": None}, "UNRECORDED"),
+            (30, {"defective_quantity": 0}, "RECORDED"),
+            (40, {"defective_quantity": 2}, "RECORDED"),
+        ):
+            response = self.add_counter(run["id"], count, **extra)
+            self.assertEqual(response.status_code, 201, response.content)
+            self.assertEqual(response.json()["defective_quantity_status"], expected)
+        legacy = ProductionDailyLog.objects.create(run_id=run["id"], produced_mold_count=1, defective_quantity=0)
+        self.assertEqual(legacy.defective_quantity_status, "HISTORICAL_ZERO_UNCONFIRMED")
+        legacy.defective_quantity = 1
+        self.assertEqual(legacy.defective_quantity_status, "RECORDED")
+
     def test_counter_log_links_shared_employee_id_and_keeps_name_snapshot(self):
         employee = QualityEmployee.objects.create(
             employee_no="EMP-PROD-001",
@@ -97,6 +113,21 @@ class ProductionCounterLedgerApiTests(ProductionTestMixin, TestCase):
         log = ProductionDailyLog.objects.get(pk=response.json()["id"])
         self.assertEqual(log.employee_id, employee.pk)
         self.assertEqual(log.operator, employee.name)
+
+    def test_edit_preserves_unknown_zero_until_defective_quantity_is_explicit(self):
+        run = self.create_task()
+        created = self.add_counter(run["id"], 10).json()
+        ProductionDailyLog.objects.filter(pk=created["id"]).update(defective_quantity_recorded=None)
+        path = f"/api/production/runs/{run['id']}/counter-logs/{created['id']}/"
+        edited = self.client.patch(path, {"notes": "只改备注"}, format="json")
+        self.assertEqual(edited.status_code, 200, edited.content)
+        self.assertEqual(edited.json()["defective_quantity_status"], "HISTORICAL_ZERO_UNCONFIRMED")
+        zero = self.client.patch(path, {"defective_quantity": 0}, format="json")
+        self.assertEqual(zero.status_code, 200, zero.content)
+        self.assertEqual(zero.json()["defective_quantity_status"], "RECORDED")
+        cleared = self.client.patch(path, {"defective_quantity": None}, format="json")
+        self.assertEqual(cleared.status_code, 200, cleared.content)
+        self.assertEqual(cleared.json()["defective_quantity_status"], "UNRECORDED")
 
     def test_minimal_task_uses_unique_order_and_defect_rate_formula(self):
         payload = self.create_task()

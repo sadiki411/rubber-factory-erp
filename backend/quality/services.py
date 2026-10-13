@@ -62,6 +62,34 @@ def reporting_related_rows(instance, relation):
     return list(manager.all()) if manager is not None else []
 
 
+def shipment_card_references(batch, *, lines=None):
+    """Trace stored card identities, including returns after a binding moved.
+
+    These are group-level references, never inferred from product text and
+    never multiplied into quantities. Historical returns keep the old source.
+    """
+    lines = lines if lines is not None else reporting_related_rows(batch, "lines")
+    result = {line.pk: [] for line in lines}
+    for line in lines:
+        if line.process_card_id:
+            result[line.pk].append({"id": line.process_card_id, "card_no": line.process_card.card_no, "source": "LINE"})
+    groups = shipment_return_groups(batch, lines=lines)
+    stored = [(binding.process_card, binding.shipment_unit_no, "CURRENT_BINDING")
+        for binding in reporting_related_rows(batch, "process_card_bindings")]
+    stored += [(case.process_card, case.shipment_unit_no, "RETURN_HISTORY")
+        for case in reporting_related_rows(batch, "rework_cases") if case.process_card_id]
+    for card, unit_no, source in stored:
+        if unit_no is None:
+            continue
+        group = next((group for group in groups if group["first_unit_no"] <= unit_no <= group["last_unit_no"]), None)
+        if group is None:
+            continue
+        for line in group["lines"]:
+            if not any(ref["id"] == card.pk for ref in result[line.pk]):
+                result[line.pk].append({"id": card.pk, "card_no": card.card_no, "shipment_unit_no": unit_no, "source": source})
+    return result
+
+
 def shipment_inspectors(batch: QualityShipmentBatch | None) -> list[QualityEmployee]:
     """Return the inspectors recorded on the source shipment in stable order.
 

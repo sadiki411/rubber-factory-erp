@@ -76,6 +76,7 @@ def _log_snapshot(log):
         "produced_mold_count": log.produced_mold_count,
         "cavities_snapshot": log.cavities_snapshot,
         "defective_quantity": log.defective_quantity,
+        "defective_quantity_recorded": log.defective_quantity_recorded,
         "is_cancelled": log.is_cancelled,
         "notes": log.notes,
     }
@@ -234,6 +235,7 @@ def update_counter_log(log, user, validated_data):
         cumulative_mold_count=log.cumulative_mold_count,
         cavities_snapshot=log.cavities_snapshot,
         defective_quantity=log.defective_quantity,
+        defective_quantity_recorded=log.defective_quantity_recorded,
         notes=log.notes,
         updated_at=timezone.now(),
     )

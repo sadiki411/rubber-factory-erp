@@ -738,6 +738,7 @@ export const qualityWorkflowApi = {
     apiFetch<ApiList<QualityReturnableBatch> | QualityReturnableBatch[]>(`/api/quality/rework-cases/returnable-batches/${queryString(filters)}`),
   createReworkCase: (body: Record<string, unknown>) => apiFetch<QualityReworkCase>('/api/quality/rework-cases/', { method: 'POST', body: JSON.stringify(body) }),
   scanReturn: (body: Record<string, unknown>) => apiFetch<QualityReworkCase>('/api/quality/rework-cases/scan-return/', { method: 'POST', body: JSON.stringify(body) }),
+  returnAllocationPreview: (batchId: number | string, unitNo: number) => apiFetch<{ order_allocations: Array<{ order_id: number; order_no: string; item_no: string; piece_quantity: number; net_weight_kg: string }>; allocation_error?: string | null }>(`/api/quality/rework-cases/return-allocation-preview/${queryString({ shipment_batch_id: batchId, shipment_unit_no: unitNo })}`),
   bulkScanReturn: (body: Record<string, unknown>) => apiFetch<QualityReworkCase[] | { results?: QualityReworkCase[]; cases?: QualityReworkCase[] }>('/api/quality/rework-cases/bulk-scan-return/', { method: 'POST', body: JSON.stringify(body) }),
   updateReworkCase: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityReworkCase>(`/api/quality/rework-cases/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
   reshipReworkCase: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityShipmentBatch>(`/api/quality/rework-cases/${id}/reship/`, { method: 'POST', body: JSON.stringify(body) }),

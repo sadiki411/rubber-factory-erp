@@ -27,6 +27,22 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
     card_endpoint = "/api/quality/process-cards/"
     return_endpoint = "/api/quality/rework-cases/"
 
+    def test_read_only_account_cannot_write_through_any_related_entry(self):
+        from django.contrib.auth.models import Group
+        from erp.permissions import READ_ONLY_GROUP_NAME
+
+        self.user.groups.add(Group.objects.get_or_create(name=READ_ONLY_GROUP_NAME)[0])
+        counts = (ProcessCard.objects.count(), QualityShipmentBatch.objects.count(), QualityReworkCase.objects.count())
+        for endpoint in (
+            self.batch_endpoint, f"{self.return_endpoint}scan-return/",
+            f"{self.return_endpoint}bulk-scan-return/", self.card_endpoint,
+            "/api/production/runs/", "/api/inventory/receipts/",
+            "/api/analytics/manual-entries/",
+        ):
+            response = self.client.post(endpoint, {}, format="json")
+            self.assertEqual(response.status_code, 403, (endpoint, response.content))
+        self.assertEqual(counts, (ProcessCard.objects.count(), QualityShipmentBatch.objects.count(), QualityReworkCase.objects.count()))
+
     def test_real_sample_allocation_return_reship_matches_all_boards(self):
         """T01-T03: physical quantity is counted once; balances use item shares."""
         day = timezone.localdate().isoformat()
@@ -58,6 +74,16 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
         allocations = QualityShipmentOrderAllocation.objects.filter(shipment_line__batch_id=batch_id)
         self.assertEqual(dict(allocations.values_list("order_id", "piece_quantity")), {self.order.pk: 4211, target.pk: 3871})
         self.assertEqual(dict(allocations.values_list("order_id", "net_weight_kg")), {self.order.pk: Decimal("4.741"), target.pk: Decimal("4.359")})
+        counts = (QualityReworkCase.objects.count(), ProcessCardUnitBinding.objects.count())
+        preview = self.client.get(f"{self.return_endpoint}return-allocation-preview/", {"shipment_batch_id": batch_id, "shipment_unit_no": 1})
+        self.assertEqual(preview.status_code, 200, preview.content)
+        self.assertEqual(sum(row["piece_quantity"] for row in preview.json()["order_allocations"]), 8082)
+        self.assertEqual(counts, (QualityReworkCase.objects.count(), ProcessCardUnitBinding.objects.count()))
+        scan = self.client.get(f"{self.card_endpoint}scan/", {"code": card.card_no})
+        self.assertEqual(scan.status_code, 200, scan.content)
+        binding = scan.json()["active_card"]["unit_binding"]
+        self.assertIsNone(binding["allocation_error"])
+        self.assertEqual({row["order_id"]: row["piece_quantity"] for row in binding["order_allocations"]}, {self.order.pk: 4211, target.pk: 3871})
 
         def check(gross, returned, net):
             filters = {"date_from": day, "date_to": day}
@@ -95,6 +121,35 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
         reship = self.client.post(f"{self.return_endpoint}{first_return.json()['id']}/reship/", {"inspector_ids": [self.inspector.pk]}, format="json")
         self.assertEqual(reship.status_code, 201, reship.content)
         check(2, 1, True)
+
+    def test_card_references_use_independent_binding_and_return_history_without_guessing(self):
+        from quality.services import shipment_card_references
+
+        old = self.create_confirmed_repeat(count=1)
+        bound = self.bind(old, [{"shipment_unit_no": 1, "card_no": "OLD-INDEPENDENT-BINDING"}])
+        self.assertEqual(bound.status_code, 200, bound.content)
+        line = old.lines.get()
+        self.assertIsNone(line.process_card_id)
+        refs = shipment_card_references(old)
+        self.assertEqual(refs[line.pk][0]["card_no"], "OLD-INDEPENDENT-BINDING")
+        returned = self.scan_return("OLD-INDEPENDENT-BINDING")
+        self.assertEqual(returned.status_code, 201, returned.content)
+        reship = self.client.post(f"{self.return_endpoint}{returned.json()['id']}/reship/", {"inspector_ids": [self.inspector.pk]}, format="json")
+        self.assertEqual(reship.status_code, 201, reship.content)
+        self.assertFalse(old.process_card_bindings.exists())
+        self.assertEqual(shipment_card_references(old)[line.pk][0]["source"], "RETURN_HISTORY")
+        unknown = self.create_confirmed_repeat(count=1, shipment_no="UNKNOWN-NO-BINDING")
+        self.assertEqual(shipment_card_references(unknown)[unknown.lines.get().pk], [])
+
+    def test_invalid_historical_binding_keeps_scan_readable_without_inventing_shares(self):
+        batch = self.create_confirmed_repeat(count=1)
+        self.assertEqual(self.bind(batch, [{"shipment_unit_no": 1, "card_no": "BAD-UNIT"}]).status_code, 200)
+        ProcessCardUnitBinding.objects.filter(shipment_batch=batch).update(shipment_unit_no=99)
+        response = self.client.get(f"{self.card_endpoint}scan/", {"code": "BAD-UNIT"})
+        self.assertEqual(response.status_code, 200, response.content)
+        binding = response.json()["active_card"]["unit_binding"]
+        self.assertEqual(binding["order_allocations"], [])
+        self.assertIn("不存在", binding["allocation_error"])
 
     def create_confirmed_repeat(
         self, *, count=2, shipment_no="QS-CARD-TRACK", order_quantity=20_000

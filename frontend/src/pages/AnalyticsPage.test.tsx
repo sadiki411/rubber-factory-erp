@@ -46,6 +46,21 @@ const qualityMetrics = {
 const financeMetrics = { revenue: '12000.00', material_cost: '4000.00', labor_cost: '1500.00', energy_cost: '500.00', other_cost: '0.00', total_cost: '6000.00', profit: '6000.00', profit_margin: '50.00' }
 
 describe('AnalyticsPage', () => {
+  it('does not report an empty employee archive during a pending or failed lookup', async () => {
+    const user = userEvent.setup()
+    let reject!: (error: Error) => void
+    apiMocks.qualityEmployeeDetails.mockImplementation(() => new Promise((_resolve, rejectPromise) => { reject = rejectPromise }))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><AnalyticsPage /></App></QueryClientProvider>)
+    await user.click(await screen.findByRole('tab', { name: '品检与返工绩效' }))
+    await user.click(await screen.findByRole('button', { name: /查看工作明细/ }))
+    expect(await screen.findByText('正在读取员工产品记录…')).toBeInTheDocument()
+    expect(screen.queryByText('所选期间没有该员工的产品记录')).not.toBeInTheDocument()
+    reject(new Error('模拟读取失败'))
+    expect(await screen.findByText('员工工作明细读取失败')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重试读取员工明细' })).toBeInTheDocument()
+    expect(screen.queryByText('所选期间没有该员工的产品记录')).not.toBeInTheDocument()
+  }, 30_000)
   beforeEach(() => {
     apiMocks.stations.mockResolvedValue([{ id: 1, code: 'M-01', group: 'Z', position_no: 1, is_active: true, machine: { id: 7, code: 'M-01', name: '扩展机台', is_active: true } }])
     apiMocks.machines.mockResolvedValue([{ id: 7, code: 'M-01', name: '扩展机台', is_active: true }])

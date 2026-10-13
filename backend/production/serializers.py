@@ -172,6 +172,7 @@ class ProductionEmployeeIdentityMatchSerializer(serializers.ModelSerializer):
 
 
 class ProductionDailyLogSerializer(serializers.ModelSerializer):
+    defective_quantity_status = serializers.CharField(read_only=True)
     date = serializers.DateField(source="production_date", allow_null=True, required=False)
     theoretical_quantity = serializers.IntegerField(read_only=True)
     qualified_quantity = serializers.IntegerField(read_only=True)
@@ -201,6 +202,8 @@ class ProductionDailyLogSerializer(serializers.ModelSerializer):
             "produced_mold_count",
             "cavities_snapshot",
             "defective_quantity",
+            "defective_quantity_recorded",
+            "defective_quantity_status",
             "theoretical_quantity",
             "qualified_quantity",
             "is_cancelled",
@@ -218,6 +221,7 @@ class ProductionDailyLogSerializer(serializers.ModelSerializer):
             "cavities_snapshot",
             "defective_quantity",
             "is_cancelled",
+            "defective_quantity_recorded",
             "created_at",
             "updated_at",
         ]
@@ -1373,7 +1377,8 @@ class ProductionCounterLogSerializer(serializers.ModelSerializer):
     )
     cumulative_mold_count = serializers.IntegerField(min_value=1)
     cavities_snapshot = serializers.IntegerField(min_value=1, required=False)
-    defective_quantity = serializers.IntegerField(min_value=0, required=False, default=0)
+    defective_quantity = serializers.IntegerField(min_value=0, required=False, allow_null=True)
+    defective_quantity_status = serializers.CharField(read_only=True)
     confirm_warnings = serializers.BooleanField(write_only=True, required=False, default=False)
     theoretical_quantity = serializers.IntegerField(read_only=True)
     qualified_quantity = serializers.IntegerField(read_only=True)
@@ -1401,6 +1406,8 @@ class ProductionCounterLogSerializer(serializers.ModelSerializer):
             "cavities_snapshot",
             "defective_quantity",
             "theoretical_quantity",
+            "defective_quantity_recorded",
+            "defective_quantity_status",
             "qualified_quantity",
             "operator_pending",
             "notes",
@@ -1414,6 +1421,7 @@ class ProductionCounterLogSerializer(serializers.ModelSerializer):
             "counter_segment",
             "produced_mold_count",
             "is_cancelled",
+            "defective_quantity_recorded",
             "created_at",
             "updated_at",
         ]
@@ -1471,7 +1479,12 @@ class ProductionCounterLogSerializer(serializers.ModelSerializer):
             "defective_quantity",
             getattr(self.instance, "defective_quantity", 0),
         )
-        if defective > cumulative * cavities:
+        if "defective_quantity" in attrs:
+            attrs["defective_quantity_recorded"] = attrs["defective_quantity"] is not None
+            attrs["defective_quantity"] = attrs["defective_quantity"] or 0
+        elif self.instance is None:
+            attrs["defective_quantity_recorded"] = False
+        if (defective or 0) > cumulative * cavities:
             raise serializers.ValidationError(
                 {"defective_quantity": "不良数量不能超过当前累计读数对应的理论数量。"}
             )

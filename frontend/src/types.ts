@@ -432,6 +432,7 @@ export interface Order {
   production_quantity?: string
   produced_quantity?: number
   production_remaining_quantity?: number
+  production_requirement_status?: 'NOT_REQUIRED' | 'DELIVERY_COMPLETE' | 'CANCELLED' | 'PRODUCTION_COMPLETE' | 'REQUIRED' | 'UNRECORDED'
   production_target_reached?: boolean
   production_run_count?: number
   inventory_total_quantity?: number
@@ -599,6 +600,8 @@ export interface ProductionStation {
 }
 
 export interface ProductionDailyLog {
+  defective_quantity_recorded?: boolean | null
+  defective_quantity_status?: 'RECORDED' | 'UNRECORDED' | 'HISTORICAL_ZERO_UNCONFIRMED'
   id: number
   date: string | null
   operator: string
@@ -1027,6 +1030,8 @@ export interface ReturnRework {
 export type QualityProcessCardStatus = 'OPEN' | 'PARTIAL_SHIPPED' | 'SHIPPED' | 'CANCELLED' | 'READY' | 'PARTIAL' | 'REWORK' | 'REPLACED'
 
 export interface QualityProcessCardBinding {
+  allocation_error?: string | null
+  order_allocations?: Array<{ order_id: number; order_no: string; item_no: string; piece_quantity: number; net_weight_kg: string | number }>
   id?: number | string
   process_card_id?: number | string
   card_no?: string
@@ -1548,6 +1553,8 @@ export interface QualityDailyTrend {
 }
 
 export interface QualityOrderStatistics {
+  inspection_record_count?: number
+  rework_record_count?: number
   item_no: string
   net_delivered_quantity: number
   remaining_quantity: number
@@ -1600,6 +1607,7 @@ export interface QualityEmployeeStatistics {
 export interface QualitySummary {
   period: { date_from: string; date_to: string }
   totals: {
+    rework_record_count?: number
     inspection_quantity: number
     qualified_quantity: number
     defective_quantity: number
@@ -1647,6 +1655,7 @@ export interface AnalyticsProductionMetrics {
 }
 
 export interface AnalyticsQualityMetrics {
+  rework_record_count?: number
   inspection_quantity: number
   qualified_quantity: number
   defective_quantity: number
@@ -1698,6 +1707,8 @@ export interface AnalyticsOperatorPerformance {
 }
 
 export interface AnalyticsStationPerformance extends AnalyticsFinanceMetrics {
+  finance_record_count?: number
+  actual_machine_time_record_count?: number
   machine_id?: number | null
   machine_code: string
   machine_name: string
@@ -1754,6 +1765,7 @@ export interface AnalyticsDefectReason {
 }
 
 export interface AnalyticsOrderPerformance extends AnalyticsQualityMetrics, AnalyticsFinanceMetrics {
+  finance_record_count?: number
   order_quantity?: number | null
   net_delivered_quantity?: number | null
   remaining_quantity?: number | null
@@ -1784,6 +1796,12 @@ export interface AnalyticsShipmentAttribution {
 }
 
 export interface AnalyticsQualityWorkRecord {
+  product_key?: string
+  product_code?: string
+  product_specification_id?: number | null
+  process_cards?: Array<{ id: number; card_no: string; source: string; shipment_unit_no?: number }>
+  source_weight_kg?: string | number | null
+  weight_basis?: string
   net_weight_kg?: number | string | null
   status?: string
   record_key: string
@@ -1816,6 +1834,11 @@ export interface AnalyticsQualityWorkRecord {
 }
 
 export interface AnalyticsQualityProductPerformance {
+  rework_record_count?: number
+  product_key?: string
+  product_code?: string
+  source_document_count?: number
+  product_specification_id?: number | null
   product_name: string
   specification: string
   material: string

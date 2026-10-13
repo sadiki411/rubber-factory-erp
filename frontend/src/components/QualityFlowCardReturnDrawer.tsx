@@ -5,7 +5,7 @@ import {
   QrcodeOutlined,
   SwapOutlined,
 } from '@ant-design/icons'
-import { Alert, App, Button, Card, Checkbox, Col, DatePicker, Drawer, Empty, Form, Input, List, Row, Select, Space, Tag, Typography } from 'antd'
+import { Alert, App, Button, Card, Checkbox, Col, Collapse, DatePicker, Drawer, Empty, Form, Input, List, Row, Select, Space, Tag, Typography } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -14,6 +14,7 @@ import { normalizeProcessCardQrText, qualityNumber } from '../quality'
 import type {
   QualityEmployee,
   QualityProcessCard,
+  QualityProcessCardBinding,
   QualityProcessCardScanResult,
   QualityReturnableBatch,
   QualityReworkCase,
@@ -25,6 +26,25 @@ import { QualityManualProcessCardInput } from './QualityManualProcessCardInput'
 type SourceSelection = {
   batch: QualityReturnableBatch
   shipmentUnitNo: number
+}
+
+function ReturnAllocationPreview({ binding, source }: { binding?: QualityProcessCardBinding | null; source?: SourceSelection }) {
+  const query = useQuery({
+    queryKey: ['quality', 'return-allocation-preview', source?.batch.shipment_batch_id, source?.shipmentUnitNo],
+    queryFn: () => qualityWorkflowApi.returnAllocationPreview(source!.batch.shipment_batch_id, source!.shipmentUnitNo),
+    enabled: !binding && !!source,
+    retry: false,
+  })
+  const result = binding || query.data
+  return <Collapse size="small" items={[{
+    key: 'allocations', label: '查看实际交付分摊及本次整批回冲',
+    children: query.isFetching ? <Typography.Text>正在核对所选物理批次分摊…</Typography.Text> : query.isError ? <Alert type="error" title="分摊预览读取失败" description={(query.error as Error).message} action={<Button onClick={() => void query.refetch()}>重试分摊预览</Button>} /> : result?.order_allocations?.length ? <Space direction="vertical" style={{ width: '100%' }}>
+      {result.order_allocations.map((share, i) => <Typography.Text key={`${share.order_id}-${i}`}>
+        <a href={`/orders?order_id=${share.order_id}`}>{share.order_no} / {share.item_no || '未记录'}</a>：{qualityNumber(share.piece_quantity)} 件 / {qualityNumber(share.net_weight_kg, 3)} kg
+      </Typography.Text>)}
+      <Typography.Text type="secondary">确认后按原单有效分摊整批回冲；此入口不支持部分退货，服务端会再次核验状态和可退量。</Typography.Text>
+    </Space> : <Typography.Text type="warning">{result?.allocation_error || '分摊资料未返回，请打开原出货核对；不按物理来源项次猜测分配。'}</Typography.Text>,
+  }]} />
 }
 
 type PendingCard = {
@@ -111,6 +131,7 @@ export function QualityFlowCardReturnDrawer({
   const { message } = App.useApp()
   const [scannerOpen, setScannerOpen] = useState(false)
   const [cards, setCards] = useState<PendingCard[]>([])
+  const [queuePage, setQueuePage] = useState(1)
   const [sources, setSources] = useState<Record<string, SourceSelection>>({})
   const [saving, setSaving] = useState(false)
   const scanSession = useRef(0)
@@ -128,6 +149,7 @@ export function QualityFlowCardReturnDrawer({
     // transient scan basket; persisted data remains server-owned.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCards([])
+    setQueuePage(1)
     setSources({})
     scanSession.current += 1
     scannedCodes.current.clear()
@@ -169,7 +191,7 @@ export function QualityFlowCardReturnDrawer({
   const reasonOptions = reasons.map((item) => ({ value: item.id, label: item.name || item.label || item.code || String(item.id) }))
   const secondaryOptions = reasonOptions.filter((item) => String(item.value) !== String(primaryReasonId ?? ''))
   const hasPendingCards = cards.some((item) => item.pending)
-  const hasFailedCards = cards.some((item) => item.error)
+  const hasFailedCards = cards.some((item) => item.error || processCardBinding(item.lookup)?.allocation_error)
 
   const closeDrawer = () => {
     scanSession.current += 1
@@ -186,6 +208,7 @@ export function QualityFlowCardReturnDrawer({
     const normalizedCardNo = normalizeProcessCardQrText(cardNo)
     if (!retry && scannedCodes.current.has(normalizedCardNo)) return true
     scannedCodes.current.add(normalizedCardNo)
+    setQueuePage(Math.max(1, Math.ceil(scannedCodes.current.size / 8)))
     const session = scanSession.current
     setCards((items) => items.some((item) => item.cardNo === normalizedCardNo)
       ? items.map((item) => item.cardNo === normalizedCardNo ? { ...item, pending: true, error: undefined } : item)
@@ -255,7 +278,13 @@ export function QualityFlowCardReturnDrawer({
       message.warning('请先重试或移除核对失败的流程卡，不能把查询失败作为首次绑定。')
       return
     }
-    const values = await form.validateFields()
+    let values: Record<string, any>
+    try {
+      values = await form.validateFields()
+    } catch {
+      // AntD already marks the missing fields; preserve the scanned queue.
+      return
+    }
     const missingSource = cards.find((item) => !processCardBinding(item.lookup) && !sources[item.cardNo])
     if (missingSource) {
       message.warning(`流程卡 ${missingSource.cardNo} 第一次登记，请选择它对应的原出货批次。`)
@@ -326,15 +355,16 @@ export function QualityFlowCardReturnDrawer({
       {!cards.length ? <Empty description="尚未扫描退回产品的流程卡"><Button type="primary" icon={<CameraOutlined />} onClick={() => setScannerOpen(true)}>开始扫码</Button></Empty> : <List
         className="quality-flow-card-return-list"
         dataSource={cards}
-        renderItem={(item, index) => {
+        pagination={cards.length > 8 ? { current: Math.min(queuePage, Math.ceil(cards.length / 8)), pageSize: 8, onChange: setQueuePage, size: 'small', showSizeChanger: false, showTotal: (total) => `共 ${total} 批，分页仅影响显示，确认包含整个队列` } : false}
+        renderItem={(item) => {
           const card = activeCard(item.lookup)
           const binding = processCardBinding(item.lookup)
           const source = sources[item.cardNo]
           return <List.Item>
-            <Card size="small" title={<Space wrap><strong>{item.cardNo}</strong>{scanStatus(item)}<Tag color="blue">第 {index + 1} 批</Tag></Space>} extra={<Button type="link" danger onClick={() => removeCard(item.cardNo)}>移除</Button>}>
+            <Card size="small" title={<Space wrap><strong>{item.cardNo}</strong>{scanStatus(item)}<Tag color="blue">第 {cards.indexOf(item) + 1} 批</Tag></Space>} extra={<Button type="link" danger onClick={() => removeCard(item.cardNo)}>移除</Button>}>
               <div className="quality-flow-card-return-facts">
-                <span><small>订单 / 项次</small><b>{binding ? `${binding.order_no || '-'}${binding.item_no ? ` / ${binding.item_no}` : ''}` : processCardOrderText(card)}</b></span>
-                <span><small>产品 / 规格 / 材质</small><b>{binding ? [binding.product_name, binding.specification, binding.material].filter(Boolean).join(' · ') || '-' : [card?.product_name_snapshot, card?.specification_snapshot, card?.material_snapshot].filter(Boolean).join(' · ') || '首次绑定后自动带入'}</b></span>
+                <span><small>物理来源订单 / 项次</small><b>{item.pending ? '正在核对…' : item.error ? '核对失败，不能判定原单' : binding ? `${binding.order_no || '-'}${binding.item_no ? ` / ${binding.item_no}` : ''}` : processCardOrderText(card)}</b></span>
+                <span><small>产品 / 规格 / 材质</small><b>{item.pending ? '正在核对…' : item.error ? '资料未核实' : binding ? [binding.product_name, binding.specification, binding.material].filter(Boolean).join(' · ') || '-' : [card?.product_name_snapshot, card?.specification_snapshot, card?.material_snapshot].filter(Boolean).join(' · ') || '首次绑定后自动带入'}</b></span>
               </div>
               {item.pending ? <Typography.Text type="secondary"><LoadingOutlined /> 正在后台核对原出货记录，可继续扫描下一张。</Typography.Text> : item.error ? <Alert type="error" showIcon message="原出货核对失败，卡号及填写内容已保留" description={item.error} action={<Button onClick={() => handleScan(item.cardNo, true)}>重试此卡</Button>} /> : binding ? <Typography.Text type="secondary">原出货 {binding.shipment_no || `#${binding.shipment_batch_id}`} · 第 {binding.shipment_unit_no} 批 · {qualityNumber(binding.piece_quantity)}件 / {qualityNumber(binding.net_weight_kg, 3)}kg</Typography.Text> : <Select
                 showSearch
@@ -348,6 +378,7 @@ export function QualityFlowCardReturnDrawer({
                   if (selection) setSources((values) => ({ ...values, [item.cardNo]: selection }))
                 }}
               />}
+              {!item.pending && !item.error && (binding || source) && <ReturnAllocationPreview binding={binding} source={source} />}
             </Card>
           </List.Item>
         }}

@@ -109,6 +109,7 @@ export function RacksPage() {
   const allSlots = useMemo(() => (slotsQuery.data || []).slice().sort((a, b) => a.display_code.localeCompare(b.display_code, undefined, { numeric: true })), [slotsQuery.data])
   const printRackCodes = useMemo(() => [...new Set(allSlots.map((slot) => slot.rack_code).filter((code): code is string => !!code))], [allSlots])
   const startLabelPrint = () => {
+    if (slotsQuery.isFetching || slotsQuery.isError) return
     let selected = allSlots
     if (printScope === 'RACK') selected = allSlots.filter((slot) => slot.rack_code === printRack)
     if (printScope === 'CUSTOM') selected = allSlots.filter((slot) => printSlotIds.includes(slot.id))
@@ -242,11 +243,12 @@ export function RacksPage() {
         {labelSlots.map((slot) => <ThermalLocationLabel key={slot.id} kind="mold-rack" code={slot.display_code} detailUrl={moldRackLocationDetailUrl(slot.id)} />)}
       </div>
 
-      <Modal className="mold-rack-print-modal" title="打印模具架70×50mm热敏库位标签" open={printOpen} onCancel={() => setPrintOpen(false)} onOk={startLabelPrint} okText="打开打印窗口">
+      <Modal className="mold-rack-print-modal" title="打印模具架70×50mm热敏库位标签" open={printOpen} onCancel={() => setPrintOpen(false)} onOk={startLabelPrint} okText="打开打印窗口" okButtonProps={{ disabled: slotsQuery.isFetching || slotsQuery.isError }}>
+        {slotsQuery.isError && <Alert type="error" title="库位读取失败" action={<Button onClick={() => void slotsQuery.refetch()}>重试</Button>} />}
         <Alert type="info" showIcon message="每个具体库位一张标签，含库位编码、Code 128条形码和扫码后打开模具架库位详情的二维码。二维码绑定库位本身，不随模具更换而变化。" style={{ marginBottom: 16 }} />
         <Form layout="vertical">
           <Form.Item label="标签规格"><Typography.Text strong>70×50mm · 每次打印一张</Typography.Text></Form.Item>
-          <Form.Item label="打印范围"><Select value={printScope} onChange={setPrintScope} options={[{ value: 'ALL', label: `全部库位（${allSlots.length}张）` }, { value: 'RACK', label: '按货架打印' }, { value: 'CUSTOM', label: '勾选库位补打' }]} /></Form.Item>
+          <Form.Item label="打印范围"><Select value={printScope} onChange={setPrintScope} options={[{ value: 'ALL', label: slotsQuery.isFetching ? '全部库位（正在读取…）' : slotsQuery.isError ? '全部库位（读取失败）' : `全部库位（${allSlots.length}张）` }, { value: 'RACK', label: '按货架打印' }, { value: 'CUSTOM', label: '勾选库位补打' }]} /></Form.Item>
           {printScope === 'RACK' && <Form.Item label="选择货架" required><Select value={printRack} onChange={setPrintRack} loading={slotsQuery.isLoading} placeholder="请选择货架" options={printRackCodes.map((code) => ({ value: code, label: `${code}（${allSlots.filter((slot) => slot.rack_code === code).length}张）` }))} /></Form.Item>}
           {printScope === 'CUSTOM' && <Form.Item label="选择需要补打的库位" required><Select mode="multiple" showSearch optionFilterProp="label" value={printSlotIds} onChange={setPrintSlotIds} loading={slotsQuery.isLoading} placeholder="可选择一个或多个库位" options={allSlots.map((slot) => ({ value: slot.id, label: `${slot.display_code} · ${slotLabelDescription(slot)}` }))} /></Form.Item>}
         </Form>

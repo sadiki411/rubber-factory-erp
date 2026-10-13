@@ -44,6 +44,7 @@ from .serializers import (
     ScannedReturnRequestSerializer,
     QualityShipmentBatchAmendRequestSerializer,
     QualityShipmentBatchVoidConfirmedRequestSerializer,
+    return_allocation_preview,
 )
 from .services import (
     bind_existing_return_to_card,
@@ -267,11 +268,13 @@ class ProcessCardViewSet(WorkflowModelViewSet):
                     }
                 )
             raise DRFValidationError({"code": message}) from exc
+        context = {"request": request}
+        scanned_data = ProcessCardScanSerializer(scanned, context=context).data
         return Response(
             {
                 "found": True,
-                "scanned_card": ProcessCardScanSerializer(scanned, context={"request": request}).data,
-                "active_card": ProcessCardScanSerializer(active, context={"request": request}).data,
+                "scanned_card": scanned_data,
+                "active_card": scanned_data if scanned.pk == active.pk else ProcessCardScanSerializer(active, context=context).data,
                 "was_replaced": scanned.pk != active.pk,
                 "replacement_notice": (
                     f"旧卡已作废，请使用补卡 {active.card_no}。"
@@ -2713,6 +2716,19 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
             status=201,
         )
 
+    @extend_schema(parameters=[OpenApiParameter("shipment_batch_id", int), OpenApiParameter("shipment_unit_no", int)], responses=dict)
+    @action(detail=False, methods=["get"], url_path="return-allocation-preview")
+    def return_allocation_preview(self, request):
+        try:
+            batch_id = int(request.query_params.get("shipment_batch_id", ""))
+            unit_no = int(request.query_params.get("shipment_unit_no", ""))
+        except (TypeError, ValueError):
+            raise DRFValidationError({"detail": "请选择原出货记录及物理批号。"})
+        batch = QualityShipmentBatch.objects.filter(pk=batch_id, status="CONFIRMED").prefetch_related("lines__order", "lines__process_card__order", "lines__order_allocations__order").first()
+        if batch is None:
+            raise DRFValidationError({"detail": "原出货不存在或尚未确认，请重新核对。"})
+        return Response(return_allocation_preview(batch, unit_no))
+
     @extend_schema(responses=QualityReturnableBatchPageSerializer)
     @action(detail=False, methods=["get"], url_path="returnable-batches")
     def returnable_batches(self, request):
@@ -3841,6 +3857,8 @@ def _rate(numerator, denominator):
 
 def _empty_quantities():
     return {
+        "inspection_record_count": 0,
+        "rework_record_count": 0,
         "inspection_quantity": 0,
         "qualified_quantity": 0,
         "defective_quantity": 0,
@@ -3865,6 +3883,7 @@ def _empty_employee_quantities():
         "participated_shipped_quantity": 0,
         "collaborative_shipped_quantity": 0,
         "inspection_record_count": 0,
+        "rework_record_count": 0,
         "inspection_days": 0,
         "shipment_count": 0,
         "responsible_return_quantity": 0,
@@ -4108,12 +4127,14 @@ class QualitySummaryView(APIView):
             shipment_count=Count("id"),
         )
         rework_totals = legacy_reworks.aggregate(
+            rework_record_count=Count("id"),
             returned_quantity=Sum("returned_quantity"),
             reworked_quantity=Sum("reworked_quantity"),
             recovered_quantity=Sum("recovered_quantity"),
             scrap_quantity=Sum("scrap_quantity"),
         )
         totals = _empty_quantities()
+        totals["rework_record_count"] = _integer(rework_totals["rework_record_count"]) + sum(len(case.period_attempts) for case in rework_cases)
         for key in (
             "inspection_quantity",
             "qualified_quantity",
@@ -4229,6 +4250,7 @@ class QualitySummaryView(APIView):
         ):
             order_quantities[item["order_id"]] = {
                 **_empty_quantities(),
+                "inspection_record_count": _integer(item["shipment_count"]),
                 "shipment_count": _integer(item["shipment_count"]),
                 "rework_count": 0,
                 **{
@@ -4269,6 +4291,7 @@ class QualitySummaryView(APIView):
                 "rework_count",
             ):
                 row[key] = _integer(item[key])
+            row["rework_record_count"] += _integer(item["rework_count"])
         for case in rework_cases:
             shares = _rework_case_order_shares(case)
             if not shares:
@@ -4306,6 +4329,7 @@ class QualitySummaryView(APIView):
                 for field in values:
                     row[field] += split_values[field].get(order, 0)
                 row["rework_count"] += rework_count
+                row["rework_record_count"] += len(case.period_attempts)
 
         orders = {
             item.pk: item
@@ -4416,6 +4440,7 @@ class QualitySummaryView(APIView):
                 item["responsible_return_quantity"]
             )
         for item in legacy_reworks.values("rework_employee_id").annotate(
+            rework_record_count=Count("id"),
             reworked_quantity=Sum("reworked_quantity"),
             recovered_quantity=Sum("recovered_quantity"),
             scrap_quantity=Sum("scrap_quantity"),
@@ -4425,6 +4450,7 @@ class QualitySummaryView(APIView):
             )
             for key in ("reworked_quantity", "recovered_quantity", "scrap_quantity"):
                 row[key] = _integer(item[key])
+            row["rework_record_count"] += _integer(item["rework_record_count"])
         for case in rework_cases:
             case_in_period = date_from <= case.opened_on <= date_to
             if (
@@ -4444,6 +4470,7 @@ class QualitySummaryView(APIView):
                 row = employee_quantities.setdefault(
                     attempt.rework_employee_id, _empty_employee_quantities()
                 )
+                row["rework_record_count"] += 1
                 for key, value in _rework_attempt_quantities(attempt).items():
                     row[key] += value
 

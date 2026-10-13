@@ -22,6 +22,7 @@ from .services import (
     serialize_rework_source,
     set_return_case_inspectors,
     shipment_inspectors,
+    shipment_unit_allocations,
     sync_order_status_from_delivery,
 )
 
@@ -568,6 +569,21 @@ class DefectReasonSerializer(ValidatedModelSerializer):
         read_only_fields = ["is_system", "created_at", "updated_at"]
 
 
+def return_allocation_preview(batch, unit_no):
+    """Read-only physical-unit shares; missing facts remain an explicit error."""
+    try:
+        _group, shares = shipment_unit_allocations(batch, unit_no)
+        if any(share["order"] is None for share in shares):
+            raise ValueError("原出货缺少订单关联，请查看原单核对，不能猜测分摊。")
+        return {"order_allocations": [{
+            "order_id": share["order"].pk, "order_no": share["order"].order_no,
+            "item_no": share["order"].item_no, "piece_quantity": share["piece_quantity"],
+            "net_weight_kg": str(share["net_weight_kg"]),
+        } for share in shares], "allocation_error": None}
+    except ValueError as exc:
+        return {"order_allocations": [], "allocation_error": str(exc)}
+
+
 class ProcessCardUnitBindingSerializer(serializers.ModelSerializer):
     card_no = serializers.CharField(source="process_card.card_no", read_only=True)
     shipment_no = serializers.CharField(source="shipment_batch.shipment_no", read_only=True)
@@ -585,6 +601,8 @@ class ProcessCardUnitBindingSerializer(serializers.ModelSerializer):
     specification = serializers.SerializerMethodField()
     material = serializers.SerializerMethodField()
     inspectors = serializers.SerializerMethodField()
+    order_allocations = serializers.SerializerMethodField()
+    allocation_error = serializers.SerializerMethodField()
 
     class Meta:
         model = ProcessCardUnitBinding
@@ -593,7 +611,7 @@ class ProcessCardUnitBindingSerializer(serializers.ModelSerializer):
             "shipment_no", "shipment_date", "shipment_unit_no", "order_id",
             "order_no", "item_no", "product_name", "specification",
             "material", "inspectors", "piece_quantity", "net_weight_kg", "created_at",
-            "updated_at",
+            "updated_at", "order_allocations", "allocation_error",
         ]
         read_only_fields = fields
 
@@ -612,6 +630,19 @@ class ProcessCardUnitBindingSerializer(serializers.ModelSerializer):
             many=True,
             context=self.context,
         ).data
+
+    def get_order_allocations(self, obj) -> list[dict]:
+        return self._allocation_result(obj)["order_allocations"]
+
+    def get_allocation_error(self, obj) -> str | None:
+        return self._allocation_result(obj)["allocation_error"]
+
+    def _allocation_result(self, obj):
+        cache = self.context.setdefault("_binding_allocations", {})
+        key = (obj.shipment_batch_id, obj.shipment_unit_no)
+        if key not in cache:
+            cache[key] = return_allocation_preview(obj.shipment_batch, obj.shipment_unit_no)
+        return cache[key]
 
 
 class ProcessCardSerializer(ValidatedModelSerializer):

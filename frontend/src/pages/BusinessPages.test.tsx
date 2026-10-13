@@ -82,7 +82,7 @@ describe('business data pages on mobile', () => {
     expect(await screen.findByText('362-001 / 10')).toBeInTheDocument()
     expect(screen.getByText('生产已完成')).toBeInTheDocument()
     expect(screen.queryByText('需要生产')).not.toBeInTheDocument()
-    expect(screen.getByText(/9147 \/ 7656 · 已达标/)).toBeInTheDocument()
+    expect(screen.getByText(/9147 \/ 7656 · 生产已达标/)).toBeInTheDocument()
   })
 
   it('lets mobile users change order date sorting', async () => {

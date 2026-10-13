@@ -299,6 +299,7 @@ class BusinessOrderSerializer(AuditedModelSerializer):
     shipment_status = serializers.SerializerMethodField()
     produced_quantity = serializers.SerializerMethodField()
     production_remaining_quantity = serializers.SerializerMethodField()
+    production_requirement_status = serializers.SerializerMethodField()
     production_target_reached = serializers.SerializerMethodField()
     production_run_count = serializers.SerializerMethodField()
     inventory_total_quantity = serializers.SerializerMethodField()
@@ -341,6 +342,7 @@ class BusinessOrderSerializer(AuditedModelSerializer):
             "production_quantity",
             "produced_quantity",
             "production_remaining_quantity",
+            "production_requirement_status",
             "production_target_reached",
             "production_run_count",
             "inventory_total_quantity",
@@ -559,7 +561,22 @@ class BusinessOrderSerializer(AuditedModelSerializer):
         return self._production_totals(obj)[0]
 
     def get_production_remaining_quantity(self, obj) -> int:
+        if self.get_production_requirement_status(obj) in {"NOT_REQUIRED", "DELIVERY_COMPLETE", "CANCELLED"}:
+            return 0
         return max(int(obj.order_quantity or 0) - self.get_produced_quantity(obj), 0)
+
+    def get_production_requirement_status(self, obj) -> str:
+        # Current scheduling is distinct from recorded historical production.
+        # Never infer stock usage, or erase old output, from this flag.
+        if obj.status == QualityOrder.Status.CANCELLED:
+            return "CANCELLED"
+        if obj.production_required is False:
+            return "NOT_REQUIRED"
+        if self._delivered_quantity(obj) >= int(obj.order_quantity or 0):
+            return "DELIVERY_COMPLETE"
+        if self.get_production_target_reached(obj):
+            return "PRODUCTION_COMPLETE"
+        return "REQUIRED" if obj.production_required is True else "UNRECORDED"
 
     def get_production_target_reached(self, obj) -> bool:
         return self.get_produced_quantity(obj) >= int(obj.order_quantity or 0)

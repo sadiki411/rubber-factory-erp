@@ -281,6 +281,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
   }
 
   const startLabelPrint = () => {
+    if (locationsQuery.isFetching || locationsQuery.isError) return
     let selected: InventoryLocation[] = []
     if (printScope === 'ALL') selected = finishedLocations
     if (printScope === 'RACK') selected = finishedLocations.filter((location) => location.rack_code === printRack)
@@ -456,11 +457,12 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
         {labelLocations.map((location) => <ThermalLocationLabel key={location.id} kind="inventory" code={location.code} detailUrl={inventoryLocationDetailUrl(location.code)} />)}
       </div>
 
-      <Modal className="inventory-modal" title="打印70×50mm热敏库位标签" open={printOpen} onCancel={() => setPrintOpen(false)} onOk={startLabelPrint} okText="打开打印窗口">
+      <Modal className="inventory-modal" title="打印70×50mm热敏库位标签" open={printOpen} onCancel={() => setPrintOpen(false)} onOk={startLabelPrint} okText="打开打印窗口" okButtonProps={{ disabled: locationsQuery.isFetching || locationsQuery.isError }}>
+        {locationsQuery.isError && <Alert type="error" title="库位读取失败" action={<Button onClick={() => void locationsQuery.refetch()}>重试</Button>} />}
         <Alert type="info" showIcon message="标签含库位编号、Code 128条形码和可直接打开库位详情的二维码。" style={{ marginBottom: 16 }} />
         <Form layout="vertical">
           <Form.Item label="标签规格"><Typography.Text strong>70×50mm · 每次打印一张</Typography.Text></Form.Item>
-          <Form.Item label="打印范围"><Select value={printScope} onChange={setPrintScope} options={[{ value: 'ALL', label: `全部库位（${finishedLocations.length}张）` }, { value: 'RACK', label: '按货架打印' }, { value: 'CUSTOM', label: '勾选库位补打' }]} /></Form.Item>
+          <Form.Item label="打印范围"><Select value={printScope} onChange={setPrintScope} options={[{ value: 'ALL', label: locationsQuery.isFetching ? '全部库位（正在读取…）' : locationsQuery.isError ? '全部库位（读取失败）' : `全部库位（${finishedLocations.length}张）` }, { value: 'RACK', label: '按货架打印' }, { value: 'CUSTOM', label: '勾选库位补打' }]} /></Form.Item>
           {printScope === 'RACK' && <Form.Item label="选择货架" required><Select value={printRack} onChange={setPrintRack} placeholder="请选择K01-K09" options={rackCodes.map((code) => ({ value: code, label: `${code}（${finishedLocations.filter((item) => item.rack_code === code).length}张）` }))} /></Form.Item>}
           {printScope === 'CUSTOM' && <Form.Item label="选择需要补打的库位" required><Select mode="multiple" showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} value={printLocationIds} onChange={setPrintLocationIds} placeholder="可选择一个或多个库位" options={finishedLocations.map((location) => ({ value: location.id, label: `${location.code} · ${location.label}` }))} /></Form.Item>}
         </Form>

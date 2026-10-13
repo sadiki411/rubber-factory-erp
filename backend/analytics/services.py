@@ -1,4 +1,5 @@
 from collections import Counter
+import json
 from datetime import datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -7,6 +8,7 @@ from django.utils import timezone
 
 from production.models import ProductionDailyLog, ProductionRun
 from quality.models import (
+    ProcessCardUnitBinding,
     QualityEmployee,
     QualityOrder,
     QualityReworkAttempt,
@@ -17,7 +19,7 @@ from quality.models import (
 )
 from quality.services import (
     delivered_quantities_by_order, reporting_related_rows, return_reporting_allocations,
-    shipment_inspectors, shipment_line_piece_quantity, shipment_reporting_lines,
+    shipment_inspectors, shipment_line_piece_quantity, shipment_reporting_lines, shipment_card_references,
 )
 
 from .models import ManualFinancialEntry, ManualPerformanceEntry
@@ -69,16 +71,18 @@ def _ratio(numerator, denominator):
 
 
 def _empty_quality():
-    return {field: 0 for field in QUALITY_FIELDS}
+    return {**{field: 0 for field in QUALITY_FIELDS}, "inspection_record_count": 0, "rework_record_count": 0}
 
 
 def _empty_finance():
-    return {field: ZERO for field in FINANCE_FIELDS}
+    return {**{field: ZERO for field in FINANCE_FIELDS}, "finance_record_count": 0}
 
 
 def _add_quality(target, source):
     for field in QUALITY_FIELDS:
         target[field] += int(source.get(field, 0) or 0)
+    for counter, quantity in (("inspection_record_count", "inspection_quantity"), ("rework_record_count", "reworked_quantity")):
+        target[counter] = target.get(counter, 0) + int(source.get(counter, bool(source.get(quantity))))
 
 
 def _rework_case_order(case):
@@ -174,6 +178,7 @@ def _rework_attempt_quality(attempt):
 def _add_finance(target, source):
     for field in FINANCE_FIELDS:
         target[field] += _decimal(source.get(field, 0))
+    target["finance_record_count"] = target.get("finance_record_count", 0) + int(source.get("finance_record_count", 1))
 
 
 def _finance_values(*, revenue=0, material_cost=0, labor_cost=0, energy_cost=0, other_cost=0):
@@ -425,6 +430,7 @@ def _employee_row(employee=None, staff_name=""):
         "participated_shipped_quantity": 0,
         "collaborative_shipped_quantity": 0,
         "inspection_record_count": 0,
+        "rework_record_count": 0,
         "responsible_return_quantity": 0,
         "handled_returned_quantity": 0,
         "reworked_quantity": 0,
@@ -476,6 +482,7 @@ def _machine_row(machine=None, station=None):
         "theoretical_output_quantity": 0,
         "automatic_equivalent_hours": ZERO,
         "automatic_actual_machine_hours": ZERO,
+        "actual_machine_time_record_count": 0,
         "manual_reported_hours": ZERO,
         **_empty_finance(),
         "run_ids": set(),
@@ -645,12 +652,15 @@ def build_quality_employee_details(
         .prefetch_related(
             Prefetch("inspectors", to_attr="report_inspectors"),
             Prefetch("lines", queryset=shipment_reporting_lines(), to_attr="report_lines"),
+            Prefetch("process_card_bindings", queryset=ProcessCardUnitBinding.objects.select_related("process_card"), to_attr="report_process_card_bindings"),
+            Prefetch("rework_cases", queryset=QualityReworkCase.objects.filter(process_card__isnull=False).select_related("process_card"), to_attr="report_rework_cases"),
         )
         .distinct()
     )
     for batch in weighted_batches:
         people = shipment_inspectors(batch)
         collaborative = len(people) > 1
+        references = shipment_card_references(batch, lines=reporting_related_rows(batch, "lines"))
         for line in reporting_related_rows(batch, "lines"):
             card = line.process_card if line.process_card_id else None
             allocations = reporting_related_rows(line, "order_allocations")
@@ -706,6 +716,9 @@ def build_quality_employee_details(
                         "order_no": order.order_no if order else "",
                         "item_no": order.item_no if order else "",
                         "process_card_no": card.card_no if card else "",
+                        "process_cards": references.get(line.pk, []),
+                        "product_code": order.product_code if order else "",
+                        "product_specification_id": order.product_specification_id if order else None,
                         "source_no": batch.shipment_no,
                         "source_type": "WEIGHTED_SHIPMENT",
                         "shipment_batch_id": batch.pk,
@@ -827,6 +840,9 @@ def build_quality_employee_details(
                     "qualified_quantity": None,
                     "defective_quantity": None,
                     "returned_quantity": quantity,
+                    "net_weight_kg": None,
+                    "source_weight_kg": case.affected_weight_kg,
+                    "weight_basis": "原退货记录重量，非另一次实称",
                     "reworked_quantity": 0,
                     "recovered_quantity": 0,
                     "scrap_quantity": 0,
@@ -961,8 +977,18 @@ def build_quality_employee_details(
         reverse=True,
     )
     products = {}
+    known_orders = {order.pk: order for order in QualityOrder.objects.filter(pk__in={record["order_id"] for record in records if record["order_id"]})}
     for record in records:
+        order = known_orders.get(record["order_id"])
+        record["product_code"] = order.product_code if order else ""
+        record["product_specification_id"] = order.product_specification_id if order else None
+        # Unknown identities remain separate; matching text is not proof of a
+        # shared customer product or process version.
+        identity = f"product:{order.product_specification_id}" if order and order.product_specification_id else f"order:{order.pk}" if order else f"unknown:{record['record_key']}"
+        product_key = json.dumps([identity, record["product_name"], record["specification"], record["material"]], ensure_ascii=False)
+        record["product_key"] = product_key
         key = (
+            product_key,
             record["product_name"],
             record["specification"],
             record["material"],
@@ -970,14 +996,19 @@ def build_quality_employee_details(
         row = products.setdefault(
             key,
             {
-                "product_name": key[0],
-                "specification": key[1],
-                "material": key[2],
+                "product_key": key[0],
+                "product_code": record["product_code"],
+                "product_specification_id": record["product_specification_id"],
+                "product_name": key[1],
+                "specification": key[2],
+                "material": key[3],
                 "attributed_shipped_quantity": 0,
                 "participated_shipped_quantity": 0,
                 "responsible_return_quantity": 0,
                 "reworked_quantity": 0,
+                "rework_record_count": 0,
                 "record_count": 0,
+                "_sources": set(),
             },
         )
         if record["event_type"] in {"SHIPMENT", "MANUAL_QUALITY"}:
@@ -991,7 +1022,12 @@ def build_quality_employee_details(
             record["returned_quantity"] or 0
         )
         row["reworked_quantity"] += int(record["reworked_quantity"] or 0)
+        row["rework_record_count"] += int(record["event_type"] in {"REWORK", "MANUAL_REWORK"})
         row["record_count"] += 1
+        row["_sources"].add((record["source_type"], record["source_no"]))
+
+    for row in products.values():
+        row["source_document_count"] = len(row.pop("_sources"))
 
     return {
         "period": {
@@ -1198,11 +1234,12 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         actual_hours = _decimal(actual_seconds) / Decimal("3600")
         automatic_production["actual_machine_hours"] += actual_hours
         machine_row["automatic_actual_machine_hours"] += actual_hours
+        machine_row["actual_machine_time_record_count"] += 1
 
     for log in logs:
         run = log.run
         molds = int(log.produced_mold_count or 0)
-        output = molds * int(run.cavities or 0)
+        output = molds * int(log.cavities_snapshot or run.cavities or 0)
         equivalent_hours = _decimal(molds * int(log.curing_seconds_snapshot or 0)) / Decimal("3600")
         automatic_production["produced_mold_count"] += molds
         automatic_production["theoretical_output_quantity"] += output
@@ -1457,6 +1494,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
     for rework in reworks:
         values = {
             "returned_quantity": rework.returned_quantity,
+            "rework_record_count": 1,
             "reworked_quantity": rework.reworked_quantity,
             "recovered_quantity": rework.recovered_quantity,
             "scrap_quantity": rework.scrap_quantity,
@@ -1476,6 +1514,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             reworker_key, _employee_row(rework.rework_employee)
         )
         reworker["handled_returned_quantity"] += int(rework.returned_quantity or 0)
+        reworker["rework_record_count"] += 1
         reworker["reworked_quantity"] += int(rework.reworked_quantity or 0)
         reworker["recovered_quantity"] += int(rework.recovered_quantity or 0)
         reworker["scrap_quantity"] += int(rework.scrap_quantity or 0)
@@ -1565,8 +1604,8 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
 
         for attempt in case.period_attempts:
             attempt_values = _rework_attempt_quality(attempt)
-            _add_quality(automatic_quality, attempt_values)
-            _add_quality(daily[attempt.attempt_date], attempt_values)
+            _add_quality(automatic_quality, {**attempt_values, "rework_record_count": 1})
+            _add_quality(daily[attempt.attempt_date], {**attempt_values, "rework_record_count": 1})
             split_attempt_values = {
                 field: dict(_split_integer_by_order_shares(value, shares))
                 for field, value in attempt_values.items()
@@ -1575,10 +1614,10 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                 order_row = order_rows[order.pk]
                 _add_quality(
                     order_row,
-                    {
+                    {"rework_record_count": 1, **{
                         field: allocations.get(order, 0)
                         for field, allocations in split_attempt_values.items()
-                    },
+                    }},
                 )
                 order_row["automatic_record_count"] += 1
             for field, value in attempt_values.items():
@@ -1593,6 +1632,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                 reworker = employees.setdefault(
                     reworker_key, _employee_row(attempt.rework_employee)
                 )
+                reworker["rework_record_count"] += 1
                 reworker["handled_returned_quantity"] += int(
                     attempt.input_quantity or returned_quantity or 0
                 )
@@ -1652,6 +1692,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                 order_row["manual_record_count"] += 1
         elif entry.entry_type == ManualPerformanceEntry.EntryType.QUALITY:
             values = {field: getattr(entry, field) for field in QUALITY_FIELDS}
+            values["inspection_record_count"] = 1
             _add_quality(manual_quality, values)
             _add_quality(day, values)
             employee_key = _employee_key(entry.quality_employee, entry.staff_name)
@@ -1678,6 +1719,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                 order_row["manual_record_count"] += 1
         else:
             values = {field: getattr(entry, field) for field in QUALITY_FIELDS}
+            values["rework_record_count"] = 1
             _add_quality(manual_quality, values)
             _add_quality(day, values)
             employee_key = _employee_key(entry.quality_employee, entry.staff_name)
@@ -1686,6 +1728,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                 _employee_row(entry.quality_employee, entry.staff_name),
             )
             employee["handled_returned_quantity"] += int(entry.returned_quantity or 0)
+            employee["rework_record_count"] += 1
             employee["reworked_quantity"] += int(entry.reworked_quantity or 0)
             employee["recovered_quantity"] += int(entry.recovered_quantity or 0)
             employee["scrap_quantity"] += int(entry.scrap_quantity or 0)

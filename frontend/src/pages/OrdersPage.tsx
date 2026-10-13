@@ -65,10 +65,19 @@ function formattedTimestamp(value?: string | null) {
   return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm') : value
 }
 
-function productionRequiredText(value?: boolean | null, productionTargetReached = false) {
+function productionRequiredText(value?: boolean | null, productionTargetReached = false, status?: Order['production_requirement_status']) {
+  if (status === 'DELIVERY_COMPLETE') return '已交足·无需安排'
+  if (status === 'CANCELLED') return '已取消·无需安排'
   if (value !== false && productionTargetReached) return '生产已完成'
   if (value === null || value === undefined) return '未登记'
   return value ? '需要生产' : '无需生产'
+}
+
+function productionProgressText(row: Order) {
+  if (row.production_required === false || ['NOT_REQUIRED', 'DELIVERY_COMPLETE', 'CANCELLED'].includes(row.production_requirement_status || '')) {
+    return `历史生产 ${exactOrderValue(row.produced_quantity)} 件 · 当前无需安排`
+  }
+  return `${exactOrderValue(row.produced_quantity)} / ${exactOrderValue(row.order_quantity)} · ${row.production_target_reached ? '生产已达标' : `欠 ${exactOrderValue(row.production_remaining_quantity)} 件`}`
 }
 
 function productionRequiredColor(value?: boolean | null, productionTargetReached = false) {
@@ -231,8 +240,8 @@ export function OrdersPage() {
       render: (value) => value || '未登记',
     },
     { title: '模具型号 / 尺寸', key: 'mold', width: 165, render: (_, row) => <span>{row.product_specification?.mold_model?.code || row.product_specification?.mold_no || '-'}<br /><Typography.Text type="secondary">{row.mold_size || row.product_specification?.mold_size || '-'}</Typography.Text></span> },
-    { title: '是否生产', dataIndex: 'production_required', width: 105, render: (value, row) => <Tag color={productionRequiredColor(value, row.production_target_reached)}>{productionRequiredText(value, row.production_target_reached)}</Tag> },
-    { title: '生产进度', key: 'production_progress', width: 155, render: (_, row) => <span>{exactOrderValue(row.produced_quantity)} / {exactOrderValue(row.order_quantity)}<br />{row.production_target_reached ? <Tag color="success">生产已达标</Tag> : <Typography.Text type="secondary">欠 {exactOrderValue(row.production_remaining_quantity)} 件</Typography.Text>}</span> },
+    { title: '是否生产', dataIndex: 'production_required', width: 125, render: (value, row) => <Tag color={productionRequiredColor(value, row.production_target_reached)}>{productionRequiredText(value, row.production_target_reached, row.production_requirement_status)}</Tag> },
+    { title: '生产进度（模数折算）', key: 'production_progress', width: 190, render: (_, row) => <span>{productionProgressText(row)}</span> },
     { title: '出货日期', dataIndex: 'shipment_date', width: 120, render: (value) => exactOrderValue(value) },
     { title: '净有效出货', key: 'weighted_shipped_quantity', width: 135, render: (_, row) => <span>{exactOrderValue(row.weighted_shipped_quantity)} / {exactOrderValue(row.order_quantity)}<br /><Typography.Text type="secondary">待出 {exactOrderValue(row.weighted_remaining_quantity)}</Typography.Text></span> },
     { title: '最后更新', key: 'last_updated', width: 155, render: (_, row) => formattedTimestamp(row.last_data_updated_at || row.updated_at) },
@@ -258,7 +267,7 @@ export function OrdersPage() {
   return (
     <div className="page-container orders-page">
       {targetOrderId && <Card title="已定位到指定订单项次" style={{ marginBottom: 16 }}>
-        {targetOrderQuery.isError ? <Alert type="error" title="指定订单读取失败" description={(targetOrderQuery.error as Error).message} action={<Button onClick={() => void targetOrderQuery.refetch()}>重试</Button>} /> : <Table className="orders-table" rowKey="id" dataSource={targetOrderQuery.data ? [targetOrderQuery.data] : []} columns={columns} loading={targetOrderQuery.isLoading} pagination={false} sticky={{ offsetHeader: mobile ? 56 : 64 }} scroll={{ x: orderScrollWidth }} />}
+        {targetOrderQuery.isError ? <Alert type="error" title="指定订单读取失败" description={(targetOrderQuery.error as Error).message} action={<Button onClick={() => void targetOrderQuery.refetch()}>重试</Button>} /> : <Table className="orders-table" rowKey="id" dataSource={targetOrderQuery.data ? [targetOrderQuery.data] : []} columns={columns} loading={targetOrderQuery.isFetching} locale={{ emptyText: targetOrderQuery.isFetching ? '正在读取指定订单…' : '未找到指定订单' }} pagination={false} sticky={{ offsetHeader: mobile ? 56 : 64 }} scroll={{ x: orderScrollWidth }} />}
       </Card>}
       <PageTitle
         title="订单管理"
@@ -317,13 +326,14 @@ export function OrdersPage() {
             </details>
           </Card>
           {ordersQuery.isError && <Alert className="business-page-alert" type="error" showIcon title="订单读取失败" description={(ordersQuery.error as Error).message} />}
+          {ordersQuery.isFetching && <Typography.Paragraph role="status">正在查询订单…{orders.length ? '（保留上次结果，尚未完成刷新）' : ''}</Typography.Paragraph>}
           {mobile ? (
             <>
               <List
               className="mobile-record-list business-mobile-list"
               loading={ordersQuery.isFetching}
               dataSource={orders}
-              locale={{ emptyText: <Empty description="暂无订单" /> }}
+              locale={{ emptyText: <Empty description={ordersQuery.isFetching ? '正在查询订单…' : ordersQuery.isError ? '订单读取失败，请重试' : '当前筛选无匹配订单'} /> }}
               renderItem={(record) => (
                 <List.Item>
                   <Card className="mobile-record-card business-mobile-card order-mobile-card" role="button" tabIndex={0} onClick={() => openForm(record)}>
@@ -345,8 +355,8 @@ export function OrdersPage() {
                       <span><small>下单日期</small><b>{record.order_date || '未登记'}</b></span>
                       <span><small>模具型号</small><b>{record.product_specification?.mold_model?.code || record.product_specification?.mold_no || '-'}</b></span>
                       <span><small>模具尺寸</small><b>{record.mold_size || record.product_specification?.mold_size || '-'}</b></span>
-                      <span><small>是否生产</small><b>{productionRequiredText(record.production_required, record.production_target_reached)}</b></span>
-                      <span><small>生产进度</small><b>{exactOrderValue(record.produced_quantity)} / {exactOrderValue(record.order_quantity)}{record.production_target_reached ? ' · 已达标' : ` · 欠${exactOrderValue(record.production_remaining_quantity)}`}</b></span>
+                      <span><small>是否生产</small><b>{productionRequiredText(record.production_required, record.production_target_reached, record.production_requirement_status)}</b></span>
+                      <span><small>生产进度（模数折算）</small><b>{productionProgressText(record)}</b></span>
                       <span><small>出货日期</small><b>{exactOrderValue(record.shipment_date)}</b></span>
                       <span><small>净有效出货</small><b>{exactOrderValue(record.weighted_shipped_quantity)} / {exactOrderValue(record.order_quantity)} · 待出{exactOrderValue(record.weighted_remaining_quantity)}</b></span>
                       <span><small>最后更新</small><b>{formattedTimestamp(record.last_data_updated_at || record.updated_at)}</b></span>
@@ -380,6 +390,7 @@ export function OrdersPage() {
                 className="orders-table"
                 rowKey="id"
                 loading={ordersQuery.isFetching}
+                locale={{ emptyText: ordersQuery.isFetching ? '正在查询订单…' : ordersQuery.isError ? '订单读取失败，请重试' : '当前筛选无匹配订单' }}
                 dataSource={orders}
                 columns={columns}
                 scroll={{ x: orderScrollWidth }}

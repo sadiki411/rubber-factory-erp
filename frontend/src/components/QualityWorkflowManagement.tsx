@@ -17,6 +17,7 @@ import {
   Row,
   Select,
   Space,
+  Spin,
   Table,
   Tag,
   Tabs,
@@ -47,6 +48,10 @@ interface Props {
   employees: QualityEmployee[]
   cards: QualityProcessCard[]
   unitWeights: QualityUnitWeight[]
+  weightsLoading?: boolean
+  weightsError?: string
+  filtered?: boolean
+  onClearFilter?: () => void
   batches: QualityShipmentBatch[]
   shipmentOptions?: QualityShipmentBatch[]
   reworkCases: QualityReworkCase[]
@@ -627,7 +632,7 @@ function AttemptDrawer({
   </Drawer>
 }
 
-export function QualityWorkflowManagement({ orders, employees, cards, unitWeights, batches, shipmentOptions = batches, reworkCases, onOpenReturnRework, onOpenReturnReworkDetail, onOpenReturnReworkAttempt, onRefresh }: Props) {
+export function QualityWorkflowManagement({ orders, employees, cards, unitWeights, weightsLoading, weightsError, filtered, onClearFilter, batches, shipmentOptions = batches, reworkCases, onOpenReturnRework, onOpenReturnReworkDetail, onOpenReturnReworkAttempt, onRefresh }: Props) {
   const screens = Grid.useBreakpoint()
   const mobile = screens.md === false
   const [weightItem, setWeightItem] = useState<QualityUnitWeight | null | undefined>(undefined)
@@ -720,7 +725,7 @@ export function QualityWorkflowManagement({ orders, employees, cards, unitWeight
   const BadgeCount = ({ count }: { count: number }) => <Tag color={count > 2 ? 'error' : 'blue'}>{count}轮</Tag>
   return <div className="quality-workflow-management">
     <Tabs items={[
-      { key: 'weights', label: `成品单重标准（${unitWeights.length}）`, children: <Card title="成品单重标准" extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setWeightItem(null)}>新增标准</Button>}><Typography.Paragraph type="secondary">按产品规格/模具型号维护成品单重；流程卡建立时保存快照，后续修改不会改变历史出货计算。</Typography.Paragraph>{unitWeights.length ? <Table rowKey="id" dataSource={unitWeights} columns={weightColumns} scroll={{ x: 720 }} pagination={{ pageSize: 8 }} /> : <Empty description="尚未维护单重标准，可直接在流程卡上填写单重" />}</Card> },
+      { key: 'weights', label: `成品单重标准（${weightsLoading ? '查询中' : weightsError ? '读取失败' : `${unitWeights.length}项${filtered ? '·当前筛选' : ''}`}）`, children: <Card title="成品单重标准" extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setWeightItem(null)}>新增标准</Button>}><Typography.Paragraph type="secondary">按产品规格/模具型号维护成品单重；流程卡建立时保存快照，后续修改不会改变历史出货计算。</Typography.Paragraph>{weightsError ? <Alert type="error" title="单重标准读取失败" description={weightsError} action={<Button onClick={() => void onRefresh()}>重试</Button>} /> : weightsLoading && !unitWeights.length ? <Spin description="正在查询单重标准…" /> : unitWeights.length ? <Table loading={weightsLoading} rowKey="id" dataSource={unitWeights} columns={weightColumns} scroll={{ x: 720 }} pagination={{ pageSize: 8 }} /> : <Empty description={filtered ? '当前筛选无匹配单重标准' : '尚未维护单重标准，可直接在流程卡上填写单重'}>{filtered && <Button onClick={onClearFilter}>清空筛选</Button>}</Empty>}</Card> },
       { key: 'batches', label: `重量出货批次（${batches.length}）`, children: <Card title="重量出货批次（兼容入口）" extra={<Tag color="blue">完整统计请看上方流程卡出货台账</Tag>}>{batches.length ? <Table rowKey="id" dataSource={batches} columns={batchColumns} scroll={{ x: 1550 }} pagination={{ pageSize: 8 }} /> : <Empty description="暂无重量出货批次" />}</Card> },
       { key: 'rework', label: `退货返工记录（${reworkCases.length}）`, children: <Card title="内部返工 / 客户整批退货" extra={<Space wrap>{onOpenReturnRework && <Button type="primary" icon={<PlusOutlined />} onClick={onOpenReturnRework}>登记客户整批退货</Button>}<Button icon={<PlusOutlined />} onClick={() => setCaseItem(null)}>新增内部返工</Button></Space>}><Typography.Paragraph type="secondary">带流程卡的客户退货由再次扫码自动生成下一轮，页面不再提供容易误点的“登记下一轮”；只有手工订单或内部返工保留人工新增入口。</Typography.Paragraph>{mobile
         ? <QualityReworkCaseMobileList items={reworkCases} onOpen={(row) => { if (row.origin === 'CUSTOMER_RETURN') onOpenReturnReworkDetail?.(row); else setCaseItem(row) }} onAddAttempt={(row) => { if (row.origin === 'CUSTOMER_RETURN') onOpenReturnReworkAttempt?.(row); else setAttemptCase(row) }} />

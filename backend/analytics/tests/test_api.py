@@ -617,10 +617,13 @@ class AnalyticsApiTests(TestCase):
         self.assertEqual(detail_response.status_code, 200, detail_response.content)
         detail = detail_response.json()
         self.assertEqual(detail["employee"]["id"], self.inspector.pk)
-        product = detail["product_stats"][0]
-        self.assertEqual(product["attributed_shipped_quantity"], 0)
-        self.assertEqual(product["participated_shipped_quantity"], 300)
-        self.assertEqual(product["responsible_return_quantity"], 100)
+        products = detail["product_stats"]
+        self.assertEqual(len(products), 2)
+        self.assertEqual(len({row["product_key"] for row in products}), 2)
+        self.assertEqual(sum(row["attributed_shipped_quantity"] for row in products), 0)
+        self.assertEqual(sum(row["participated_shipped_quantity"] for row in products), 300)
+        self.assertEqual(sum(row["responsible_return_quantity"] for row in products), 100)
+        self.assertTrue(all(row["source_document_count"] == 2 for row in products))
         shipment_records = [
             row for row in detail["records"] if row["event_type"] == "SHIPMENT"
         ]
@@ -846,6 +849,26 @@ class AnalyticsApiTests(TestCase):
             {"date_from": day.isoformat(), "date_to": day.isoformat()},
         )
         self.assertIn(anonymous.status_code, (401, 403))
+
+    def test_missing_events_and_explicit_zero_keep_distinct_record_counts(self):
+        day = timezone.localdate()
+        params = {"date_from": day.isoformat(), "date_to": day.isoformat()}
+        empty = self.client.get("/api/analytics/dashboard/", params).json()
+        self.assertEqual(empty["quality"]["total"]["inspection_record_count"], 0)
+        self.assertEqual(empty["quality"]["total"]["rework_record_count"], 0)
+        ManualPerformanceEntry.objects.create(entry_date=day, entry_type="QUALITY", quality_employee=self.inspector, inspection_quantity=1, qualified_quantity=1, defective_quantity=0, created_by=self.user)
+        ManualPerformanceEntry.objects.create(entry_date=day, entry_type="REWORK", quality_employee=self.reworker, returned_quantity=1, reworked_quantity=0, created_by=self.user)
+        payload = self.client.get("/api/analytics/dashboard/", params).json()
+        self.assertEqual(payload["quality"]["total"]["defective_quantity"], 0)
+        self.assertEqual(payload["quality"]["total"]["inspection_record_count"], 1)
+        self.assertEqual(payload["quality"]["total"]["reworked_quantity"], 0)
+        self.assertEqual(payload["quality"]["total"]["rework_record_count"], 1)
+        self.create_automatic_records(day)
+        ProductionRun.objects.update(settled_at=None)
+        payload = self.client.get("/api/analytics/dashboard/", params).json()
+        self.assertTrue(payload["station_performance"])
+        self.assertTrue(all(row["finance_record_count"] == 0 for row in payload["station_performance"]))
+        self.assertTrue(all(row["finance_record_count"] == 0 for row in payload["order_performance"]))
 
     def test_manual_detail_lists_follow_machine_and_group_filters(self):
         day = timezone.localdate()

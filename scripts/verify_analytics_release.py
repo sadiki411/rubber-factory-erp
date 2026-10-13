@@ -7,6 +7,7 @@ API timings include response rendering, but exclude network, login and camera/UI
 """
 from datetime import date
 import json
+import os
 import math
 import statistics
 import time
@@ -18,6 +19,8 @@ from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from analytics.services import build_dashboard
+from analytics.views import QualityEmployeeDetailView
+from orders.views import BusinessOrderViewSet
 from quality.models import (
     QualityEmployee, QualityOrder, QualityReworkCase, QualityShipment,
     QualityShipmentBatch, QualityShipmentLine, QualityShipmentOrderAllocation,
@@ -26,8 +29,10 @@ from quality.services import order_delivery_totals, shipment_inspectors
 from quality.views import ProcessCardViewSet, QualityShipmentLedgerView, QualitySummaryView
 
 DATE_FROM = date(2026, 10, 1)
-DATE_TO = date(2026, 10, 8)
-SAMPLES = 100
+DATE_TO = date.fromisoformat(os.environ.get("QA_DATE_TO", "2026-10-08"))
+SAMPLES = int(os.environ.get("QA_SAMPLES", "100"))
+connection.ensure_connection()
+connection.connection.execute("PRAGMA query_only=ON")
 factory = APIRequestFactory()
 user = get_user_model().objects.filter(is_active=True, is_superuser=True).first()
 if user is None:
@@ -35,7 +40,7 @@ if user is None:
 
 
 def invoke(view, path, params):
-    request = factory.get(path, params)
+    request = factory.get(path, params, HTTP_HOST="localhost")
     force_authenticate(request, user=user)
     response = view(request)
     if response.status_code != 200:
@@ -54,6 +59,8 @@ targets = {
     "quality_summary": lambda: invoke(QualitySummaryView.as_view(), "/api/quality/summary/", params),
     "single_card_scan": lambda: invoke(ProcessCardViewSet.as_view({"get": "scan"}), "/api/quality/process-cards/scan/", {"code": "04-M003-2607080061"}),
     "shipment_search": lambda: invoke(QualityShipmentLedgerView.as_view(), "/api/quality/shipment-ledger/", dict(params, specification="240", material="N7200", page_size=20, compact=True)),
+    "employee_details": lambda: invoke(QualityEmployeeDetailView.as_view(), "/api/analytics/quality-employee-details/", dict(params, quality_employee_id=QualityEmployee.objects.order_by("pk").first().pk)),
+    "order_search": lambda: invoke(BusinessOrderViewSet.as_view({"get": "list"}), "/api/orders/orders/", {"q": "449", "page_size": 20}),
 }
 
 emit("SCALE", {
@@ -63,6 +70,8 @@ emit("SCALE", {
     "confirmed_pieces_all_time": QualityShipmentLine.objects.filter(batch__status="CONFIRMED").aggregate(total=Sum("piece_quantity"))["total"],
 })
 for name, fn in targets.items():
+    if os.environ.get("QA_TARGETS") and name not in os.environ["QA_TARGETS"].split(","):
+        continue
     reset_queries()
     start = time.perf_counter()
     with CaptureQueriesContext(connection) as ctx:

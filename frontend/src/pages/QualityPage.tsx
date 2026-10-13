@@ -604,11 +604,11 @@ export function QualityPage() {
     { title: '产品 / 规格', key: 'product', width: 200, render: (_, row) => <span>{row.order.product_code} · {row.order.product_name}<br /><Typography.Text type="secondary">{row.order.specification} · {row.order.material}</Typography.Text></span> },
     { title: '订单数量', key: 'order_quantity', width: 105, render: (_, row) => qualityNumber(row.order.order_quantity) },
     { title: '状态', key: 'status', width: 95, render: (_, row) => <Tag color={ORDER_STATUS_META[row.order.status].color}>{row.order.status_display || ORDER_STATUS_META[row.order.status].text}</Tag> },
-    { title: '质检数量', key: 'inspection', width: 105, render: (_, row) => qualityNumber(row.stats?.inspection_quantity) },
+    { title: '质检数量', key: 'inspection', width: 105, render: (_, row) => row.stats?.inspection_record_count ? qualityNumber(row.stats.inspection_quantity) : '未登记' },
     { title: '当期累计出货', key: 'shipped', width: 115, render: (_, row) => qualityNumber(row.stats?.shipped_quantity) },
     { title: '全生命周期净交付 / 剩余', key: 'delivery', width: 175, render: (_, row) => row.stats ? `${qualityNumber(row.stats.net_delivered_quantity)} / ${qualityNumber(row.stats.remaining_quantity)}` : '—' },
     { title: '退货数量', key: 'returned', width: 105, render: (_, row) => <span className={row.stats?.returned_quantity ? 'quality-danger-text' : ''}>{qualityNumber(row.stats?.returned_quantity)}</span> },
-    { title: '返工数量', key: 'reworked', width: 105, render: (_, row) => qualityNumber(row.stats?.reworked_quantity) },
+    { title: '返工数量', key: 'reworked', width: 105, render: (_, row) => row.stats?.rework_record_count ? qualityNumber(row.stats.reworked_quantity) : '未登记' },
     { title: '一次合格率', key: 'first_pass', width: 120, render: (_, row) => rateText(row.stats?.first_pass_rate) },
     { title: '当期退回/出货比', key: 'return_rate', width: 145, render: (_, row) => <span className={Number(row.stats?.return_rate || 0) > 0 ? 'quality-danger-text' : ''}>{rateText(row.stats?.return_rate)}</span> },
     { title: '返工通过率', key: 'rework_pass', width: 120, render: (_, row) => rateText(row.stats?.rework_pass_rate) },
@@ -642,11 +642,11 @@ export function QualityPage() {
       key: 'workflow',
       label: '流程卡出货',
       children: <div className="quality-tab-content">
-        {(processCardsQuery.error || unitWeightsQuery.error || batchesQuery.error || shipmentBatchOptionsQuery.error || reworkCasesQuery.error) && <Alert type="warning" showIcon style={{ marginBottom: 16 }} title="流程卡重量出货模块暂不可用" description="当前服务器未返回一期流程卡接口，页面已保留原有件数出货功能；完成后端迁移后刷新即可启用。" />}
+        {(processCardsQuery.error || unitWeightsQuery.error || batchesQuery.error || shipmentBatchOptionsQuery.error || reworkCasesQuery.error) && <Alert type="warning" showIcon style={{ marginBottom: 16 }} title="部分流程卡资料读取失败" description={((processCardsQuery.error || unitWeightsQuery.error || batchesQuery.error || shipmentBatchOptionsQuery.error || reworkCasesQuery.error) as Error).message} action={<Button onClick={() => void refreshAfterShipment()}>重试读取</Button>} />}
         <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} shipments={shipmentOptions} batches={shipmentBatches} reworks={reworks} reworkCases={filteredReworkCases} searchText={query} loading={ordersQuery.isLoading || processCardsQuery.isLoading || batchesQuery.isLoading} onOpenShipment={() => openShipmentForm()} onOpenRework={openFlowCardReturn} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); refreshAfterShipmentInBackground() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} />
         {workflowTab && <><div className="section-heading quality-shipment-ledger-heading"><div><Typography.Title level={3}>流程卡出货台账</Typography.Title><Typography.Text type="secondary">与“每日出货”使用同一套出货明细；点击出货单号可查看称重、品检员、退货和返工次数，并可修改品检员或进入出货更正。</Typography.Text></div></div>
         {renderShipmentLedger(workflowShipmentLedger, shipmentLedgerQuery.isLoading, '当前筛选条件下暂无流程卡出货记录')}</>}
-        <QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions.length ? shipmentBatchOptions : shipmentBatches} reworkCases={filteredReworkCases} onOpenReturnRework={openFlowCardReturn} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={refreshAfterShipment} /></div>,
+        <QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} weightsLoading={unitWeightsQuery.isFetching} weightsError={unitWeightsQuery.isError ? (unitWeightsQuery.error as Error).message : undefined} filtered={!!debouncedQuery} onClearFilter={() => setQuery('')} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions.length ? shipmentBatchOptions : shipmentBatches} reworkCases={filteredReworkCases} onOpenReturnRework={openFlowCardReturn} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={refreshAfterShipment} /></div>,
     },
     {
       key: 'daily',
@@ -767,7 +767,7 @@ export function QualityPage() {
         <Col xs={12} md={6}><Card className="quality-kpi inspection"><Statistic title="质检数量" value={totals?.inspection_record_count ? totals.inspection_quantity : '未登记'} suffix={totals?.inspection_record_count ? '件' : undefined} prefix={<AuditOutlined />} /><span>一次合格率 {rateText(totals?.first_pass_rate)}</span></Card></Col>
         <Col xs={12} md={6}><Card className="quality-kpi shipment"><Statistic title="出货数量" value={totals?.shipped_quantity || 0} suffix="件" prefix={<SendOutlined />} /><span>共 {qualityNumber(totals?.shipment_count)} 批出货</span></Card></Col>
         <Col xs={12} md={6}><Card className="quality-kpi return"><Statistic title="退货数量" value={totals?.returned_quantity || 0} suffix="件" prefix={<WarningOutlined />} /><span>当期退回/出货比 {rateText(totals?.return_rate)}</span></Card></Col>
-        <Col xs={12} md={6}><Card className="quality-kpi rework"><Statistic title="返工处理数量" value={totals?.reworked_quantity || 0} suffix="件" prefix={<CheckCircleOutlined />} /><span>返工通过率 {rateText(totals?.rework_pass_rate)}</span></Card></Col>
+        <Col xs={12} md={6}><Card className="quality-kpi rework"><Statistic title="返工处理数量" value={totals?.rework_record_count ? totals.reworked_quantity : '未登记'} suffix={totals?.rework_record_count ? '件' : undefined} prefix={<CheckCircleOutlined />} /><span>返工通过率 {rateText(totals?.rework_pass_rate)}</span></Card></Col>
       </Row>
       {!!shipmentAttribution && (shipmentAttribution.unassigned_employee_quantity > 0 || shipmentAttribution.collaborative_unallocated_quantity > 0 || shipmentAttribution.other_unattributed_quantity > 0) && <Alert
         className="quality-page-alert"

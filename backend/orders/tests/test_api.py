@@ -421,6 +421,28 @@ class BusinessApiTests(APITestCase):
         self.assertFalse(response.json()["production_target_reached"])
         self.assertEqual(response.json()["production_run_count"], 2)
 
+        # Scheduling flags must not erase the two historical tasks.
+        order.production_required = False
+        order.save()
+        data = self.client.get(f"/api/orders/orders/{order.pk}/").json()
+        self.assertEqual(data["production_requirement_status"], "NOT_REQUIRED")
+        self.assertEqual(data["production_remaining_quantity"], 0)
+        self.assertEqual(data["produced_quantity"], 100)
+        self.assertEqual(data["production_run_count"], 2)
+
+    def test_delivered_order_with_no_production_history_does_not_recreate_production_need(self):
+        order = QualityOrder.objects.create(order_no="DELIVERED-NO-LOG", specification="SYN-SPEC", order_quantity=100,
+            production_required=True, created_by=self.user)
+        from orders.serializers import BusinessOrderSerializer
+        data = BusinessOrderSerializer(order, context={"delivered_quantities_by_order": {order.pk: 100}}).data
+        self.assertEqual(data["production_requirement_status"], "DELIVERY_COMPLETE")
+        self.assertEqual(data["production_remaining_quantity"], 0)
+        self.assertEqual(data["produced_quantity"], 0)
+        self.assertFalse(data["production_target_reached"])
+        data = BusinessOrderSerializer(order, context={"delivered_quantities_by_order": {order.pk: 60}}).data
+        self.assertEqual(data["production_remaining_quantity"], 100)
+        self.assertEqual(data["production_requirement_status"], "REQUIRED")
+
     def test_order_number_and_item_must_be_unique_and_delete_is_disabled(self):
         payload = {
             "order_no": "DUP-100",

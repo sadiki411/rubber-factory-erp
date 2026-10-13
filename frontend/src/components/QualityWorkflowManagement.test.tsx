@@ -138,6 +138,20 @@ function renderManagement({
 }
 
 describe('QualityWorkflowManagement', () => {
+  it('separates pending, failed and filtered unit-weight results from an empty archive', () => {
+    const clear = vi.fn()
+    const props = { orders: [], employees: [], cards: [], unitWeights: [], batches: [], reworkCases: [], onRefresh: vi.fn() }
+    const { rerender } = render(<App><QualityWorkflowManagement {...props} weightsLoading /></App>)
+    expect(screen.getByText('正在查询单重标准…')).toBeInTheDocument()
+    expect(screen.queryByText(/尚未维护单重标准/)).not.toBeInTheDocument()
+    rerender(<App><QualityWorkflowManagement {...props} weightsError="测试超时" /></App>)
+    expect(screen.getByText('单重标准读取失败')).toBeInTheDocument()
+    expect(screen.queryByText(/尚未维护单重标准/)).not.toBeInTheDocument()
+    rerender(<App><QualityWorkflowManagement {...props} filtered onClearFilter={clear} /></App>)
+    expect(screen.getByText('当前筛选无匹配单重标准')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('清空筛选'))
+    expect(clear).toHaveBeenCalledOnce()
+  })
   it('shows the linked product and material without looking it up through orders', () => {
     const weight = {
       id: 77,

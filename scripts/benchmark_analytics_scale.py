@@ -18,7 +18,7 @@ from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.db import connection, reset_queries
+from django.db import connection, reset_queries, transaction
 from django.db.models import Sum
 from django.test.runner import DiscoverRunner
 from django.test.utils import CaptureQueriesContext, override_settings
@@ -31,12 +31,12 @@ from quality.models import (
     QualityShipmentLine, QualityShipmentOrderAllocation,
 )
 from quality.services import delivered_quantities_by_order
-from quality.views import ProcessCardViewSet, QualityShipmentLedgerView, QualitySummaryView
+from quality.views import ProcessCardViewSet, QualityReworkCaseViewSet, QualityShipmentLedgerView, QualitySummaryView
 
-DAY = date(2026, 10, 8)
+DAY = date(2026, 10, 13)
 SAMPLES = 100
-BASE = {"orders": 162, "batches": 576, "lines": 581,
-        "allocations": 610, "employees": 11, "return_cases": 210}
+BASE = {"orders": 167, "batches": 659, "lines": 664,
+        "allocations": 702, "employees": 11, "return_cases": 253}
 
 
 def emit(name, value):
@@ -149,7 +149,45 @@ def benchmark(stage, name, fn):
     })
 
 
-@override_settings(DEBUG=False, ALLOWED_HOSTS=["testserver"])
+def benchmark_small_batch_save(stage, user, factory):
+    """Save and retry two actual returns in a rollback-only memory transaction."""
+    cards = list(ProcessCardUnitBinding.objects.filter(shipment_unit_no=1)
+                 .order_by("-pk").values_list("process_card__card_no", flat=True)[:2])
+    view = QualityReworkCaseViewSet.as_view({"post": "bulk_scan_return"})
+    path = "/api/quality/rework-cases/bulk-scan-return/"
+    payload = {"cards": [{"card_no": code} for code in cards],
+               "opened_on": DAY.isoformat(), "reason": "Isolated benchmark return"}
+    base_cases = QualityReworkCase.objects.count()
+    samples, query_count, response_bytes = [], None, None
+    for index in range(SAMPLES):
+        with transaction.atomic():
+            request = factory.post(path, payload, format="json", HTTP_HOST="localhost")
+            force_authenticate(request, user=user)
+            started = time.perf_counter()
+            with CaptureQueriesContext(connection) as captured:
+                response = view(request)
+                response.render()
+            samples.append((time.perf_counter() - started) * 1000)
+            assert response.status_code == 201, response.data
+            assert QualityReworkCase.objects.count() == base_cases + 2
+            retry = factory.post(path, payload, format="json", HTTP_HOST="localhost")
+            force_authenticate(retry, user=user)
+            duplicate = view(retry)
+            assert duplicate.status_code == 400, duplicate.data
+            assert QualityReworkCase.objects.count() == base_cases + 2
+            if index == 0:
+                query_count, response_bytes = len(captured), len(response.content)
+            transaction.set_rollback(True)
+        assert QualityReworkCase.objects.count() == base_cases
+    emit("BENCH", {"stage": stage, "target": "two_card_return_save", "samples": SAMPLES,
+        "failures": 0, "query_count": query_count, "payload_json_bytes": response_bytes,
+        "p50_ms": round(statistics.median(samples), 2),
+        "p95_ms": round(sorted(samples)[math.ceil(.95 * SAMPLES) - 1], 2),
+        "max_ms": round(max(samples), 2), "duplicate_retries_rejected": SAMPLES,
+        "persisted_benchmark_events": 0})
+
+
+@override_settings(DEBUG=False, ALLOWED_HOSTS=["testserver", "localhost"])
 def run():
     if os.environ.get("ERP_ANALYTICS_SCALE_BENCHMARK") != "1":
         raise RuntimeError("Explicit local benchmark opt-in is required")
@@ -164,7 +202,7 @@ def run():
         user = get_user_model().objects.create_user(username="scale-test", is_superuser=True)
         factory = APIRequestFactory()
         def invoke(view, path, params):
-            request = factory.get(path, params)
+            request = factory.get(path, params, HTTP_HOST="localhost")
             force_authenticate(request, user=user)
             response = view(request)
             if response.status_code != 200:
@@ -203,6 +241,7 @@ def run():
             balances = delivered_quantities_by_order(QualityOrder.objects.values_list("id", flat=True))
             assert sum(balances.values()) == (BASE["lines"] - BASE["return_cases"]) * stage * 1000
             emit("QUANTITY", {"stage": stage, "physical": physical, "net_delivery": sum(balances.values())})
+            benchmark_small_batch_save(stage, user, factory)
             for size in (1, 20, 50):
                 started = time.perf_counter()
                 for code in cards[:size]:

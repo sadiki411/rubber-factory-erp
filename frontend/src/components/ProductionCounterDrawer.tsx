@@ -44,13 +44,13 @@ export function ProductionCounterDrawer({ open, run, log, initialValues, keepOpe
     form.resetFields()
     form.setFieldsValue(log ? {
       ...log,
+      defective_quantity: log.defective_quantity_status === 'RECORDED' || Number(log.defective_quantity) > 0 ? log.defective_quantity : undefined,
       date: log.date ? dayjs(log.date) : null,
       operator_employee_id: typeof log.operator_employee_id === 'number' ? log.operator_employee_id : undefined,
       assistant_operator_ids: log.assistant_operators?.map((item) => item.id) || [],
     } : {
       shift: currentShift(),
       cavities_snapshot: run?.cavities,
-      defective_quantity: 0,
       ...initialValues,
       date: initialValues && 'production_date' in initialValues
         ? (initialValues.production_date ? dayjs(initialValues.production_date) : null)
@@ -58,6 +58,7 @@ export function ProductionCounterDrawer({ open, run, log, initialValues, keepOpe
           ? (initialValues.date ? dayjs(initialValues.date) : null)
           : dayjs(),
     })
+    form.setFields([{ name: 'defective_quantity', touched: false }])
   }, [form, initialValues, log, open, run])
 
   const closeDrawer = () => {
@@ -68,14 +69,17 @@ export function ProductionCounterDrawer({ open, run, log, initialValues, keepOpe
   const mutation = useMutation({
     mutationFn: ({ values, confirmWarnings }: { values: Record<string, any>; confirmWarnings: boolean }) => {
       if (!run) throw new Error('未选择生产任务')
-      const body = {
+      const body: Record<string, any> = {
         ...values,
         date: values.date ? (values.date as Dayjs).format('YYYY-MM-DD') : null,
         shift: values.shift || '',
         operator_employee_id: values.operator_employee_id || null,
         assistant_operator_ids: values.assistant_operator_ids || [],
+        defective_quantity: values.defective_quantity ?? null,
         confirm_warnings: confirmWarnings,
       }
+      // Do not reinterpret a historical unknown zero when editing other fields.
+      if (log && !form.isFieldTouched('defective_quantity')) delete body.defective_quantity
       return log
         ? productionApi.updateCounterLog(run.id, log.id, body)
         : productionApi.addCounterLog(run.id, body)
@@ -117,7 +121,15 @@ export function ProductionCounterDrawer({ open, run, log, initialValues, keepOpe
     onError: (error: Error) => message.error(error.message),
   })
 
-  const submit = async () => mutation.mutate({ values: await form.validateFields(), confirmWarnings: false })
+  const submit = async () => {
+    let values: Record<string, any>
+    try {
+      values = await form.validateFields()
+    } catch {
+      return
+    }
+    mutation.mutate({ values, confirmWarnings: false })
+  }
   const previous = latestCumulative(run)
   const progress = Math.round(Number(run?.progress_percent || 0))
 
@@ -157,7 +169,7 @@ export function ProductionCounterDrawer({ open, run, log, initialValues, keepOpe
         <div className="production-quick-employee"><Input value={newEmployeeName} onChange={(event) => setNewEmployeeName(event.target.value)} placeholder="人员名单没有时快速新增" /><Button icon={<PlusOutlined />} loading={createEmployee.isPending} disabled={!newEmployeeName.trim()} onClick={() => createEmployee.mutate(newEmployeeName.trim())}>新增并选中</Button></div>
         <Row gutter={12}>
           <Col xs={12}><Form.Item name="cavities_snapshot" label="本次有效孔数"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
-          <Col xs={12}><Form.Item name="defective_quantity" label="不良数量（选填）"><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
+          <Col xs={12}><Form.Item name="defective_quantity" label="不良数量（选填）" extra="留空为未统计；明确填0表示已确认零不良。历史零值需核对。"><InputNumber min={0} precision={0} placeholder="未统计请留空" style={{ width: '100%' }} /></Form.Item></Col>
         </Row>
         <Form.Item name="operator" label="历史姓名快照（系统自动保存）"><Input disabled placeholder="新记录以员工档案为准" /></Form.Item>
         <Form.Item name="notes" label="备注"><Input.TextArea rows={3} /></Form.Item>

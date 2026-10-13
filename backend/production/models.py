@@ -1048,6 +1048,13 @@ class ProductionDailyLog(TimeStampedModel):
         "本次有效孔数快照", default=1, validators=[MinValueValidator(1)]
     )
     defective_quantity = models.PositiveIntegerField("不良/报废数量", default=0)
+    defective_quantity_recorded = models.BooleanField("不良数量是否明确登记", null=True, blank=True, default=None)
+
+    @property
+    def defective_quantity_status(self):
+        if self.defective_quantity_recorded is True or self.defective_quantity > 0:
+            return "RECORDED"
+        return "UNRECORDED" if self.defective_quantity_recorded is False else "HISTORICAL_ZERO_UNCONFIRMED"
     is_cancelled = models.BooleanField("已取消", default=False, db_index=True)
     cancelled_at = models.DateTimeField("取消时间", null=True, blank=True)
     cancelled_by = models.ForeignKey(
