@@ -50,11 +50,18 @@ interface Props {
   unitWeights: QualityUnitWeight[]
   weightsLoading?: boolean
   weightsError?: string
+  unitWeightsTotal?: number
   filtered?: boolean
   onClearFilter?: () => void
   batches: QualityShipmentBatch[]
+  batchesLoading?: boolean
+  batchesError?: string
+  batchesTotal?: number
   shipmentOptions?: QualityShipmentBatch[]
   reworkCases: QualityReworkCase[]
+  reworkCasesLoading?: boolean
+  reworkCasesError?: string
+  reworkCasesTotal?: number
   onOpenReturnRework?: () => void
   onOpenReturnReworkDetail?: (item: QualityReworkCase) => void
   onOpenReturnReworkAttempt?: (item: QualityReworkCase) => void
@@ -81,6 +88,11 @@ function shipmentStatusText(status?: QualityShipmentBatch['status']) {
 
 function lineHasAutoAllocationNote(line: QualityShipmentBatchLine) {
   return String(line.notes || '').includes('系统自动分配')
+}
+
+function listCountLabel(total: number | undefined, loaded: number, suffix = '') {
+  if (total == null) return `${loaded}${suffix}`
+  return `${loaded}项·当前列表 / 接口共${total}项${suffix}`
 }
 
 export interface ShipmentBatchReviewDrawerProps {
@@ -632,7 +644,7 @@ function AttemptDrawer({
   </Drawer>
 }
 
-export function QualityWorkflowManagement({ orders, employees, cards, unitWeights, weightsLoading, weightsError, filtered, onClearFilter, batches, shipmentOptions = batches, reworkCases, onOpenReturnRework, onOpenReturnReworkDetail, onOpenReturnReworkAttempt, onRefresh }: Props) {
+export function QualityWorkflowManagement({ orders, employees, cards, unitWeights, weightsLoading, weightsError, unitWeightsTotal, filtered, onClearFilter, batches, batchesLoading = false, batchesError, batchesTotal, shipmentOptions = batches, reworkCases, reworkCasesLoading = false, reworkCasesError, reworkCasesTotal, onOpenReturnRework, onOpenReturnReworkDetail, onOpenReturnReworkAttempt, onRefresh }: Props) {
   const screens = Grid.useBreakpoint()
   const mobile = screens.md === false
   const [weightItem, setWeightItem] = useState<QualityUnitWeight | null | undefined>(undefined)
@@ -725,11 +737,11 @@ export function QualityWorkflowManagement({ orders, employees, cards, unitWeight
   const BadgeCount = ({ count }: { count: number }) => <Tag color={count > 2 ? 'error' : 'blue'}>{count}轮</Tag>
   return <div className="quality-workflow-management">
     <Tabs items={[
-      { key: 'weights', label: `成品单重标准（${weightsLoading ? '查询中' : weightsError ? '读取失败' : `${unitWeights.length}项${filtered ? '·当前筛选' : ''}`}）`, children: <Card title="成品单重标准" extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setWeightItem(null)}>新增标准</Button>}><Typography.Paragraph type="secondary">按产品规格/模具型号维护成品单重；流程卡建立时保存快照，后续修改不会改变历史出货计算。</Typography.Paragraph>{weightsError ? <Alert type="error" title="单重标准读取失败" description={weightsError} action={<Button onClick={() => void onRefresh()}>重试</Button>} /> : weightsLoading && !unitWeights.length ? <Spin description="正在查询单重标准…" /> : unitWeights.length ? <Table loading={weightsLoading} rowKey="id" dataSource={unitWeights} columns={weightColumns} scroll={{ x: 720 }} pagination={{ pageSize: 8 }} /> : <Empty description={filtered ? '当前筛选无匹配单重标准' : '尚未维护单重标准，可直接在流程卡上填写单重'}>{filtered && <Button onClick={onClearFilter}>清空筛选</Button>}</Empty>}</Card> },
-      { key: 'batches', label: `重量出货批次（${batches.length}）`, children: <Card title="重量出货批次（兼容入口）" extra={<Tag color="blue">完整统计请看上方流程卡出货台账</Tag>}>{batches.length ? <Table rowKey="id" dataSource={batches} columns={batchColumns} scroll={{ x: 1550 }} pagination={{ pageSize: 8 }} /> : <Empty description="暂无重量出货批次" />}</Card> },
-      { key: 'rework', label: `退货返工记录（${reworkCases.length}）`, children: <Card title="内部返工 / 客户整批退货" extra={<Space wrap>{onOpenReturnRework && <Button type="primary" icon={<PlusOutlined />} onClick={onOpenReturnRework}>登记客户整批退货</Button>}<Button icon={<PlusOutlined />} onClick={() => setCaseItem(null)}>新增内部返工</Button></Space>}><Typography.Paragraph type="secondary">带流程卡的客户退货由再次扫码自动生成下一轮，页面不再提供容易误点的“登记下一轮”；只有手工订单或内部返工保留人工新增入口。</Typography.Paragraph>{mobile
+      { key: 'weights', label: `成品单重标准（${weightsLoading ? '查询中' : weightsError ? '读取失败' : `${listCountLabel(unitWeightsTotal, unitWeights.length, filtered ? '·当前筛选' : '')}`}）`, children: <Card title="成品单重标准" extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setWeightItem(null)}>新增标准</Button>}><Typography.Paragraph type="secondary">按产品规格/模具型号维护成品单重；流程卡建立时保存快照，后续修改不会改变历史出货计算。</Typography.Paragraph>{weightsError ? <Alert type="error" title="单重标准读取失败" description={weightsError} action={<Button onClick={() => void onRefresh()}>重试</Button>} /> : weightsLoading && !unitWeights.length ? <Spin description="正在查询单重标准…" /> : unitWeights.length ? <Table loading={weightsLoading} rowKey="id" dataSource={unitWeights} columns={weightColumns} scroll={{ x: 720 }} pagination={{ pageSize: 8 }} /> : <Empty description={filtered ? '当前筛选无匹配单重标准' : '尚未维护单重标准，可直接在流程卡上填写单重'}>{filtered && <Button onClick={onClearFilter}>清空筛选</Button>}</Empty>}</Card> },
+      { key: 'batches', label: `重量出货批次（${batchesLoading ? '查询中' : batchesError ? '读取失败' : listCountLabel(batchesTotal, batches.length)}）`, children: <Card title="重量出货批次（兼容入口）" extra={<Tag color="blue">完整统计请看上方流程卡出货台账</Tag>}>{batchesError ? <Alert type="error" showIcon message="重量出货批次读取失败" description={batchesError} action={<Button onClick={() => void onRefresh()}>重试</Button>} /> : batchesLoading && !batches.length ? <Spin description="正在读取重量出货批次…" /> : batches.length ? <Table loading={batchesLoading} rowKey="id" dataSource={batches} columns={batchColumns} scroll={{ x: 1550 }} pagination={{ pageSize: 8 }} /> : <Empty description="当前条件下暂无重量出货批次" />}</Card> },
+      { key: 'rework', label: `退货返工记录（${reworkCasesLoading ? '查询中' : reworkCasesError ? '读取失败' : listCountLabel(reworkCasesTotal, reworkCases.length)}）`, children: <Card title="内部返工 / 客户整批退货" extra={<Space wrap>{onOpenReturnRework && <Button type="primary" icon={<PlusOutlined />} onClick={onOpenReturnRework}>登记客户整批退货</Button>}<Button icon={<PlusOutlined />} onClick={() => setCaseItem(null)}>新增内部返工</Button></Space>}><Typography.Paragraph type="secondary">带流程卡的客户退货由再次扫码自动生成下一轮，页面不再提供容易误点的“登记下一轮”；只有手工订单或内部返工保留人工新增入口。</Typography.Paragraph>{reworkCasesError ? <Alert type="error" showIcon message="退货返工记录读取失败" description={reworkCasesError} action={<Button onClick={() => void onRefresh()}>重试</Button>} /> : reworkCasesLoading && !reworkCases.length ? <Spin description="正在读取退货返工记录…" /> : mobile
         ? <QualityReworkCaseMobileList items={reworkCases} onOpen={(row) => { if (row.origin === 'CUSTOMER_RETURN') onOpenReturnReworkDetail?.(row); else setCaseItem(row) }} onAddAttempt={(row) => { if (row.origin === 'CUSTOMER_RETURN') onOpenReturnReworkAttempt?.(row); else setAttemptCase(row) }} />
-        : reworkCases.length ? <Table rowKey="id" dataSource={reworkCases} columns={caseColumns} scroll={{ x: 1260 }} pagination={{ pageSize: 8 }} /> : <Empty description="暂无退货返工记录" />}</Card> },
+        : reworkCases.length ? <Table loading={reworkCasesLoading} rowKey="id" dataSource={reworkCases} columns={caseColumns} scroll={{ x: 1260 }} pagination={{ pageSize: 8 }} /> : <Empty description="当前条件下暂无退货返工记录" />}</Card> },
     ]} />
     <WeightDrawer open={weightItem !== undefined} item={weightItem || undefined} orders={orders} onClose={() => setWeightItem(undefined)} onSaved={onRefresh} />
     <ShipmentBatchReviewDrawer

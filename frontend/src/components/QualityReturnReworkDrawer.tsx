@@ -96,6 +96,36 @@ function WholeBatchSummary({ item }: { item: QualityReturnableBatch }) {
   </div>
 }
 
+function WholeBatchAllocationPreview({ batch, shipmentUnitNo }: { batch: QualityReturnableBatch; shipmentUnitNo?: number }) {
+  const query = useQuery({
+    queryKey: ['quality', 'return-allocation-preview', batch.shipment_batch_id, shipmentUnitNo],
+    queryFn: () => qualityWorkflowApi.returnAllocationPreview(batch.shipment_batch_id, shipmentUnitNo as number),
+    enabled: shipmentUnitNo != null,
+    retry: false,
+  })
+  if (shipmentUnitNo == null) return <Alert type="info" showIcon message="请选择本次退回的物理批号后查看逐项次回冲预览。" />
+  if (query.isFetching) return <Card size="small" title="本次整批回冲预览"><Spin tip="正在核对所选物理批次的订单分摊…" /></Card>
+  if (query.isError) return <Alert type="error" showIcon message="逐项次回冲预览读取失败" description={(query.error as Error).message} action={<Button size="small" onClick={() => void query.refetch()}>重试预览</Button>} />
+  const allocations = query.data?.order_allocations || []
+  if (query.data?.allocation_error || !allocations.length) {
+    return <Alert type="warning" showIcon message="当前物理批次暂时无法确认逐项次分摊" description={query.data?.allocation_error || '分摊资料未返回，请先核对原出货记录；不会按规格或订单号猜测回冲。'} />
+  }
+  const totalPieces = allocations.reduce((sum, item) => sum + Number(item.piece_quantity || 0), 0)
+  const totalWeight = allocations.reduce((sum, item) => sum + Number(item.net_weight_kg || 0), 0)
+  return <Card size="small" title={`本次整批回冲预览 · 物理批号 ${shipmentUnitNo}`}>
+    <List
+      size="small"
+      dataSource={allocations}
+      renderItem={(share) => <List.Item>
+        <Typography.Text>{share.order_no} / {share.item_no || '未记录'}：<strong>{qualityNumber(share.piece_quantity)} 件</strong> / {qualityNumber(share.net_weight_kg, 3)} kg</Typography.Text>
+      </List.Item>}
+    />
+    <Typography.Text strong>合计：{qualityNumber(totalPieces)} 件 / {totalWeight.toFixed(3)} kg</Typography.Text>
+    <br />
+    <Typography.Text type="secondary">确认后只回冲所选物理批次已保存的订单项次分摊；此入口不支持部分退货，服务端会再次核验。</Typography.Text>
+  </Card>
+}
+
 interface ReturnDrawerProps {
   open: boolean
   employees?: QualityEmployee[]
@@ -137,6 +167,7 @@ export function QualityReturnReworkDrawer({ open, employees = [], onClose, onSav
   const activeSelected = useMemo(() => selected ? candidates.find((item) => item.key === selected.key) || selected : undefined, [candidates, selected])
   const selectedBatchNumbers = useMemo(() => activeSelected?.available_batch_numbers || [], [activeSelected?.available_batch_numbers])
   const sourceInspectors = useMemo(() => activeSelected?.inspectors || [], [activeSelected?.inspectors])
+  const selectedShipmentUnitNo = Form.useWatch('shipment_unit_no', form) as number | undefined
   const selectCandidate = (item: QualityReturnableBatch) => {
     setSelected(item)
     form.setFieldValue('shipment_unit_no', item.available_batch_numbers?.[0])
@@ -228,6 +259,7 @@ export function QualityReturnReworkDrawer({ open, employees = [], onClose, onSav
           <Col xs={12}><Form.Item label="整批件数"><Input value={`${qualityNumber(activeSelected.pieces_per_batch)} 件`} disabled /></Form.Item></Col>
           <Col xs={12}><Form.Item label="整批净重"><Input value={`${qualityNumber(activeSelected.single_batch_net_weight_kg, 3)} kg`} disabled /></Form.Item></Col>
         </Row>
+        <WholeBatchAllocationPreview batch={activeSelected} shipmentUnitNo={selectedShipmentUnitNo} />
         {historical && <Form.Item name="backfill_reason" label="补录原因" rules={[{ required: true, whitespace: true, message: '补录历史日期时请填写原因' }]}><Input placeholder="例如：当天漏记，现按退货单补录" /></Form.Item>}
         <Form.Item name="reason_category" label="原因分类" rules={[{ required: true }]}><Select options={RETURN_REASON_CATEGORY_OPTIONS} /></Form.Item>
         <Form.Item label="常用退货原因" extra="点击可直接带入，仍可在下方修改。"><Space wrap>{COMMON_RETURN_REASONS.map((item) => <Button key={item.name} htmlType="button" onClick={() => form.setFieldsValue({ reason_category: item.category, reason: item.name })}>{item.name}</Button>)}</Space></Form.Item>

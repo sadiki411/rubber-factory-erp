@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, apiFetch } from './client'
+import { ApiError, apiFetch, updateListRows } from './client'
+
+describe('pagination cache updates', () => {
+  it('preserves authoritative count and page links while updating loaded rows', () => {
+    const page = { count: 450, next: '/?page=2', previous: null, results: [{ id: 1 }] }
+    expect(updateListRows(page, (rows) => [...rows, { id: 2 }])).toEqual({
+      ...page, results: [{ id: 1 }, { id: 2 }],
+    })
+    expect(page.results).toEqual([{ id: 1 }])
+    expect(updateListRows([{ id: 1 }], () => [])).toEqual([])
+  })
+})
 
 describe('API validation error messages', () => {
   afterEach(() => vi.unstubAllGlobals())

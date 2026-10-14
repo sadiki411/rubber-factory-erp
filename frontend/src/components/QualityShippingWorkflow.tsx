@@ -68,6 +68,14 @@ interface WorkflowProps {
   orders: QualityOrder[]
   employees?: QualityEmployee[]
   processCards?: QualityProcessCard[]
+  processCardsTotal?: number
+  processCardsLoading?: boolean
+  processCardsError?: string
+  onRetryProcessCards?: () => void
+  batchesLoading?: boolean
+  batchesError?: string
+  reworkCasesLoading?: boolean
+  reworkCasesError?: string
   shipments: QualityShipment[]
   batches?: QualityShipmentBatch[]
   reworks: ReturnRework[]
@@ -263,7 +271,7 @@ function ProcessCardDrawer({ open, card, orders, onClose, onSave }: { open: bool
   </Drawer>
 }
 
-export function QualityShippingWorkflow({ orders, employees = [], processCards = [], shipments, batches = [], reworks, reworkCases = [], searchText = '', loading, onOpenRework, onOpenTimeline, onSubmitBatch, onOpenShipment, onSaveProcessCard }: WorkflowProps) {
+export function QualityShippingWorkflow({ orders, employees = [], processCards = [], processCardsTotal, processCardsLoading = false, processCardsError, onRetryProcessCards, batchesLoading = false, batchesError, reworkCasesLoading = false, reworkCasesError, shipments, batches = [], reworks, reworkCases = [], searchText = '', loading, onOpenRework, onOpenTimeline, onSubmitBatch, onOpenShipment, onSaveProcessCard }: WorkflowProps) {
   const [selectedKeys, setSelectedKeys] = useState<React.Key[]>([])
   const [basketOpen, setBasketOpen] = useState(false)
   const [basketSessionKey, setBasketSessionKey] = useState(0)
@@ -271,8 +279,13 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
   const [timelineCard, setTimelineCard] = useState<WorkflowCard>()
   const [processCardForm, setProcessCardForm] = useState<QualityProcessCard | null | undefined>(undefined)
   const cards = useMemo(() => {
-    if (loading) return []
+    // Do not fall back to the order list while the authoritative process-card
+    // request is still pending or failed. That fallback is useful only after
+    // legacy callers without an authoritative count; successful API empty
+    // results must also stay empty instead of listing unrelated orders.
+    if (loading || processCardsLoading || processCardsError) return []
     if (!processCards.length) {
+      if (processCardsTotal != null) return []
       const keyword = searchText.trim().toLowerCase()
       const fallbackOrders = keyword
         ? orders.filter((order) => [order.order_no, order.item_no, order.batch_no, order.product_code, order.product_name, order.specification, order.material]
@@ -304,12 +317,16 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
       const missingDate = shippedWeightKg > 0 && batches.some((batch) => !batch.shipment_date && (batch.lines || []).some((line) => String(line.process_card_id || line.process_card?.id) === String(item.id)))
       return { key: String(item.id), cardNo: item.card_no, processCard: item, order, quantity, shippedQuantity, remainingQuantity, unitWeightG, expectedWeightKg: expectedWeightKg(remainingQuantity, unitWeightG), shippedWeightKg, maxAllowedWeightKg, dueDate, reworkCount, missingDate, overdue: Boolean(remainingQuantity && due?.isValid() && due.isBefore(dayjs().startOf('day'))), status: remainingQuantity <= 0 ? 'SHIPPED' : reworkCount ? 'REWORK' : shippedQuantity ? 'PARTIAL' : 'READY' } satisfies WorkflowCard
     }).filter(Boolean).filter((item) => (item as WorkflowCard).quantity > 0) as WorkflowCard[]
-  }, [orders, processCards, reworks, reworkCases, shipments, batches, searchText, loading])
+  }, [orders, processCards, processCardsTotal, processCardsLoading, processCardsError, reworks, reworkCases, shipments, batches, searchText, loading])
   const visibleCards = useMemo(() => onlyAlerts ? cards.filter((card) => card.overdue || card.missingDate || card.reworkCount > 0) : cards, [cards, onlyAlerts])
   const selectedCards = cards.filter((card) => card.processCard && selectedKeys.includes(card.key))
   const pendingCards = cards.filter((card) => card.processCard && card.remainingQuantity > 0)
   const missingDateCount = cards.filter((card) => card.missingDate).length
   const pendingReworkCount = reworks.filter((item) => item.status !== 'COMPLETED').length + reworkCases.filter((item) => !['RESHIPPED', 'COMPLETED', 'SCRAPPED', 'CANCELLED'].includes(item.status)).length
+  const cardMetricsLoading = !!loading || processCardsLoading
+  const missingDateLoading = cardMetricsLoading || batchesLoading
+  const missingDateError = processCardsError || batchesError
+  const metric = (title: string, value: number, suffix: string, pending: boolean, error?: string) => <Statistic loading={pending} title={title} value={error ? '读取失败' : value} suffix={error ? undefined : suffix} />
   const openBasket = () => {
     setBasketSessionKey((value) => value + 1)
     setBasketOpen(true)
@@ -329,14 +346,16 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
   return (
     <div className="quality-workflow">
       <Row gutter={[12, 12]} className="quality-workflow-kpis">
-        <Col xs={12} md={6}><Card className="quality-workflow-kpi"><Statistic title="待出货流程卡" value={pendingCards.length} suffix="张" /></Card></Col>
-        <Col xs={12} md={6}><Card className="quality-workflow-kpi"><Statistic title="待出货件数" value={pendingCards.reduce((sum, card) => sum + card.remainingQuantity, 0)} suffix="件" /></Card></Col>
-        <Col xs={12} md={6}><Card className={`quality-workflow-kpi ${missingDateCount ? 'has-warning' : ''}`}><Statistic title="待补出货日期" value={missingDateCount} suffix="条" /></Card></Col>
-        <Col xs={12} md={6}><Card className={`quality-workflow-kpi ${pendingReworkCount ? 'has-warning' : ''}`}><Statistic title="待处理返工" value={pendingReworkCount} suffix="条" /></Card></Col>
+        <Col xs={12} md={6}><Card className="quality-workflow-kpi">{metric('待出货流程卡（当前已加载）', pendingCards.length, '张', cardMetricsLoading, processCardsError)}</Card></Col>
+        <Col xs={12} md={6}><Card className="quality-workflow-kpi">{metric('待出货件数（当前已加载）', pendingCards.reduce((sum, card) => sum + card.remainingQuantity, 0), '件', cardMetricsLoading, processCardsError)}</Card></Col>
+        <Col xs={12} md={6}><Card className={`quality-workflow-kpi ${missingDateCount ? 'has-warning' : ''}`}>{metric('待补出货日期（当前已加载）', missingDateCount, '条', missingDateLoading, missingDateError)}</Card></Col>
+        <Col xs={12} md={6}><Card className={`quality-workflow-kpi ${pendingReworkCount ? 'has-warning' : ''}`}>{metric('待处理返工（当前已加载）', pendingReworkCount, '条', reworkCasesLoading, reworkCasesError)}</Card></Col>
       </Row>
       {(missingDateCount || cards.some((card) => card.overdue)) && <Alert className="quality-workflow-alert" type="warning" showIcon message={`需要关注 ${missingDateCount + cards.filter((card) => card.overdue).length} 项记录`} description="出货日期缺失、交期已过或返工未完成的流程卡会显示在这里。先补日期，再安排出货。" action={<Button size="small" onClick={() => setOnlyAlerts((value) => !value)}>{onlyAlerts ? '显示全部' : '只看提醒'}</Button>} />}
       <Card className="quality-workflow-card" title={<div className="quality-workflow-heading"><div><Typography.Title level={4}>流程卡与待出货篮</Typography.Title><Typography.Text type="secondary">流程卡单重未录入时可保存，但不可加入出货篮；胶料重量仅作记录，不参与成品重量计算。新增出货统一使用重量登记抽屉。</Typography.Text></div><Space wrap><Button onClick={() => setProcessCardForm(null)} icon={<PlusOutlined />}>新增流程卡</Button>{onOpenShipment && <Button onClick={onOpenShipment}>新增重量出货</Button>}<Button disabled={!selectedCards.length} onClick={openBasket}>出货篮（{selectedCards.length}）</Button><Button type="primary" disabled={!selectedCards.length} onClick={openBasket}>批量登记出货</Button></Space></div>}>
-        <Table<WorkflowCard> rowKey="key" loading={loading} dataSource={visibleCards} columns={columns} rowSelection={rowSelection} scroll={{ x: 1170 }} pagination={{ pageSize: 12, showSizeChanger: true, showTotal: (total) => `共 ${total} 张流程卡` }} locale={{ emptyText: <Empty description={onlyAlerts ? '暂无待处理提醒' : '暂无可用流程卡'} /> }} />
+        <Table<WorkflowCard> rowKey="key" loading={loading || processCardsLoading} dataSource={visibleCards} columns={columns} rowSelection={rowSelection} scroll={{ x: 1170 }} pagination={{ pageSize: 12, showSizeChanger: true, showTotal: (total) => `当前已加载 ${total} 张流程卡` }} locale={{ emptyText: processCardsError
+          ? <Alert type="error" showIcon title="流程卡读取失败" description={processCardsError} action={onRetryProcessCards && <Button onClick={onRetryProcessCards}>重试</Button>} />
+          : <Empty description={loading || processCardsLoading ? '正在读取流程卡，请稍候…' : onlyAlerts ? '暂无待处理提醒' : '当前条件下暂无可用流程卡'} /> }} />
       </Card>
       <BatchShipmentDrawer key={`shipment-basket-session-${basketSessionKey}`} open={basketOpen} cards={selectedCards} orders={orders} employees={employees} shipments={shipments} batches={batches} onClose={() => setBasketOpen(false)} onSubmit={async (payload) => { await onSubmitBatch(payload); setSelectedKeys([]) }} />
       <ProcessCardDrawer open={processCardForm !== undefined} card={processCardForm || undefined} orders={orders} onClose={() => setProcessCardForm(undefined)} onSave={onSaveProcessCard} />

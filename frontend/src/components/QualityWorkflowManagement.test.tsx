@@ -138,6 +138,11 @@ function renderManagement({
 }
 
 describe('QualityWorkflowManagement', () => {
+  it('shows current-list size separately from the server pagination total', () => {
+    render(<App><QualityWorkflowManagement orders={[]} employees={[]} cards={[]} unitWeights={[]} batches={[]} batchesTotal={529} reworkCases={[]} reworkCasesTotal={1265} onRefresh={vi.fn()} /></App>)
+    expect(screen.getByRole('tab', { name: '重量出货批次（0项·当前列表 / 接口共529项）' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '退货返工记录（0项·当前列表 / 接口共1265项）' })).toBeInTheDocument()
+  })
   it('separates pending, failed and filtered unit-weight results from an empty archive', () => {
     const clear = vi.fn()
     const props = { orders: [], employees: [], cards: [], unitWeights: [], batches: [], reworkCases: [], onRefresh: vi.fn() }
@@ -151,6 +156,30 @@ describe('QualityWorkflowManagement', () => {
     expect(screen.getByText('当前筛选无匹配单重标准')).toBeInTheDocument()
     fireEvent.click(screen.getByText('清空筛选'))
     expect(clear).toHaveBeenCalledOnce()
+  })
+
+  it('does not turn loading or failed batch and rework requests into empty business conclusions', () => {
+    const props = { orders: [], employees: [], cards: [], unitWeights: [], batches: [], reworkCases: [], onRefresh: vi.fn() }
+    const { rerender } = render(<App><QualityWorkflowManagement {...props} batchesLoading reworkCasesLoading /></App>)
+
+    expect(screen.getByRole('tab', { name: '重量出货批次（查询中）' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '退货返工记录（查询中）' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: '重量出货批次（查询中）' }))
+    expect(screen.getByText('正在读取重量出货批次…')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: '退货返工记录（查询中）' }))
+    expect(screen.getByText('正在读取退货返工记录…')).toBeInTheDocument()
+    expect(screen.queryByText('当前条件下暂无重量出货批次')).not.toBeInTheDocument()
+    expect(screen.queryByText('当前条件下暂无退货返工记录')).not.toBeInTheDocument()
+
+    rerender(<App><QualityWorkflowManagement {...props} batchesError="批次接口超时" reworkCasesError="返工接口失败" /></App>)
+    expect(screen.getByRole('tab', { name: '重量出货批次（读取失败）' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '退货返工记录（读取失败）' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: '重量出货批次（读取失败）' }))
+    expect(screen.getByText('重量出货批次读取失败')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: '退货返工记录（读取失败）' }))
+    expect(screen.getByText('退货返工记录读取失败')).toBeInTheDocument()
+    expect(screen.queryByText('当前条件下暂无重量出货批次')).not.toBeInTheDocument()
+    expect(screen.queryByText('当前条件下暂无退货返工记录')).not.toBeInTheDocument()
   })
   it('shows the linked product and material without looking it up through orders', () => {
     const weight = {

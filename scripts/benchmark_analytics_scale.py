@@ -9,11 +9,16 @@ It does not measure network, cameras, UI, concurrent saves or genuinely cold OS
 caches. Never compare local timings directly to the production host's timings.
 """
 import json
+import cProfile
+import io
 import math
 import os
 import platform
+import pstats
+import re
 import statistics
 import time
+from collections import Counter
 from datetime import date
 from decimal import Decimal
 
@@ -34,13 +39,43 @@ from quality.services import delivered_quantities_by_order
 from quality.views import ProcessCardViewSet, QualityReworkCaseViewSet, QualityShipmentLedgerView, QualitySummaryView
 
 DAY = date(2026, 10, 13)
-SAMPLES = 100
+SAMPLES = max(100, int(os.environ.get('ERP_BENCH_SAMPLES', '100')))
 BASE = {"orders": 167, "batches": 659, "lines": 664,
         "allocations": 702, "employees": 11, "return_cases": 253}
 
 
 def emit(name, value):
     print(name, json.dumps(value, ensure_ascii=False, default=str), flush=True)
+
+
+def query_profile(queries):
+    """Summarise the captured first-call SQL without printing business data.
+
+    The total count alone hid whether the 257-query return path was doing
+    useful state checks or repeatedly loading the same relation. Keep this
+    deliberately coarse: it is diagnostic evidence, not a new query-count
+    acceptance threshold.
+    """
+    categories = Counter()
+    signatures = Counter()
+    for entry in queries:
+        sql = str(entry.get("sql", entry)).strip()
+        operation = sql.split(None, 1)[0].upper() if sql else "UNKNOWN"
+        tables = re.findall(r'\b(?:FROM|JOIN|UPDATE|INTO)\s+["`]?([\w.]+)', sql, re.I)
+        table = "+".join(sorted(set(tables))) or "unknown"
+        categories[f"{operation}:{table}"] += 1
+        # Strip literals so repeated parameterised statements collapse into a
+        # stable signature that is useful across benchmark runs.
+        signature = re.sub(r"'[^']*'|\b\d+(?:\.\d+)?\b", "?", sql)
+        signatures[signature[:240]] += 1
+    return {
+        "categories": dict(categories.most_common()),
+        "unique_parameterized_signatures": len(signatures),
+        "top_repeated_signatures": [
+            {"count": count, "sql": signature}
+            for signature, count in signatures.most_common(8)
+        ],
+    }
 
 
 def populate(multiplier, user):
@@ -146,21 +181,25 @@ def benchmark(stage, name, fn):
         "p95_ms": round(sorted(samples)[math.ceil(.95 * SAMPLES) - 1], 2),
         "max_ms": round(max(samples), 2),
         "payload_json_bytes": len(json.dumps(result, ensure_ascii=False, default=str).encode()),
+        "query_profile": query_profile(captured),
     })
 
 
-def benchmark_small_batch_save(stage, user, factory):
-    """Save and retry two actual returns in a rollback-only memory transaction."""
+def benchmark_small_batch_save(stage, user, factory, size=2):
+    """Save/retry 1/2/20/50 actual returns in a rollback-only transaction."""
     cards = list(ProcessCardUnitBinding.objects.filter(shipment_unit_no=1)
-                 .order_by("-pk").values_list("process_card__card_no", flat=True)[:2])
+                 .order_by("-pk").values_list("process_card__card_no", flat=True)[:size])
+    assert len(cards) == size
     view = QualityReworkCaseViewSet.as_view({"post": "bulk_scan_return"})
     path = "/api/quality/rework-cases/bulk-scan-return/"
     payload = {"cards": [{"card_no": code} for code in cards],
-               "opened_on": DAY.isoformat(), "reason": "Isolated benchmark return"}
+               "opened_on": DAY.isoformat(), "backfill_reason": "Isolated benchmark date",
+               "reason": "Isolated benchmark return"}
     base_cases = QualityReworkCase.objects.count()
-    samples, query_count, response_bytes = [], None, None
+    samples, query_count, response_bytes, query_profile_data = [], None, None, None
     for index in range(SAMPLES):
         with transaction.atomic():
+            reset_queries()
             request = factory.post(path, payload, format="json", HTTP_HOST="localhost")
             force_authenticate(request, user=user)
             started = time.perf_counter()
@@ -169,22 +208,31 @@ def benchmark_small_batch_save(stage, user, factory):
                 response.render()
             samples.append((time.perf_counter() - started) * 1000)
             assert response.status_code == 201, response.data
-            assert QualityReworkCase.objects.count() == base_cases + 2
+            assert QualityReworkCase.objects.count() == base_cases + size
+            saved_cases = list(QualityReworkCase.objects.order_by('-pk')[:size])
+            assert all(case.primary_reason_id is not None for case in saved_cases)
+            assert all(case.responsible_inspector_id is not None for case in saved_cases)
+            # Read the capture before duplicate-check queries can fill Django's
+            # bounded query log. Reset on every sample; a saturated deque must
+            # never be reported as a zero-query confirmation path.
+            if index == 0:
+                query_count, response_bytes = len(captured), len(response.content)
+                query_profile_data = query_profile(captured)
             retry = factory.post(path, payload, format="json", HTTP_HOST="localhost")
             force_authenticate(retry, user=user)
             duplicate = view(retry)
             assert duplicate.status_code == 400, duplicate.data
-            assert QualityReworkCase.objects.count() == base_cases + 2
-            if index == 0:
-                query_count, response_bytes = len(captured), len(response.content)
+            assert QualityReworkCase.objects.count() == base_cases + size
             transaction.set_rollback(True)
         assert QualityReworkCase.objects.count() == base_cases
-    emit("BENCH", {"stage": stage, "target": "two_card_return_save", "samples": SAMPLES,
+    emit("BENCH", {"stage": stage, "target": f"{size}_card_return_save", "samples": SAMPLES,
         "failures": 0, "query_count": query_count, "payload_json_bytes": response_bytes,
         "p50_ms": round(statistics.median(samples), 2),
         "p95_ms": round(sorted(samples)[math.ceil(.95 * SAMPLES) - 1], 2),
         "max_ms": round(max(samples), 2), "duplicate_retries_rejected": SAMPLES,
-        "persisted_benchmark_events": 0})
+        "query_profile": query_profile_data,
+        "persisted_benchmark_events": 0,
+        "primary_reason_and_inspector_present": True})
 
 
 @override_settings(DEBUG=False, ALLOWED_HOSTS=["testserver", "localhost"])
@@ -233,7 +281,14 @@ def run():
                     "/api/quality/shipment-ledger/", dict(params, specification="240", material="N7200", page_size=20, compact=True)),
             }
             for name, fn in targets.items():
-                benchmark(stage, name, fn)
+                if name in os.environ.get('ERP_BENCH_TARGETS', ','.join(targets)).split(','):
+                    benchmark(stage, name, fn)
+            if stage == 5 and os.environ.get('ERP_BENCH_PROFILE') == '1':
+                profile = cProfile.Profile()
+                profile.runcall(targets['quality_summary'])
+                output = io.StringIO()
+                pstats.Stats(profile, stream=output).sort_stats('cumulative').print_stats(25)
+                emit('PROFILE', output.getvalue())
             dashboard, summary = targets["analytics_service"](), targets["quality_summary"]()
             physical = QualityShipmentLine.objects.aggregate(total=Sum("piece_quantity"))["total"]
             assert dashboard["quality"]["total"]["shipped_quantity"] == physical
@@ -241,7 +296,9 @@ def run():
             balances = delivered_quantities_by_order(QualityOrder.objects.values_list("id", flat=True))
             assert sum(balances.values()) == (BASE["lines"] - BASE["return_cases"]) * stage * 1000
             emit("QUANTITY", {"stage": stage, "physical": physical, "net_delivery": sum(balances.values())})
-            benchmark_small_batch_save(stage, user, factory)
+            if os.environ.get('ERP_BENCH_SKIP_SAVES') != '1':
+                for size in (1, 2, 20, 50):
+                    benchmark_small_batch_save(stage, user, factory, size)
             for size in (1, 20, 50):
                 started = time.perf_counter()
                 for code in cards[:size]:

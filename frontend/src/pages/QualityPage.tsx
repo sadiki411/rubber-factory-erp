@@ -16,7 +16,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { orderApi, productionApi, qualityApi, qualityWorkflowApi, toList } from '../api/client'
+import { orderApi, productionApi, qualityApi, qualityWorkflowApi, toList, updateListRows } from '../api/client'
 import {
   QualityEmployeeDrawer,
   QualityShipmentDrawer,
@@ -34,6 +34,7 @@ import { QualityReworkCaseMobileList } from '../components/QualityReworkCaseMobi
 import { QualityFlowCardReturnDrawer, QualityProcessCardReplacementDrawer } from '../components/QualityFlowCardReturnDrawer'
 import { formatQualityDate, isHighReworkCount, qualityNumber, reworkCaseSourceTitle } from '../quality'
 import type {
+  ApiList,
   QualityDailyTrend,
   QualityEmployee,
   QualityEmployeeRole,
@@ -77,6 +78,15 @@ const ROLE_META: Record<QualityEmployeeRole, { text: string; color: string }> = 
   INSPECTOR: { text: '品检员', color: 'blue' },
   REWORKER: { text: '返工员', color: 'orange' },
   BOTH: { text: '品检兼返工', color: 'purple' },
+}
+
+function responseCount(payload: unknown) {
+  if (Array.isArray(payload)) return payload.length
+  if (!payload || typeof payload !== 'object') return undefined
+  const count = (payload as { count?: unknown }).count
+  if (count == null || count === '') return undefined
+  const parsed = Number(count)
+  return Number.isFinite(parsed) ? parsed : undefined
 }
 
 function rateText(value: number | string | null | undefined) {
@@ -316,19 +326,19 @@ export function QualityPage() {
   })
   const processCardsQuery = useQuery({
     queryKey: ['quality', 'process-cards', { debouncedQuery, debouncedSpecificationFilter, debouncedMaterialFilter }],
-    queryFn: async ({ signal }) => toList(await qualityWorkflowApi.listProcessCards({ q: debouncedQuery, specification: debouncedSpecificationFilter || undefined, material: debouncedMaterialFilter || undefined, page_size: 200 }, { signal })),
+    queryFn: async ({ signal }) => qualityWorkflowApi.listProcessCards({ q: debouncedQuery, specification: debouncedSpecificationFilter || undefined, material: debouncedMaterialFilter || undefined, page_size: 200 }, { signal }),
     retry: false,
     enabled: workflowTab || Boolean(replacementOpen),
   })
   const unitWeightsQuery = useQuery({
     queryKey: ['quality', 'unit-weights', debouncedQuery],
-    queryFn: async () => toList(await qualityWorkflowApi.listUnitWeights({ q: debouncedQuery, page_size: 200 })),
+    queryFn: async ({ signal }) => qualityWorkflowApi.listUnitWeights({ q: debouncedQuery, page_size: 200 }, { signal }),
     retry: false,
     enabled: workflowTab,
   })
   const batchesQuery = useQuery({
     queryKey: ['quality', 'shipment-batches', { dateFrom, dateTo, dueDateFrom, dueDateTo, debouncedQuery, shipmentStatus, orderStatus, deliveryStatus, debouncedSpecificationFilter, debouncedMaterialFilter, inspectorFilter, ordering }],
-    queryFn: async ({ signal }) => toList(await qualityWorkflowApi.listShipmentBatches({
+    queryFn: async ({ signal }) => qualityWorkflowApi.listShipmentBatches({
       q: debouncedQuery,
       status: shipmentStatus,
       order_status: orderStatus || undefined,
@@ -342,7 +352,7 @@ export function QualityPage() {
       due_date_to: dueDateTo,
       ordering,
       page_size: 200,
-    }, { signal })),
+    }, { signal }),
     retry: false,
     enabled: workflowTab,
   })
@@ -358,7 +368,7 @@ export function QualityPage() {
   })
   const reworkCasesQuery = useQuery({
     queryKey: ['quality', 'rework-cases'],
-    queryFn: async () => toList(await qualityWorkflowApi.listReworkCases({ page_size: 200 })),
+    queryFn: async ({ signal }) => qualityWorkflowApi.listReworkCases({ page_size: 200 }, { signal }),
     retry: false,
     enabled: workflowTab || reworksTab,
   })
@@ -369,15 +379,19 @@ export function QualityPage() {
   const ledgerTotal = Array.isArray(shipmentLedgerQuery.data) ? shipmentLedgerQuery.data.length : shipmentLedgerQuery.data?.count || 0
   const shipmentOptions = shipmentOptionsQuery.data || []
   const reworks = reworksQuery.data || []
-  const processCards = useMemo(() => processCardsQuery.data || [], [processCardsQuery.data])
-  const unitWeights = unitWeightsQuery.data || []
-  const shipmentBatches = batchesQuery.data || []
+  const processCards = useMemo(() => processCardsQuery.data ? toList(processCardsQuery.data) : [], [processCardsQuery.data])
+  const unitWeights = useMemo(() => unitWeightsQuery.data ? toList(unitWeightsQuery.data) : [], [unitWeightsQuery.data])
+  const shipmentBatches = useMemo(() => batchesQuery.data ? toList(batchesQuery.data) : [], [batchesQuery.data])
   const workflowShipmentLedger = useMemo(
     () => shipmentLedger.filter((row) => row.source_type === 'WEIGHTED'),
     [shipmentLedger],
   )
   const shipmentBatchOptions = shipmentBatchOptionsQuery.data || []
-  const reworkCases = useMemo(() => reworkCasesQuery.data || [], [reworkCasesQuery.data])
+  const reworkCases = useMemo(() => reworkCasesQuery.data ? toList(reworkCasesQuery.data) : [], [reworkCasesQuery.data])
+  const processCardsTotal = responseCount(processCardsQuery.data)
+  const unitWeightsTotal = responseCount(unitWeightsQuery.data)
+  const shipmentBatchesTotal = responseCount(batchesQuery.data)
+  const reworkCasesTotal = responseCount(reworkCasesQuery.data)
   const summary = summaryQuery.data
   const totals = summary?.totals
   const shipmentAttribution = summary?.shipment_attribution
@@ -429,6 +443,8 @@ export function QualityPage() {
       queryClient.invalidateQueries({ queryKey: ['quality', 'returnable-batches'] }),
       queryClient.invalidateQueries({ queryKey: ['analytics'] }),
       queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+      queryClient.invalidateQueries({ queryKey: ['orders'] }),
+      queryClient.invalidateQueries({ queryKey: ['quality', 'return-allocation-preview'] }),
       queryClient.invalidateQueries({ queryKey: ['product-specifications'] }),
     ])
   }
@@ -442,19 +458,23 @@ export function QualityPage() {
   const upsertReworkCaseCache = (saved: QualityReworkCase | QualityReworkCase[]) => {
     const incoming = Array.isArray(saved) ? saved : [saved]
     if (!incoming.length) return
-    queryClient.setQueryData<QualityReworkCase[]>(['quality', 'rework-cases'], (current = []) => {
-      const merged = new Map(current.map((item) => [String(item.id), item]))
+    queryClient.setQueryData<ApiList<QualityReworkCase> | QualityReworkCase[]>(['quality', 'rework-cases'], (current = []) => updateListRows(current, (rows) => {
+      const merged = new Map(rows.map((item) => [String(item.id), item]))
       incoming.forEach((item) => merged.set(String(item.id), { ...merged.get(String(item.id)), ...item }))
       return [...merged.values()].sort((left, right) =>
         String(right.opened_on || '').localeCompare(String(left.opened_on || ''))
         || String(right.id).localeCompare(String(left.id), undefined, { numeric: true }),
       )
-    })
+    }))
   }
 
   const markRelatedCachesStale = (keys: string[][]) => {
     keys.forEach((queryKey) => {
-      void queryClient.invalidateQueries({ queryKey, refetchType: 'none' })
+      // Mounted consumers refetch immediately; do not wait for the analytics
+      // 60-second timer. Inactive pages remain stale and refetch on opening.
+      void queryClient.invalidateQueries({ queryKey }).catch(() => {
+        message.warning('记录已保存，关联页面读取失败，请重试刷新。')
+      })
     })
   }
 
@@ -468,6 +488,8 @@ export function QualityPage() {
       ['quality', 'returnable-batches'],
       ['analytics'],
       ['dashboard'],
+      ['orders'],
+      ['quality', 'return-allocation-preview'],
     ])
     refreshReturnDataInBackground([
       () => reworkCasesQuery.refetch(),
@@ -479,7 +501,7 @@ export function QualityPage() {
   }
 
   const refreshAfterReworkAttempt = (saved: QualityReworkAttempt, caseId: number | string) => {
-    queryClient.setQueryData<QualityReworkCase[]>(['quality', 'rework-cases'], (current = []) => current.map((item) => {
+    queryClient.setQueryData<ApiList<QualityReworkCase> | QualityReworkCase[]>(['quality', 'rework-cases'], (current = []) => updateListRows(current, (rows) => rows.map((item) => {
       if (String(item.id) !== String(caseId)) return item
       const attempts = [...(item.attempts || []).filter((attempt) => String(attempt.id) !== String(saved.id)), saved]
         .sort((left, right) => Number(left.attempt_no || 0) - Number(right.attempt_no || 0))
@@ -496,8 +518,8 @@ export function QualityPage() {
         attempt_count: Math.max(Number(item.attempt_count || 0), attempts.length, Number(saved.attempt_no || 0)),
         status,
       }
-    }))
-    markRelatedCachesStale([['analytics'], ['dashboard']])
+    })))
+    markRelatedCachesStale([['analytics'], ['dashboard'], ['orders']])
     refreshReturnDataInBackground([
       () => reworkCasesQuery.refetch(),
       () => shipmentLedgerQuery.refetch(),
@@ -511,6 +533,8 @@ export function QualityPage() {
       ['quality', 'returnable-batches'],
       ['analytics'],
       ['dashboard'],
+      ['orders'],
+      ['quality', 'return-allocation-preview'],
     ])
     refreshReturnDataInBackground([
       () => reworkCasesQuery.refetch(),
@@ -643,10 +667,10 @@ export function QualityPage() {
       label: '流程卡出货',
       children: <div className="quality-tab-content">
         {(processCardsQuery.error || unitWeightsQuery.error || batchesQuery.error || shipmentBatchOptionsQuery.error || reworkCasesQuery.error) && <Alert type="warning" showIcon style={{ marginBottom: 16 }} title="部分流程卡资料读取失败" description={((processCardsQuery.error || unitWeightsQuery.error || batchesQuery.error || shipmentBatchOptionsQuery.error || reworkCasesQuery.error) as Error).message} action={<Button onClick={() => void refreshAfterShipment()}>重试读取</Button>} />}
-        <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} shipments={shipmentOptions} batches={shipmentBatches} reworks={reworks} reworkCases={filteredReworkCases} searchText={query} loading={ordersQuery.isLoading || processCardsQuery.isLoading || batchesQuery.isLoading} onOpenShipment={() => openShipmentForm()} onOpenRework={openFlowCardReturn} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); refreshAfterShipmentInBackground() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} />
+        <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} processCardsTotal={processCardsTotal} processCardsLoading={processCardsQuery.isFetching} processCardsError={processCardsQuery.isError ? (processCardsQuery.error as Error).message : undefined} onRetryProcessCards={() => void processCardsQuery.refetch()} batchesLoading={batchesQuery.isFetching} batchesError={batchesQuery.isError ? (batchesQuery.error as Error).message : undefined} reworkCasesLoading={reworkCasesQuery.isFetching} reworkCasesError={reworkCasesQuery.isError ? (reworkCasesQuery.error as Error).message : undefined} shipments={shipmentOptions} batches={shipmentBatches} reworks={reworks} reworkCases={filteredReworkCases} searchText={query} loading={ordersQuery.isLoading} onOpenShipment={() => openShipmentForm()} onOpenRework={openFlowCardReturn} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); refreshAfterShipmentInBackground() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} />
         {workflowTab && <><div className="section-heading quality-shipment-ledger-heading"><div><Typography.Title level={3}>流程卡出货台账</Typography.Title><Typography.Text type="secondary">与“每日出货”使用同一套出货明细；点击出货单号可查看称重、品检员、退货和返工次数，并可修改品检员或进入出货更正。</Typography.Text></div></div>
         {renderShipmentLedger(workflowShipmentLedger, shipmentLedgerQuery.isLoading, '当前筛选条件下暂无流程卡出货记录')}</>}
-        <QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} weightsLoading={unitWeightsQuery.isFetching} weightsError={unitWeightsQuery.isError ? (unitWeightsQuery.error as Error).message : undefined} filtered={!!debouncedQuery} onClearFilter={() => setQuery('')} batches={shipmentBatches} shipmentOptions={shipmentBatchOptions.length ? shipmentBatchOptions : shipmentBatches} reworkCases={filteredReworkCases} onOpenReturnRework={openFlowCardReturn} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={refreshAfterShipment} /></div>,
+        <QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} weightsLoading={unitWeightsQuery.isFetching} weightsError={unitWeightsQuery.isError ? (unitWeightsQuery.error as Error).message : undefined} unitWeightsTotal={unitWeightsTotal} filtered={!!debouncedQuery} onClearFilter={() => setQuery('')} batches={shipmentBatches} batchesLoading={batchesQuery.isFetching} batchesError={batchesQuery.isError ? (batchesQuery.error as Error).message : undefined} batchesTotal={shipmentBatchesTotal} shipmentOptions={shipmentBatchOptions.length ? shipmentBatchOptions : shipmentBatches} reworkCases={filteredReworkCases} reworkCasesLoading={reworkCasesQuery.isFetching} reworkCasesError={reworkCasesQuery.isError ? (reworkCasesQuery.error as Error).message : undefined} reworkCasesTotal={reworkCasesTotal} onOpenReturnRework={() => setReturnReworkOpen(true)} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={refreshAfterShipment} /></div>,
     },
     {
       key: 'daily',

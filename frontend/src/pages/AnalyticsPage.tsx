@@ -49,6 +49,21 @@ function moneyText(value: number | string | null | undefined) {
   return `¥${numberText(value, 2)}`
 }
 
+function reworkMetricText(row: { rework_record_count?: number; reworked_quantity?: number | string }) {
+  return row.rework_record_count
+    ? `返工${numberText(row.reworked_quantity)}`
+    : '返工未登记'
+}
+
+function manualHoursText(row: { manual_record_count?: number; manual_reported_hours?: number | string }) {
+  if (!row.manual_record_count) return '未登记'
+  // Legacy forms defaulted hours to 0. A row proves a manual event exists,
+  // but cannot prove that its default zero was an explicit actual-hours entry.
+  return Number(row.manual_reported_hours) === 0
+    ? '0 h（记录值，含义待核对）'
+    : `${numberText(row.manual_reported_hours, 2)} h`
+}
+
 const WORK_STATUS: Record<string, string> = { CONFIRMED: '已确认', RESHIPPED: '已重新出货', WAITING_REWORK: '待返工', REWORKING: '正在返工', WAITING_REINSPECTION: '待复检', READY_TO_RESHIP: '待重新出货', SCRAPPED: '已报废', CANCELLED: '已取消', COMPLETED: '已完成', LEGACY: '历史记录', MANUAL: '手工补录' }
 const productLabel = (row: AnalyticsQualityProductPerformance | AnalyticsQualityWorkRecord) => row.product_name || (row.product_code ? `产品编号 ${row.product_code}` : row.specification ? `${row.specification}（名称未填写）` : '产品身份待关联')
 const productFilterKey = (row: AnalyticsQualityProductPerformance | AnalyticsQualityWorkRecord): string => row.product_key || JSON.stringify([row.product_name, row.specification, row.material])
@@ -209,7 +224,7 @@ export function AnalyticsPage() {
     { title: '自动 / 手工 / 合计模数', key: 'molds', width: 190, render: (_, row) => `${numberText(row.automatic_mold_count)} / ${numberText(row.manual_mold_count)} / ${numberText(row.total_mold_count)}` },
     { title: '生产天数', dataIndex: 'production_days', width: 105, render: (value) => `${numberText(value)} 天` },
     { title: '折算工时', dataIndex: 'automatic_equivalent_hours', width: 110, render: (value) => `${numberText(value, 2)} h` },
-    { title: '填报工时', dataIndex: 'manual_reported_hours', width: 110, render: (value) => `${numberText(value, 2)} h` },
+    { title: '填报工时', dataIndex: 'manual_reported_hours', width: 110, render: (_, row) => manualHoursText(row) },
     { title: '折算模数/小时（非实测）', dataIndex: 'automatic_molds_per_equivalent_hour', width: 180, render: (value) => value === null ? '—' : `${numberText(value, 2)} 模/h` },
     { title: '手工效率', dataIndex: 'manual_molds_per_reported_hour', width: 110, render: (value) => value === null ? '—' : `${numberText(value, 2)} 模/h` },
   ]
@@ -217,7 +232,7 @@ export function AnalyticsPage() {
     { title: '机台', key: 'machine', fixed: 'left', width: 150, render: (_, row) => <span><strong>{row.machine_code || row.station_code || '未关联'}</strong><br /><Typography.Text type="secondary">{row.machine_name || (row.group ? `${row.group}组` : '-')}</Typography.Text></span> },
     { title: '来源', dataIndex: 'source', width: 125, render: (value) => <SourceTag source={value} /> },
     { title: '自动 / 手工 / 合计模数', key: 'molds', width: 190, render: (_, row) => `${numberText(row.automatic_mold_count)} / ${numberText(row.manual_mold_count)} / ${numberText(row.total_mold_count)}` },
-    { title: '折算 / 上下机间隔 / 填报工时', key: 'hours', width: 245, render: (_, row) => `${numberText(row.automatic_equivalent_hours, 2)} / ${row.actual_machine_time_record_count ? numberText(row.automatic_actual_machine_hours, 2) : '未登记'} / ${Number(row.manual_reported_hours) > 0 ? numberText(row.manual_reported_hours, 2) : '未登记'} h` },
+    { title: '折算 / 上下机间隔 / 填报工时', key: 'hours', width: 245, render: (_, row) => `${numberText(row.automatic_equivalent_hours, 2)} / ${row.actual_machine_time_record_count ? numberText(row.automatic_actual_machine_hours, 2) : '未登记'} / ${manualHoursText(row)}` },
     { title: '自动机台效率', dataIndex: 'automatic_efficiency_percent', width: 125, render: rateText },
     { title: '订单数', dataIndex: 'run_count', width: 90, render: (value) => numberText(value) },
     { title: '收入', dataIndex: 'revenue', width: 120, render: (value, row) => row.finance_record_count ? moneyText(value) : '未录入' },
@@ -231,7 +246,7 @@ export function AnalyticsPage() {
     { title: '归属出货', dataIndex: 'shipped_quantity', width: 105, render: (value) => numberText(value) },
     { title: '参与出货', dataIndex: 'participated_shipped_quantity', width: 105, render: (value, row) => <span>{numberText(value)}{row.collaborative_shipped_quantity ? <><br /><Typography.Text type="warning">协作未分摊 {numberText(row.collaborative_shipped_quantity)}</Typography.Text></> : null}</span> },
     { title: '责任退回', dataIndex: 'responsible_return_quantity', width: 110, render: (value) => <span className={value ? 'quality-danger-text' : ''}>{numberText(value)}</span> },
-    { title: '返工 / 合格 / 报废', key: 'rework', width: 175, render: (_, row) => row.rework_record_count ? `${numberText(row.reworked_quantity)} / ${numberText(row.recovered_quantity)} / ${numberText(row.scrap_quantity)}` : '未登记' },
+    { title: '返工 / 合格 / 报废', key: 'rework', width: 175, render: (_, row) => row.rework_record_count ? `${numberText(row.reworked_quantity)} / ${numberText(row.recovered_quantity)} / ${numberText(row.scrap_quantity)}` : '返工未登记' },
     { title: '一次合格率', dataIndex: 'first_pass_rate', width: 115, render: rateText },
     { title: '返工通过率', dataIndex: 'rework_pass_rate', width: 115, render: rateText },
     { title: '明细', key: 'detail', fixed: 'right', width: 120, render: (_, row) => <Button type="link" icon={<EyeOutlined />} disabled={!row.employee_id} onClick={() => { setQualityDetailEmployeeId(row.employee_id!); setQualityProductFilter(undefined) }}>查看工作明细</Button> },
@@ -264,7 +279,7 @@ export function AnalyticsPage() {
           <span><small>归属出货</small><b>{numberText(row.shipped_quantity)} 件</b></span>
           <span><small>参与出货</small><b>{numberText(row.participated_shipped_quantity)} 件</b></span>
           <span><small>责任退回</small><b className={row.responsible_return_quantity ? 'quality-danger-text' : ''}>{numberText(row.responsible_return_quantity)} 件</b></span>
-          <span><small>返工 / 合格 / 报废</small><b>{row.rework_record_count ? `${numberText(row.reworked_quantity)} / ${numberText(row.recovered_quantity)} / ${numberText(row.scrap_quantity)}` : '未登记'}</b></span>
+          <span><small>返工 / 合格 / 报废</small><b>{row.rework_record_count ? `${numberText(row.reworked_quantity)} / ${numberText(row.recovered_quantity)} / ${numberText(row.scrap_quantity)}` : '返工未登记'}</b></span>
           <span><small>一次 / 返工通过率</small><b>{rateText(row.first_pass_rate)} / {rateText(row.rework_pass_rate)}</b></span>
         </div>
         {!!row.collaborative_shipped_quantity && <Typography.Text type="warning">协作未分摊 {numberText(row.collaborative_shipped_quantity)} 件</Typography.Text>}
@@ -420,7 +435,7 @@ export function AnalyticsPage() {
       <Card className="analytics-tabs-card data-card">
         <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
           { key: 'production', label: '生产绩效', children: <div className="analytics-tab-content"><Row gutter={[16, 16]}><Col xs={24} xl={10}><Card title="人员模数排行"><RankBarChart items={(data?.operator_performance || []).map((row) => ({ key: row.operator, label: row.operator, value: row.total_mold_count, detail: `${row.production_days}天 · 日均${numberText(row.average_daily_mold_count, 2)}`, source: row.source }))} valueSuffix=" 模" /></Card></Col><Col xs={24} xl={14}><Card title="机台效率与利润" styles={{ body: { padding: 0 } }}><Table rowKey={(row) => row.machine_id || row.station_id || row.machine_code} dataSource={data?.station_performance || []} columns={stationColumns} scroll={{ x: 1130 }} pagination={{ pageSize: 10 }} /></Card></Col></Row><Card className="analytics-detail-table" title="人员绩效明细" styles={{ body: { padding: 0 } }}><Table rowKey="operator" dataSource={data?.operator_performance || []} columns={operatorColumns} scroll={{ x: 1080 }} pagination={{ pageSize: 15 }} /></Card></div> },
-          { key: 'quality', label: '品检与返工绩效', children: <div className="analytics-tab-content"><Row gutter={[16, 16]}><Col xs={24} xl={12}><Card title="品检出货 / 返工工作量排行"><RankBarChart items={(data?.quality_employee_performance || []).filter((row) => row.shipped_quantity + row.reworked_quantity > 0).map((row) => ({ key: row.employee_id || row.name, label: row.name, value: row.shipped_quantity + row.reworked_quantity, detail: `归属出货${numberText(row.shipped_quantity)} · 返工${numberText(row.reworked_quantity)}`, source: row.source }))} valueSuffix=" 件" emptyText="所选期间暂无已归属员工的出货或返工数据" /></Card></Col><Col xs={24} xl={12}><Card title="退回原因排行与占比"><RankBarChart items={(data?.defect_reason_breakdown || []).map((row) => ({ key: row.reason_category, label: row.reason_category_display || row.reason_category, value: row.returned_quantity, detail: `占退回 ${rateText(row.share_of_returns)} · 返工通过 ${rateText(row.rework_pass_rate)}`, source: row.source }))} valueSuffix=" 件" emptyText="所选期间暂无退回原因数据" /></Card></Col></Row><Card className="analytics-detail-table" title="员工绩效明细" styles={{ body: { padding: 0 } }}>{qualityEmployeeSection}</Card></div> },
+          { key: 'quality', label: '品检与返工绩效', children: <div className="analytics-tab-content"><Row gutter={[16, 16]}><Col xs={24} xl={12}><Card title="归属出货＋已登记返工作业件数排行"><RankBarChart items={(data?.quality_employee_performance || []).filter((row) => row.shipped_quantity + row.reworked_quantity > 0).map((row) => ({ key: row.employee_id || row.name, label: row.name, value: row.shipped_quantity + row.reworked_quantity, detail: `归属出货${numberText(row.shipped_quantity)} · ${reworkMetricText(row)}`, source: row.source }))} valueSuffix=" 件" emptyText="所选期间暂无已归属员工的出货或返工数据" /></Card></Col><Col xs={24} xl={12}><Card title="退回原因排行与占比"><RankBarChart items={(data?.defect_reason_breakdown || []).map((row) => ({ key: row.reason_category, label: row.reason_category_display || row.reason_category, value: row.returned_quantity, detail: `占退回 ${rateText(row.share_of_returns)} · 返工通过 ${rateText(row.rework_pass_rate)}`, source: row.source }))} valueSuffix=" 件" emptyText="所选期间暂无退回原因数据" /></Card></Col></Row><Card className="analytics-detail-table" title="员工绩效明细" styles={{ body: { padding: 0 } }}>{qualityEmployeeSection}</Card></div> },
           { key: 'orders', label: '订单联动', children: <div className="analytics-tab-content"><Alert className="analytics-alert" type="info" showIcon title="优先按订单主档关联" description="新记录通过订单 ID 精确联动；旧历史没有订单关联时继续按订单号匹配，并在表中标明关联方式。" /><Card styles={{ body: { padding: 0 } }}><Table rowKey="row_key" dataSource={data?.order_performance || []} columns={orderColumns} scroll={{ x: 1370 }} pagination={{ pageSize: 15 }} /></Card></div> },
           { key: 'manual', label: '手工补录', children: <div className="analytics-tab-content"><div className="section-heading"><div><Typography.Title level={3}>补录与作废记录</Typography.Title><Typography.Text type="secondary">补录可编辑；删除采用作废方式保留审计历史。</Typography.Text></div><Space wrap><Button icon={<FormOutlined />} onClick={() => setPerformanceForm({})}>补录绩效</Button><Button type="primary" icon={<DollarOutlined />} onClick={() => setFinancialForm({})}>记录收支</Button></Space></div>{manualSection}</div> },
         ]} />

@@ -51,6 +51,7 @@ vi.mock('./QualityQrScanner', () => ({
       <input value={value} onChange={(event) => setValue(event.target.value)} placeholder="输入退货流程卡" />
       <button type="button" onClick={() => void onScan(value)}>加入退货卡</button>
       <button type="button" onClick={() => { for (let i = 1; i <= 20; i++) void onScan(`04-M003-261013${String(i).padStart(4, '0')}`) }}>加入20张测试卡</button>
+      <button type="button" onClick={() => { for (let i = 1; i <= 50; i++) void onScan(`04-M003-261013${String(i).padStart(4, '0')}`) }}>加入50张测试卡</button>
     </section>
   },
 }))
@@ -73,21 +74,73 @@ function renderDrawer() {
 }
 
 describe('QualityFlowCardReturnDrawer scan performance', () => {
-  it('pages a long queue without dropping any card from the eventual bulk submission', async () => {
+  it.each([false, true])('reconciles a lost submission response without guessing success (committed=%s)', async (committed) => {
+    const user = userEvent.setup()
+    const cardNo = 'CARD-LOST-RESPONSE'
+    const lookup = { found: true, scanned_card: { id: 1, card_no: cardNo, order_id: 107,
+      unit_binding: { shipment_batch_id: 1, shipment_unit_no: 1, inspectors: [{ id: 1, name: '王品检' }] } } }
+    apiMocks.listReturnReasons.mockResolvedValue([{ id: 1, name: '拔破' }])
+    apiMocks.scanProcessCard.mockResolvedValue(lookup)
+    apiMocks.scanReturn.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    renderDrawer()
+    fireEvent.change(await screen.findByPlaceholderText('输入退货流程卡'), { target: { value: cardNo } })
+    fireEvent.click(screen.getByRole('button', { name: '加入退货卡' }))
+    await screen.findByText('已锁定原出货')
+    await user.click(screen.getByLabelText('主要退货原因'))
+    await user.click(await screen.findByText('拔破'))
+    fireEvent.click(screen.getByRole('button', { name: /确认登记/ }))
+    await screen.findByText('提交结果未确认，不能直接再次登记')
+    expect(screen.getByText(cardNo)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /确认登记/ })).toBeDisabled()
+    apiMocks.scanProcessCard.mockRejectedValueOnce(new TypeError('still offline'))
+    fireEvent.click(screen.getByRole('button', { name: '重新核对提交结果' }))
+    await screen.findByText(/提交结果仍未确认，队列已保留/)
+    expect(screen.getByRole('button', { name: /确认登记/ })).toBeDisabled()
+    apiMocks.scanProcessCard.mockResolvedValue(committed ? { ...lookup,
+      current_return: { id: 99, case_no: 'R99', status: 'WAITING_REWORK' } } : lookup)
+    fireEvent.click(screen.getByRole('button', { name: '重新核对提交结果' }))
+    await waitFor(() => expect(screen.queryByText('提交结果未确认，不能直接再次登记')).not.toBeInTheDocument())
+    if (committed) {
+      expect(screen.getByText(/服务器已有退货记录 R99/)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /确认登记/ })).toBeDisabled()
+      expect(apiMocks.scanReturn).toHaveBeenCalledTimes(1)
+    } else {
+      expect(screen.getByRole('button', { name: /确认登记/ })).toBeEnabled()
+      fireEvent.click(screen.getByRole('button', { name: /确认登记/ }))
+      await waitFor(() => expect(apiMocks.scanReturn).toHaveBeenCalledTimes(2))
+    }
+  }, 30_000)
+  it.each([20, 50])('pages a %s-card queue without dropping any card from the bulk submission', async (size) => {
     const user = userEvent.setup()
     apiMocks.listReturnReasons.mockResolvedValue([{ id: 1, name: '拔破', is_active: true }])
     apiMocks.scanProcessCard.mockImplementation(async (cardNo: string) => ({ found: true, scanned_card: { id: cardNo, card_no: cardNo, order_id: 107, unit_binding: { shipment_batch_id: Number(cardNo.slice(-4)), shipment_unit_no: 1, inspectors: [{ id: 1, name: '王品检' }] } } }))
     renderDrawer()
-    fireEvent.click(await screen.findByRole('button', { name: '加入20张测试卡' }))
-    await waitFor(() => expect(apiMocks.scanProcessCard).toHaveBeenCalledTimes(20))
-    expect(await screen.findByText(/共 20 批，分页仅影响显示/)).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: `加入${size}张测试卡` }))
+    await waitFor(() => expect(apiMocks.scanProcessCard).toHaveBeenCalledTimes(size))
+    expect(await screen.findByText(new RegExp(`共 ${size} 批，分页仅影响显示`))).toBeInTheDocument()
     expect(screen.queryByText('04-M003-2610130001', { exact: true })).not.toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: /确认登记/ })).toBeEnabled())
     await user.click(screen.getByLabelText('主要退货原因'))
     await user.click(await screen.findByText('拔破'))
     fireEvent.click(screen.getByRole('button', { name: /确认登记/ }))
     await waitFor(() => expect(apiMocks.bulkScanReturn).toHaveBeenCalled())
-    expect(apiMocks.bulkScanReturn.mock.calls[0][0].cards).toHaveLength(20)
+    expect(apiMocks.bulkScanReturn.mock.calls[0][0].cards).toHaveLength(size)
+  }, 30_000)
+  it.each([20, 50])('blocks all %s cards when an off-page card is pending or fails', async (size) => {
+    let reject!: (reason: Error) => void
+    apiMocks.scanProcessCard.mockImplementation((cardNo: string) => cardNo.endsWith('0001')
+      ? new Promise((_, fail) => { reject = fail })
+      : Promise.resolve({ found: true, scanned_card: { id: cardNo, card_no: cardNo,
+        unit_binding: { shipment_batch_id: Number(cardNo.slice(-4)), shipment_unit_no: 1, inspectors: [{ id: 1, name: '王品检' }] } } }))
+    renderDrawer()
+    fireEvent.click(await screen.findByRole('button', { name: `加入${size}张测试卡` }))
+    await waitFor(() => expect(apiMocks.scanProcessCard).toHaveBeenCalledTimes(size))
+    expect(screen.queryByText('04-M003-2610130001', { exact: true })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /确认登记/ })).toBeDisabled()
+    reject(new Error('first card failed off-page'))
+    await screen.findByText('部分流程卡核对失败')
+    expect(screen.getByRole('button', { name: /确认登记/ })).toBeDisabled()
+    expect(apiMocks.bulkScanReturn).not.toHaveBeenCalled()
   }, 30_000)
   beforeEach(() => {
     vi.clearAllMocks()

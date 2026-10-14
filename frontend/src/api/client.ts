@@ -134,6 +134,12 @@ export function toList<T>(payload: ApiList<T> | T[]): T[] {
   return Array.isArray(payload) ? payload : payload.results || []
 }
 
+/** Update cached rows without losing server pagination/count scope. */
+export function updateListRows<T>(payload: ApiList<T> | T[], update: (rows: T[]) => T[]): ApiList<T> | T[] {
+  const results = update(toList(payload))
+  return Array.isArray(payload) ? results : { ...payload, results }
+}
+
 function mapList<T, U>(payload: ApiList<T> | T[], mapper: (item: T) => U): ApiList<U> | U[] {
   if (Array.isArray(payload)) return payload.map(mapper)
   return { ...payload, results: (payload.results || []).map(mapper) }
@@ -663,8 +669,8 @@ export const qualityApi = {
  * server can continue serving the legacy tables while the UI falls back.
  */
 export const qualityWorkflowApi = {
-  listUnitWeights: (filters: QualityListFilters = {}) =>
-    apiFetch<ApiList<QualityUnitWeight> | QualityUnitWeight[]>(`/api/quality/product-unit-weights/${queryString(filters)}`),
+  listUnitWeights: (filters: QualityListFilters = {}, init: RequestInit = {}) =>
+    apiFetch<ApiList<QualityUnitWeight> | QualityUnitWeight[]>(`/api/quality/product-unit-weights/${queryString(filters)}`, init),
   createUnitWeight: (body: Partial<QualityUnitWeight>) => apiFetch<QualityUnitWeight>('/api/quality/product-unit-weights/', { method: 'POST', body: JSON.stringify(body) }),
   updateUnitWeight: (id: number | string, body: Partial<QualityUnitWeight>) => apiFetch<QualityUnitWeight>(`/api/quality/product-unit-weights/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
   listProcessCards: (filters: QualityListFilters = {}, init: RequestInit = {}) =>
@@ -733,7 +739,7 @@ export const qualityWorkflowApi = {
     if (!draft.id) throw new Error('出货批次创建成功但未返回批次 ID，无法确认')
     return qualityWorkflowApi.confirmShipmentBatch(draft.id, processCardBindings)
   },
-  listReworkCases: (filters: QualityListFilters = {}) => apiFetch<ApiList<QualityReworkCase> | QualityReworkCase[]>(`/api/quality/rework-cases/${queryString(filters)}`),
+  listReworkCases: (filters: QualityListFilters = {}, init: RequestInit = {}) => apiFetch<ApiList<QualityReworkCase> | QualityReworkCase[]>(`/api/quality/rework-cases/${queryString(filters)}`, init),
   listReturnableBatches: (filters: Pick<QualityListFilters, 'q' | 'order_id' | 'page' | 'page_size'> = {}) =>
     apiFetch<ApiList<QualityReturnableBatch> | QualityReturnableBatch[]>(`/api/quality/rework-cases/returnable-batches/${queryString(filters)}`),
   createReworkCase: (body: Record<string, unknown>) => apiFetch<QualityReworkCase>('/api/quality/rework-cases/', { method: 'POST', body: JSON.stringify(body) }),

@@ -2,6 +2,7 @@ import { App } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import dayjs from 'dayjs'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import type { QualityEmployee, QualityReturnableBatch, QualityReworkCase } from '../types'
 import {
   QualityReturnReworkAttemptDrawer,
@@ -33,6 +34,7 @@ globalThis.ResizeObserver = ResizeObserverMock
 
 const apiMocks = vi.hoisted(() => ({
   listReturnableBatches: vi.fn(),
+  returnAllocationPreview: vi.fn(),
   createReworkCase: vi.fn(),
   updateReworkCase: vi.fn(),
   createReworkAttempt: vi.fn(),
@@ -76,6 +78,9 @@ describe('QualityReturnReworkDrawer', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     apiMocks.listReturnableBatches.mockResolvedValue([candidate])
+    apiMocks.returnAllocationPreview.mockResolvedValue({
+      order_allocations: [{ order_id: 101, order_no: candidate.order_no, item_no: candidate.item_no, piece_quantity: 1000, net_weight_kg: '8.740' }],
+    })
     apiMocks.createReworkCase.mockResolvedValue({ id: 9, case_no: 'R9' })
     apiMocks.updateReworkCase.mockResolvedValue({ id: 9, case_no: 'R9', status: 'CANCELLED' })
     apiMocks.createReworkAttempt.mockResolvedValue({ id: 19, attempt_no: 1 })
@@ -116,6 +121,43 @@ describe('QualityReturnReworkDrawer', () => {
     expect(body).not.toHaveProperty('recovered_quantity')
     expect(onSaved).toHaveBeenCalled()
   })
+
+  it('previews the selected physical batch order allocations before an unscanned whole-batch return', async () => {
+    renderWithQuery(<QualityReturnReworkDrawer open onClose={vi.fn()} onSaved={vi.fn()} onBackfillShipment={vi.fn()} />)
+    await screen.findByText(/04-A001-2607040001 \/ 11/)
+    fireEvent.click(screen.getByRole('button', { name: '选择一整批退货' }))
+
+    expect(await screen.findByText(/本次整批回冲预览 · 物理批号 3/)).toBeInTheDocument()
+    expect(screen.getByText('1,000 件')).toBeInTheDocument()
+    expect(apiMocks.returnAllocationPreview).toHaveBeenCalledWith(501, 3)
+  })
+
+  it('does not reuse a previous physical unit preview while the new unit loads, fails and retries', async () => {
+    const user = userEvent.setup()
+    apiMocks.listReturnableBatches.mockResolvedValue([{ ...candidate, available_batch_numbers: [3, 4] }])
+    let fail!: (error: Error) => void
+    apiMocks.returnAllocationPreview.mockResolvedValueOnce({ order_allocations: [
+      { order_id: 121, order_no: '04-A001-2609140004', item_no: '89', piece_quantity: 10417, net_weight_kg: '1.529' },
+      { order_id: 114, order_no: '04-A001-2608290001', item_no: '8', piece_quantity: 687, net_weight_kg: '0.101' },
+    ] }).mockImplementationOnce(() => new Promise((_, reject) => { fail = reject }))
+    renderWithQuery(<QualityReturnReworkDrawer open onClose={vi.fn()} onSaved={vi.fn()} onBackfillShipment={vi.fn()} />)
+    await screen.findByText(/04-A001-2607040001 \/ 11/)
+    fireEvent.click(screen.getByRole('button', { name: '选择一整批退货' }))
+    await screen.findByText('10,417 件')
+    expect(screen.getByText(/合计：11,104 件 \/ 1.630 kg/)).toBeInTheDocument()
+    await user.click(screen.getByLabelText('本次退回的物理批号'))
+    await user.click(await screen.findByText('物理批号 4（本组共34批）'))
+    await waitFor(() => expect(apiMocks.returnAllocationPreview).toHaveBeenLastCalledWith(501, 4))
+    expect(screen.queryByText('10,417 件')).not.toBeInTheDocument()
+    fail(new Error('isolated preview failure'))
+    await screen.findByText('逐项次回冲预览读取失败')
+    apiMocks.returnAllocationPreview.mockResolvedValueOnce({ order_allocations: [
+      { order_id: 101, order_no: 'DEMO-SECOND-UNIT', item_no: '1', piece_quantity: 1167, net_weight_kg: '10.200' },
+    ] })
+    fireEvent.click(screen.getByRole('button', { name: '重试预览' }))
+    await screen.findByText(/DEMO-SECOND-UNIT \/ 1/)
+    expect(screen.queryByText('10,417 件')).not.toBeInTheDocument()
+  }, 30_000)
 
   it.each(['拔破', '空洞', '脏', '变形'])('offers %s as a common reason and persists the selected description', async (reason) => {
     renderWithQuery(<QualityReturnReworkDrawer open onClose={vi.fn()} onSaved={vi.fn()} onBackfillShipment={vi.fn()} />)

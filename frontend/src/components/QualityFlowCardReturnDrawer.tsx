@@ -134,6 +134,8 @@ export function QualityFlowCardReturnDrawer({
   const [queuePage, setQueuePage] = useState(1)
   const [sources, setSources] = useState<Record<string, SourceSelection>>({})
   const [saving, setSaving] = useState(false)
+  const [submissionUncertain, setSubmissionUncertain] = useState(false)
+  const [checkingSubmission, setCheckingSubmission] = useState(false)
   const scanSession = useRef(0)
   const scannedCodes = useRef(new Set<string>())
   const queryQueue = useRef({ running: 0, waiting: [] as Array<() => Promise<void>> })
@@ -151,6 +153,7 @@ export function QualityFlowCardReturnDrawer({
     setCards([])
     setQueuePage(1)
     setSources({})
+    setSubmissionUncertain(false)
     scanSession.current += 1
     scannedCodes.current.clear()
     queryQueue.current.waiting = []
@@ -200,11 +203,16 @@ export function QualityFlowCardReturnDrawer({
     setScannerOpen(false)
     setCards([])
     setSources({})
+    setSubmissionUncertain(false)
     form.resetFields()
     onClose()
   }
 
   const handleScan = (cardNo: string, retry = false) => {
+    if (submissionUncertain) {
+      message.warning('上次提交结果未确认，请先重新核对提交结果。')
+      return false
+    }
     const normalizedCardNo = normalizeProcessCardQrText(cardNo)
     if (!retry && scannedCodes.current.has(normalizedCardNo)) return true
     scannedCodes.current.add(normalizedCardNo)
@@ -265,7 +273,7 @@ export function QualityFlowCardReturnDrawer({
   }
 
   const submit = async () => {
-    if (saving) return
+    if (saving || submissionUncertain) return
     if (!cards.length) {
       message.warning('请先扫描至少一张退回产品的流程卡。')
       return
@@ -333,9 +341,44 @@ export function QualityFlowCardReturnDrawer({
         .then(() => onSaved(saved))
         .catch(() => message.warning('退货已经登记成功，但页面数据刷新失败，请稍后手动刷新。'))
     } catch (error) {
-      message.error((error as Error).message || '扫描退货登记失败')
+      const status = (error as { status?: number }).status
+      if (status === undefined || status >= 500) {
+        // A dropped response can follow a committed transaction. Keep the
+        // queue and require read-only reconciliation before another POST.
+        setSubmissionUncertain(true)
+        message.warning('提交结果未确认：网络异常不代表未入账，请先重新核对提交结果。')
+      } else {
+        message.error((error as Error).message || '扫描退货登记失败')
+      }
     } finally {
       setSaving(false)
+    }
+  }
+
+  const checkSubmission = async () => {
+    if (checkingSubmission) return
+    setCheckingSubmission(true)
+    try {
+      const checked = await Promise.all(cards.map(async (item) => ({
+        item, lookup: await qualityWorkflowApi.scanProcessCard(item.cardNo),
+      })))
+      const updates = new Map(checked.map(({ item, lookup }) => {
+        const before = currentReturn(item.lookup)
+        const after = currentReturn(lookup)
+        const changed = after && after.id !== before?.id
+        const stillOpen = after && !['RESHIPPED', 'SCRAPPED', 'CANCELLED'].includes(after.status)
+        return [item.cardNo, { ...item, lookup, pending: false,
+          error: changed || stillOpen
+            ? `服务器已有退货记录 ${after.case_no || `#${after.id}`}。请核对记录日期、原因与操作来源；查询不能证明它就是刚才这次提交，请核实后移除此卡，勿重复登记。`
+            : undefined }]
+      }))
+      setCards((items) => items.map((item) => updates.get(item.cardNo) || item))
+      setSubmissionUncertain(false)
+      message.info('核对已完成：已有退货的卡已拦截；未见新增记录的卡可再次提交，服务端仍会检查是否重复。')
+    } catch (error) {
+      message.error(`提交结果仍未确认，队列已保留：${(error as Error).message || '读取失败'}`)
+    } finally {
+      setCheckingSubmission(false)
     }
   }
 
@@ -346,9 +389,10 @@ export function QualityFlowCardReturnDrawer({
       width={720}
       className="quality-return-rework-drawer quality-flow-card-return-drawer"
       title="扫描登记退货返工"
-      footer={<Space className="drawer-footer-actions"><Button onClick={closeDrawer}>取消</Button><Button icon={<CameraOutlined />} onClick={() => setScannerOpen(true)}>继续扫码</Button><Button type="primary" loading={saving} disabled={!cards.length || hasPendingCards || hasFailedCards} onClick={() => void submit()}>确认登记 {cards.length || ''} 批退货</Button></Space>}
+      footer={<Space className="drawer-footer-actions"><Button onClick={closeDrawer}>取消</Button><Button disabled={submissionUncertain} icon={<CameraOutlined />} onClick={() => setScannerOpen(true)}>继续扫码</Button><Button type="primary" loading={saving} disabled={!cards.length || hasPendingCards || hasFailedCards || submissionUncertain || checkingSubmission} onClick={() => void submit()}>确认登记 {cards.length || ''} 批退货</Button></Space>}
     >
       <Alert type="info" showIcon message="一张流程卡追踪一批产品" description="多批退货可连续扫码后统一填写日期和原因；系统仍为每张流程卡建立独立的第1次、第2次、第3次退货记录。" />
+      {submissionUncertain && <Alert type="warning" showIcon title="提交结果未确认，不能直接再次登记" description="网络超时或断线可能发生在服务器已入账之后。卡号与填写内容已保留；先读取服务器记录，已有退货只供核实，不自动宣称本次提交成功。" action={<Button loading={checkingSubmission} onClick={() => void checkSubmission()}>重新核对提交结果</Button>} />}
       <Button className="quality-flow-card-scan-button" type="primary" size="large" block icon={<QrcodeOutlined />} onClick={() => setScannerOpen(true)}>扫描流程卡二维码</Button>
       <QualityManualProcessCardInput existingValues={cards.map((item) => item.cardNo)} onSubmit={handleScan} />
 
@@ -366,7 +410,7 @@ export function QualityFlowCardReturnDrawer({
                 <span><small>物理来源订单 / 项次</small><b>{item.pending ? '正在核对…' : item.error ? '核对失败，不能判定原单' : binding ? `${binding.order_no || '-'}${binding.item_no ? ` / ${binding.item_no}` : ''}` : processCardOrderText(card)}</b></span>
                 <span><small>产品 / 规格 / 材质</small><b>{item.pending ? '正在核对…' : item.error ? '资料未核实' : binding ? [binding.product_name, binding.specification, binding.material].filter(Boolean).join(' · ') || '-' : [card?.product_name_snapshot, card?.specification_snapshot, card?.material_snapshot].filter(Boolean).join(' · ') || '首次绑定后自动带入'}</b></span>
               </div>
-              {item.pending ? <Typography.Text type="secondary"><LoadingOutlined /> 正在后台核对原出货记录，可继续扫描下一张。</Typography.Text> : item.error ? <Alert type="error" showIcon message="原出货核对失败，卡号及填写内容已保留" description={item.error} action={<Button onClick={() => handleScan(item.cardNo, true)}>重试此卡</Button>} /> : binding ? <Typography.Text type="secondary">原出货 {binding.shipment_no || `#${binding.shipment_batch_id}`} · 第 {binding.shipment_unit_no} 批 · {qualityNumber(binding.piece_quantity)}件 / {qualityNumber(binding.net_weight_kg, 3)}kg</Typography.Text> : <Select
+              {item.pending ? <Typography.Text type="secondary"><LoadingOutlined /> 正在后台核对原出货记录，可继续扫描下一张。</Typography.Text> : item.error ? <Alert type="error" showIcon message="原出货核对失败，卡号及填写内容已保留" description={<>{item.error}{currentReturn(item.lookup)?.id && <a href={`/quality?q=${encodeURIComponent(item.cardNo)}`}> 按此流程卡查看服务器记录</a>}</>} action={<Button disabled={submissionUncertain} onClick={() => handleScan(item.cardNo, true)}>重试此卡</Button>} /> : binding ? <Typography.Text type="secondary">原出货 {binding.shipment_no || `#${binding.shipment_batch_id}`} · 第 {binding.shipment_unit_no} 批 · {qualityNumber(binding.piece_quantity)}件 / {qualityNumber(binding.net_weight_kg, 3)}kg</Typography.Text> : <Select
                 showSearch
                 optionFilterProp="label"
                 placeholder={candidatesQuery.isLoading ? '正在读取原出货…' : '首次退货：选择对应的原出货和物理批号'}

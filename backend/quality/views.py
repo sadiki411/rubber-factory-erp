@@ -1,8 +1,10 @@
 import time
+import random
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from types import SimpleNamespace
 from copy import deepcopy
+from functools import wraps
 
 from django.db import IntegrityError, OperationalError, connection, transaction
 from django.db.models import Case, Count, DateField, F, IntegerField, Min, Prefetch, Q, Sum, Value, When
@@ -54,6 +56,7 @@ from .services import (
     create_scanned_return,
     delivered_quantities_by_order,
     find_process_card,
+    is_sqlite_lock_error,
     replace_process_card,
     reporting_related_rows,
     return_reporting_allocations,
@@ -72,6 +75,39 @@ from .unit_weights import (
     latest_saved_product_unit_weight,
     remember_confirmed_product_unit_weight,
 )
+
+
+class QualityWriteBusy(APIException):
+    status_code = 503
+    default_detail = '品检记录正在被其他操作更新，本次未入账，请稍后重试。'
+    default_code = 'quality_write_busy'
+
+
+def quality_write_retry(operation):
+    """Replay only fully rolled-back SQLite transactions, never a savepoint.
+
+    Validation and response hydration stay inside the transaction so a lock
+    error cannot occur after committing and cause a blind duplicate replay.
+    Existing business/idempotency checks are retained on every attempt.
+    """
+    @wraps(operation)
+    def wrapped(*args, **kwargs):
+        nested = connection.in_atomic_block
+        for attempt in range(5):
+            try:
+                with transaction.atomic():
+                    return operation(*args, **kwargs)
+            except OperationalError as exc:
+                if not is_sqlite_lock_error(exc) or nested:
+                    raise
+                if attempt == 4:
+                    raise QualityWriteBusy() from exc
+                # Equal deterministic delays can keep two SQLite writers in
+                # lockstep (both upgrade a read lock, both roll back). Jitter
+                # lets one finish; the total backoff remains bounded <1.5s.
+                delay = 0.05 * (2 ** attempt)
+                time.sleep(delay + random.uniform(0, delay))
+    return wrapped
 
 
 class QualityPagination(PageNumberPagination):
@@ -1683,6 +1719,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             return Response(self.get_serializer(batch).data)
 
     @action(detail=True, methods=["post"])
+    @quality_write_retry
     def confirm(self, request, pk=None):
         with transaction.atomic():
             batch = QualityShipmentBatch.objects.select_for_update().get(pk=pk)
@@ -2516,6 +2553,10 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
         "reshipment_batch__process_card_bindings__process_card__order",
     ).all()
 
+    @quality_write_retry
+    def create(self, request, *args, **kwargs):
+        return super().create(request, *args, **kwargs)
+
     def get_queryset(self):
         queryset = self.queryset
         q = str(self.request.query_params.get("q", "")).strip()
@@ -2624,6 +2665,7 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
 
     @extend_schema(request=ScannedReturnRequestSerializer, responses=QualityReworkCaseSerializer)
     @action(detail=False, methods=["post"], url_path="scan-return")
+    @quality_write_retry
     def scan_return(self, request):
         payload = ScannedReturnRequestSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
@@ -2648,6 +2690,7 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
 
     @extend_schema(request=BulkScannedReturnRequestSerializer, responses=QualityReworkCaseSerializer(many=True))
     @action(detail=False, methods=["post"], url_path="bulk-scan-return")
+    @quality_write_retry
     def bulk_scan_return(self, request):
         payload = BulkScannedReturnRequestSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
@@ -4008,6 +4051,34 @@ class QualitySummaryView(APIView):
     )
     def get(self, request):
         date_from, date_to = _date_range(request.query_params, default_month=True)
+        # Summary only needs order identities while resolving physical shares.
+        # Product masters, full card/order snapshots and timestamps are still
+        # loaded by detail endpoints; avoid constructing them several times
+        # for every line here. This is request-local projection, not caching.
+        summary_lines = QualityShipmentLine.objects.select_related(
+            "order", "process_card__order",
+        ).only(
+            "id", "batch_id", "piece_quantity", "net_weight_kg",
+            "unit_weight_g_snapshot", "product_batch_count", "pieces_per_batch",
+            "order_id", "process_card_id", "order__id", "process_card__id",
+            "process_card__order_id", "process_card__unit_weight_g",
+            "process_card__order__id",
+        ).prefetch_related(Prefetch(
+            "order_allocations",
+            queryset=QualityShipmentOrderAllocation.objects.only(
+                "id", "shipment_line_id", "order_id", "piece_quantity",
+            ),
+            to_attr="report_order_allocations",
+        ))
+        summary_returns = return_reporting_allocations().only(
+            "id", "case_id", "piece_quantity", "shipment_line_id",
+            "shipment_order_allocation_id", "shipment_line__id",
+            "shipment_line__order_id", "shipment_line__order__id",
+            "shipment_line__process_card_id", "shipment_line__process_card__id",
+            "shipment_line__process_card__order_id", "shipment_line__process_card__order__id",
+            "shipment_order_allocation__id", "shipment_order_allocation__order_id",
+            "shipment_order_allocation__order__id",
+        )
         shipments = QualityShipment.objects.filter(
             shipment_date__gte=date_from, shipment_date__lte=date_to
         )
@@ -4019,11 +4090,12 @@ class QualitySummaryView(APIView):
                 shipment_date__lte=date_to,
             )
             .select_related("inspector", "order")
+            .only("id", "shipment_date", "inspector_id", "inspector__id", "order_id", "order__id", "unit_weight_g")
             .prefetch_related(
-                Prefetch("inspectors", to_attr="report_inspectors"),
+                Prefetch("inspectors", queryset=QualityEmployee.objects.only("id"), to_attr="report_inspectors"),
                 Prefetch(
                     "lines",
-                    queryset=shipment_reporting_lines(),
+                    queryset=summary_lines,
                     to_attr="report_lines",
                 ),
             )
@@ -4043,11 +4115,21 @@ class QualitySummaryView(APIView):
                 )
             )
             .select_related(
-                "responsible_inspector",
                 "process_card__order",
                 "shipment_batch__order",
                 "shipment_line__order",
                 "shipment_line__process_card__order",
+            )
+            .only(
+                "id", "origin", "status", "opened_on", "responsible_inspector_id",
+                "affected_quantity", "affected_weight_kg", "process_card_id",
+                "shipment_batch_id", "shipment_line_id", "process_card__id",
+                "process_card__order_id", "process_card__order__id",
+                "shipment_batch__id", "shipment_batch__order_id", "shipment_batch__order__id",
+                "shipment_line__id", "shipment_line__order_id", "shipment_line__order__id",
+                "shipment_line__unit_weight_g_snapshot", "shipment_line__process_card_id",
+                "shipment_line__process_card__id", "shipment_line__process_card__order_id",
+                "shipment_line__process_card__unit_weight_g", "shipment_line__process_card__order__id",
             )
             .prefetch_related(
                 Prefetch(
@@ -4059,10 +4141,10 @@ class QualitySummaryView(APIView):
                         attempt_date__gte=date_from,
                         attempt_date__lte=date_to,
                     )
-                    .select_related("rework_employee"),
+                    .only("id", "case_id", "attempt_date", "status", "rework_employee_id", "reworked_quantity", "recovered_quantity", "scrap_quantity"),
                     to_attr="period_attempts",
                 ),
-                Prefetch("shipment_allocations", queryset=return_reporting_allocations(), to_attr="report_shipment_allocations"),
+                Prefetch("shipment_allocations", queryset=summary_returns, to_attr="report_shipment_allocations"),
             )
             .distinct()
         )

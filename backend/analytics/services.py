@@ -1665,11 +1665,16 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             day["manual_produced_mold_count"] += molds
             day["produced_mold_count"] += molds
             day["manual_reported_hours"] += reported_hours
-            if molds or reported_hours:
+            # A named manual production row is an event even when its saved
+            # numeric values are zero. Legacy forms defaulted hours to zero;
+            # this count distinguishes a missing event, not an explicit zero
+            # actual-hours assertion. The UI labels legacy zero as unconfirmed.
+            staff_name = str(entry.staff_name or "").strip()
+            if staff_name:
                 production_days.add(entry.entry_date)
-                operator_key = entry.staff_name.casefold()
+                operator_key = staff_name.casefold()
                 operator = operators.setdefault(
-                    operator_key, _operator_row(entry.staff_name)
+                    operator_key, _operator_row(staff_name)
                 )
                 operator["manual_mold_count"] += molds
                 operator["total_mold_count"] += molds

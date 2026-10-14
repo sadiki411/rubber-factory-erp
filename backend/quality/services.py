@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import time
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, OperationalError, connection, transaction
 from django.db.models import Max, Prefetch, Q, Sum
 from django.utils import timezone
 
@@ -29,6 +30,12 @@ PENDING_RETURN_STATUSES = (
     QualityReworkCase.Status.WAITING_REINSPECTION,
     QualityReworkCase.Status.WAITING_REWORK,
 )
+
+
+def is_sqlite_lock_error(exc):
+    return connection.vendor == 'sqlite' and any(
+        marker in str(exc).lower() for marker in ('database is locked', 'table is locked')
+    )
 
 
 def shipment_reporting_lines():
@@ -133,8 +140,12 @@ def set_return_case_inspectors(
     if not people and case.responsible_inspector_id:
         people = [case.responsible_inspector]
     if people:
-        case.responsible_inspector = people[0]
-        case.save(update_fields=["responsible_inspector", "updated_at"])
+        if case.responsible_inspector_id != people[0].pk:
+            case.responsible_inspector = people[0]
+            case.save(update_fields=["responsible_inspector", "updated_at"])
+        # The create path has already validated this exact primary person.
+        # Saving an unchanged FK re-ran full_clean and card status reads for
+        # every card. Keep the M2M snapshot, but not a redundant model save.
         case.inspectors.set(people)
     return people
 
@@ -1246,7 +1257,7 @@ def _unit_allocations(group: dict, unit_no: int) -> list[dict]:
     return allocations
 
 
-def create_whole_batch_return_case(
+def _create_whole_batch_return_case_once(
     validated_data: dict,
     *,
     fallback_inspectors: Iterable[QualityEmployee] = (),
@@ -1375,6 +1386,40 @@ def create_whole_batch_return_case(
             reason_prefix=f"登记客户退货 {case.case_no}。",
         )
         return case
+
+
+def create_whole_batch_return_case(
+    validated_data: dict,
+    *,
+    fallback_inspectors: Iterable[QualityEmployee] = (),
+) -> QualityReworkCase:
+    """Create a physical-batch return with a bounded SQLite lock retry.
+
+    Two phones can submit the same scan at nearly the same time.  The batch
+    row lock and the unique active-return constraint still make the operation
+    single-writer, but SQLite can surface the brief writer collision as an
+    ``OperationalError`` before the second request reaches the constraint.
+    Retry the complete transaction so the losing request can observe the
+    committed active return and receive the normal occupied-batch validation.
+    Other database errors are not swallowed.
+    """
+
+    inspectors = list(fallback_inspectors)
+    # A nested savepoint cannot release the outer transaction's read snapshot.
+    # Let the endpoint retry its complete transaction instead of retrying a
+    # doomed inner write (notably the multi-card scan path).
+    if connection.in_atomic_block:
+        return _create_whole_batch_return_case_once(validated_data, fallback_inspectors=inspectors)
+    for attempt in range(4):
+        try:
+            return _create_whole_batch_return_case_once(
+                validated_data,
+                fallback_inspectors=inspectors,
+            )
+        except OperationalError as exc:
+            if not is_sqlite_lock_error(exc) or attempt == 3:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def serialize_rework_source(case: QualityReworkCase) -> dict | None:
@@ -1922,6 +1967,11 @@ def create_scanned_return(
             raise ValueError("主要原因不能同时作为次要问题标签。")
         if primary_reason is not None and "reason_category" not in values:
             values["reason_category"] = legacy_reason_category(primary_reason)
+        # Validate/freeze the selected reason in the initial model create.
+        # A second save of the same new case repeated all physical quantity,
+        # FK and status validation without changing the business result.
+        if primary_reason is not None:
+            values["primary_reason"] = primary_reason
         try:
             case = create_whole_batch_return_case(
                 values,
@@ -1929,9 +1979,6 @@ def create_scanned_return(
             )
         except IntegrityError as exc:
             raise ValueError("该流程卡刚被其他操作登记退货，请刷新后重试。") from exc
-        if primary_reason is not None:
-            case.primary_reason = primary_reason
-            case.save(update_fields=["primary_reason", "updated_at"])
         if secondary_reasons:
             case.secondary_reasons.set(secondary_reasons)
         return case

@@ -870,6 +870,25 @@ class AnalyticsApiTests(TestCase):
         self.assertTrue(all(row["finance_record_count"] == 0 for row in payload["station_performance"]))
         self.assertTrue(all(row["finance_record_count"] == 0 for row in payload["order_performance"]))
 
+    def test_explicit_zero_manual_production_hours_are_not_treated_as_missing(self):
+        day = timezone.localdate()
+        ManualPerformanceEntry.objects.create(
+            entry_date=day,
+            entry_type=ManualPerformanceEntry.EntryType.PRODUCTION,
+            staff_name="零工时员工",
+            produced_mold_count=1,
+            production_hours=0,
+            machine=self.stations[0].machine,
+            created_by=self.user,
+        )
+        payload = self.client.get(
+            "/api/analytics/dashboard/",
+            {"date_from": day.isoformat(), "date_to": day.isoformat()},
+        ).json()
+        row = next(item for item in payload["operator_performance"] if item["operator"] == "零工时员工")
+        self.assertEqual(row["manual_record_count"], 1)
+        self.assertEqual(Decimal(str(row["manual_reported_hours"])), Decimal("0"))
+
     def test_manual_detail_lists_follow_machine_and_group_filters(self):
         day = timezone.localdate()
         station_a = self.stations[0]
