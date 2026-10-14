@@ -4294,17 +4294,20 @@ class QualitySummaryView(APIView):
             ):
                 row[key] = _integer(item[key])
             row["shipment_count"] = _integer(item["shipment_count"])
+            row["inspection_record_count"] = _integer(item["shipment_count"])
         for batch, batch_quantity, _, _ in weighted_rows:
             row = daily[batch.shipment_date]
             row["shipped_quantity"] += batch_quantity
             row["shipment_count"] += 1
         for item in legacy_reworks.values("rework_date").annotate(
+            rework_record_count=Count("id"),
             returned_quantity=Sum("returned_quantity"),
             reworked_quantity=Sum("reworked_quantity"),
             recovered_quantity=Sum("recovered_quantity"),
             scrap_quantity=Sum("scrap_quantity"),
         ):
             row = daily[item["rework_date"]]
+            row["rework_record_count"] += _integer(item["rework_record_count"])
             for key in (
                 "returned_quantity",
                 "reworked_quantity",
@@ -4319,6 +4322,7 @@ class QualitySummaryView(APIView):
                 )
             for attempt in case.period_attempts:
                 row = daily[attempt.attempt_date]
+                row["rework_record_count"] += 1
                 for key, value in _rework_attempt_quantities(attempt).items():
                     row[key] += value
 

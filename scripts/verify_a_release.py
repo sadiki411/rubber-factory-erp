@@ -6,6 +6,7 @@ No test business events, mutations, guessed allocations or migrations.
 """
 import ast
 from datetime import date
+from copy import deepcopy
 import hashlib
 import json
 import os
@@ -53,13 +54,25 @@ exec(compile(ast.Module(body=[node], type_ignores=[]), '<baseline-quality-summar
 before = invoke(namespace['QualitySummaryView'].as_view(), '/api/quality/summary/', params)
 with CaptureQueriesContext(connection) as queries:
     after = invoke(views.QualitySummaryView.as_view(), '/api/quality/summary/', params)
-assert before == after, 'Full quality summary JSON changed: do not publish until explained'
+def without_daily_event_counts(payload):
+    comparable = deepcopy(payload)
+    for row in comparable['daily_trend']:
+        for key in ('inspection_record_count', 'rework_record_count'):
+            row.pop(key, None)
+    return comparable
+
+assert without_daily_event_counts(before) == without_daily_event_counts(after), 'Quantities or other summary fields changed: do not publish until explained'
 encoded = json.dumps(after, sort_keys=True, default=str).encode()
 dashboard = build_dashboard(date_from=date(2026, 10, 1), date_to=date(2026, 10, 13))
 factory_quantity = dashboard['quality']['total']['shipped_quantity']
 assert factory_quantity == after['totals']['shipped_quantity']
 attribution = dashboard['quality_attribution']
-emit('SUMMARY_EQUALITY', {'baseline': baseline, 'full_response_equal': True,
+for key in ('inspection_record_count', 'rework_record_count'):
+    assert sum(row[key] for row in after['daily_trend']) == after['totals'][key], key
+emit('SUMMARY_EQUALITY', {'baseline': baseline,
+                         'full_response_equal': before == after,
+                         'all_except_daily_event_counts_equal': True,
+                         'intentional_metadata_change': 'daily inspection/rework event counts, previously always zero',
                          'json_sha256': hashlib.sha256(encoded).hexdigest(),
                          'query_count': len(queries), 'payload_json_bytes': len(encoded)})
 if os.environ.get('ERP_A_TIMING') == '1':
@@ -74,12 +87,12 @@ if os.environ.get('ERP_A_TIMING') == '1':
             started = time.perf_counter()
             result = invoke(view.as_view(), '/api/quality/summary/', params)
             samples[name].append((time.perf_counter() - started) * 1000)
-            assert result == after
+            assert without_daily_event_counts(result) == without_daily_event_counts(after)
     for name, times in samples.items():
         emit('SNAPSHOT_BENCH', {'stage': name, 'samples': 100, 'failures': 0,
                                'p50_ms': round(statistics.median(times), 2),
                                'p95_ms': round(sorted(times)[math.ceil(.95*len(times))-1], 2),
-                               'max_ms': round(max(times), 2), 'full_response_equal': True})
+                               'max_ms': round(max(times), 2), 'all_except_daily_event_counts_equal': True})
 emit('QUANTITY', {'quality': after['totals']['shipped_quantity'], 'analytics': factory_quantity,
                   'attribution': attribution,
                   'row_counts': {'orders': QualityOrder.objects.count(), 'batches': QualityShipmentBatch.objects.count(),

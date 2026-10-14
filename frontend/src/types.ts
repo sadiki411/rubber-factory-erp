@@ -1541,6 +1541,8 @@ export interface QualityReworkAttempt {
 }
 
 export interface QualityDailyTrend {
+  inspection_record_count?: number
+  rework_record_count?: number
   date: string
   inspection_quantity: number
   qualified_quantity: number

@@ -1,6 +1,7 @@
 import { Empty, Tag, Typography } from 'antd'
 import dayjs from 'dayjs'
 import type { AnalyticsDailyTrend, AnalyticsSource } from '../types'
+import { qualityEventValue } from '../quality'
 
 export function SourceTag({ source }: { source: AnalyticsSource }) {
   const meta = {
@@ -50,7 +51,7 @@ const SERIES = [
 ]
 
 export function DailyLinkageChart({ rows }: { rows: AnalyticsDailyTrend[] }) {
-  const active = rows.filter((row) => SERIES.some((series) => Number(row[series.key] || 0) > 0))
+  const active = rows.filter((row) => SERIES.some((series) => Number(row[series.key] || 0) > 0) || Boolean(row.inspection_record_count))
   if (!active.length) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="所选期间暂无生产、品检或出货趋势数据" />
   const width = Math.max(760, active.length * 42)
   const height = 270
@@ -63,8 +64,9 @@ export function DailyLinkageChart({ rows }: { rows: AnalyticsDailyTrend[] }) {
     const max = Math.max(1, ...active.map((row) => Number(row[key] || 0)))
     return active.map((row, index) => {
       const x = left + (active.length === 1 ? plotWidth / 2 : (index / (active.length - 1)) * plotWidth)
-      const y = top + plotHeight - (Number(row[key] || 0) / max) * plotHeight
-      return { x, y, value: Number(row[key] || 0), date: row.date }
+      const value = key === 'inspection_quantity' ? qualityEventValue(row, 'inspection') : Number(row[key] || 0)
+      const y = top + plotHeight - (Number(value || 0) / max) * plotHeight
+      return { x, y, value, date: row.date }
     })
   }
   const labelStep = Math.max(1, Math.ceil(active.length / 8))
@@ -73,6 +75,7 @@ export function DailyLinkageChart({ rows }: { rows: AnalyticsDailyTrend[] }) {
       <div className="analytics-chart-legend">
         {SERIES.map((series) => <span key={series.key}><i style={{ background: series.color }} />{series.label}</span>)}
         <Typography.Text type="secondary">各指标按自身峰值归一，仅比较变化趋势；悬停数据点查看实际数值。</Typography.Text>
+        <Typography.Text type="secondary">无检验事件的日期为未登记，不绘制质检零值点。</Typography.Text>
       </div>
       <div className="analytics-chart-scroll">
         <svg className="analytics-line-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="生产、品检、出货和退回每日联动趋势">
@@ -81,12 +84,19 @@ export function DailyLinkageChart({ rows }: { rows: AnalyticsDailyTrend[] }) {
           ))}
           {SERIES.map((series) => {
             const points = pointsFor(series.key)
+            let previousKnown = false
+            const path = points.map((point) => {
+              if (point.value == null) { previousKnown = false; return '' }
+              const segment = `${previousKnown ? 'L' : 'M'}${point.x},${point.y}`
+              previousKnown = true
+              return segment
+            }).join(' ')
             return (
               <g key={series.key}>
-                <polyline fill="none" stroke={series.color} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" points={points.map((point) => `${point.x},${point.y}`).join(' ')} />
-                {points.map((point) => (
+                <path fill="none" stroke={series.color} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" d={path} />
+                {points.filter((point) => point.value != null).map((point) => (
                   <circle key={`${series.key}-${point.date}`} cx={point.x} cy={point.y} r="4" fill="#fff" stroke={series.color} strokeWidth="2">
-                    <title>{`${dayjs(point.date).format('MM-DD')} ${series.label}：${point.value.toLocaleString('zh-CN')}`}</title>
+                    <title>{`${dayjs(point.date).format('MM-DD')} ${series.label}：${point.value!.toLocaleString('zh-CN')}`}</title>
                   </circle>
                 ))}
               </g>

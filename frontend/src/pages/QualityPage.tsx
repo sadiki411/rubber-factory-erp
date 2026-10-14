@@ -32,7 +32,7 @@ import {
 } from '../components/QualityReturnReworkDrawer'
 import { QualityReworkCaseMobileList } from '../components/QualityReworkCaseMobileList'
 import { QualityFlowCardReturnDrawer, QualityProcessCardReplacementDrawer } from '../components/QualityFlowCardReturnDrawer'
-import { formatQualityDate, isHighReworkCount, qualityNumber, reworkCaseSourceTitle } from '../quality'
+import { formatQualityDate, isHighReworkCount, qualityEventValue, qualityNumber, reworkCaseSourceTitle } from '../quality'
 import type {
   ApiList,
   QualityDailyTrend,
@@ -101,13 +101,13 @@ function reworkCountTag(value: number) {
     : <Tag>{value || 0} 次</Tag>
 }
 
-function DailyTrend({ rows, loading }: { rows: QualityDailyTrend[]; loading: boolean }) {
+export function DailyTrend({ rows, loading }: { rows: QualityDailyTrend[]; loading: boolean }) {
   const activityRows = rows.filter((item) => [
     item.inspection_quantity,
     item.shipped_quantity,
     item.returned_quantity,
     item.reworked_quantity,
-  ].some((value) => Number(value || 0) > 0))
+  ].some((value) => Number(value || 0) > 0) || Boolean(item.inspection_record_count || item.rework_record_count))
   const maxInspection = Math.max(1, ...activityRows.map((item) => Number(item.inspection_quantity || 0)))
   return (
     <Card className="quality-trend-card" title={<span><AuditOutlined /> 每日质检与出货趋势</span>}>
@@ -117,12 +117,12 @@ function DailyTrend({ rows, loading }: { rows: QualityDailyTrend[]; loading: boo
             <div className="quality-trend-row" key={item.date}>
               <strong>{formatQualityDate(item.date, 'MM-DD')}</strong>
               <div className="quality-trend-main">
-                <Progress percent={Math.round((Number(item.inspection_quantity || 0) / maxInspection) * 100)} showInfo={false} strokeColor="#2f6f9f" />
+                {qualityEventValue(item, 'inspection') != null && <Progress percent={Math.round((Number(item.inspection_quantity || 0) / maxInspection) * 100)} showInfo={false} strokeColor="#2f6f9f" />}
                 <div className="quality-trend-values">
-                  <span>质检 {qualityNumber(item.inspection_quantity)}</span>
+                  <span>质检 {qualityEventValue(item, 'inspection') == null ? '未登记' : qualityNumber(item.inspection_quantity)}</span>
                   <span>出货 {qualityNumber(item.shipped_quantity)}</span>
                   <span className={Number(item.returned_quantity) > 0 ? 'quality-danger-text' : ''}>退货 {qualityNumber(item.returned_quantity)}</span>
-                  <span>返工 {qualityNumber(item.reworked_quantity)}</span>
+                  <span>返工 {qualityEventValue(item, 'rework') == null ? '未登记' : qualityNumber(item.reworked_quantity)}</span>
                 </div>
               </div>
             </div>

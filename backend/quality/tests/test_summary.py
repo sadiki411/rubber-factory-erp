@@ -18,6 +18,19 @@ from .helpers import QualityTestMixin
 
 
 class QualitySummaryApiTests(QualityTestMixin, TestCase):
+    def test_daily_event_counts_distinguish_missing_from_recorded_zero(self):
+        today = timezone.localdate()
+        shipment = self.create_shipment()
+        self.create_rework(shipment, reworked_quantity=0, recovered_quantity=0, scrap_quantity=0)
+        response = self.client.get('/api/quality/summary/', {
+            'date_from': (today - timedelta(days=1)).isoformat(), 'date_to': today.isoformat(),
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+        missing, recorded = response.json()['daily_trend']
+        self.assertEqual((missing['inspection_record_count'], missing['rework_record_count']), (0, 0))
+        self.assertEqual((recorded['inspection_record_count'], recorded['rework_record_count']), (1, 1))
+        self.assertEqual((recorded['inspection_quantity'], recorded['reworked_quantity']), (100, 0))
+
     def assert_decimal_value(self, value, expected):
         self.assertEqual(Decimal(str(value)), Decimal(str(expected)))
 
@@ -127,6 +140,8 @@ class QualitySummaryApiTests(QualityTestMixin, TestCase):
         self.assertEqual(trend[today.isoformat()]["inspection_quantity"], 50)
         self.assertEqual(trend[today.isoformat()]["returned_quantity"], 20)
         self.assertEqual(trend[today.isoformat()]["reworked_quantity"], 20)
+        self.assertEqual(trend[today.isoformat()]["inspection_record_count"], 1)
+        self.assertEqual(trend[today.isoformat()]["rework_record_count"], 1)
 
         order_stats = {item["order_no"]: item for item in payload["order_stats"]}
         order_item = order_stats[self.order.order_no]
@@ -244,6 +259,7 @@ class QualitySummaryApiTests(QualityTestMixin, TestCase):
         day = payload["daily_trend"][0]
         self.assertEqual(day["shipped_quantity"], 121)
         self.assertEqual(day["shipment_count"], 2)
+        self.assertEqual(day["inspection_record_count"], 1)  # weighted shipment is not an inspection event
 
         order = payload["order_stats"][0]
         self.assertEqual(order["shipped_quantity"], 121)
@@ -406,6 +422,7 @@ class QualitySummaryApiTests(QualityTestMixin, TestCase):
         self.assertEqual(payload["totals"]["scrap_quantity"], 10)
         self.assertEqual(payload["daily_trend"][0]["returned_quantity"], 100)
         self.assertEqual(payload["daily_trend"][0]["reworked_quantity"], 200)
+        self.assertEqual(payload["daily_trend"][0]["rework_record_count"], 2)
 
         order = payload["order_stats"][0]
         self.assertEqual(order["returned_quantity"], 100)

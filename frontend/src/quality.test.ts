@@ -1,4 +1,5 @@
 import {
+  qualityEventValue,
   expectedWeightKg,
   isHighReworkCount,
   isLikelyProcessCardNo,
@@ -23,6 +24,12 @@ import {
 } from './quality'
 
 describe('quality quantity validation', () => {
+  it('uses event evidence for inspection and rework instead of default zero', () => {
+    expect(qualityEventValue({ reworked_quantity: 0 }, 'rework')).toBeNull()
+    expect(qualityEventValue({ rework_record_count: 1, reworked_quantity: 0 }, 'rework')).toBe(0)
+    expect(qualityEventValue({ inspection_record_count: 0, inspection_quantity: 0 }, 'inspection')).toBeNull()
+    expect(qualityEventValue({ inspection_record_count: 1, inspection_quantity: 0 }, 'inspection')).toBe(0)
+  })
   it('reads the real customer process-card QR format without an ERP connection', () => {
     expect(normalizeProcessCardQrText(' 04-M003-2608210028\n')).toBe('04-M003-2608210028')
     expect(isLikelyProcessCardNo('04-M003-2608210028')).toBe(true)

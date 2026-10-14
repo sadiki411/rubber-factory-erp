@@ -3,6 +3,14 @@ import type { AnalyticsDailyTrend } from '../types'
 import { DailyLinkageChart, DailyProfitChart, RankBarChart } from './AnalyticsCharts'
 
 describe('analytics charts', () => {
+  it('does not plot missing inspection as zero but preserves a recorded zero', () => {
+    const missing = { date: '2026-07-14', shipped_quantity: 10, inspection_quantity: 0, inspection_record_count: 0 } as AnalyticsDailyTrend
+    const recorded = { ...missing, date: '2026-07-15', inspection_record_count: 1 }
+    const { container } = render(<DailyLinkageChart rows={[missing, recorded]} />)
+    const titles = [...container.querySelectorAll('title')].map((node) => node.textContent)
+    expect(titles).not.toContain('07-14 质检数量：0')
+    expect(titles).toContain('07-15 质检数量：0')
+  })
   it('renders a linked daily trend with real values in accessible SVG titles', () => {
     const row = {
       date: '2026-07-14', produced_mold_count: 120, inspection_quantity: 430, shipped_quantity: 400, returned_quantity: 3,

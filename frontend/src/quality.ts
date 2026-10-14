@@ -54,6 +54,16 @@ export function qualityNumber(value: number | string | null | undefined, digits 
     : '-'
 }
 
+/** A stored event, not a numeric default, proves that zero was recorded. */
+export function qualityEventValue(
+  row: { inspection_record_count?: number; rework_record_count?: number; inspection_quantity?: number | string; reworked_quantity?: number | string },
+  metric: 'inspection' | 'rework',
+) {
+  const count = metric === 'inspection' ? row.inspection_record_count : row.rework_record_count
+  if (!count) return null
+  return Number((metric === 'inspection' ? row.inspection_quantity : row.reworked_quantity) || 0)
+}
+
 export function reworkCaseSourceTitle(item: QualityReworkCase) {
   const source = item.source
   if (!source) return item.shipment_batch_id ? `出货批次 #${item.shipment_batch_id}` : '历史来源记录'
