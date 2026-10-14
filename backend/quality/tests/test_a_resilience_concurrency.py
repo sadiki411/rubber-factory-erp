@@ -198,7 +198,10 @@ class QualityConcurrentReturnTests(TransactionTestCase):
     def test_scanned_return_freezes_primary_reason_and_inspector_in_one_validated_save(self):
         client = APIClient()
         client.force_authenticate(self.user)
-        reason = DefectReason.objects.get(code="OTHER")
+        # TransactionTestCase flushes the DB between tests. Migration seeds
+        # may exist in a stand-alone run but not after another transaction
+        # suite, so this test must own its dictionary fixture.
+        reason = DefectReason.objects.create(code="CONCURRENT-REASON", name="隔离测试原因")
         original = QualityReworkCase.full_clean
         with patch.object(QualityReworkCase, "full_clean", autospec=True, side_effect=original) as validation:
             response = client.post("/api/quality/rework-cases/scan-return/", {
