@@ -433,9 +433,11 @@ export const materialReceiptApi = {
 }
 
 export const businessImportApi = {
-  preview: (file: File) => {
+  preview: (file: File, filters: { specification?: string; material?: string } = {}) => {
     const body = new FormData()
     body.append('file', file)
+    if (filters.specification?.trim()) body.append('specification', filters.specification.trim())
+    if (filters.material?.trim()) body.append('material', filters.material.trim())
     return apiFetch<BusinessImportPreview>('/api/orders/imports/preview/', { method: 'POST', body })
   },
   commit: (token: string) => apiFetch<BusinessImportCommitResult>('/api/orders/imports/commit/', {

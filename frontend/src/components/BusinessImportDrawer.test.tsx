@@ -100,4 +100,23 @@ describe('BusinessImportDrawer', () => {
       ['analytics'],
     ]))
   }, 15_000)
+
+  it('sends exact product scope and invalidates preview when the scope changes', async () => {
+    apiMocks.preview.mockResolvedValue({
+      token: 'scoped', counts: { orders: 1 }, total_rows: 1, error_count: 0, warning_count: 0,
+      rows: [{ row_key: 'scoped-order', record_type: 'ORDER', valid: true }], issues: [],
+    })
+    const user = userEvent.setup()
+    renderDrawer()
+    await user.type(screen.getByRole('textbox', { name: '限定导入规格' }), 'TEST-SPEC')
+    await user.type(screen.getByRole('textbox', { name: '限定导入材质' }), 'TEST-MAT')
+    const file = new File(['excel'], 'legacy.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file)
+    await user.click(screen.getByRole('button', { name: /上传并自动识别/ }))
+    await screen.findByRole('button', { name: /确认整批导入/ })
+    expect(apiMocks.preview).toHaveBeenCalledWith(file, { specification: 'TEST-SPEC', material: 'TEST-MAT' })
+    await user.type(screen.getByRole('textbox', { name: '限定导入规格' }), '-NEW')
+    expect(screen.queryByRole('button', { name: /确认整批导入/ })).not.toBeInTheDocument()
+    expect(apiMocks.commit).not.toHaveBeenCalled()
+  }, 15_000)
 })

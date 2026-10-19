@@ -1,5 +1,5 @@
 import { CheckCircleOutlined, DownloadOutlined, InboxOutlined, UploadOutlined } from '@ant-design/icons'
-import { Alert, App, Button, Descriptions, Drawer, Progress, Space, Table, Tag, Upload } from 'antd'
+import { Alert, App, Button, Col, Descriptions, Drawer, Input, Progress, Row, Space, Table, Tag, Upload } from 'antd'
 import type { TableColumnsType, UploadFile } from 'antd'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
@@ -117,9 +117,11 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
   const queryClient = useQueryClient()
   const [files, setFiles] = useState<UploadFile[]>([])
   const [preview, setPreview] = useState<BusinessImportPreview>()
+  const [specification, setSpecification] = useState('')
+  const [material, setMaterial] = useState('')
 
   const previewMutation = useMutation({
-    mutationFn: (file: File) => businessImportApi.preview(file),
+    mutationFn: (file: File) => businessImportApi.preview(file, { specification: specification.trim(), material: material.trim() }),
     onSuccess: (result) => {
       setPreview({
         ...result,
@@ -151,6 +153,8 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
       message.success(`业务数据导入完成：新增 ${createdTotal} 条，更新 ${updatedTotal} 条，跳过 ${skippedTotal} 条`)
       setPreview(undefined)
       setFiles([])
+      setSpecification('')
+      setMaterial('')
       onClose()
     },
     onError: (error: Error) => {
@@ -164,6 +168,8 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
     if (busy) return
     setPreview(undefined)
     setFiles([])
+    setSpecification('')
+    setMaterial('')
     onClose()
   }
   const startPreview = () => {
@@ -211,10 +217,15 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
       <Alert
         type="info"
         showIcon
-        title="系统会自动识别产品规格表、内部订单表、客户工作联络单和客户发料清单。"
+        title="系统会自动识别产品规格表、内部订单表、客户工作联络单、旧版客户排程表和客户发料清单。"
         description="同一订单号与项次会增量更新现有订单；同一发料批号不会重复累计。导入前会显示新增、更新或跳过动作及全部问题，存在错误时整批不会写入数据库。"
       />
       <div className="business-import-upload">
+        <Alert type="info" showIcon title="只导入指定产品（选填）" description="补录历史订单时可填写规格、材质，按完整名称精确匹配。留空则预检全表；填写后仅处理匹配产品及其关联资料。" />
+        <Row gutter={[12, 12]}>
+          <Col xs={24} sm={12}><Input aria-label="限定导入规格" placeholder="规格（选填，填写完整规格）" value={specification} disabled={busy} allowClear onChange={(event) => { setSpecification(event.target.value); setPreview(undefined) }} /></Col>
+          <Col xs={24} sm={12}><Input aria-label="限定导入材质" placeholder="材质（选填，填写完整材质）" value={material} disabled={busy} allowClear onChange={(event) => { setMaterial(event.target.value); setPreview(undefined) }} /></Col>
+        </Row>
         <Upload.Dragger
           accept=".xlsx"
           maxCount={1}

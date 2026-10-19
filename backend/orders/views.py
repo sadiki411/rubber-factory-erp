@@ -467,7 +467,11 @@ class BusinessImportPreviewView(APIView):
         if not uploaded_file.name.lower().endswith(".xlsx"):
             raise DRFValidationError({"file": "仅支持.xlsx文件。"})
         try:
-            result = preview_business_workbook(uploaded_file, request.user)
+            result = preview_business_workbook(
+                uploaded_file, request.user,
+                specification=str(request.data.get("specification", "") or "").strip(),
+                material=str(request.data.get("material", "") or "").strip(),
+            )
         except (
             ValueError,
             KeyError,

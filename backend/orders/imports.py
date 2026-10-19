@@ -1685,13 +1685,129 @@ def _validate_duplicate_business_keys(records, issues):
         )
 
 
-def parse_business_sheets(sheets, sha256, original_name=""):
+LEGACY_FACTORY_HEADERS = (
+    "需求单号", "项次", "规格", "B胶配方名", "工厂交期", "已下单量",
+)
+
+
+def _parse_legacy_factory_orders(sheets, sha256, issues):
+    """Adapt the old supplier schedule without confusing sales and demand IDs."""
+    records = []
+    aliases = {
+        "订单号": "客户订单号",
+        "订单项次": "客户订单项次",
+        "订单量": "客户总订单量",
+        "需求单号": "独立需求号",
+        "B胶配方名": "材质",
+        "工厂交期": "完成日",
+        "已下单量": "订单量",
+        "成型工时": "参考工时",
+        "需求胶料重量": "胶料用量KG",
+        "模具编号": "模具号",
+    }
+    for sheet in sheets:
+        header_row, mapping = _find_header(sheet, LEGACY_FACTORY_HEADERS)
+        if not mapping:
+            continue
+        # The supplier is explicitly identified by the worksheet name in this
+        # export, not by its internal supplier code or the sales customer.
+        adapted_rows = [
+            (0, [CellData("协力商：", "协力商："), CellData(sheet.name, sheet.name)])
+        ]
+        for row_no, cells in sheet.rows:
+            if row_no == header_row or _row_repeats_header(cells, mapping, LEGACY_FACTORY_HEADERS):
+                cells = [
+                    CellData(
+                        aliases.get(cell.display_text, cell.raw_value),
+                        aliases.get(cell.display_text, cell.display_text),
+                        cell.number_format,
+                    )
+                    for cell in cells
+                ]
+            adapted_rows.append((row_no, cells))
+        adapted = SheetData(sheet.name, adapted_rows)
+        parsed = _parse_factory_work_contact([adapted], sha256, issues)
+        original_rows = dict(sheet.rows)
+        for record in parsed:
+            cells = original_rows[record["row"]]
+            record["raw_data"] = _raw_row(cells, mapping)
+            if record["record_type"] == RECORD_PRODUCT:
+                # Missing process columns in an old schedule are not blank
+                # corrections to the current product's cutting/curing data.
+                record["source_fields"] = ["specification", "material"]
+                if _mapping_has(mapping, "模具编号"):
+                    record["source_fields"].append("mold_no")
+            else:
+                order_date = _date_value(_mapped_cell(cells, mapping, "订单日期"))
+                record["order_date"] = order_date
+                record["order_date_source"] = "ROW" if order_date else "MISSING"
+                record["source_fields"].remove("mold_size")
+                if order_date:
+                    record["source_fields"].append("order_date")
+                for field, header in (
+                    ("forming_hours", "成型工时"),
+                    ("required_material_kg", "需求胶料重量"),
+                ):
+                    if not _mapping_has(mapping, header):
+                        record["source_fields"].remove(field)
+                issues.append(
+                    _issue(
+                        "warning",
+                        "旧版排程按需求单号和项次识别订单，数量采用“已下单量”，交期采用“工厂交期”；客户订单号、客户总订单量等原列保留供核对，不生成历史出货或生产记录。",
+                        sheet=sheet.name,
+                        row=record["row"],
+                        field="order_quantity",
+                    )
+                )
+        records.extend(parsed)
+    _deduplicate_factory_products(records, issues)
+    return records
+
+
+def _filter_business_records(records, issues, specification, material):
+    filters = {
+        key: str(value or "").strip().casefold()
+        for key, value in (("specification", specification), ("material", material))
+        if str(value or "").strip()
+    }
+    if not filters:
+        return records, issues
+    selected = [
+        record for record in records
+        if all(
+            str(record.get(key) or "").strip().casefold() == value
+            for key, value in filters.items()
+        )
+    ]
+    dependencies = {
+        record["product_spec_source_key"] for record in selected
+        if record.get("product_spec_source_key")
+    }
+    selected_orders = {
+        record["source_key"] for record in selected if record["record_type"] == RECORD_ORDER
+    }
+    selected_keys = {record["source_key"] for record in selected} | dependencies
+    selected = [
+        record for record in records
+        if record["source_key"] in selected_keys or record.get("order_source_key") in selected_orders
+    ]
+    if not selected:
+        raise ValueError("未找到符合指定规格、材质的业务行，请核对后重新预检；不会导入其他产品。")
+    selected_rows = {(record["sheet"], record["row"]) for record in selected}
+    return selected, [
+        issue for issue in issues
+        if issue.get("row") is None or (issue.get("sheet"), issue.get("row")) in selected_rows
+    ]
+
+
+def parse_business_sheets(sheets, sha256, original_name="", *, specification="", material=""):
     issues = []
     material_match = None
     product_match = None
     internal_matches = []
     factory_main = False
     factory_criteria = False
+    legacy_factory = False
     for sheet in sheets:
         header_row, mapping = _find_header(
             sheet, ["独立需求号", "成品品名", "成品规格", "材质", "重量"]
@@ -1712,6 +1828,8 @@ def parse_business_sheets(sheets, sha256, original_name=""):
             factory_main = True
         if _find_header(sheet, ["独立需求号", "项次", "项目号", "检验项目"])[1]:
             factory_criteria = True
+        if _find_header(sheet, LEGACY_FACTORY_HEADERS)[1]:
+            legacy_factory = True
 
     if material_match:
         sheet, header_row, mapping = material_match
@@ -1725,6 +1843,9 @@ def parse_business_sheets(sheets, sha256, original_name=""):
             sheets, sha256, issues, original_name
         )
         source_type = BusinessImportBatch.SourceType.FACTORY_WORK_CONTACT
+    elif legacy_factory:
+        records = _parse_legacy_factory_orders(sheets, sha256, issues)
+        source_type = BusinessImportBatch.SourceType.FACTORY_WORK_CONTACT
     elif product_match:
         sheet, header_row, mapping = product_match
         records = _parse_product_specifications(sheet, header_row, mapping, sha256, issues)
@@ -1734,7 +1855,8 @@ def parse_business_sheets(sheets, sha256, original_name=""):
         _link_existing_product_specifications(records, issues)
         source_type = BusinessImportBatch.SourceType.INTERNAL_ORDERS
     else:
-        raise ValueError("无法识别Excel格式，请使用产品规格、内部订单、生产工作联络单或发料清单。")
+        raise ValueError("无法识别Excel格式，请使用产品规格、内部订单、生产工作联络单、旧版客户排程表或发料清单。")
+    records, issues = _filter_business_records(records, issues, specification, material)
     _link_product_mold_models(records, issues)
     _validate_duplicate_business_keys(records, issues)
     if not records:
@@ -2481,14 +2603,14 @@ def _preview_summary(record):
     return f"{record.get('order_no', '')} / {record.get('inspection_item', '')}"
 
 
-def preview_business_workbook(uploaded_file, user):
+def preview_business_workbook(uploaded_file, user, *, specification="", material=""):
     data = uploaded_file.read()
     uploaded_file.seek(0)
     sha256 = hashlib.sha256(data).hexdigest()
     sheets, parser = read_business_workbook(data)
     original_name = str(getattr(uploaded_file, "name", "upload.xlsx"))[:255]
     source_type, records, issues = parse_business_sheets(
-        sheets, sha256, original_name
+        sheets, sha256, original_name, specification=specification, material=material
     )
     _prepare_record_actions(records, source_type, issues)
     for record in records:
@@ -2509,7 +2631,11 @@ def preview_business_workbook(uploaded_file, user):
         parser=parser,
         original_name=original_name,
         sha256=sha256,
-        payload={"rows": json_safe(records), "parser": parser},
+        payload={
+            "rows": json_safe(records),
+            "parser": parser,
+            "filters": {"specification": specification, "material": material},
+        },
         errors=errors,
         warnings=warnings,
         created_by=user,
