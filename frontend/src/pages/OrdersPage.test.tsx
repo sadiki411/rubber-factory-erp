@@ -137,6 +137,31 @@ describe('order server pagination and table navigation', () => {
     expect(await screen.findByText('TEST-ORDER-001 / 5')).toBeInTheDocument()
   })
 
+  it.each([false, true])('resets pagination and removes stale rows when production filtering changes (mobile: %s)', async (mobile) => {
+    vi.mocked(Grid.useBreakpoint).mockReturnValue({ md: !mobile, lg: !mobile, xl: !mobile })
+    const user = userEvent.setup()
+    let resolveFilter: (value: ReturnType<typeof pageResponse>) => void = () => {}
+    apiMocks.listOrders.mockImplementation(({ page, page_size, production_required }) => production_required === true
+      ? new Promise((resolve) => { resolveFilter = resolve }) : Promise.resolve(pageResponse(page, page_size)))
+    renderPage()
+    await screen.findByText('TEST-ORDER-001 / 5')
+    await user.click(screen.getByTitle('3'))
+    await screen.findByText('TEST-ORDER-041 / 5')
+    await user.click(screen.getByRole('combobox', { name: '生产安排筛选' }))
+    await user.click(await screen.findByText('需要生产'))
+    await waitFor(() => expect(apiMocks.listOrders).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 1, production_required: true, status: 'OPEN' }), expect.anything(),
+    ))
+    expect(screen.queryByText('TEST-ORDER-041 / 5')).not.toBeInTheDocument()
+    await act(async () => { resolveFilter({ count: 0, next: null, previous: null, results: [] }) })
+    expect(screen.queryByText('TEST-ORDER-041 / 5')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('combobox', { name: '生产安排筛选' }))
+    await user.click(await screen.findByText('无需生产'))
+    await waitFor(() => expect(apiMocks.listOrders).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 1, production_required: false }), expect.anything(),
+    ))
+  })
+
   it.each([false, true])('resets to page 1 when page size changes and keeps the size selector (mobile: %s)', async (mobile) => {
     vi.mocked(Grid.useBreakpoint).mockReturnValue({ md: !mobile, lg: !mobile, xl: !mobile })
     const user = userEvent.setup()

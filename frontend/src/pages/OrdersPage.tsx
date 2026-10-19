@@ -294,7 +294,7 @@ export function OrdersPage() {
           <Card className="filter-card">
             <div className="business-filter-row order-filter-row">
               <Input allowClear prefix={<SearchOutlined />} placeholder="搜索订单号、项次、产品、规格、材质或批次" value={query} onChange={(event) => setQuery(event.target.value)} />
-              <Select value={productionRequired} onChange={(value) => { setOrderPage(1); setProductionRequired(value) }} options={[{ value: '', label: '全部生产安排' }, { value: 'yes', label: '需要生产' }, { value: 'no', label: '无需生产' }]} />
+              <Select aria-label="生产安排筛选" value={productionRequired} onChange={(value) => { setOrderPage(1); setProductionRequired(value) }} options={[{ value: '', label: '全部生产安排' }, { value: 'yes', label: '需要生产' }, { value: 'no', label: '无需生产' }]} />
               <Select value={materialStatus} onChange={(value) => { setOrderPage(1); setMaterialStatus(value) }} options={[{ value: '', label: '全部胶料状态' }, ...Object.entries(MATERIAL_META).map(([value, meta]) => ({ value, label: meta.text }))]} />
               <Select value={processCardStatus} onChange={(value) => { setOrderPage(1); setProcessCardStatus(value) }} options={[{ value: '', label: '全部流程卡状态' }, ...Object.entries(PROCESS_CARD_META).map(([value, meta]) => ({ value, label: meta.text }))]} />
               <Select<string>

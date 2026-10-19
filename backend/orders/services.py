@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import transaction
-from django.db.models import DateTimeField, DecimalField, F, Max, OuterRef, Q, Subquery, Sum, Value
+from django.db.models import DateTimeField, DecimalField, F, Max, OuterRef, Prefetch, Q, Subquery, Sum, Value
 from django.db.models.fields.files import FieldFile
 from django.db.models.functions import Coalesce, Greatest
 from django.forms.models import model_to_dict
@@ -17,6 +17,75 @@ MODEL_RECORD_TYPES = {
     "MaterialReceipt": BusinessRecordRevision.RecordType.MATERIAL_RECEIPT,
     "ProductInspectionCriterion": BusinessRecordRevision.RecordType.INSPECTION_CRITERION,
 }
+
+
+def production_totals_by_order(order_ids):
+    """Read current output in batches using the production task's allocation rules.
+
+    Include every selected order of a matching task before distributing output:
+    filtering links first would incorrectly give all output to a later-due order.
+    Cancelled tasks/logs never contribute; legacy tasks without links still do.
+    """
+    from production.models import ProductionDailyLog, ProductionRun, ProductionRunOrder
+
+    ids = set(order_ids)
+    totals = {order_id: (0, 0) for order_id in ids}
+    if not ids:
+        return totals
+    runs = (
+        ProductionRun.objects.filter(
+            Q(order_id__in=ids) | Q(order_links__order_id__in=ids)
+        )
+        .exclude(status=ProductionRun.Status.CANCELLED)
+        .distinct()
+        .only("id", "order_id", "cavities")
+        .prefetch_related(
+            Prefetch(
+                "daily_logs",
+                queryset=ProductionDailyLog.objects.filter(is_cancelled=False).only(
+                    "run_id", "produced_mold_count", "cavities_snapshot",
+                    "defective_quantity", "is_cancelled",
+                ),
+            ),
+            Prefetch(
+                "order_links",
+                queryset=ProductionRunOrder.objects.only(
+                    "run_id", "order_id", "planned_quantity", "due_date_snapshot", "sequence",
+                ),
+            ),
+        )
+    )
+    for run in runs:
+        distribution = run.order_distribution()
+        shares = [(link.order_id, quantity) for link, quantity in distribution]
+        if not shares and run.order_id in ids:
+            shares = [(run.order_id, run.qualified_production_quantity)]
+        for order_id, quantity in shares:
+            if order_id in totals:
+                produced, count = totals[order_id]
+                totals[order_id] = (produced + int(quantity), count + 1)
+    return totals
+
+
+def order_production_requirement_status(
+    *, status, production_required, order_quantity, produced_quantity, delivered_quantity,
+):
+    """One effective scheduling status for both display and list filtering.
+
+    This is a read-time decision, not a mutation of the original scheduling flag
+    or the order's manually controlled completion state.
+    """
+    from quality.models import QualityOrder
+
+    if status == QualityOrder.Status.CANCELLED:
+        return "CANCELLED"
+    if production_required is False:
+        return "NOT_REQUIRED"
+    if delivered_quantity >= int(order_quantity or 0):
+        return "DELIVERY_COMPLETE"
+    if produced_quantity >= int(order_quantity or 0):
+        return "PRODUCTION_COMPLETE"
+    return "REQUIRED" if production_required is True else "UNRECORDED"
 
 
 def json_safe(value):

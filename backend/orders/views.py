@@ -41,7 +41,11 @@ from .serializers import (
     ProductInspectionCriterionSerializer,
     ProductSpecificationSerializer,
 )
-from .services import with_order_activity
+from .services import (
+    order_production_requirement_status,
+    production_totals_by_order,
+    with_order_activity,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -209,6 +213,39 @@ class BusinessOrderViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
     serializer_class = BusinessOrderSerializer
     revision_record_type = BusinessRecordRevision.RecordType.ORDER
 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        if hasattr(self, "_production_filter_totals"):
+            context["_order_production_totals"] = self._production_filter_totals
+            context["delivered_quantities_by_order"] = self._production_filter_deliveries
+        return context
+
+    def _filter_production_requirement(self, queryset, required):
+        from quality.services import delivered_quantities_by_order
+
+        candidates = list(queryset.order_by().values(
+            "id", "status", "production_required", "order_quantity",
+        ))
+        ids = [row["id"] for row in candidates]
+        totals = production_totals_by_order(ids)
+        deliveries = delivered_quantities_by_order(ids)
+        wanted = {"REQUIRED"} if required else {
+            "NOT_REQUIRED", "PRODUCTION_COMPLETE", "DELIVERY_COMPLETE", "CANCELLED",
+        }
+        matching = [
+            row["id"] for row in candidates
+            if order_production_requirement_status(
+                status=row["status"], production_required=row["production_required"],
+                order_quantity=row["order_quantity"], produced_quantity=totals[row["id"]][0],
+                delivered_quantity=deliveries[row["id"]],
+            ) in wanted
+        ]
+        self._production_filter_totals = totals
+        self._production_filter_deliveries = deliveries
+        # Filter before pagination so totals/pages describe the effective state.
+        # Reuse the batch facts in serialization instead of fetching runs again.
+        return queryset.filter(pk__in=matching).prefetch_related(None)
+
     def get_queryset(self):
         queryset = _business_order_queryset()
         params = self.request.query_params
@@ -229,11 +266,6 @@ class BusinessOrderViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
             if status_value not in QualityOrder.Status.values:
                 raise DRFValidationError({"status": "无效的订单状态。"})
             queryset = queryset.filter(status=status_value)
-        production_required = str(params.get("production_required", "") or "").strip().lower()
-        if production_required in {"1", "true", "yes"}:
-            queryset = queryset.filter(production_required=True)
-        elif production_required in {"0", "false", "no"}:
-            queryset = queryset.filter(production_required=False)
         material_status = str(params.get("material_status", "") or "").strip().upper()
         if material_status:
             if material_status == "UNKNOWN":
@@ -283,6 +315,11 @@ class BusinessOrderViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
             queryset = queryset.filter(order_date__gte=date_from)
         if date_to:
             queryset = queryset.filter(order_date__lte=date_to)
+        production_required = str(params.get("production_required", "") or "").strip().lower()
+        if production_required in {"1", "true", "yes", "0", "false", "no"}:
+            queryset = self._filter_production_requirement(
+                queryset, production_required in {"1", "true", "yes"},
+            )
         ordering = str(params.get("ordering", "") or "").strip()
         return queryset.order_by(*_order_expressions(ordering))
 
@@ -297,7 +334,8 @@ class BusinessOrderViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
             from quality.models import ProductUnitWeight
             from quality.services import delivered_quantities_by_order
 
-            context["delivered_quantities_by_order"] = delivered_quantities_by_order(order_ids)
+            if "delivered_quantities_by_order" not in context:
+                context["delivered_quantities_by_order"] = delivered_quantities_by_order(order_ids)
             context["inventory_availability_by_order"] = product_availability_by_orders(rows)
             specification_ids = {
                 row.product_specification_id

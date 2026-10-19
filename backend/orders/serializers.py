@@ -19,6 +19,7 @@ from .models import (
 from .services import (
     model_snapshot,
     order_identity_exists,
+    order_production_requirement_status,
     record_order_status_change,
     record_revision,
 )
@@ -568,15 +569,13 @@ class BusinessOrderSerializer(AuditedModelSerializer):
     def get_production_requirement_status(self, obj) -> str:
         # Current scheduling is distinct from recorded historical production.
         # Never infer stock usage, or erase old output, from this flag.
-        if obj.status == QualityOrder.Status.CANCELLED:
-            return "CANCELLED"
-        if obj.production_required is False:
-            return "NOT_REQUIRED"
-        if self._delivered_quantity(obj) >= int(obj.order_quantity or 0):
-            return "DELIVERY_COMPLETE"
-        if self.get_production_target_reached(obj):
-            return "PRODUCTION_COMPLETE"
-        return "REQUIRED" if obj.production_required is True else "UNRECORDED"
+        return order_production_requirement_status(
+            status=obj.status,
+            production_required=obj.production_required,
+            order_quantity=obj.order_quantity,
+            produced_quantity=self.get_produced_quantity(obj),
+            delivered_quantity=self._delivered_quantity(obj),
+        )
 
     def get_production_target_reached(self, obj) -> bool:
         return self.get_produced_quantity(obj) >= int(obj.order_quantity or 0)
