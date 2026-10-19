@@ -1705,6 +1705,7 @@ def _parse_legacy_factory_orders(sheets, sha256, issues):
         "需求胶料重量": "胶料用量KG",
         "模具编号": "模具号",
     }
+    aliases = {_normalized_header(key): value for key, value in aliases.items()}
     for sheet in sheets:
         header_row, mapping = _find_header(sheet, LEGACY_FACTORY_HEADERS)
         if not mapping:
@@ -1718,8 +1719,8 @@ def _parse_legacy_factory_orders(sheets, sha256, issues):
             if row_no == header_row or _row_repeats_header(cells, mapping, LEGACY_FACTORY_HEADERS):
                 cells = [
                     CellData(
-                        aliases.get(cell.display_text, cell.raw_value),
-                        aliases.get(cell.display_text, cell.display_text),
+                        aliases.get(_normalized_header(cell.display_text), cell.raw_value),
+                        aliases.get(_normalized_header(cell.display_text), cell.display_text),
                         cell.number_format,
                     )
                     for cell in cells
@@ -1794,9 +1795,16 @@ def _filter_business_records(records, issues, specification, material):
     if not selected:
         raise ValueError("未找到符合指定规格、材质的业务行，请核对后重新预检；不会导入其他产品。")
     selected_rows = {(record["sheet"], record["row"]) for record in selected}
+    selected_sheets = {record["sheet"] for record in selected}
+    data_rows = {(record["sheet"], record["row"]) for record in records}
     return selected, [
         issue for issue in issues
-        if issue.get("row") is None or (issue.get("sheet"), issue.get("row")) in selected_rows
+        if issue.get("row") is None
+        or (issue.get("sheet"), issue.get("row")) in selected_rows
+        or (
+            issue.get("sheet") in selected_sheets
+            and (issue.get("sheet"), issue.get("row")) not in data_rows
+        )
     ]
 
 

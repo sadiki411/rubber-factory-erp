@@ -133,6 +133,26 @@ class LegacyScheduleImportTests(APITestCase):
             self.preview(specification="TEST-LEGACY")
         self.assertEqual(QualityOrder.objects.count(), 0)
 
+    def test_legacy_header_whitespace_is_normalized_consistently(self):
+        from openpyxl import load_workbook
+        import io
+        workbook = load_workbook(io.BytesIO(legacy_schedule()))
+        for sheet in workbook:
+            sheet["F1"] = " B胶\n配方名 "
+            sheet["C1"] = " 需求单号 "
+            sheet["K1"] = "已下单量\n"
+        preview = self.preview(workbook_bytes(workbook), specification="TEST-LEGACY-A")
+        self.assertEqual(preview["error_count"], 0, preview["issues"])
+        self.commit(preview)
+        self.assertEqual(QualityOrder.objects.count(), 2)
+
+    def test_scope_keeps_document_date_conflict_warning(self):
+        preview = preview_business_workbook(
+            upload("factory-2026-08-05.xlsx", factory_workbook(specification="TEST-LEGACY-A")),
+            self.user, specification="TEST-LEGACY-A",
+        )
+        self.assertTrue(any("文件名识别的" in issue["message"] for issue in preview["issues"]), preview["issues"])
+
     def test_old_schedule_cannot_revert_a_more_recent_customer_document(self):
         from django.utils import timezone
         product = ProductSpecification.objects.create(
