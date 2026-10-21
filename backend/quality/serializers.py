@@ -1,5 +1,8 @@
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
+import hashlib
+import json
+import uuid
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
@@ -18,6 +21,7 @@ from .models import (
 )
 from .services import (
     create_whole_batch_return_case,
+    delivered_quantities_by_order,
     legacy_reason_category,
     serialize_rework_source,
     set_return_case_inspectors,
@@ -310,7 +314,110 @@ class QualityOrderSerializer(ValidatedModelSerializer):
             return updated
 
 
-class QualityShipmentSerializer(ValidatedModelSerializer):
+def _lock_piece_orders(order_ids):
+    # All piece writes (including return corrections) share the same order
+    # mutex and read the effective balance only after acquiring it.
+    return list(QualityOrder.objects.select_for_update().filter(
+        pk__in=order_ids
+    ).order_by("pk"))
+
+
+def _validate_piece_order_balances(orders, field):
+    limited = [order for order in orders if order.source_system == "艾斯霖"]
+    balances = delivered_quantities_by_order(order.pk for order in limited)
+    for order in limited:
+        if balances[order.pk] > order.order_quantity:
+            raise serializers.ValidationError({field: (
+                f"采购单 {order.order_no}/{order.item_no} 有效交付 "
+                f"{balances[order.pk]} 件，不能超过采购单数量 {order.order_quantity} 件；"
+                "请刷新后按剩余件数出货，退货更正不能收回已重新出货的余额。"
+            )})
+
+
+class PieceRequestSerializer(ValidatedModelSerializer):
+    # Do not use a UniqueValidator: a committed key is a replay candidate,
+    # not a field-validation error. The database remains the final arbiter.
+    client_request_id = serializers.UUIDField(required=False, allow_null=True, validators=[])
+
+    def _request_owner_id(self):
+        return getattr(getattr(self.context.get("request"), "user", None), "pk", None)
+
+    def _check_replay(self, existing, owner_id=None):
+        owner_id = owner_id if owner_id is not None else self._request_owner_id()
+        if owner_id is None or existing.created_by_id != owner_id:
+            raise serializers.ValidationError({"client_request_id": "该请求标识已被其他用户使用。"})
+        if existing.request_fingerprint != self._request_fingerprint:
+            raise serializers.ValidationError({"client_request_id": "该请求标识的首次请求参数不同，请勿复用。"})
+        return existing
+
+    def run_validation(self, data=serializers.empty):
+        if self.instance is None and hasattr(data, "items"):
+            # Hash the ORIGINAL submitted fields, before defaults, employee
+            # inference or system-generated shipment numbers. Object key order
+            # does not matter; omitted/changed fields do. Never hash the later
+            # mutable model state to decide whether a retry is the same request.
+            original = {}
+            for name, value in data.items():
+                if name == "client_request_id":
+                    continue
+                if hasattr(data, "getlist"):
+                    values = data.getlist(name)
+                    value = values if len(values) > 1 or name.endswith("_ids") else value
+                original[name] = value
+            self._request_fingerprint = hashlib.sha256(json.dumps(
+                original, sort_keys=True, ensure_ascii=False,
+                separators=(",", ":"), default=str,
+            ).encode("utf-8")).hexdigest()
+            try:
+                key = self.fields["client_request_id"].run_validation(
+                    data["client_request_id"]
+                ) if "client_request_id" in data else None
+            except serializers.ValidationError as exc:
+                raise serializers.ValidationError({"client_request_id": exc.detail}) from exc
+            if key:
+                existing = self.Meta.model.objects.filter(client_request_id=key).first()
+                if existing is not None:
+                    self._check_replay(existing)
+                    # Replay precedes mutable field/uniqueness checks (e.g. a
+                    # now-inactive inspector or an already-used shipment_no).
+                    # save() still rechecks the committed key under a lock.
+                    return {"client_request_id": key}
+        return super().run_validation(data)
+
+    def validate_client_request_id(self, value):
+        if self.instance is not None and value != self.instance.client_request_id:
+            raise serializers.ValidationError("请求标识创建后不可修改。")
+        return value
+
+    def _validate_request_required(self, attrs, order):
+        if self.instance is None and order.source_system == "艾斯霖" and not attrs.get("client_request_id"):
+            raise serializers.ValidationError({"client_request_id": "艾斯霖件数出货/退货必须提供 UUID 请求标识。"})
+
+    def _save_piece_request(self, validated_data, create):
+        key = validated_data.get("client_request_id")
+        if not key:
+            return create(validated_data)
+        owner_id = getattr(validated_data.get("created_by"), "pk", None)
+        request_owner = self._request_owner_id()
+        if owner_id is None or (request_owner is not None and owner_id != request_owner):
+            raise serializers.ValidationError({"client_request_id": "请求创建人与登录用户不一致。"})
+        with transaction.atomic():
+            existing = self.Meta.model.objects.select_for_update().filter(client_request_id=key).first()
+            if existing is not None:
+                return self._check_replay(existing, owner_id)
+            try:
+                # A savepoint is essential: a concurrent unique-key loser
+                # must roll back its writes before looking up the winner.
+                with transaction.atomic():
+                    return create({**validated_data, "request_fingerprint": self._request_fingerprint})
+            except (IntegrityError, DjangoValidationError, serializers.ValidationError):
+                existing = self.Meta.model.objects.select_for_update().filter(client_request_id=key).first()
+                if existing is not None:
+                    return self._check_replay(existing, owner_id)
+                raise
+
+
+class QualityShipmentSerializer(PieceRequestSerializer):
     order = QualityOrderSerializer(read_only=True)
     order_id = serializers.PrimaryKeyRelatedField(
         source="order", queryset=QualityOrder.objects.all()
@@ -318,6 +425,8 @@ class QualityShipmentSerializer(ValidatedModelSerializer):
     inspector = QualityEmployeeSerializer(read_only=True)
     inspector_id = serializers.PrimaryKeyRelatedField(
         source="inspector",
+        required=False,
+        allow_null=True,
         queryset=QualityEmployee.objects.filter(
             is_active=True,
             role__in=[QualityEmployee.Role.INSPECTOR, QualityEmployee.Role.BOTH],
@@ -339,8 +448,10 @@ class QualityShipmentSerializer(ValidatedModelSerializer):
 
     class Meta:
         model = QualityShipment
+        extra_kwargs = {"shipment_no": {"required": False, "allow_blank": True}}
         fields = [
             "id",
+            "client_request_id",
             "shipment_no",
             "shipment_date",
             "order",
@@ -394,9 +505,33 @@ class QualityShipmentSerializer(ValidatedModelSerializer):
             data["inspector_ids"] = data.get("inspectors")
         return super().to_internal_value(data)
 
+    def validate(self, attrs):
+        order = attrs.get("order", getattr(self.instance, "order", None))
+        if order:
+            self._validate_request_required(attrs, order)
+        inspector = attrs.get("inspector", getattr(self.instance, "inspector", None))
+        people = attrs.get("inspectors", [])
+        if people:
+            attrs["inspector"] = people[0]
+            inspector = people[0]
+        if order and order.source_system != "艾斯霖" and inspector is None:
+            raise serializers.ValidationError({"inspector_id": "请选择品检员。"})
+        return attrs
+
     def create(self, validated_data):
+        return self._save_piece_request(validated_data, self._create_piece)
+
+    @transaction.atomic
+    def _create_piece(self, validated_data):
+        orders = _lock_piece_orders([validated_data["order"].pk])
+        validated_data["order"] = orders[0]
+        validated_data = self.validate(validated_data)
+        if not str(validated_data.get("shipment_no", "")).strip():
+            # Separate namespace from weighted QS numbers and process cards.
+            validated_data["shipment_no"] = f"QS-COUNT-{uuid.uuid4().hex.upper()}"
         inspectors = validated_data.pop("inspectors", serializers.empty)
         instance = super().create(validated_data)
+        _validate_piece_order_balances(orders, "shipped_quantity")
         if inspectors is not serializers.empty:
             instance.inspectors.set(inspectors)
             if inspectors:
@@ -405,7 +540,7 @@ class QualityShipmentSerializer(ValidatedModelSerializer):
                     inspector_id=inspectors[0].pk
                 )
         else:
-            instance.inspectors.set([instance.inspector])
+            instance.inspectors.set([instance.inspector] if instance.inspector_id else [])
         sync_order_status_from_delivery(
             [instance.order_id],
             source="SHIPMENT",
@@ -414,10 +549,22 @@ class QualityShipmentSerializer(ValidatedModelSerializer):
         )
         return instance
 
+    @transaction.atomic
     def update(self, instance, validated_data):
+        instance = QualityShipment.objects.select_for_update().get(pk=instance.pk)
         previous_order_id = instance.order_id
+        target_order = validated_data.get("order", instance.order)
+        orders = _lock_piece_orders([previous_order_id, target_order.pk])
+        if target_order.pk != previous_order_id and instance.reworks.exists() and any(
+            order.source_system == "艾斯霖" for order in orders
+        ):
+            raise serializers.ValidationError({"order_id": "已有退货的件数出货不能改关联采购单。"})
+        # Validate against the freshly locked row, not a stale PATCH instance.
+        self.instance = instance
+        validated_data = self.validate(validated_data)
         inspectors = validated_data.pop("inspectors", serializers.empty)
         instance = super().update(instance, validated_data)
+        _validate_piece_order_balances(orders, "shipped_quantity")
         if inspectors is not serializers.empty:
             instance.inspectors.set(inspectors)
             first = inspectors[0] if inspectors else None
@@ -426,8 +573,8 @@ class QualityShipmentSerializer(ValidatedModelSerializer):
                 QualityShipment.objects.filter(pk=instance.pk).update(
                     inspector_id=first.pk
                 )
-        elif "inspector" in validated_data and instance.inspector_id:
-            instance.inspectors.set([instance.inspector])
+        elif "inspector" in validated_data:
+            instance.inspectors.set([instance.inspector] if instance.inspector_id else [])
         sync_order_status_from_delivery(
             [previous_order_id, instance.order_id],
             source="SHIPMENT",
@@ -437,7 +584,7 @@ class QualityShipmentSerializer(ValidatedModelSerializer):
         return instance
 
 
-class ReturnReworkSerializer(ValidatedModelSerializer):
+class ReturnReworkSerializer(PieceRequestSerializer):
     shipment = QualityShipmentSerializer(read_only=True)
     shipment_id = serializers.PrimaryKeyRelatedField(
         source="shipment", queryset=QualityShipment.objects.all()
@@ -450,10 +597,13 @@ class ReturnReworkSerializer(ValidatedModelSerializer):
             role__in=[QualityEmployee.Role.INSPECTOR, QualityEmployee.Role.BOTH],
         ),
         required=False,
+        allow_null=True,
     )
     rework_employee = QualityEmployeeSerializer(read_only=True)
     rework_employee_id = serializers.PrimaryKeyRelatedField(
         source="rework_employee",
+        required=False,
+        allow_null=True,
         queryset=QualityEmployee.objects.filter(
             is_active=True,
             role__in=[QualityEmployee.Role.REWORKER, QualityEmployee.Role.BOTH],
@@ -470,6 +620,7 @@ class ReturnReworkSerializer(ValidatedModelSerializer):
         model = ReturnRework
         fields = [
             "id",
+            "client_request_id",
             "shipment",
             "shipment_id",
             "order_id",
@@ -500,17 +651,31 @@ class ReturnReworkSerializer(ValidatedModelSerializer):
 
     def validate(self, attrs):
         shipment = attrs.get("shipment") or getattr(self.instance, "shipment", None)
+        if shipment:
+            self._validate_request_required(attrs, shipment.order)
         if shipment and "responsible_inspector" not in attrs and not self.instance:
             attrs["responsible_inspector"] = shipment.inspector
+        if shipment and shipment.order.source_system != "艾斯霖":
+            for field in ("responsible_inspector", "rework_employee"):
+                if attrs.get(field, getattr(self.instance, field, None)) is None:
+                    raise serializers.ValidationError({f"{field}_id": "请选择员工。"})
         return attrs
 
     def create(self, validated_data):
+        return self._save_piece_request(validated_data, self._create_piece)
+
+    def _create_piece(self, validated_data):
         shipment = validated_data["shipment"]
         try:
             with transaction.atomic():
                 validated_data["shipment"] = QualityShipment.objects.select_for_update().get(
                     pk=shipment.pk
                 )
+                _lock_piece_orders([validated_data["shipment"].order_id])
+                self._validate_request_required(validated_data, validated_data["shipment"].order)
+                # Responsibility comes from the locked source if provided.
+                if validated_data["shipment"].inspector_id:
+                    validated_data["responsible_inspector"] = validated_data["shipment"].inspector
                 instance = super().create(validated_data)
                 sync_order_status_from_delivery(
                     [instance.shipment.order_id],
@@ -523,20 +688,26 @@ class ReturnReworkSerializer(ValidatedModelSerializer):
             raise serializers.ValidationError({"detail": self.conflict_message}) from exc
 
     def update(self, instance, validated_data):
-        target_shipment = validated_data.get("shipment", instance.shipment)
-        previous_order_id = instance.shipment.order_id
         try:
             with transaction.atomic():
+                instance = ReturnRework.objects.select_for_update().get(pk=instance.pk)
+                target_shipment = validated_data.get("shipment", instance.shipment)
                 shipment_ids = sorted({instance.shipment_id, target_shipment.pk})
                 locked = {
                     item.pk: item
                     for item in QualityShipment.objects.select_for_update().filter(
                         pk__in=shipment_ids
-                    )
+                    ).order_by("pk")
                 }
+                previous_order_id = locked[instance.shipment_id].order_id
+                orders = _lock_piece_orders([item.order_id for item in locked.values()])
+                if instance.shipment_id != target_shipment.pk and any(
+                    order.source_system == "艾斯霖" for order in orders
+                ):
+                    raise serializers.ValidationError({"shipment_id": "件数退货须保留原出货及原采购单。"})
                 validated_data["shipment"] = locked[target_shipment.pk]
-                locked_instance = ReturnRework.objects.select_for_update().get(pk=instance.pk)
-                updated = super().update(locked_instance, validated_data)
+                updated = super().update(instance, validated_data)
+                _validate_piece_order_balances(orders, "returned_quantity")
                 sync_order_status_from_delivery(
                     [previous_order_id, updated.shipment.order_id],
                     source="CUSTOMER_RETURN",
@@ -1267,7 +1438,7 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
                         raise serializers.ValidationError(
                             {
                                 "shipment_no": (
-                                    f"出货单号 {shipment_no} 已存在于历史出货台账，请使用新的出货单号。"
+                                    f"出货单号 {shipment_no} 已存在于件数出货台账，请使用新的出货单号。"
                                 )
                             }
                         )
@@ -1326,7 +1497,7 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
                 )
             if QualityShipment.objects.filter(shipment_no__iexact=next_shipment_no).exists():
                 raise serializers.ValidationError(
-                    {"shipment_no": "出货单号已被历史出货记录使用。"}
+                    {"shipment_no": "出货单号已被件数出货记录使用。"}
                 )
         lines = validated_data.pop("lines", serializers.empty)
         inspectors = validated_data.pop("inspectors", serializers.empty)

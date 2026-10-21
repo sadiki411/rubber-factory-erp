@@ -327,6 +327,8 @@ class QualityOrder(TimeStampedModel):
 
 
 class QualityShipment(TimeStampedModel):
+    client_request_id = models.UUIDField(null=True, blank=True, unique=True)
+    request_fingerprint = models.CharField(max_length=64, blank=True, default="", editable=False)
     shipment_no = models.CharField("出货单号", max_length=100, unique=True)
     shipment_date = models.DateField("出货日期", db_index=True)
     order = models.ForeignKey(
@@ -340,6 +342,8 @@ class QualityShipment(TimeStampedModel):
         verbose_name="品检员",
         related_name="inspected_shipments",
         on_delete=models.PROTECT,
+        null=True,
+        blank=True,
     )
     inspectors = models.ManyToManyField(
         QualityEmployee,
@@ -438,6 +442,9 @@ class QualityShipment(TimeStampedModel):
 
 
 class ReturnRework(TimeStampedModel):
+    client_request_id = models.UUIDField(null=True, blank=True, unique=True)
+    request_fingerprint = models.CharField(max_length=64, blank=True, default="", editable=False)
+
     class ReasonCategory(models.TextChoices):
         APPEARANCE = "APPEARANCE", "外观"
         STICKING = "STICKING", "粘皮"
@@ -468,12 +475,16 @@ class ReturnRework(TimeStampedModel):
         verbose_name="责任品检员",
         related_name="responsible_reworks",
         on_delete=models.PROTECT,
+        null=True,
+        blank=True,
     )
     rework_employee = models.ForeignKey(
         QualityEmployee,
         verbose_name="返工处理员工",
         related_name="handled_reworks",
         on_delete=models.PROTECT,
+        null=True,
+        blank=True,
     )
     returned_quantity = models.PositiveIntegerField("退货数量")
     reworked_quantity = models.PositiveIntegerField("返工数量", default=0)

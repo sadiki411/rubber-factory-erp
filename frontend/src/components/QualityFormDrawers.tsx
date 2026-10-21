@@ -1,12 +1,16 @@
-import { Alert, App, Button, Col, DatePicker, Drawer, Form, Input, InputNumber, Row, Select, Space, Switch } from 'antd'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Alert, App, Button, Checkbox, Col, DatePicker, Drawer, Form, Input, InputNumber, Row, Select, Space, Switch } from 'antd'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
-import { useEffect } from 'react'
-import { qualityApi } from '../api/client'
+import { useEffect, useRef, useState } from 'react'
+import { orderApi, qualityApi, toList } from '../api/client'
 import { reworkQuantitiesValid, shipmentQuantitiesMatch, shipmentQuantityAllowed } from '../quality'
 import type { QualityEmployee, QualityOrder, QualityProcessCard, QualityShipment, QualityShipmentBatch, ReturnRework } from '../types'
 import { QualityWeightShipmentDrawer } from './QualityWeightShipmentDrawer'
-import { QualityEmployeeSelect } from './QualityEmployeeSelect'
+
+// Keep this additive source field local while the import worker owns types.ts.
+function orderSourceSystem(order?: QualityOrder) {
+  return (order as (QualityOrder & { source_system?: string }) | undefined)?.source_system
+}
 
 interface BaseDrawerProps {
   open: boolean
@@ -14,6 +18,7 @@ interface BaseDrawerProps {
 }
 
 interface ShipmentDrawerProps extends BaseDrawerProps {
+  mode?: 'PIECES' | 'WEIGHTED'
   shipment?: QualityShipment
   orders: QualityOrder[]
   employees: QualityEmployee[]
@@ -25,59 +30,92 @@ interface ShipmentDrawerProps extends BaseDrawerProps {
   onSaved?: (result?: unknown) => void | Promise<void>
 }
 
-function LegacyQualityShipmentDrawer({ open, shipment, orders, employees, onClose }: ShipmentDrawerProps) {
+function LegacyQualityShipmentDrawer({ open, shipment, orders, employees, onClose, onSaved }: ShipmentDrawerProps) {
   const [form] = Form.useForm<Record<string, any>>()
   const queryClient = useQueryClient()
   const { message } = App.useApp()
+  const submitting = useRef(false)
+  const clientRequestId = useRef<string | undefined>(undefined)
+  const [orderSearch, setOrderSearch] = useState('')
+  const orderOptionsQuery = useQuery({
+    queryKey: ['orders', 'piece-shipment-options', orderSearch],
+    queryFn: async () => toList(await orderApi.list({ q: orderSearch, page_size: 1000 })),
+    enabled: open,
+  })
+  const orderOptions = [...new Map([...orders, ...(shipment?.order ? [shipment.order] : []), ...(orderOptionsQuery.data || [])].map((item) => [item.id, item])).values()]
+  const orderId = Form.useWatch('order_id', form) ?? shipment?.order?.id
+  const selectedOrder = orderOptions.find((item) => String(item.id) === String(orderId))
+  const optionalEmployees = orderSourceSystem(selectedOrder) === '艾斯霖'
+  const directPieces = !shipment
+  const closeDrawer = () => {
+    setOrderSearch('')
+    onClose()
+  }
 
   useEffect(() => {
     if (!open) return
+    clientRequestId.current = shipment ? undefined : crypto.randomUUID()
     form.resetFields()
     form.setFieldsValue(shipment ? {
       ...shipment,
       shipment_date: dayjs(shipment.shipment_date),
       order_id: shipment.order_id || shipment.order?.id,
       inspector_id: shipment.inspector_id || shipment.inspector?.id,
-    } : { shipment_date: dayjs() })
+    } : { shipment_date: dayjs(), shipment_no: `QS-COUNT-${dayjs().format('YYYYMMDD')}-${crypto.randomUUID()}`.toUpperCase(), confirmed_qualified_pieces: false })
   }, [form, open, shipment])
 
   const mutation = useMutation({
     mutationFn: (values: Record<string, any>) => {
-      const body = { ...values, shipment_date: (values.shipment_date as Dayjs).format('YYYY-MM-DD') }
+      const body: Record<string, unknown> = { ...values, shipment_date: (values.shipment_date as Dayjs).format('YYYY-MM-DD') }
+      if (!shipment) body.client_request_id = clientRequestId.current
+      delete body.confirmed_qualified_pieces
+      if (directPieces) Object.assign(body, { inspection_quantity: values.shipped_quantity, qualified_quantity: values.shipped_quantity, defective_quantity: 0 })
+      body.inspector_id = values.inspector_id || null
       return shipment ? qualityApi.updateShipment(shipment.id, body) : qualityApi.createShipment(body)
     },
-    onSuccess: async () => {
-      await Promise.all([
+    onSuccess: (saved) => {
+      message.success(shipment ? '件数出货记录已更新' : '件数出货记录已保存')
+      closeDrawer()
+      void Promise.all([
         queryClient.invalidateQueries({ queryKey: ['quality'] }),
         queryClient.invalidateQueries({ queryKey: ['analytics'] }),
-      ])
-      message.success(shipment ? '出货记录已更新' : '出货记录已保存')
-      onClose()
+        queryClient.invalidateQueries({ queryKey: ['orders'] }),
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+        Promise.resolve().then(() => onSaved?.(saved)),
+      ]).catch(() => message.warning('出货已保存，部分页面刷新失败，请手动刷新。'))
     },
     onError: (error: Error) => message.error(error.message),
   })
 
-  const submit = async () => mutation.mutate(await form.validateFields())
+  const submit = async () => {
+    if (submitting.current) return
+    submitting.current = true
+    try { await mutation.mutateAsync(await form.validateFields()) } catch { /* Form/API errors are shown in place. */ }
+    finally { submitting.current = false }
+  }
   return (
     <Drawer
       open={open}
-      onClose={onClose}
+      onClose={closeDrawer}
       size={680}
-      title={shipment ? `编辑出货 · ${shipment.shipment_no}` : '新增出货记录'}
-      footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={mutation.isPending} onClick={() => void submit()}>保存</Button></Space>}
+      title={shipment ? `编辑出货 · ${shipment.shipment_no}` : '按采购单件数出货（无需流程卡）'}
+      footer={<Space className="drawer-footer-actions"><Button onClick={closeDrawer}>取消</Button><Button type="primary" loading={mutation.isPending} onClick={() => void submit()}>保存</Button></Space>}
     >
-      <Alert className="quality-form-alert" type="info" showIcon title="出货数量不能超过合格数量，质检数量必须等于合格数量与不良数量之和。" />
+      <Alert className="quality-form-alert" type="info" showIcon title="直接选择采购单按件数出货，无需流程卡或重量。" description="只关联所选订单。艾斯霖按采购单有效剩余件数校验，退货后可再次出货；员工选填，不会自动新增。" />
+      {orderOptionsQuery.isError && <Alert type="error" message="采购单读取失败" description={(orderOptionsQuery.error as Error).message} action={<Button onClick={() => void orderOptionsQuery.refetch()}>重试</Button>} />}
       <Form form={form} layout="vertical" requiredMark="optional">
         <Row gutter={14}>
-          <Col xs={24} sm={12}><Form.Item name="shipment_no" label="出货单号" rules={[{ required: true, whitespace: true, message: '请输入出货单号' }]}><Input placeholder="例如 CK-202607-001" /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="shipment_no" label="出货单号" extra={!shipment ? '系统已生成，可修改；留空也会自动生成。' : undefined} rules={shipment ? [{ required: true, whitespace: true, message: '请输入出货单号' }] : []}><Input placeholder="留空由系统自动生成" /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="shipment_date" label="出货日期" rules={[{ required: true, message: '请选择出货日期' }]}><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
         </Row>
-        <Form.Item name="order_id" label="订单 / 批次" rules={[{ required: true, message: '请选择订单批次' }]}>
-          <Select showSearch optionFilterProp="label" placeholder="选择订单批次" options={orders.map((item) => ({ value: item.id, label: [item.order_no, item.batch_no, item.product_name || item.specification].filter(Boolean).join(' · ') }))} />
+        <Form.Item name="order_id" label="采购单 / 项次" rules={[{ required: true, message: '请选择采购单项次' }]}>
+          <Select showSearch virtual={false} optionRender={(option) => <div style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{option.label}</div>} onSearch={setOrderSearch} optionFilterProp="label" loading={orderOptionsQuery.isFetching} placeholder="搜索并选择采购单项次" disabled={Boolean(shipment?.returned_quantity)} options={orderOptions.map((item) => ({ value: item.id, label: [orderSourceSystem(item), item.order_no, item.item_no, item.product_name, item.specification, item.material, `采购 ${item.order_quantity} 件`].filter(Boolean).join(' · ') }))} />
         </Form.Item>
-        <Form.Item name="inspector_id" label="责任品检员" rules={[{ required: true, message: '请选择品检员' }]}>
-          <QualityEmployeeSelect employees={employees} allowClear={false} placeholder="选择或新增品检员" />
+        <Form.Item name="inspector_id" label={optionalEmployees ? '责任品检员（选填）' : '责任品检员'} rules={[{ required: !optionalEmployees, message: '请选择品检员' }]}>
+          <Select allowClear showSearch optionFilterProp="label" placeholder="可选择现有品检员" options={employees.filter((item) => item.is_active && ['INSPECTOR', 'BOTH'].includes(item.role)).map((item) => ({ value: item.id, label: item.name }))} />
         </Form.Item>
+        {directPieces ? <><Form.Item name="shipped_quantity" label="本次出货件数" rules={[{ required: true, type: 'number', min: 1, message: '请输入大于 0 的整数件数' }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item name="confirmed_qualified_pieces" valuePropName="checked" rules={[{ validator: (_, value) => value === true ? Promise.resolve() : Promise.reject(new Error('请确认本次出货成品的品检及数量口径')) }]}><Checkbox>确认本次出货均为已品检合格的包装成品，按本次出货件数登记检验/合格数量，不包含其他未出货或不良件数</Checkbox></Form.Item></> :
         <Row gutter={14}>
           <Col xs={12} sm={6}><Form.Item name="inspection_quantity" label="质检数量" rules={[{ required: true, type: 'number', min: 1, message: '质检数量必须大于 0' }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
           <Col xs={12} sm={6}><Form.Item name="qualified_quantity" label="合格数量" rules={[{ required: true, message: '请输入合格数量' }]}><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
@@ -117,7 +155,7 @@ function LegacyQualityShipmentDrawer({ open, shipment, orders, employees, onClos
               <InputNumber min={1} precision={0} style={{ width: '100%' }} />
             </Form.Item>
           </Col>
-        </Row>
+        </Row>}
         <Form.Item name="notes" label="备注"><Input.TextArea rows={3} maxLength={500} showCount placeholder="可记录包装、交接或出货异常" /></Form.Item>
       </Form>
     </Drawer>
@@ -125,12 +163,10 @@ function LegacyQualityShipmentDrawer({ open, shipment, orders, employees, onClos
 }
 
 /**
- * Compatibility export retained for callers outside the quality page.  New
- * records always use the weighted workflow drawer; the legacy form remains
- * available only while editing historical件数制 records.
+ * Keep the existing weighted default and explicitly route piece-only entry.
  */
 export function QualityShipmentDrawer(props: ShipmentDrawerProps) {
-  if (!props.shipment) {
+  if (!props.shipment && props.mode !== 'PIECES') {
     return <QualityWeightShipmentDrawer
       open={props.open}
       orders={props.orders}
@@ -203,12 +239,23 @@ export function QualityReworkDrawer({ open, rework, shipments, employees, onClos
   const [form] = Form.useForm<Record<string, any>>()
   const queryClient = useQueryClient()
   const { message } = App.useApp()
-  const selectedShipmentId = Form.useWatch('shipment_id', form)
-  const selectedShipment = shipments.find((item) => String(item.id) === String(selectedShipmentId))
+  const submitting = useRef(false)
+  const clientRequestId = useRef<string | undefined>(undefined)
+  const [shipmentSearch, setShipmentSearch] = useState('')
+  const shipmentOptionsQuery = useQuery({
+    queryKey: ['quality', 'piece-return-options', shipmentSearch],
+    queryFn: async () => toList(await qualityApi.listShipments({ q: shipmentSearch, page_size: 1000 })),
+    enabled: open,
+  })
+  const shipmentOptions = [...new Map([...shipments, ...(rework?.shipment ? [rework.shipment] : []), ...(shipmentOptionsQuery.data || [])].map((item) => [item.id, item])).values()]
+  const selectedShipmentId = Form.useWatch('shipment_id', form) ?? rework?.shipment_id ?? rework?.shipment?.id
+  const selectedShipment = shipmentOptions.find((item) => String(item.id) === String(selectedShipmentId))
+  const optionalEmployees = orderSourceSystem(selectedShipment?.order) === '艾斯霖'
   const inheritedInspector = selectedShipment?.inspector || selectedShipment?.inspectors?.[0]
 
   useEffect(() => {
     if (!open) return
+    clientRequestId.current = rework ? undefined : crypto.randomUUID()
     form.resetFields()
     form.setFieldsValue(rework ? {
       ...rework,
@@ -223,40 +270,48 @@ export function QualityReworkDrawer({ open, rework, shipments, employees, onClos
       recovered_quantity: 0,
       scrap_quantity: 0,
       work_hours: 0,
+      reason_category: 'OTHER',
     })
   }, [form, open, rework])
 
   const mutation = useMutation({
     mutationFn: (values: Record<string, any>) => {
-      const body = { ...values, rework_date: (values.rework_date as Dayjs).format('YYYY-MM-DD') }
+      const body: Record<string, unknown> = { ...values, responsible_inspector_id: inheritedInspector?.id || values.responsible_inspector_id || null, rework_employee_id: values.rework_employee_id || null, rework_date: (values.rework_date as Dayjs).format('YYYY-MM-DD') }
+      if (!rework) body.client_request_id = clientRequestId.current
       return rework ? qualityApi.updateRework(rework.id, body) : qualityApi.createRework(body)
     },
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['quality'] }),
-        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
-      ])
+    onSuccess: () => {
       message.success(rework ? '退货返工记录已更新' : '退货返工记录已保存')
       onClose()
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['quality'] }),
+        queryClient.invalidateQueries({ queryKey: ['analytics'] }),
+        queryClient.invalidateQueries({ queryKey: ['orders'] }),
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+      ]).catch(() => message.warning('退货已保存，部分页面刷新失败，请手动刷新。'))
     },
     onError: (error: Error) => message.error(error.message),
   })
 
-  const submit = async () => mutation.mutate(await form.validateFields())
+  const submit = async () => {
+    if (submitting.current) return
+    submitting.current = true
+    try { await mutation.mutateAsync(await form.validateFields()) } catch { /* Form/API errors are shown in place. */ }
+    finally { submitting.current = false }
+  }
   const selectShipment = (shipmentId: number) => {
-    const selected = shipments.find((item) => String(item.id) === String(shipmentId))
+    const selected = shipmentOptions.find((item) => String(item.id) === String(shipmentId))
     const inspector = selected?.inspector || selected?.inspectors?.[0]
-    if (inspector?.id) {
-      form.setFieldValue('responsible_inspector_id', inspector.id)
-    }
+    form.setFieldValue('responsible_inspector_id', inspector?.id)
   }
 
   return (
     <Drawer open={open} onClose={onClose} size={720} title={rework ? `编辑退货返工 · ${rework.shipment?.shipment_no}` : '登记退货返工'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={mutation.isPending} onClick={() => void submit()}>保存</Button></Space>}>
-      <Alert className="quality-form-alert" type="warning" showIcon title="责任品检员用于质量责任统计；返工处理人用于返工工作量统计，两者必须分别登记。" />
+      <Alert className="quality-form-alert" type="info" showIcon title="按原件数出货登记退货，回冲原采购单有效交付。" description="无需流程卡或重量，艾斯霖员工选填。返工完成不会自动增加交付，需从件数出货入口再次登记。" />
+      {shipmentOptionsQuery.isError && <Alert type="error" message="原出货查询失败" action={<Button onClick={() => void shipmentOptionsQuery.refetch()}>重试</Button>} />}
       <Form form={form} layout="vertical" requiredMark="optional">
         <Row gutter={14}>
-          <Col xs={24} sm={14}><Form.Item name="shipment_id" label="原出货记录" rules={[{ required: true, message: '请选择原出货记录' }]}><Select showSearch optionFilterProp="label" onChange={selectShipment} options={shipments.map((item) => ({ value: item.id, label: [item.shipment_no, item.order?.order_no, item.order?.batch_no].filter(Boolean).join(' · ') }))} /></Form.Item></Col>
+          <Col xs={24} sm={14}><Form.Item name="shipment_id" label="原件数出货记录" rules={[{ required: true, message: '请选择原出货记录' }]}><Select showSearch virtual={false} optionRender={(option) => <div style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{option.label}</div>} onSearch={setShipmentSearch} loading={shipmentOptionsQuery.isFetching} optionFilterProp="label" onChange={selectShipment} disabled={Boolean(rework)} options={shipmentOptions.map((item) => ({ value: item.id, label: [item.shipment_no, item.order?.order_no, item.order?.item_no, item.order?.product_name, item.order?.specification, item.order?.material, `可退 ${Math.max(0, item.shipped_quantity - (item.returned_quantity || 0) + (rework?.shipment?.id === item.id ? rework.returned_quantity : 0))} 件`].filter(Boolean).join(' · ') }))} /></Form.Item></Col>
           <Col xs={24} sm={10}><Form.Item name="rework_date" label="退货 / 返工日期" rules={[{ required: true }]}><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
         </Row>
         <Row gutter={14}>
@@ -265,8 +320,8 @@ export function QualityReworkDrawer({ open, rework, shipments, employees, onClos
             showIcon
             message="责任品检员已从原出货自动带入"
             description={`${inheritedInspector.name}；无需在退货时重复选择。`}
-          /> : <Form.Item name="responsible_inspector_id" label="责任品检员（原出货未填写，请补录）" rules={[{ required: true, message: '原出货没有品检员，请补录责任品检员' }]}><QualityEmployeeSelect employees={employees} allowClear={false} placeholder="选择或新增责任品检员" /></Form.Item>}</Col>
-          <Col xs={24} sm={12}><Form.Item name="rework_employee_id" label="返工处理人" rules={[{ required: true, message: '请选择返工处理人' }]}><QualityEmployeeSelect employees={employees} purpose="REWORKER" allowClear={false} placeholder="选择或新增返工处理人" /></Form.Item></Col>
+          /> : <Form.Item name="responsible_inspector_id" label="责任品检员（艾斯霖选填）" rules={[{ required: !optionalEmployees, message: '请选择责任品检员' }]}><Select allowClear options={employees.filter((item) => item.is_active && ['INSPECTOR', 'BOTH'].includes(item.role)).map((item) => ({ value: item.id, label: item.name }))} /></Form.Item>}</Col>
+          <Col xs={24} sm={12}><Form.Item name="rework_employee_id" label="返工处理人（艾斯霖选填）" rules={[{ required: !optionalEmployees, message: '请选择返工处理人' }]}><Select allowClear options={employees.filter((item) => item.is_active && ['REWORKER', 'BOTH'].includes(item.role)).map((item) => ({ value: item.id, label: item.name }))} /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="reason_category" label="原因分类" rules={[{ required: true }]}><Select options={[{ value: 'APPEARANCE', label: '外观' }, { value: 'STICKING', label: '粘皮' }, { value: 'DIMENSION', label: '尺寸' }, { value: 'MATERIAL', label: '材料' }, { value: 'MIXED', label: '混料' }, { value: 'PACKAGING', label: '包装' }, { value: 'OTHER', label: '其他' }]} /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="status" label="处理状态" rules={[{ required: true }]}><Select options={[{ value: 'PENDING', label: '待处理' }, { value: 'PROCESSING', label: '处理中' }, { value: 'COMPLETED', label: '已完成' }]} /></Form.Item></Col>
         </Row>

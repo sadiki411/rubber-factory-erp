@@ -548,6 +548,38 @@ class BusinessImportCommitView(APIView):
         return Response(result)
 
 
+class PurchaseImageRecognizeView(APIView):
+    @extend_schema(request={"multipart/form-data": dict}, responses=dict)
+    def post(self, request):
+        from .purchase_images import recognize_purchase_images
+
+        files = request.FILES.getlist("files") or request.FILES.getlist("files[]")
+        try:
+            return Response(recognize_purchase_images(files, request.user))
+        except ValueError as exc:
+            raise DRFValidationError({"files": str(exc)}) from exc
+
+
+class PurchaseImagePreviewView(APIView):
+    @extend_schema(request=dict, responses=dict)
+    def post(self, request):
+        from .purchase_images import preview_purchase_images
+
+        try:
+            token = UUID(str(request.data.get("token", "")))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise DRFValidationError({"token": "无效的采购单图片批次。"}) from exc
+        batch = get_object_or_404(BusinessImportBatch, pk=token, created_by=request.user)
+        try:
+            result = preview_purchase_images(
+                batch, request.data.get("documents"), request.user,
+                confirmed=request.data.get("confirmed") is True,
+            )
+        except ValueError as exc:
+            raise DRFValidationError({"detail": str(exc)}) from exc
+        return Response(result)
+
+
 class BusinessImportErrorReportView(APIView):
     @extend_schema(
         responses={(200, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"): bytes}

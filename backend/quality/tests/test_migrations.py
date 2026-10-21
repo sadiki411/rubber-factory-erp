@@ -1,12 +1,60 @@
 from decimal import Decimal
 from importlib import import_module
+from datetime import date
 
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 
 
-class ProcessCardTrackingMigrationTests(TransactionTestCase):
+class QualityMigrationTestCase(TransactionTestCase):
+    def tearDown(self):
+        # Historical migration tests must not leave later API/concurrency
+        # tests running against an old schema (notably non-null employees).
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        super().tearDown()
+
+
+class PieceShipmentEmployeeMigrationTests(QualityMigrationTestCase):
+    def test_nullable_employee_migration_preserves_existing_piece_facts(self):
+        executor = MigrationExecutor(connection)
+        before = ("quality", "0017_add_return_defect_reasons")
+        after = ("quality", "0018_piece_shipment_optional_employees")
+        executor.migrate([before])
+        apps = executor.loader.project_state([before]).apps
+        user = apps.get_model("auth", "User").objects.create(username="piece-migration")
+        employee = apps.get_model("quality", "QualityEmployee").objects.create(
+            employee_no="MIG-P", name="原始员工", role="BOTH",
+        )
+        order = apps.get_model("quality", "QualityOrder").objects.create(
+            order_no="MIG-PO", specification="20x30", order_quantity=100,
+            source_system="艾斯霖", created_by_id=user.pk,
+        )
+        shipment = apps.get_model("quality", "QualityShipment").objects.create(
+            shipment_no="MIG-SHIP", shipment_date=date(2026, 10, 21),
+            order_id=order.pk, inspector_id=employee.pk, inspection_quantity=100,
+            qualified_quantity=100, defective_quantity=0, shipped_quantity=100,
+            created_by_id=user.pk,
+        )
+        returned = apps.get_model("quality", "ReturnRework").objects.create(
+            shipment_id=shipment.pk, rework_date=date(2026, 10, 21),
+            reason_category="OTHER", responsible_inspector_id=employee.pk,
+            rework_employee_id=employee.pk, returned_quantity=20, created_by_id=user.pk,
+        )
+        executor = MigrationExecutor(connection)
+        executor.migrate([after])
+        apps = executor.loader.project_state([after]).apps
+        updated = apps.get_model("quality", "QualityShipment").objects.get(pk=shipment.pk)
+        self.assertEqual((updated.order_id, updated.inspector_id, updated.shipped_quantity), (order.pk, employee.pk, 100))
+        updated_return = apps.get_model("quality", "ReturnRework").objects.get(pk=returned.pk)
+        self.assertEqual((updated_return.shipment_id, updated_return.returned_quantity), (shipment.pk, 20))
+        self.assertTrue(updated._meta.get_field("inspector").null)
+        self.assertTrue(updated_return._meta.get_field("responsible_inspector").null)
+        self.assertTrue(updated_return._meta.get_field("rework_employee").null)
+
+
+class ProcessCardTrackingMigrationTests(QualityMigrationTestCase):
     """Regression coverage for populated production databases."""
 
     migrate_from = ("quality", "0010_alter_qualityreworkcase_reason_category_and_more")
@@ -81,7 +129,7 @@ class ProcessCardTrackingMigrationTests(TransactionTestCase):
         self.assertEqual(values, [(1, False), (2, True)])
 
 
-class ShipmentOrderAllocationMigrationTests(TransactionTestCase):
+class ShipmentOrderAllocationMigrationTests(QualityMigrationTestCase):
     migrate_from = (
         "quality",
         "0011_defectreason_processcardunitbinding_and_more",

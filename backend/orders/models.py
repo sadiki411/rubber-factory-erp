@@ -29,6 +29,7 @@ class BusinessImportBatch(models.Model):
         INTERNAL_ORDERS = "INTERNAL_ORDERS", "内部季度订单"
         FACTORY_WORK_CONTACT = "FACTORY_WORK_CONTACT", "生产工作联络单"
         MATERIAL_ISSUE = "MATERIAL_ISSUE", "混料发料清单"
+        PURCHASE_ORDER_IMAGES = "PURCHASE_ORDER_IMAGES", "艾斯霖采购单图片"
 
     class Status(models.TextChoices):
         PREVIEWED = "PREVIEWED", "已预检"

@@ -1,10 +1,11 @@
 import { CheckCircleOutlined, DownloadOutlined, InboxOutlined, UploadOutlined } from '@ant-design/icons'
-import { Alert, App, Button, Col, Descriptions, Drawer, Input, Progress, Row, Space, Table, Tag, Upload } from 'antd'
+import { Alert, App, Button, Col, Collapse, Descriptions, Drawer, Input, Progress, Row, Space, Table, Tag, Upload } from 'antd'
 import type { TableColumnsType, UploadFile } from 'antd'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { businessImportApi } from '../api/client'
 import type { BusinessImportCounts, BusinessImportPreview, BusinessImportPreviewRow, ImportIssue } from '../types'
+import { PurchaseImageImport } from './PurchaseImageImport'
 
 interface Props {
   open: boolean
@@ -23,6 +24,7 @@ const SOURCE_META: Record<string, string> = {
   PRODUCT_SPECIFICATIONS: '产品规格记录表',
   INTERNAL_ORDERS: '内部订单表',
   FACTORY_WORK_CONTACT: '客户工作联络单',
+  PURCHASE_ORDER_IMAGES: '艾斯霖采购单图片',
   MATERIAL_ISSUE: '客户发料清单',
   MIXED: '混合业务工作簿',
 }
@@ -119,6 +121,7 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
   const [preview, setPreview] = useState<BusinessImportPreview>()
   const [specification, setSpecification] = useState('')
   const [material, setMaterial] = useState('')
+  const [imageBusy, setImageBusy] = useState(false)
 
   const previewMutation = useMutation({
     mutationFn: (file: File) => businessImportApi.preview(file, { specification: specification.trim(), material: material.trim() }),
@@ -163,7 +166,7 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
     },
   })
 
-  const busy = previewMutation.isPending || commitMutation.isPending
+  const busy = previewMutation.isPending || commitMutation.isPending || imageBusy
   const closeDrawer = () => {
     if (busy) return
     setPreview(undefined)
@@ -214,6 +217,10 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
       title={context === 'product-specifications' ? '导入产品规格及业务数据' : '导入订单及客户业务数据'}
       extra={<Button icon={<DownloadOutlined />} href={businessImportApi.templateUrl(context === 'product-specifications' ? 'product_specifications' : 'orders')}>下载标准模板</Button>}
     >
+      {context === 'orders' && <Collapse style={{ marginBottom: 16 }} items={[{
+        key: 'purchase-images', label: '艾斯霖采购单图片导入（PNG / JPG）',
+        children: open ? <PurchaseImageImport disabled={previewMutation.isPending || commitMutation.isPending} onBusyChange={setImageBusy} /> : null,
+      }]} />}
       <Alert
         type="info"
         showIcon

@@ -1962,6 +1962,22 @@ def _order_match(record, issues, *, lock=False):
         if match:
             return match
 
+    # A customer purchase image has its own explicit document/line identity.
+    # Never let the legacy blank-source fallback claim another customer's row.
+    if record.get("source_type") == BusinessImportBatch.SourceType.PURCHASE_ORDER_IMAGES:
+        match, ambiguous = _unique_match(queryset.filter(
+            order_no=record.get("order_no", ""),
+            item_no=record.get("item_no", ""),
+            source_system=record.get("source_system", ""),
+        ))
+        if ambiguous:
+            record["ambiguous_order_identity"] = True
+            issues.append(_issue(
+                "error", "该采购单号和明细项次存在多条记录，请先核对，不能重复新增。",
+                sheet=record["sheet"], row=record["row"], field="item_no",
+            ))
+        return match
+
     source_type = record.get("source_type")
     if source_type == BusinessImportBatch.SourceType.INTERNAL_ORDERS:
         match, ambiguous = _unique_match(
@@ -2093,6 +2109,31 @@ def _product_match(record, *, lock=False):
     queryset = ProductSpecification.objects.all()
     if lock:
         queryset = queryset.select_for_update()
+    if record.get("source_type") == BusinessImportBatch.SourceType.PURCHASE_ORDER_IMAGES:
+        # Images contain no process settings. Reuse only an unambiguous exact
+        # product identity; never erase hand-maintained mold/cutting data.
+        record.pop("preserve_existing_product", None)
+        record.pop("product_selection_error", None)
+        candidates = queryset.filter(
+            specification__iexact=record.get("specification", ""),
+            material__iexact=record.get("material", ""), is_active=True,
+        )
+        record["product_candidates"] = list(candidates.order_by("id").values(
+            "id", "product_name", "specification", "material", "mold_no",
+        )[:100])
+        selected_id = record.get("selected_product_specification_id")
+        if selected_id:
+            match = candidates.filter(pk=selected_id).first()
+            ambiguous = match is None
+            if ambiguous:
+                record["product_selection_error"] = "指定的产品档案已失效或与本行规格、材质不一致，请重新选择。"
+        else:
+            match, ambiguous = _unique_match(candidates)
+        if ambiguous:
+            record["ambiguous_product_identity"] = True
+        if match:
+            record["preserve_existing_product"] = True
+        return match
     match = queryset.filter(source_key=record["source_key"]).first()
     if match:
         return match
@@ -2283,6 +2324,10 @@ def _prepare_record_actions(records, source_type, issues, *, lock=False):
             )
             record["changes"] = {}
         else:
+            if record.get("preserve_existing_product"):
+                record["action"] = "SKIP"
+                record["changes"] = {}
+                continue
             incoming_source_at = _datetime_from_payload(
                 record.get("source_document_at")
             )
@@ -2476,7 +2521,11 @@ def _prepare_record_actions(records, source_type, issues, *, lock=False):
             issues.append(
                 _issue(
                     "error",
-                    "数据库中存在多条相同产品身份，无法安全自动选择；请先在线整理产品资料。",
+                    product_record.get("product_selection_error") or (
+                        "数据库中存在多条相同产品身份，无法安全自动选择；请明确选择已有产品档案，不会猜配或新增重复档案。"
+                        if source_type == BusinessImportBatch.SourceType.PURCHASE_ORDER_IMAGES
+                        else "数据库中存在多条相同产品身份，无法安全自动选择；请先在线整理产品资料。"
+                    ),
                     sheet=product_record["sheet"],
                     row=product_record["row"],
                     field="product_specification",
@@ -2650,6 +2699,12 @@ def preview_business_workbook(uploaded_file, user, *, specification="", material
     )
     batch.original_file.save(batch.original_name, ContentFile(data), save=False)
     batch.save()
+    return business_preview_result(batch, records, issues)
+
+
+def business_preview_result(batch, records, issues):
+    errors = [item for item in issues if item["level"] == "error"]
+    warnings = [item for item in issues if item["level"] == "warning"]
     counts = {
         "product_specifications": sum(r["record_type"] == RECORD_PRODUCT for r in records),
         "orders": sum(r["record_type"] == RECORD_ORDER for r in records),
@@ -2659,7 +2714,7 @@ def preview_business_workbook(uploaded_file, user, *, specification="", material
     error_rows = {(item.get("sheet"), item.get("row")) for item in errors}
     return {
         "token": str(batch.pk),
-        "source_type": source_type,
+        "source_type": batch.source_type,
         "total_rows": len(records),
         "counts": counts,
         "error_count": len(errors),
@@ -2681,10 +2736,13 @@ def preview_business_workbook(uploaded_file, user, *, specification="", material
                 "order_no": record.get("order_no", ""),
                 "item_no": record.get("item_no", ""),
                 "order_date": record.get("order_date"),
+                "order_quantity": record.get("order_quantity"),
+                "due_date": record.get("due_date"),
                 "issued_on": record.get("issued_on"),
                 "manufactured_on": record.get("manufactured_on"),
                 "specification": record.get("specification", ""),
                 "material": record.get("material", ""),
+                "product_candidates": record.get("product_candidates", []),
                 "summary": _preview_summary(record),
                 "valid": (record["sheet"], record["row"]) not in error_rows,
             }
@@ -2781,6 +2839,10 @@ def _apply_source_fields(instance, record, source_batch):
 
 
 def _relink_unlinked_receipts(order, user, source_batch):
+    # A purchase image proves only the PO itself. It cannot authorize claiming
+    # historical receipts that happen to share its number/item from any source.
+    if source_batch.source_type == BusinessImportBatch.SourceType.PURCHASE_ORDER_IMAGES:
+        return 0
     if not order.item_no:
         return 0
     if QualityOrder.objects.filter(order_no=order.order_no, item_no=order.item_no).count() != 1:
@@ -2816,6 +2878,11 @@ def commit_business_batch(batch, user):
                 raise ValueError("该导入批次已经提交或正在提交，不能重复导入。")
             if current.errors:
                 raise ValueError("预检存在错误，请修正Excel后重新上传。")
+            if (
+                current.source_type == BusinessImportBatch.SourceType.PURCHASE_ORDER_IMAGES
+                and not current.payload.get("human_confirmed")
+            ):
+                raise ValueError("采购单图片必须先核对识别内容并完成预检，不能直接提交。")
             claimed = BusinessImportBatch.objects.filter(
                 pk=current.pk,
                 created_by=user,

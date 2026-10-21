@@ -12,6 +12,8 @@ from .views import (
     MaterialReceiptViewSet,
     ProductInspectionCriterionViewSet,
     ProductSpecificationViewSet,
+    PurchaseImageRecognizeView,
+    PurchaseImagePreviewView,
 )
 
 
@@ -31,6 +33,8 @@ router.register(
 
 
 urlpatterns = [
+    path("imports/purchase-images/recognize/", PurchaseImageRecognizeView.as_view(), name="purchase-image-recognize"),
+    path("imports/purchase-images/preview/", PurchaseImagePreviewView.as_view(), name="purchase-image-preview"),
     path("imports/template/", BusinessImportTemplateView.as_view(), name="business-import-template"),
     path("imports/preview/", BusinessImportPreviewView.as_view(), name="business-import-preview"),
     path("imports/commit/", BusinessImportCommitView.as_view(), name="business-import-commit"),

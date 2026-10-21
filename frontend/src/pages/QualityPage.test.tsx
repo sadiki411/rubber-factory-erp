@@ -55,8 +55,9 @@ vi.mock('../components/QualityWorkflowManagement', () => ({
   ShipmentBatchReviewDrawer: ({ open, item }: any) => open ? <div>批次详情 {item?.shipment_no}</div> : null,
 }))
 vi.mock('../components/QualityFormDrawers', () => ({
-  QualityShipmentDrawer: ({ open, onSaved, onClose }: any) => open ? <div role="dialog" aria-label="补录原出货"><button onClick={async () => { await onSaved?.({ status: 'DRAFT' }); onClose() }}>模拟保存草稿</button><button onClick={async () => { await onSaved?.({ status: 'CONFIRMED' }); onClose() }}>模拟确认出货</button></div> : null,
+  QualityShipmentDrawer: ({ open, mode, onSaved, onClose }: any) => open ? <div role="dialog" aria-label={mode === 'PIECES' ? '采购单件数出货' : '补录原出货'}><button onClick={async () => { await onSaved?.({ status: 'DRAFT' }); onClose() }}>模拟保存草稿</button><button onClick={async () => { await onSaved?.({ status: 'CONFIRMED' }); onClose() }}>模拟确认出货</button></div> : null,
   QualityEmployeeDrawer: () => null,
+  QualityReworkDrawer: ({ open, rework }: any) => open ? <div role="dialog" aria-label="件数退货抽屉">{rework ? '修改原件数退货' : '选择原件数出货'}</div> : null,
 }))
 vi.mock('../components/QualityReturnReworkDrawer', () => ({
   QualityReturnReworkDrawer: ({ open, onBackfillShipment }: any) => open ? <div role="dialog" aria-label="整批退货抽屉"><span>整批退货候选</span><button onClick={onBackfillShipment}>补录原出货</button></div> : null,
@@ -116,6 +117,16 @@ describe('QualityPage unified shipment ledger', () => {
     ])
   })
 
+  it('exposes explicit piece shipment and return entrances without replacing weighted shipping', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<MemoryRouter><QueryClientProvider client={client}><App><QualityPage /></App></QueryClientProvider></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('button', { name: '采购单件数出货（无流程卡）' }))
+    expect(await screen.findByRole('dialog', { name: '采购单件数出货' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '登记件数退货（无流程卡）' }))
+    expect(await screen.findByText('选择原件数出货')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /新增出货/ })).toBeInTheDocument()
+  })
+
   it('shows weighted and legacy records once and opens weighted details', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<MemoryRouter><QueryClientProvider client={client}><App><QualityPage /></App></QueryClientProvider></MemoryRouter>)
@@ -123,6 +134,8 @@ describe('QualityPage unified shipment ledger', () => {
     await userEvent.setup().click(await screen.findByRole('tab', { name: '每日出货' }))
     expect(await screen.findByText('QS-20260820-WEIGHT')).toBeInTheDocument()
     expect(screen.getByText('OLD-001')).toBeInTheDocument()
+    expect(screen.getByText('件数出货')).toBeInTheDocument()
+    expect(screen.queryByText('历史出货')).not.toBeInTheDocument()
     expect(screen.getByText('密封圈A')).toBeInTheDocument()
     expect(screen.getByText('20×30 · NBR')).toBeInTheDocument()
     expect(screen.getByText('7.5 kg')).toBeInTheDocument()

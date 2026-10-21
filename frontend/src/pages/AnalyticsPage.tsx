@@ -64,7 +64,7 @@ function manualHoursText(row: { manual_record_count?: number; manual_reported_ho
     : `${numberText(row.manual_reported_hours, 2)} h`
 }
 
-const WORK_STATUS: Record<string, string> = { CONFIRMED: '已确认', RESHIPPED: '已重新出货', WAITING_REWORK: '待返工', REWORKING: '正在返工', WAITING_REINSPECTION: '待复检', READY_TO_RESHIP: '待重新出货', SCRAPPED: '已报废', CANCELLED: '已取消', COMPLETED: '已完成', LEGACY: '历史记录', MANUAL: '手工补录' }
+const WORK_STATUS: Record<string, string> = { CONFIRMED: '已确认', RESHIPPED: '已重新出货', WAITING_REWORK: '待返工', REWORKING: '正在返工', WAITING_REINSPECTION: '待复检', READY_TO_RESHIP: '待重新出货', SCRAPPED: '已报废', CANCELLED: '已取消', COMPLETED: '已完成', LEGACY: '件数记录', MANUAL: '手工补录' }
 const productLabel = (row: AnalyticsQualityProductPerformance | AnalyticsQualityWorkRecord) => row.product_name || (row.product_code ? `产品编号 ${row.product_code}` : row.specification ? `${row.specification}（名称未填写）` : '产品身份待关联')
 const productFilterKey = (row: AnalyticsQualityProductPerformance | AnalyticsQualityWorkRecord): string => row.product_key || JSON.stringify([row.product_name, row.specification, row.material])
 

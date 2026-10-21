@@ -499,6 +499,14 @@ export interface BusinessImportCounts {
   inspection_criteria: number
 }
 
+export interface BusinessImportProductCandidate {
+  id: number
+  product_name: string
+  specification: string
+  material: string
+  mold_no: string
+}
+
 export interface BusinessImportPreviewRow {
   row_key: string
   record_type: BusinessImportRecordType
@@ -511,6 +519,7 @@ export interface BusinessImportPreviewRow {
   material?: string
   summary?: string
   changes?: Record<string, { from?: unknown; to?: unknown }>
+  product_candidates?: BusinessImportProductCandidate[]
   valid?: boolean
   [key: string]: unknown
 }
@@ -524,6 +533,37 @@ export interface BusinessImportPreview {
   warning_count: number
   rows: BusinessImportPreviewRow[]
   issues: ImportIssue[]
+}
+
+export interface PurchaseImageRow {
+  product_specification_id?: number | null
+  item_no: string | null
+  product_name: string | null
+  specification: string | null
+  material: string | null
+  order_quantity: number | string | null
+  unit_price: number | string | null
+  amount: number | string | null
+  due_date: string | null
+}
+
+export interface PurchaseImageDocument {
+  document_id: string
+  file_name: string
+  archive_name?: string
+  sha256?: string
+  order_no: string | null
+  order_date: string | null
+  rows: PurchaseImageRow[]
+  warnings: string[]
+  raw_text: string
+}
+
+export interface PurchaseImageRecognition {
+  token: string
+  customer: '艾斯霖'
+  documents: PurchaseImageDocument[]
+  requires_human_confirmation: true
 }
 
 export interface BusinessImportCommitResult {

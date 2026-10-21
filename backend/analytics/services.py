@@ -611,7 +611,7 @@ def build_quality_employee_details(
                 "record_key": f"legacy-shipment:{shipment.pk}",
                 "business_date": shipment.shipment_date.isoformat(),
                 "event_type": "SHIPMENT",
-                "event_type_display": "历史出货",
+                "event_type_display": "件数出货",
                 "role": "INSPECTOR",
                 "product_name": order.product_name or "",
                 "specification": order.specification or "",

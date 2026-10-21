@@ -3558,6 +3558,14 @@ def _weighted_ledger_row(
 class QualityShipmentViewSet(NoDeleteModelViewSet):
     serializer_class = QualityShipmentSerializer
 
+    @quality_write_retry
+    def create(self, request, *args, **kwargs):
+        return super().create(request, *args, **kwargs)
+
+    @quality_write_retry
+    def update(self, request, *args, **kwargs):
+        return super().update(request, *args, **kwargs)
+
     def get_queryset(self):
         queryset = _shipment_queryset()
         params = self.request.query_params
@@ -3831,6 +3839,14 @@ class QualityShipmentLedgerView(APIView):
 
 class ReturnReworkViewSet(NoDeleteModelViewSet):
     serializer_class = ReturnReworkSerializer
+
+    @quality_write_retry
+    def create(self, request, *args, **kwargs):
+        return super().create(request, *args, **kwargs)
+
+    @quality_write_retry
+    def update(self, request, *args, **kwargs):
+        return super().update(request, *args, **kwargs)
 
     def get_queryset(self):
         queryset = ReturnRework.objects.select_related(

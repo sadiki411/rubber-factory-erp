@@ -6,6 +6,8 @@ import type {
   BusinessImportHistoryDetail,
   BusinessImportHistorySummary,
   BusinessImportPreview,
+  PurchaseImageDocument,
+  PurchaseImageRecognition,
   ImportPreview,
   InventoryAvailability,
   InventoryContainer,
@@ -448,6 +450,18 @@ export const businessImportApi = {
   historyDetail: (token: string) => apiFetch<BusinessImportHistoryDetail>(`/api/orders/imports/history/${token}/`),
   templateUrl: (type: 'orders' | 'product_specifications') => `/api/orders/imports/template/${queryString({ type })}`,
   errorReportUrl: (token: string) => `/api/orders/imports/${token}/errors/`,
+}
+
+export const purchaseImageImportApi = {
+  recognize: (files: File[]) => {
+    const body = new FormData()
+    files.forEach((file) => body.append('files[]', file))
+    return apiFetch<PurchaseImageRecognition>('/api/orders/imports/purchase-images/recognize/', { method: 'POST', body })
+  },
+  preview: (token: string, documents: PurchaseImageDocument[], confirmed: true) =>
+    apiFetch<BusinessImportPreview>('/api/orders/imports/purchase-images/preview/', {
+      method: 'POST', body: JSON.stringify({ token, documents, confirmed }),
+    }),
 }
 
 export interface ProductionRunFilters {
