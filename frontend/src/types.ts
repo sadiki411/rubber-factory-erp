@@ -72,6 +72,8 @@ export interface InventoryLocation {
     bag_count: number
     pieces_per_bag?: number | null
     inspector_name?: string
+    inspector_id?: number | null
+    inspected_on?: string | null
     received_on?: string
     unit_weight_g?: string | number | null
   } | null

@@ -244,6 +244,7 @@ button, input, textarea, select { font: inherit; }
 .inventory-select-popup { min-width: min(380px, calc(100vw - 24px)) !important; max-width: calc(100vw - 24px); }
 .inventory-select-popup .ant-select-item { height: auto; min-height: 38px; align-items: center; }
 .inventory-select-popup .ant-select-item-option-content { white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
+.inventory-detail-actions .ant-btn { min-height: 44px; height: auto; white-space: normal; }
 .inventory-modal .ant-modal-body .ant-row { margin-inline: 0 !important; }
 .inventory-modal .ant-modal-body .ant-col { min-width: 0; }
 .inventory-label-sheet { display: none; }

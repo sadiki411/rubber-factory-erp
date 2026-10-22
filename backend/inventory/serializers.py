@@ -15,7 +15,7 @@ from .models import (
     MaterialRemainderUse,
 )
 from .services import create_inventory_outbound, create_inventory_receipt
-from quality.models import QualityEmployee
+from quality.models import QualityEmployee, QualityOrder
 from quality.unit_weights import latest_saved_product_unit_weight
 
 
@@ -87,6 +87,8 @@ class InventoryLocationSerializer(serializers.ModelSerializer):
             "inspector_name": (
                 container.batch.inspector.name if container.batch.inspector_id else ""
             ),
+            "inspector_id": container.batch.inspector_id,
+            "inspected_on": container.batch.inspected_on,
             "received_on": container.batch.received_on,
             "unit_weight_g": container.batch.product.unit_weight_g,
         }
@@ -178,6 +180,27 @@ class InventoryReceiptSerializer(serializers.Serializer):
         return create_inventory_receipt(validated_data, created_by=self.context["request"].user)
 
 
+class InventoryQualityUpdateSerializer(serializers.Serializer):
+    quality_status = serializers.ChoiceField(choices=InventoryBatch.QualityStatus.choices)
+    inspector_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    inspected_on = serializers.DateField(required=False, allow_null=True)
+
+    def validate_inspector_id(self, value):
+        if value is not None and not QualityEmployee.objects.filter(pk=value, is_active=True).exists():
+            raise serializers.ValidationError("品检员不存在或已停用。")
+        return value
+
+    def validate(self, attrs):
+        if attrs["quality_status"] == InventoryBatch.QualityStatus.PASSED and not attrs.get("inspector_id"):
+            raise serializers.ValidationError({"inspector_id": "已检合格必须选择品检员。"})
+        return attrs
+
+
+class InventoryMoveSerializer(serializers.Serializer):
+    location_id = serializers.IntegerField(min_value=1)
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=500)
+
+
 class InventoryProductCorrectionSerializer(serializers.Serializer):
     replacement_product_id = serializers.IntegerField(required=False, allow_null=True)
     product_code = serializers.CharField(required=False, allow_blank=True, max_length=120)
@@ -224,8 +247,13 @@ class InventoryTransactionSerializer(serializers.ModelSerializer):
 
 
 class InventoryOutboundLineInputSerializer(serializers.Serializer):
-    container_id = serializers.IntegerField()
+    container_id = serializers.IntegerField(min_value=1)
     quantity = serializers.IntegerField(min_value=1)
+
+    def validate_container_id(self, value):
+        if not InventoryContainer.objects.filter(pk=value).exists():
+            raise serializers.ValidationError("库存容器不存在，请刷新后重新选择。")
+        return value
 
 
 class InventoryOutboundSerializer(serializers.Serializer):
@@ -234,6 +262,22 @@ class InventoryOutboundSerializer(serializers.Serializer):
     shipment_ref = serializers.CharField(required=False, allow_blank=True, max_length=100)
     note = serializers.CharField(required=False, allow_blank=True)
     lines = InventoryOutboundLineInputSerializer(many=True, allow_empty=False)
+
+    def validate_outbound_no(self, value):
+        if value and InventoryOutbound.objects.filter(outbound_no=value).exists():
+            raise serializers.ValidationError("该出库单号已存在，请查看原出库记录，勿重复提交。")
+        return value
+
+    def validate_order_id(self, value):
+        if value is not None and not QualityOrder.objects.filter(pk=value).exists():
+            raise serializers.ValidationError("关联订单不存在，请刷新后重新选择。")
+        return value
+
+    def validate_lines(self, rows):
+        ids = [row["container_id"] for row in rows]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError("同一容器只能选择一次，请在同一行填写合计出库数量。")
+        return rows
 
     def create(self, validated_data):
         return create_inventory_outbound(validated_data, created_by=self.context["request"].user)

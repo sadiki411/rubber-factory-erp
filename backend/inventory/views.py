@@ -1,7 +1,6 @@
 from django.db import transaction
 from django.db.models import DecimalField, OuterRef, Q, Subquery, Sum
 from django.shortcuts import get_object_or_404
-from django.utils.dateparse import parse_date
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -23,15 +22,17 @@ from .models import (
     MaterialRemainder,
     MaterialRemainderUse,
 )
-from quality.models import ProductUnitWeight, QualityEmployee
+from quality.models import ProductUnitWeight
 from .serializers import (
     InventoryBatchSerializer,
     InventoryContainerSerializer,
     InventoryLocationSerializer,
+    InventoryMoveSerializer,
     InventoryOutboundReadSerializer,
     InventoryOutboundSerializer,
     InventoryProductCorrectionSerializer,
     InventoryProductSerializer,
+    InventoryQualityUpdateSerializer,
     InventoryReceiptSerializer,
     InventoryTransactionSerializer,
     MaterialRemainderSerializer,
@@ -42,6 +43,7 @@ from .services import (
     correct_inventory_container_product,
     move_inventory_container,
     product_availability,
+    set_inventory_container_quality,
 )
 
 
@@ -216,12 +218,12 @@ class InventoryContainerViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["post"])
     def move(self, request, pk=None):
         container = self.get_object()
-        location_id = request.data.get("location_id")
-        if not location_id:
-            raise ValidationError({"location_id": "请选择目标库位。"})
+        serializer = InventoryMoveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        location_id = serializer.validated_data["location_id"]
         try:
             target = InventoryLocation.objects.get(pk=location_id)
-            move_inventory_container(container, target, created_by=request.user, reason=request.data.get("reason", ""))
+            move_inventory_container(container, target, created_by=request.user, reason=serializer.validated_data.get("reason", ""))
         except (InventoryLocation.DoesNotExist, ValueError) as exc:
             raise ValidationError({"detail": str(exc)}) from exc
         return Response(self.get_serializer(InventoryContainer.objects.select_related("batch__product", "location").get(pk=container.pk)).data)
@@ -229,34 +231,13 @@ class InventoryContainerViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["post"], url_path="set-quality")
     def set_quality(self, request, pk=None):
         container = self.get_object()
-        status_value = request.data.get("quality_status")
-        if status_value not in InventoryBatch.QualityStatus.values:
-            raise ValidationError({"quality_status": "无效的质量状态。"})
-        if status_value == InventoryBatch.QualityStatus.PASSED and not request.data.get("inspector_id"):
-            raise ValidationError({"inspector_id": "已检合格必须选择品检员。"})
-        inspector_id = request.data.get("inspector_id")
-        if inspector_id and not QualityEmployee.objects.filter(pk=inspector_id, is_active=True).exists():
-            raise ValidationError({"inspector_id": "品检员不存在或已停用。"})
-        with transaction.atomic():
-            batch = container.batch
-            batch.quality_status = status_value
-            batch.inspector_id = inspector_id or None
-            inspected_on = request.data.get("inspected_on") or None
-            if inspected_on and parse_date(str(inspected_on)) is None:
-                raise ValidationError({"inspected_on": "日期格式应为yyyy-mm-dd。"})
-            batch.inspected_on = parse_date(str(inspected_on)) if inspected_on else None
-            batch.save(update_fields=["quality_status", "inspector", "inspected_on", "updated_at"])
-            InventoryTransaction.objects.create(
-                transaction_type=InventoryTransaction.TransactionType.QUALITY,
-                batch=batch,
-                container=container,
-                quantity=0,
-                from_location=container.location,
-                to_location=container.location,
-                reason=f"质量状态变更为 {batch.get_quality_status_display()}",
-                created_by=request.user,
-            )
-        return Response(self.get_serializer(container).data)
+        serializer = InventoryQualityUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            set_inventory_container_quality(container, serializer.validated_data, created_by=request.user)
+        except ValueError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+        return Response(self.get_serializer(self.get_queryset().get(pk=container.pk)).data)
 
     @action(detail=True, methods=["post"], url_path="correct-product")
     def correct_product(self, request, pk=None):

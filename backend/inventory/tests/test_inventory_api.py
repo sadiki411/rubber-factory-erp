@@ -9,7 +9,7 @@ from rest_framework.test import APIClient
 from orders.models import ProductSpecification
 from quality.models import ProductUnitWeight, QualityEmployee, QualityOrder
 
-from inventory.models import InventoryBatch, InventoryContainer, InventoryLocation, InventoryProduct, InventoryTransaction, MaterialRemainder
+from inventory.models import InventoryBatch, InventoryContainer, InventoryLocation, InventoryOutbound, InventoryOutboundLine, InventoryProduct, InventoryTransaction, MaterialRemainder
 
 
 class InventoryApiTests(APITestCase):
@@ -238,6 +238,7 @@ class InventoryApiTests(APITestCase):
         target = InventoryLocation.objects.get(code="K02-L01-P01")
         response = self.client.post(f"/api/inventory/containers/{container_id}/set-quality/", {
             "quality_status": "PASSED", "inspector_id": self.inspector.pk,
+            "inspected_on": "2026-10-22",
         }, format="json")
         self.assertEqual(response.status_code, 200, response.content)
         moved = self.client.post(f"/api/inventory/containers/{container_id}/move/", {
@@ -473,6 +474,163 @@ class InventoryApiTests(APITestCase):
         self.assertEqual(container.quantity, 3000)
         self.assertEqual(container.location.code, "K01-L01-P01")
         self.assertEqual(InventoryTransaction.objects.filter(transaction_type="OUTBOUND").count(), 1)
+
+    def test_waiting_stock_can_be_moved_inspected_outbound_and_location_reused(self):
+        created = self.receipt(quality_status="WAITING", inspector_id=None)
+        self.assertEqual(created.status_code, 201, created.content)
+        container_id = created.json()["id"]
+        endpoint = f"/api/inventory/containers/{container_id}/set-quality/"
+        target = InventoryLocation.objects.get(code="K01-L01-P02")
+        moved = self.client.post(f"/api/inventory/containers/{container_id}/move/", {"location_id": target.pk}, format="json")
+        self.assertEqual(moved.status_code, 200, moved.content)
+        self.assertEqual(moved.json()["batch"]["quality_status"], "WAITING")
+        self.assertEqual(moved.json()["quantity"], 4000)
+        for state in ("HOLD", "FAILED", "WAITING"):
+            changed = self.client.post(endpoint, {"quality_status": state}, format="json")
+            self.assertEqual(changed.status_code, 200, changed.content)
+            self.assertEqual(changed.json()["batch"]["quality_status"], state)
+            self.assertEqual(changed.json()["quantity"], 4000)
+            blocked = self.client.post("/api/inventory/outbounds/", {"lines": [{"container_id": container_id, "quantity": 1}]}, format="json")
+            self.assertEqual(blocked.status_code, 400, blocked.content)
+        approved = self.client.post(endpoint, {"quality_status": "PASSED", "inspector_id": self.inspector.pk, "inspected_on": "2026-10-22"}, format="json")
+        self.assertEqual(approved.status_code, 200, approved.content)
+        location = next(row for row in self.client.get("/api/inventory/locations/").json() if row["id"] == target.pk)
+        self.assertEqual(location["container"]["quality_status"], "PASSED")
+        self.assertEqual(location["container"]["inspector_id"], self.inspector.pk)
+        self.assertEqual(location["container"]["inspected_on"], "2026-10-22")
+        summary = self.client.get("/api/inventory/summary/").json()
+        self.assertEqual((summary["total_quantity"], summary["available_quantity"], summary["waiting_inspection_quantity"]), (4000, 4000, 0))
+        shipped = self.client.post("/api/inventory/outbounds/", {"lines": [{"container_id": container_id, "quantity": 4000}]}, format="json")
+        self.assertEqual(shipped.status_code, 201, shipped.content)
+        container = InventoryContainer.objects.get(pk=container_id)
+        self.assertEqual((container.status, container.quantity, container.location_id), ("EMPTY", 0, None))
+        reused = self.receipt(batch_no="REUSED", location_id=target.pk, quantity=500)
+        self.assertEqual(reused.status_code, 201, reused.content)
+        self.assertEqual(InventoryTransaction.objects.filter(transaction_type="QUALITY").count(), 4)
+        from quality.models import QualityShipment, QualityShipmentBatch
+        self.assertFalse(QualityShipment.objects.exists())
+        self.assertFalse(QualityShipmentBatch.objects.exists())
+
+    def test_all_quality_status_transitions_leave_quantity_and_location_unchanged(self):
+        locations = list(InventoryLocation.objects.filter(rack_type="LARGE").order_by("id")[:16])
+        index = 0
+        for previous in InventoryBatch.QualityStatus.values:
+            for following in InventoryBatch.QualityStatus.values:
+                with self.subTest(previous=previous, following=following):
+                    created = self.receipt(batch_no=f"TRANSITION-{index}", location_id=locations[index].pk,
+                                           quality_status=previous, inspector_id=self.inspector.pk if previous == "PASSED" else None)
+                    self.assertEqual(created.status_code, 201, created.content)
+                    result = self.client.post(f"/api/inventory/containers/{created.json()['id']}/set-quality/", {
+                        "quality_status": following, "inspector_id": self.inspector.pk if following == "PASSED" else None,
+                    }, format="json")
+                    self.assertEqual(result.status_code, 200, result.content)
+                    self.assertEqual((result.json()["quantity"], result.json()["location"]), (4000, locations[index].pk))
+                    self.assertEqual(result.json()["batch"]["quality_status"], following)
+                    index += 1
+
+    def test_invalid_quality_inputs_are_validation_errors_without_business_writes(self):
+        created = self.receipt(quality_status="WAITING", inspector_id=None)
+        container = InventoryContainer.objects.get(pk=created.json()["id"])
+        inactive = QualityEmployee.objects.create(employee_no="QC-INACTIVE", name="停用", role=QualityEmployee.Role.INSPECTOR, is_active=False)
+        before = InventoryTransaction.objects.count()
+        for body in (
+            {"quality_status": "PASSED"},
+            {"quality_status": "PASSED", "inspector_id": "abc"},
+            {"quality_status": "PASSED", "inspector_id": 999999},
+            {"quality_status": "PASSED", "inspector_id": inactive.pk},
+            {"quality_status": "PASSED", "inspector_id": self.inspector.pk, "inspected_on": "2026-99-99"},
+            {"quality_status": "HOLD", "inspected_on": "not-a-date"},
+            {"quality_status": "UNKNOWN"},
+        ):
+            with self.subTest(body=body):
+                result = self.client.post(f"/api/inventory/containers/{container.pk}/set-quality/", body, format="json")
+                self.assertEqual(result.status_code, 400, result.content)
+                container.batch.refresh_from_db()
+                self.assertEqual(container.batch.quality_status, "WAITING")
+                self.assertEqual(InventoryTransaction.objects.count(), before)
+
+    def test_repeated_quality_save_is_noop_and_does_not_add_audit_duplicates(self):
+        created = self.receipt(quality_status="WAITING", inspector_id=None)
+        endpoint = f"/api/inventory/containers/{created.json()['id']}/set-quality/"
+        body = {"quality_status": "PASSED", "inspector_id": self.inspector.pk, "inspected_on": "2026-10-22"}
+        for _ in range(2):
+            response = self.client.post(endpoint, body, format="json")
+            self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(InventoryTransaction.objects.filter(transaction_type="QUALITY").count(), 1)
+        self.assertEqual(InventoryContainer.objects.get(pk=created.json()["id"]).quantity, 4000)
+
+    def test_completed_container_cannot_rewrite_quality_history(self):
+        created = self.receipt()
+        container_id = created.json()["id"]
+        shipped = self.client.post("/api/inventory/outbounds/", {"lines": [{"container_id": container_id, "quantity": 4000}]}, format="json")
+        self.assertEqual(shipped.status_code, 201, shipped.content)
+        result = self.client.post(f"/api/inventory/containers/{container_id}/set-quality/", {"quality_status": "WAITING"}, format="json")
+        self.assertEqual(result.status_code, 400, result.content)
+        self.assertEqual(InventoryContainer.objects.get(pk=container_id).batch.quality_status, "PASSED")
+        self.assertFalse(InventoryTransaction.objects.filter(transaction_type="QUALITY").exists())
+
+    def test_partial_stock_can_be_put_back_on_hold_without_changing_prior_outbound(self):
+        created = self.receipt()
+        cid = created.json()["id"]
+        shipped = self.client.post("/api/inventory/outbounds/", {"lines": [{"container_id": cid, "quantity": 1000}]}, format="json")
+        self.assertEqual(shipped.status_code, 201, shipped.content)
+        held = self.client.post(f"/api/inventory/containers/{cid}/set-quality/", {"quality_status": "HOLD"}, format="json")
+        self.assertEqual(held.status_code, 200, held.content)
+        blocked = self.client.post("/api/inventory/outbounds/", {"lines": [{"container_id": cid, "quantity": 1}]}, format="json")
+        self.assertEqual(blocked.status_code, 400, blocked.content)
+        self.assertEqual(InventoryContainer.objects.get(pk=cid).quantity, 3000)
+        self.assertEqual(InventoryOutbound.objects.count(), 1)
+        self.assertEqual(InventoryOutboundLine.objects.get().quantity, 1000)
+
+    def test_invalid_moves_return_validation_errors_and_leave_stock_in_place(self):
+        created = self.receipt(quality_status="WAITING", inspector_id=None)
+        cid = created.json()["id"]
+        for target in ("abc", -1, 999999, self.large.pk, self.small.pk):
+            with self.subTest(target=target):
+                result = self.client.post(f"/api/inventory/containers/{cid}/move/", {"location_id": target}, format="json")
+                self.assertEqual(result.status_code, 400, result.content)
+                self.assertEqual(InventoryContainer.objects.get(pk=cid).location_id, self.large.pk)
+
+    def test_invalid_outbounds_and_duplicate_container_lines_never_partially_deduct(self):
+        created = self.receipt()
+        cid = created.json()["id"]
+        for body in (
+            {"lines": [{"container_id": 999999, "quantity": 1}]},
+            {"order_id": 999999, "lines": [{"container_id": cid, "quantity": 1}]},
+            {"lines": [{"container_id": cid, "quantity": 3000}, {"container_id": cid, "quantity": 1000}]},
+            {"lines": [{"container_id": cid, "quantity": 4001}]},
+            {"lines": [{"container_id": cid, "quantity": 0}]},
+        ):
+            with self.subTest(body=body):
+                result = self.client.post("/api/inventory/outbounds/", body, format="json")
+                self.assertEqual(result.status_code, 400, result.content)
+                self.assertEqual(InventoryContainer.objects.get(pk=cid).quantity, 4000)
+                self.assertFalse(InventoryOutbound.objects.exists())
+                self.assertFalse(InventoryOutboundLine.objects.exists())
+
+    def test_mixed_qualified_and_waiting_outbound_rolls_back_every_line(self):
+        first = self.receipt()
+        second = self.receipt(batch_no="WAITING-SECOND", location_id=InventoryLocation.objects.get(code="K01-L01-P02").pk, quality_status="WAITING", inspector_id=None)
+        first_id, second_id = first.json()["id"], second.json()["id"]
+        response = self.client.post("/api/inventory/outbounds/", {"lines": [
+            {"container_id": first_id, "quantity": 1000}, {"container_id": second_id, "quantity": 1},
+        ]}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(list(InventoryContainer.objects.filter(pk__in=[first_id, second_id]).order_by("pk").values_list("quantity", flat=True)), [4000, 4000])
+        self.assertFalse(InventoryOutbound.objects.exists())
+        self.assertFalse(InventoryOutboundLine.objects.exists())
+        self.assertFalse(InventoryTransaction.objects.filter(transaction_type="OUTBOUND").exists())
+
+    def test_duplicate_outbound_number_reports_validation_error_without_extra_deduction(self):
+        created = self.receipt()
+        body = {"outbound_no": "OUT-RETRY", "lines": [{"container_id": created.json()["id"], "quantity": 1000}]}
+        first = self.client.post("/api/inventory/outbounds/", body, format="json")
+        second = self.client.post("/api/inventory/outbounds/", body, format="json")
+        self.assertEqual(first.status_code, 201, first.content)
+        self.assertEqual(second.status_code, 400, second.content)
+        self.assertIn("该出库单号已存在", str(second.json()))
+        self.assertEqual(InventoryContainer.objects.get(pk=created.json()["id"]).quantity, 3000)
+        self.assertEqual(InventoryOutbound.objects.count(), 1)
 
     def test_material_remainder_uses_are_audited_and_cannot_overdraw(self):
         created = self.client.post(

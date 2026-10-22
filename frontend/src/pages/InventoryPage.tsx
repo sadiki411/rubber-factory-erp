@@ -4,6 +4,7 @@ import type { TableColumnsType } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import dayjs from 'dayjs'
 import { inventoryApi, orderApi, toList } from '../api/client'
 import { qualityApi } from '../api/client'
 import { ThermalLocationLabel } from '../components/ThermalLocationLabel'
@@ -59,6 +60,8 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
   const receiptProductCode = Form.useWatch<string>('product_code', receiptForm)
   const receiptSpecification = Form.useWatch<string>('specification', receiptForm)
   const receiptMaterial = Form.useWatch<string>('material', receiptForm)
+  const receiptQualityStatus = Form.useWatch<InventoryQualityStatus>('quality_status', receiptForm)
+  const selectedQualityStatus = Form.useWatch<InventoryQualityStatus>('quality_status', qualityForm)
   const summaryQuery = useQuery({ queryKey: ['inventory', 'summary'], queryFn: inventoryApi.summary })
   const locationsQuery = useQuery({
     queryKey: ['inventory', 'locations'],
@@ -110,7 +113,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
       setOutboundOpen(false)
       outboundForm.resetFields()
       await queryClient.invalidateQueries({ queryKey: ['inventory'] })
-      message.success('库存出库已确认，请在品检出货页面单独扫描流程卡')
+      message.success('库存出库已确认；如需登记出货，请到品检出货页面单独处理')
     },
     onError: (error: Error) => message.error(error.message),
   })
@@ -182,13 +185,15 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
   const rackCodes = useMemo(() => [...new Set(finishedLocations.map((location) => location.rack_code))], [finishedLocations])
   const routedLocationCode = normalizeInventoryLocationCode(initialLocationCode)
   const routedLocation = routedLocationCode ? finishedLocations.find((item) => item.code === routedLocationCode) : undefined
-  const activeDetailLocation = detailLocation || routedLocation
+  // Keep an open drawer bound to fresh query data, not the clicked snapshot.
+  const activeDetailLocation = detailLocation ? finishedLocations.find((item) => item.id === detailLocation.id) : routedLocation
   const visibleLocations = useMemo(() => {
     const needle = query.trim().toLowerCase()
     if (!needle) return finishedLocations
     return finishedLocations.filter((location) => {
       const item = location.container
       return location.code.toLowerCase().includes(needle)
+        || item?.container_code?.toLowerCase().includes(needle)
         || item?.product_code?.toLowerCase().includes(needle)
         || item?.product_name?.toLowerCase().includes(needle)
         || item?.specification?.toLowerCase().includes(needle)
@@ -303,6 +308,27 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
     window.setTimeout(() => window.print(), 120)
   }
 
+  const openQuality = (target: NonNullable<InventoryLocation['container']>) => {
+    setQualityTarget(target)
+    qualityForm.setFieldsValue({
+      quality_status: target.quality_status,
+      inspector_id: target.inspector_id ?? undefined,
+      inspected_on: target.inspected_on || (target.quality_status === 'PASSED' ? dayjs().format('YYYY-MM-DD') : undefined),
+    })
+  }
+
+  const openMove = (location: InventoryLocation) => {
+    if (!location.container) return
+    setMoveTarget({ containerId: location.container.id, containerCode: location.container.container_code, containerType: location.container.container_type, currentLocationId: location.id })
+    moveForm.resetFields()
+  }
+
+  const openOutbound = (target?: NonNullable<InventoryLocation['container']>) => {
+    outboundForm.resetFields()
+    if (target) outboundForm.setFieldsValue({ lines: [{ container_id: target.id }] })
+    setOutboundOpen(true)
+  }
+
   const locationColumns: TableColumnsType<InventoryLocation> = [
     { title: '库位', dataIndex: 'code', width: 140 },
     { title: '容器', key: 'container', width: 130, render: (_, row) => row.container?.container_code || '空位' },
@@ -310,11 +336,12 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
     { title: '数量', key: 'quantity', width: 100, render: (_, row) => row.container?.quantity ?? '-' },
     { title: '质量状态', key: 'quality', width: 110, render: (_, row) => qualityTag(row.container?.quality_status) },
     { title: '最近品检员', key: 'inspector', width: 120, render: (_, row) => row.container?.inspector_name || '未登记' },
-    { title: '操作', key: 'actions', width: 320, render: (_, row) => <Space size={0}><Button type="link" size="small" onClick={() => setDetailLocation(row)}>查看</Button>{row.container ? <><Button type="link" size="small" onClick={() => openProductCorrection(row.container!)}>改产品资料</Button><Button type="link" size="small" onClick={() => { setQualityTarget(row.container); qualityForm.setFieldsValue({ quality_status: row.container?.quality_status, inspector_id: undefined, inspected_on: new Date().toISOString().slice(0, 10) }) }}>改质量状态</Button><Button type="link" size="small" onClick={() => { setMoveTarget({ containerId: row.container!.id, containerCode: row.container!.container_code, containerType: row.container!.container_type, currentLocationId: row.id }); moveForm.resetFields() }}>移库</Button></> : null}</Space> },
+    { title: '操作', key: 'actions', width: 320, render: (_, row) => <Space size={0} wrap><Button type="link" size="small" onClick={() => setDetailLocation(row)}>查看</Button>{row.container ? <><Button type="link" size="small" onClick={() => openProductCorrection(row.container!)}>改产品资料</Button><Button type="link" size="small" onClick={() => openQuality(row.container!)}>改质量状态</Button><Button type="link" size="small" onClick={() => openMove(row)}>移库</Button></> : null}</Space> },
   ]
 
   const submitReceipt = async () => {
-    const values = await receiptForm.validateFields()
+    const values = await receiptForm.validateFields().catch(() => undefined)
+    if (!values) return
     const productId = values.product_id
     const matchedProduct = selectedProduct || existingManualProduct
     const previousWeight = Number(matchedProduct?.effective_unit_weight_g ?? matchedProduct?.latest_quality_unit_weight_g ?? matchedProduct?.unit_weight_g)
@@ -349,7 +376,8 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
   }
 
   const submitOutbound = async () => {
-    const values = await outboundForm.validateFields()
+    const values = await outboundForm.validateFields().catch(() => undefined)
+    if (!values) return
     outboundMutation.mutate({
       outbound_no: values.outbound_no || undefined,
       order_id: values.order_id || undefined,
@@ -361,12 +389,14 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
 
   const submitQuality = async () => {
     if (!qualityTarget) return
-    const values = await qualityForm.validateFields()
-    qualityMutation.mutate({ id: qualityTarget.id, body: values })
+    const values = await qualityForm.validateFields().catch(() => undefined)
+    if (!values) return
+    qualityMutation.mutate({ id: qualityTarget.id, body: { ...values, inspector_id: values.inspector_id ?? null, inspected_on: values.inspected_on || null } })
   }
 
   const submitRemainder = async () => {
-    const values = await remainderForm.validateFields()
+    const values = await remainderForm.validateFields().catch(() => undefined)
+    if (!values) return
     remainderMutation.mutate({
       material: values.material,
       weight_kg: values.weight_kg,
@@ -378,19 +408,22 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
 
   const submitRemainderUse = async () => {
     if (!remainderUseTarget) return
-    const values = await remainderUseForm.validateFields()
+    const values = await remainderUseForm.validateFields().catch(() => undefined)
+    if (!values) return
     remainderUseMutation.mutate({ id: remainderUseTarget.id, body: { weight_kg: values.weight_kg, note: values.note || '' } })
   }
 
   const submitMove = async () => {
     if (!moveTarget) return
-    const values = await moveForm.validateFields()
+    const values = await moveForm.validateFields().catch(() => undefined)
+    if (!values) return
     moveMutation.mutate({ id: moveTarget.containerId, body: { location_id: values.location_id, reason: values.reason || '' } })
   }
 
   const submitProductCorrection = async () => {
     if (!productCorrectionTarget) return
-    const values = await productCorrectionForm.validateFields()
+    const values = await productCorrectionForm.validateFields().catch(() => undefined)
+    if (!values) return
     productCorrectionMutation.mutate({ id: productCorrectionTarget.id, body: values })
   }
 
@@ -409,7 +442,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
       <PageTitle
         title="成品库存"
         description="库存直接入库、人工选取出库；流程卡只在品检出货页面单独扫描，不会重复扣减库存。"
-        extra={<Space wrap className="inventory-actions"><Button icon={<QrcodeOutlined />} onClick={() => setScanPurpose('LOOKUP')}>扫码查库位</Button><Button icon={<PrinterOutlined />} onClick={() => setPrintOpen(true)}>打印库位标签</Button><Button icon={<SwapOutlined />} onClick={() => setOutboundOpen(true)}>库存出库</Button><Button type="primary" icon={<InboxOutlined />} onClick={() => setReceiptOpen(true)}>直接入库</Button></Space>}
+        extra={<Space wrap className="inventory-actions"><Button icon={<QrcodeOutlined />} onClick={() => setScanPurpose('LOOKUP')}>扫码查库位</Button><Button icon={<PrinterOutlined />} onClick={() => setPrintOpen(true)}>打印库位标签</Button><Button icon={<SwapOutlined />} onClick={() => openOutbound()}>库存出库</Button><Button type="primary" icon={<InboxOutlined />} onClick={() => setReceiptOpen(true)}>直接入库</Button></Space>}
       />
 
       <Row gutter={[12, 12]} className="inventory-stats">
@@ -419,7 +452,8 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
         <Col xs={12} sm={6}><Card><Statistic title="占用库位" value={`${summaryQuery.data?.occupied_locations ?? 0} / ${summaryQuery.data?.location_count ?? 0}`} /></Card></Col>
       </Row>
 
-      {!finishedLocations.length && !locationsQuery.isLoading ? <Card><Empty description="还没有初始化库存固定库位"><Button type="primary" onClick={() => bootstrapMutation.mutate()} loading={bootstrapMutation.isPending}>初始化 K01-K09 库位</Button></Empty></Card> : null}
+      {locationsQuery.isError && <Alert type="error" showIcon message="库位读取失败，不能据此判断为空库位" action={<Button onClick={() => void locationsQuery.refetch()}>重新读取</Button>} style={{ marginBottom: 16 }} />}
+      {!finishedLocations.length && !locationsQuery.isLoading && !locationsQuery.isError ? <Card><Empty description="还没有初始化库存固定库位"><Button type="primary" onClick={() => bootstrapMutation.mutate()} loading={bootstrapMutation.isPending}>初始化 K01-K09 库位</Button></Empty></Card> : null}
 
       <Card className="inventory-map-card">
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -441,7 +475,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
       </Card>
 
       <Card title="当前容器明细" className="inventory-table-card">
-        <Table rowKey="id" size="small" loading={containersQuery.isLoading} dataSource={finishedLocations} columns={locationColumns} pagination={{ pageSize: 20, showSizeChanger: true }} scroll={{ x: 850 }} />
+        <Table rowKey="id" size="small" loading={locationsQuery.isLoading} dataSource={visibleLocations} columns={locationColumns} pagination={{ pageSize: 20, showSizeChanger: true }} scroll={{ x: 850 }} />
       </Card>
 
       <Card
@@ -468,7 +502,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
         </Form>
       </Modal>
 
-      <Drawer className="inventory-location-detail" title={`库位详情${activeDetailLocation ? ` · ${activeDetailLocation.code}` : ''}`} open={!!activeDetailLocation} onClose={closeLocationDetail} width={480}>
+      <Drawer className="inventory-location-detail" aria-label={`库位详情${activeDetailLocation ? ` · ${activeDetailLocation.code}` : ''}`} title={`库位详情${activeDetailLocation ? ` · ${activeDetailLocation.code}` : ''}`} open={!!activeDetailLocation} onClose={closeLocationDetail} width={480}>
         {activeDetailLocation && <>
           <Descriptions bordered size="small" column={1}>
             <Descriptions.Item label="库位编号"><Typography.Text copyable strong>{activeDetailLocation.code}</Typography.Text></Descriptions.Item>
@@ -486,7 +520,15 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
             <Descriptions.Item label="品检员">{activeDetailLocation.container.inspector_name || '未登记'}</Descriptions.Item>
             <Descriptions.Item label="入库日期">{activeDetailLocation.container.received_on || '-'}</Descriptions.Item>
           </Descriptions> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前为空库位"><Button type="primary" icon={<InboxOutlined />} onClick={() => { receiptForm.setFieldValue('location_id', activeDetailLocation.id); closeLocationDetail(); setReceiptOpen(true) }}>在此库位入库</Button></Empty>}
-          {activeDetailLocation.container && <Button block icon={<EditOutlined />} style={{ marginTop: 16 }} onClick={() => openProductCorrection(activeDetailLocation.container!)}>更正产品资料</Button>}
+          {activeDetailLocation.container && <>
+            {activeDetailLocation.container.quality_status !== 'PASSED' && <Alert style={{ marginTop: 16 }} type="warning" showIcon message="当前库存尚不可正常出库" description="可先移库整理；实际检验合格后，请在下方更新质量状态并登记品检员，再办理出库。更正状态不会改变数量或库位。" />}
+            <Space direction="vertical" className="inventory-detail-actions" style={{ width: '100%', marginTop: 16 }}>
+              <Button block type="primary" onClick={() => openQuality(activeDetailLocation.container!)}>更新质量状态</Button>
+              <Button block icon={<SwapOutlined />} onClick={() => openMove(activeDetailLocation)}>移库</Button>
+              {activeDetailLocation.container.quality_status === 'PASSED' && <Button block onClick={() => openOutbound(activeDetailLocation.container!)}>办理出库</Button>}
+              <Button block icon={<EditOutlined />} onClick={() => openProductCorrection(activeDetailLocation.container!)}>更正产品资料</Button>
+            </Space>
+          </>}
         </>}
       </Drawer>
 
@@ -506,13 +548,13 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
           />}
           <Row gutter={12}><Col xs={24} sm={8}><Form.Item label="成品单重(g)" name="unit_weight_g" extra={selectedProductId ? '自动带出品检出货最近确认的单重；修改后会写入同一单重历史。' : '可选填；能唯一匹配产品规格资料时会同步到品检出货。'}><InputNumber min={0.00001} precision={5} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="容器类型" name="container_type" rules={[{ required: true }]}><Select options={[{ value: 'BAG', label: '袋' }, { value: 'BASKET', label: '筐' }]} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="库位" required><div className="inventory-scan-field"><Form.Item name="location_id" noStyle rules={[{ required: true, message: '请选择库位' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} options={finishedLocations.filter((item) => !item.container).map((item) => ({ value: item.id, label: `${item.code}${item.allows_basket ? ' · 可放筐/袋' : ' · 袋位'}` }))} /></Form.Item><Button aria-label="扫描入库库位" icon={<CameraOutlined />} onClick={() => setScanPurpose('RECEIPT')}>扫码</Button></div></Form.Item></Col></Row>
           <Row gutter={12}><Col xs={24} sm={8}><Form.Item label="总数量（件）" name="quantity" rules={[{ required: true, type: 'number', min: 1 }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="筐内/容器袋数" name="bag_count"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item label="每袋数量" name="pieces_per_bag"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col></Row>
-          <Row gutter={12}><Col xs={24} sm={6}><Form.Item label="质量状态" name="quality_status" rules={[{ required: true }]}><Select options={Object.entries(QUALITY_META).map(([value, meta]) => ({ value, label: meta.label }))} /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="品检员（已检时必填）" name="inspector_id"><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} loading={employeesQuery.isLoading} options={(employeesQuery.data || []).map((employee: QualityEmployee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} /></Form.Item></Col><Col xs={24} sm={6}><Form.Item label="库存批次号" name="batch_no"><Input placeholder="留空自动生成" /></Form.Item></Col></Row>
+          <Row gutter={12}><Col xs={24} sm={6}><Form.Item label="质量状态" name="quality_status" rules={[{ required: true }]}><Select options={Object.entries(QUALITY_META).map(([value, meta]) => ({ value, label: meta.label }))} /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="品检员（已检时必填）" name="inspector_id" rules={[{ required: receiptQualityStatus === 'PASSED', message: '已检合格必须选择品检员' }]}><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} loading={employeesQuery.isLoading} options={(employeesQuery.data || []).filter((employee: QualityEmployee) => employee.is_active !== false).map((employee: QualityEmployee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} /></Form.Item></Col><Col xs={24} sm={6}><Form.Item label="库存批次号" name="batch_no"><Input placeholder="留空自动生成" /></Form.Item></Col></Row>
           <Form.Item label="来源说明" name="source_note"><Input.TextArea rows={2} placeholder="例如：前批生产剩余、现场期初盘点" /></Form.Item>
         </Form>
       </Modal>
 
       <Modal className="inventory-modal" title="库存出库" open={outboundOpen} onCancel={() => setOutboundOpen(false)} onOk={() => void submitOutbound()} confirmLoading={outboundMutation.isPending} width={620} okText="确认出库">
-        <Alert type="warning" showIcon message="这里只扣减已检库存；确认后请到品检出货页面单独扫描流程卡。" style={{ marginBottom: 16 }} />
+        <Alert type="warning" showIcon message="这里只扣减已检合格库存，不自动登记出货。待检、冻结或不合格库存请从库位详情更新质量状态或移库。" style={{ marginBottom: 16 }} />
         <Form form={outboundForm} layout="vertical" initialValues={{ lines: [{}] }}>
           <Form.List name="lines">
             {(fields, { add, remove }) => <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -531,11 +573,11 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
       </Modal>
 
       <Modal className="inventory-modal" title={`更新库存质量状态${qualityTarget ? ` · ${qualityTarget.container_code}` : ''}`} open={!!qualityTarget} onCancel={() => setQualityTarget(undefined)} onOk={() => void submitQuality()} confirmLoading={qualityMutation.isPending} okText="保存状态">
-        <Alert type="info" showIcon message="待检库存通过检验后才会进入可用库存；这里不需要订单或流程卡。" style={{ marginBottom: 16 }} />
+        <Alert type="info" showIcon message="更正当前库存批次的质量状态，不改变数量或库位。只有实际检验合格才可设为已检合格；这里不需要订单或流程卡。" style={{ marginBottom: 16 }} />
         <Form form={qualityForm} layout="vertical">
-          <Form.Item label="质量状态" name="quality_status" rules={[{ required: true }]}><Select options={Object.entries(QUALITY_META).map(([value, meta]) => ({ value, label: meta.label }))} /></Form.Item>
-          <Form.Item label="品检员" name="inspector_id" rules={[{ required: true, message: '请选择品检员' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} loading={employeesQuery.isLoading} options={(employeesQuery.data || []).map((employee: QualityEmployee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} /></Form.Item>
-          <Form.Item label="检验日期" name="inspected_on" rules={[{ required: true, message: '请选择检验日期' }]}><Input type="date" /></Form.Item>
+          <Form.Item label="质量状态" name="quality_status" rules={[{ required: true }]}><Select onChange={(value) => { if (value === 'PASSED' && !qualityForm.getFieldValue('inspected_on')) qualityForm.setFieldValue('inspected_on', dayjs().format('YYYY-MM-DD')) }} options={Object.entries(QUALITY_META).map(([value, meta]) => ({ value, label: meta.label }))} /></Form.Item>
+          <Form.Item label="品检员" name="inspector_id" rules={[{ required: selectedQualityStatus === 'PASSED', message: '已检合格必须选择品检员' }]}><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} loading={employeesQuery.isLoading} options={(employeesQuery.data || []).filter((employee: QualityEmployee) => employee.is_active !== false).map((employee: QualityEmployee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} /></Form.Item>
+          <Form.Item label="检验日期（可选）" name="inspected_on"><Input type="date" /></Form.Item>
         </Form>
       </Modal>
 

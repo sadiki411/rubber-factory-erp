@@ -22,6 +22,9 @@ const apiMocks = vi.hoisted(() => ({
   materialRemainders: vi.fn(),
   listEmployees: vi.fn(),
   listOrders: vi.fn(),
+  setQuality: vi.fn(),
+  outbound: vi.fn(),
+  moveContainer: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -34,11 +37,11 @@ vi.mock('../api/client', () => ({
     materialRemainders: apiMocks.materialRemainders,
     bootstrap: vi.fn(),
     receipt: apiMocks.receipt,
-    outbound: vi.fn(),
-    setQuality: vi.fn(),
+    outbound: apiMocks.outbound,
+    setQuality: apiMocks.setQuality,
     createMaterialRemainder: vi.fn(),
     useMaterialRemainder: vi.fn(),
-    moveContainer: vi.fn(),
+    moveContainer: apiMocks.moveContainer,
   },
   qualityApi: { listEmployees: apiMocks.listEmployees },
   orderApi: { list: apiMocks.listOrders },
@@ -70,6 +73,9 @@ describe('InventoryPage mobile inventory forms', () => {
     apiMocks.materialRemainders.mockResolvedValue([])
     apiMocks.listEmployees.mockResolvedValue([])
     apiMocks.listOrders.mockResolvedValue([])
+    apiMocks.setQuality.mockReset().mockResolvedValue({})
+    apiMocks.outbound.mockReset().mockResolvedValue({})
+    apiMocks.moveContainer.mockReset().mockResolvedValue({})
   })
 
   it('loads complete selector datasets and exposes a mobile-safe location popup', async () => {
@@ -255,4 +261,168 @@ describe('InventoryPage mobile inventory forms', () => {
     await user.click(screen.getByRole('button', { name: '返回检查' }))
     expect(apiMocks.receipt).not.toHaveBeenCalled()
   }, 30_000)
+
+  function seedStock(qualityStatus = 'WAITING', inspectorId: number | null = null) {
+    const container = {
+      id: 81, container_code: 'CT-081', container_type: 'BAG', batch_no: 'INV-081',
+      product_id: 362, product_code: 'P-362', product_name: '库存产品', specification: '362',
+      material: 'NBR', quantity: 1000, quality_status: qualityStatus, bag_count: 1,
+      inspector_id: inspectorId, inspector_name: inspectorId ? '品检员甲' : '',
+      inspected_on: inspectorId ? '2026-10-21' : null,
+    }
+    apiMocks.locations.mockResolvedValue([{ ...lastLocation, container }])
+    apiMocks.containers.mockResolvedValue([{
+      id: 81, container_code: 'CT-081', quantity: 1000, status: 'ACTIVE',
+      batch: { quality_status: qualityStatus, product: { specification: '362' } },
+    }])
+    return container
+  }
+
+  async function findLocationDrawer() {
+    const title = await screen.findByText('库位详情 · K09-L05-P02')
+    const drawer = title.closest('[role="dialog"]') as HTMLElement
+    await waitFor(() => expect(drawer).toBeVisible())
+    return drawer
+  }
+
+  async function findModal(title: string) {
+    const heading = await screen.findByText(title, { selector: '.ant-modal-title' })
+    const dialog = heading.closest('[role="dialog"]') as HTMLElement
+    await waitFor(() => expect(dialog).toBeVisible())
+    return dialog
+  }
+
+  it.each([
+    { title: '库存直接入库', openName: /直接入库/, saveName: '确认入库' },
+    { title: '库存出库', openName: /库存出库/, saveName: '确认出库' },
+  ])('keeps an incomplete $title form open without sending a request or an unhandled rejection', async ({ title, openName, saveName }) => {
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><InventoryPage /></App></QueryClientProvider>)
+    await user.click(await screen.findByRole('button', { name: openName }))
+    const dialog = await findModal(title)
+    await user.click(within(dialog).getByRole('button', { name: saveName }))
+    await waitFor(() => expect(dialog.querySelector('.ant-form-item-explain-error')).toBeVisible())
+    expect(dialog).toBeVisible()
+    expect(apiMocks.receipt).not.toHaveBeenCalled()
+    expect(apiMocks.outbound).not.toHaveBeenCalled()
+  }, 30_000)
+
+  it('offers quality correction and movement directly in the location drawer and allows HOLD without an inspector or date', async () => {
+    const stock = seedStock()
+    apiMocks.setQuality.mockImplementation(async () => {
+      apiMocks.locations.mockResolvedValue([{ ...lastLocation, container: { ...stock, quality_status: 'HOLD' } }])
+      return {}
+    })
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><InventoryPage initialLocationCode="K09-L05-P02" /></App></QueryClientProvider>)
+    const drawer = await findLocationDrawer()
+    expect(within(drawer).getByRole('button', { name: /移库$/ })).toBeVisible()
+    expect(within(drawer).queryByRole('button', { name: '办理出库' })).not.toBeInTheDocument()
+    await user.click(within(drawer).getByRole('button', { name: '更新质量状态' }))
+    const form = await findModal('更新库存质量状态 · CT-081')
+    await user.click(within(form).getByRole('combobox', { name: '质量状态' }))
+    await user.click(await screen.findByText('冻结', { selector: '.ant-select-item-option-content' }))
+    await user.click(within(form).getByRole('button', { name: '保存状态' }))
+    await waitFor(() => expect(apiMocks.setQuality).toHaveBeenCalledWith(81, { quality_status: 'HOLD', inspector_id: null, inspected_on: null }))
+    await waitFor(() => expect(form).not.toBeVisible())
+    expect(within(drawer).getByText('冻结')).toBeVisible()
+    expect(within(drawer).getByText('1000 件')).toBeVisible()
+  }, 30_000)
+
+  it('requires an inspector for PASSED and refreshes the open drawer before offering outbound with the selected container', async () => {
+    const stock = seedStock()
+    apiMocks.listEmployees.mockResolvedValue([{ id: 9, employee_no: 'QC-009', name: '品检员甲', is_active: true }])
+    apiMocks.setQuality.mockImplementation(async () => {
+      apiMocks.locations.mockResolvedValue([{ ...lastLocation, container: { ...stock, quality_status: 'PASSED', inspector_id: 9, inspector_name: '品检员甲' } }])
+      apiMocks.containers.mockResolvedValue([{ id: 81, container_code: 'CT-081', quantity: 1000, status: 'ACTIVE', batch: { quality_status: 'PASSED', product: { specification: '362' } } }])
+      return {}
+    })
+    apiMocks.outbound.mockImplementation(async () => {
+      apiMocks.locations.mockResolvedValue([lastLocation])
+      apiMocks.containers.mockResolvedValue([])
+      return {}
+    })
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><InventoryPage initialLocationCode="K09-L05-P02" /></App></QueryClientProvider>)
+    const drawer = await findLocationDrawer()
+    await user.click(within(drawer).getByRole('button', { name: '更新质量状态' }))
+    const form = await findModal('更新库存质量状态 · CT-081')
+    await user.click(within(form).getByRole('combobox', { name: '质量状态' }))
+    await user.click(await screen.findByText('已检合格', { selector: '.ant-select-item-option-content' }))
+    await user.click(within(form).getByRole('button', { name: '保存状态' }))
+    expect(await within(form).findByText('已检合格必须选择品检员')).toBeVisible()
+    expect(apiMocks.setQuality).not.toHaveBeenCalled()
+    await user.click(within(form).getByRole('combobox', { name: '品检员' }))
+    await user.click(await screen.findByText('QC-009 · 品检员甲', { selector: '.ant-select-item-option-content' }))
+    await user.click(within(form).getByRole('button', { name: '保存状态' }))
+    await waitFor(() => expect(apiMocks.setQuality).toHaveBeenCalledWith(81, expect.objectContaining({ quality_status: 'PASSED', inspector_id: 9 })))
+    await user.click(await within(drawer).findByRole('button', { name: '办理出库' }))
+    const outbound = await findModal('库存出库')
+    expect(within(outbound).getByText('CT-081 · 362 · 可出 1000')).toBeVisible()
+    await user.type(within(outbound).getByRole('spinbutton', { name: '出库数量（件）' }), '1000')
+    await user.click(within(outbound).getByRole('button', { name: '确认出库' }))
+    await waitFor(() => expect(apiMocks.outbound).toHaveBeenCalled())
+    expect(apiMocks.outbound.mock.calls[0][0]).toMatchObject({ lines: [{ container_id: 81, quantity: 1000 }] })
+    expect(await within(drawer).findByText('当前为空库位')).toBeVisible()
+  }, 45_000)
+
+  it('retains the recorded inspector and inspection date rather than forcing a second selection', async () => {
+    seedStock('PASSED', 9)
+    apiMocks.listEmployees.mockResolvedValue([{ id: 9, employee_no: 'QC-009', name: '品检员甲', is_active: true }])
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><InventoryPage initialLocationCode="K09-L05-P02" /></App></QueryClientProvider>)
+    const drawer = await findLocationDrawer()
+    await user.click(within(drawer).getByRole('button', { name: '更新质量状态' }))
+    const form = await findModal('更新库存质量状态 · CT-081')
+    expect(await within(form).findByText('QC-009 · 品检员甲')).toBeVisible()
+    expect(within(form).getByLabelText('检验日期（可选）')).toHaveValue('2026-10-21')
+    await user.click(within(form).getByRole('button', { name: '保存状态' }))
+    await waitFor(() => expect(apiMocks.setQuality).toHaveBeenCalledWith(81, { quality_status: 'PASSED', inspector_id: 9, inspected_on: '2026-10-21' }))
+  }, 30_000)
+
+  it('retains the quality form and original displayed status if saving fails', async () => {
+    seedStock()
+    apiMocks.setQuality.mockRejectedValue(new Error('网络中断，请重试'))
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><InventoryPage initialLocationCode="K09-L05-P02" /></App></QueryClientProvider>)
+    const drawer = await findLocationDrawer()
+    await user.click(within(drawer).getByRole('button', { name: '更新质量状态' }))
+    const form = await findModal('更新库存质量状态 · CT-081')
+    await user.click(within(form).getByRole('combobox', { name: '质量状态' }))
+    await user.click(await screen.findByText('冻结', { selector: '.ant-select-item-option-content' }))
+    await user.click(within(form).getByRole('button', { name: '保存状态' }))
+    expect(await screen.findByText('网络中断，请重试')).toBeVisible()
+    expect(form).toBeVisible()
+    expect(within(form).getByText('冻结')).toBeVisible()
+    expect(within(drawer).getByText('待检')).toBeVisible()
+    expect(within(drawer).queryByRole('button', { name: '办理出库' })).not.toBeInTheDocument()
+  }, 30_000)
+
+  it('searches container codes in both the shelf map and the actionable table', async () => {
+    const stock = seedStock()
+    apiMocks.locations.mockResolvedValue([{ ...lastLocation, container: stock }, { ...lastLocation, id: 149, code: 'K09-L05-P01' }])
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><InventoryPage /></App></QueryClientProvider>)
+    await user.type(await screen.findByPlaceholderText('搜索位置、产品、规格、材质或容器编号'), 'CT-081')
+    expect(screen.getAllByText('K09-L05-P02').length).toBeGreaterThan(0)
+    expect(screen.queryByText('K09-L05-P01')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '改质量状态' })).toBeVisible()
+  }, 30_000)
+
+  it('does not mistake a failed location request for an empty warehouse requiring initialization', async () => {
+    apiMocks.locations.mockRejectedValueOnce(new Error('读取失败'))
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><InventoryPage /></App></QueryClientProvider>)
+    expect(await screen.findByText('库位读取失败，不能据此判断为空库位')).toBeVisible()
+    expect(screen.queryByRole('button', { name: '初始化 K01-K09 库位' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '重新读取' }))
+    expect((await screen.findAllByText('K09-L05-P02')).length).toBeGreaterThan(0)
+  })
 })

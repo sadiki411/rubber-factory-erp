@@ -280,6 +280,31 @@ def correct_inventory_container_product(container, data, *, created_by):
 
 
 @transaction.atomic
+def set_inventory_container_quality(container, data, *, created_by):
+    container = InventoryContainer.objects.select_for_update().get(pk=container.pk)
+    if container.status != InventoryContainer.Status.ACTIVE or container.quantity <= 0:
+        raise ValueError("已空或已关闭的容器不能更改质量状态，请选择当前在库容器。")
+    batch = InventoryBatch.objects.select_for_update().get(pk=container.batch_id)
+    before = (batch.quality_status, batch.inspector_id, batch.inspected_on)
+    after = (data["quality_status"], data.get("inspector_id"), data.get("inspected_on"))
+    if before == after:
+        return container
+    before_label = batch.get_quality_status_display()
+    batch.quality_status, batch.inspector_id, batch.inspected_on = after
+    batch.save(update_fields=["quality_status", "inspector", "inspected_on", "updated_at"])
+    InventoryTransaction.objects.create(
+        transaction_type=InventoryTransaction.TransactionType.QUALITY,
+        batch=batch, container=container, quantity=0,
+        from_location=container.location, to_location=container.location,
+        reason=(f"质量状态：{before_label} -> {batch.get_quality_status_display()}；"
+                f"品检员ID：{before[1] or '未登记'} -> {after[1] or '未登记'}；"
+                f"检验日期：{before[2] or '未登记'} -> {after[2] or '未登记'}"),
+        created_by=created_by,
+    )
+    return container
+
+
+@transaction.atomic
 def move_inventory_container(container, target_location, *, created_by, reason=""):
     container = InventoryContainer.objects.select_for_update().select_related("batch", "location").get(pk=container.pk)
     target_location = InventoryLocation.objects.select_for_update().get(pk=target_location.pk)
@@ -322,7 +347,10 @@ def create_inventory_outbound(data, *, created_by):
         created_by=created_by,
     )
     for row in data["lines"]:
-        container = InventoryContainer.objects.select_for_update().select_related("batch", "batch__product", "location").get(pk=row["container_id"])
+        try:
+            container = InventoryContainer.objects.select_for_update().select_related("batch", "batch__product", "location").get(pk=row["container_id"])
+        except InventoryContainer.DoesNotExist as exc:
+            raise ValueError("库存容器不存在，请刷新后重新选择。") from exc
         quantity = int(row["quantity"])
         if container.status != InventoryContainer.Status.ACTIVE or container.batch.quality_status != InventoryBatch.QualityStatus.PASSED:
             raise ValueError(f"容器 {container.container_code} 不是可用的已检库存。")
