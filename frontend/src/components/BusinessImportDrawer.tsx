@@ -3,9 +3,10 @@ import { Alert, App, Button, Col, Collapse, Descriptions, Drawer, Input, Progres
 import type { TableColumnsType, UploadFile } from 'antd'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { businessImportApi } from '../api/client'
+import { ApiError, businessImportApi } from '../api/client'
 import type { BusinessImportCounts, BusinessImportPreview, BusinessImportPreviewRow, ImportIssue } from '../types'
 import { PurchaseImageImport } from './PurchaseImageImport'
+import { CutLengthReminder } from './CutLengthReminder'
 
 interface Props {
   open: boolean
@@ -122,10 +123,12 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
   const [specification, setSpecification] = useState('')
   const [material, setMaterial] = useState('')
   const [imageBusy, setImageBusy] = useState(false)
+  const [cutLengthAcknowledged, setCutLengthAcknowledged] = useState(false)
 
   const previewMutation = useMutation({
     mutationFn: (file: File) => businessImportApi.preview(file, { specification: specification.trim(), material: material.trim() }),
     onSuccess: (result) => {
+      setCutLengthAcknowledged(false)
       setPreview({
         ...result,
         counts: result.counts || { product_specifications: 0, orders: 0, material_receipts: 0, inspection_criteria: 0 },
@@ -138,7 +141,9 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['business-import-history'] }),
   })
   const commitMutation = useMutation({
-    mutationFn: (token: string) => businessImportApi.commit(token),
+    mutationFn: (token: string) => preview?.cut_length_check?.alert_count
+      ? businessImportApi.commit(token, { cut_length_acknowledged: cutLengthAcknowledged, cut_length_digest: preview.cut_length_check.digest })
+      : businessImportApi.commit(token),
     onSuccess: async (result) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['product-specifications'] }),
@@ -161,12 +166,27 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
       onClose()
     },
     onError: (error: Error) => {
+      if (error instanceof ApiError && error.data?.code === 'CUT_LENGTH_CONFIRMATION_REQUIRED') {
+        setCutLengthAcknowledged(false)
+        setPreview((current) => current ? { ...current, cut_length_check: error.data.cut_length_check } : current)
+        message.warning(error.message)
+        return
+      }
       void queryClient.invalidateQueries({ queryKey: ['business-import-history'] })
       message.error(error.message)
     },
   })
+  const refreshMutation = useMutation({
+    mutationFn: (token: string) => businessImportApi.refreshCutLength(token),
+    onSuccess: (result) => {
+      setCutLengthAcknowledged(false)
+      setPreview((current) => current ? { ...current, cut_length_check: result.cut_length_check } : current)
+      message.success('已按当前实际料长重新核对，请重新确认提醒')
+    },
+    onError: (error: Error) => message.error(error.message),
+  })
 
-  const busy = previewMutation.isPending || commitMutation.isPending || imageBusy
+  const busy = previewMutation.isPending || commitMutation.isPending || refreshMutation.isPending || imageBusy
   const closeDrawer = () => {
     if (busy) return
     setPreview(undefined)
@@ -264,15 +284,18 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
             <Descriptions.Item label="错误 / 警告"><span className="error-text">{preview.error_count}</span> / <span className="warning-text">{preview.warning_count}</span></Descriptions.Item>
           </Descriptions>
           <Progress percent={percent} status={preview.error_count ? 'exception' : 'success'} />
+          <CutLengthReminder check={preview.cut_length_check} token={preview.token}
+            acknowledged={cutLengthAcknowledged} onAcknowledgedChange={setCutLengthAcknowledged}
+            disabled={busy} refreshing={refreshMutation.isPending} onRefresh={() => refreshMutation.mutate(preview.token)} />
           {preview.issues.length ? (
             <Table rowKey={(row) => `${row.sheet}-${row.row}-${row.field}-${row.message}`} size="small" dataSource={preview.issues} columns={issueColumns} pagination={{ pageSize: 6 }} scroll={{ x: 700 }} />
-          ) : <Alert type="success" showIcon icon={<CheckCircleOutlined />} title="预检通过，可以导入" />}
+          ) : <Alert type="success" showIcon icon={<CheckCircleOutlined />} title={preview.cut_length_check?.alert_count ? '格式校验通过，请同时核对上方料长提醒' : '预检通过，可以导入'} />}
           <Table className="business-import-table" rowKey="row_key" size="small" dataSource={preview.rows} columns={rowColumns} pagination={{ pageSize: 10 }} scroll={{ x: 1655 }} />
           <div className="import-commit-bar">
             <span>确认后将一次性处理 {validRows} 条业务记录。</span>
             <Space wrap>
               {preview.issues.length > 0 && <Button href={businessImportApi.errorReportUrl(preview.token)}>下载问题报告</Button>}
-              <Button type="primary" disabled={busy || preview.error_count > 0 || validRows === 0} loading={commitMutation.isPending} onClick={() => commitMutation.mutate(preview.token)}>确认整批导入</Button>
+              <Button type="primary" disabled={busy || preview.error_count > 0 || validRows === 0 || (!!preview.cut_length_check?.alert_count && !cutLengthAcknowledged)} loading={commitMutation.isPending} onClick={() => commitMutation.mutate(preview.token)}>确认整批导入</Button>
             </Space>
           </div>
         </div>

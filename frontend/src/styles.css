@@ -919,6 +919,10 @@ button, input, textarea, select { font: inherit; }
   .import-commit-bar { align-items: stretch; flex-direction: column; position: sticky; bottom: 8px; z-index: 2; box-shadow: 0 8px 25px rgba(22,69,58,.16); }
   .import-commit-bar .ant-btn { min-height: 48px; }
   .business-import-drawer .ant-drawer-header { align-items: flex-start; }
+  .business-import-drawer .ant-drawer-header { flex-wrap: wrap; row-gap: 12px; }
+  .business-import-drawer .ant-drawer-header-title { min-width: 0; }
+  .business-import-drawer .ant-drawer-extra { width: 100%; margin-inline-start: 0; padding-inline-start: 32px; }
+  .business-import-drawer .ant-drawer-extra .ant-btn { width: 100%; }
   .business-import-drawer .ant-drawer-extra .ant-btn { min-height: 44px; }
   .business-page-tabs .ant-tabs-nav-wrap { overflow-x: auto; }
   .business-page-tabs .ant-tabs-tab { padding-inline: 8px; }

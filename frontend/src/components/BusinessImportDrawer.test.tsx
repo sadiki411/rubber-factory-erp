@@ -3,6 +3,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { BusinessImportDrawer } from './BusinessImportDrawer'
+import { ApiError } from '../api/client'
+import type { CutLengthCheck } from '../types'
 
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
@@ -11,11 +13,14 @@ Object.defineProperty(window, 'matchMedia', {
 class ResizeObserverMock { observe() {} unobserve() {} disconnect() {} }
 globalThis.ResizeObserver = ResizeObserverMock
 
-const apiMocks = vi.hoisted(() => ({ preview: vi.fn(), commit: vi.fn() }))
-vi.mock('../api/client', () => ({
+const apiMocks = vi.hoisted(() => ({ preview: vi.fn(), commit: vi.fn(), refresh: vi.fn() }))
+vi.mock('../api/client', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../api/client')>(),
   businessImportApi: {
     preview: apiMocks.preview,
     commit: apiMocks.commit,
+    refreshCutLength: apiMocks.refresh,
+    cutLengthReportUrl: (token: string) => `/api/orders/imports/${token}/cut-length/`,
     templateUrl: (type: string) => `/api/orders/imports/template/?type=${type}`,
     errorReportUrl: (token: string) => `/api/orders/imports/${token}/errors/`,
   },
@@ -33,6 +38,7 @@ describe('BusinessImportDrawer', () => {
   beforeEach(() => {
     apiMocks.preview.mockReset()
     apiMocks.commit.mockReset()
+    apiMocks.refresh.mockReset()
   })
 
   it('shows detected record counts and blocks commit when preview has errors', async () => {
@@ -118,5 +124,65 @@ describe('BusinessImportDrawer', () => {
     await user.type(screen.getByRole('textbox', { name: '限定导入规格' }), '-NEW')
     expect(screen.queryByRole('button', { name: /确认整批导入/ })).not.toBeInTheDocument()
     expect(apiMocks.commit).not.toHaveBeenCalled()
+  }, 15_000)
+
+  const check: CutLengthCheck = {
+    version: 1, tolerance_mm: '5', digest: 'digest-1', alert_count: 1,
+    rows: [{ row_key: 'length-1', sheet: 'sheet1', row: 4, order_no: 'LENGTH-ORDER', item_no: '1', specification: '240', material: 'N7200',
+      product_id: null, customer_length: '275', actual_length: '', customer_mm: '275', actual_mm: null, difference_mm: null,
+      status: 'MISSING_ACTUAL', message: '未填写实际切料长，待补充核对；可知悉后继续导入。', candidates: [] }],
+  }
+  async function uploadWithReminder(user: ReturnType<typeof userEvent.setup>) {
+    apiMocks.preview.mockResolvedValue({
+      token: 'reminder-token', source_type: 'FACTORY_WORK_CONTACT', total_rows: 1,
+      counts: { product_specifications: 0, orders: 1, material_receipts: 0, inspection_criteria: 0 },
+      error_count: 0, warning_count: 0, rows: [{ row_key: 'order', record_type: 'ORDER', valid: true }],
+      issues: [], cut_length_check: check,
+    })
+    renderDrawer()
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, new File(['excel'], 'factory.xlsx'))
+    await user.click(screen.getByRole('button', { name: /上传并自动识别/ }))
+    await screen.findByText('客户料长核对')
+  }
+
+  it('shows missing actual values and allows import after explicit acknowledgement', async () => {
+    const user = userEvent.setup()
+    await uploadWithReminder(user)
+    const commit = screen.getByRole('button', { name: /确认整批导入/ })
+    expect(commit).toBeDisabled()
+    expect(screen.getByText(/未填写实际切料长，待补充核对/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '下载料长提醒清单' })).toHaveAttribute('href', '/api/orders/imports/reminder-token/cut-length/')
+    await user.click(screen.getByRole('checkbox', { name: /已知悉上述料长提醒/ }))
+    apiMocks.commit.mockResolvedValue({ created: { orders: 1 } })
+    await user.click(commit)
+    await waitFor(() => expect(apiMocks.commit).toHaveBeenCalledWith('reminder-token', { cut_length_acknowledged: true, cut_length_digest: 'digest-1' }))
+  }, 15_000)
+
+  it('refreshes manual values and revokes previous acknowledgement', async () => {
+    const user = userEvent.setup()
+    await uploadWithReminder(user)
+    await user.click(screen.getByRole('checkbox', { name: /已知悉上述料长提醒/ }))
+    apiMocks.refresh.mockResolvedValue({ cut_length_check: { ...check, digest: 'digest-2' } })
+    await user.click(screen.getByRole('button', { name: '重新核对实际料长' }))
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: /已知悉上述料长提醒/ })).not.toBeChecked())
+    expect(apiMocks.refresh).toHaveBeenCalledWith('reminder-token')
+    expect(screen.getByRole('button', { name: /确认整批导入/ })).toBeDisabled()
+    expect(apiMocks.commit).not.toHaveBeenCalled()
+  }, 15_000)
+
+  it('keeps preview and displays refreshed server reminder when baseline changed', async () => {
+    const user = userEvent.setup()
+    await uploadWithReminder(user)
+    const revised = { ...check, digest: 'digest-2', rows: [{ ...check.rows[0], actual_length: '300', actual_mm: '300', difference_mm: '-25', status: 'SHORTER', message: '客户料长偏短25mm，请核对' }] }
+    apiMocks.commit.mockRejectedValueOnce(new ApiError(409, '请重新确认最新提醒', { code: 'CUT_LENGTH_CONFIRMATION_REQUIRED', cut_length_check: revised }))
+    await user.click(screen.getByRole('checkbox', { name: /已知悉上述料长提醒/ }))
+    await user.click(screen.getByRole('button', { name: /确认整批导入/ }))
+    expect(await screen.findByText('客户料长偏短25mm，请核对')).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: /已知悉上述料长提醒/ })).not.toBeChecked()
+    expect(screen.getByRole('button', { name: /确认整批导入/ })).toBeDisabled()
+    apiMocks.commit.mockResolvedValueOnce({ created: { orders: 1 } })
+    await user.click(screen.getByRole('checkbox', { name: /已知悉上述料长提醒/ }))
+    await user.click(screen.getByRole('button', { name: /确认整批导入/ }))
+    await waitFor(() => expect(apiMocks.commit).toHaveBeenLastCalledWith('reminder-token', { cut_length_acknowledged: true, cut_length_digest: 'digest-2' }))
   }, 15_000)
 })

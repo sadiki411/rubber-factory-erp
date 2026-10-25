@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     BusinessImportCommitView,
+    BusinessImportCutLengthView,
     BusinessImportErrorReportView,
     BusinessImportHistoryDetailView,
     BusinessImportHistoryView,
@@ -38,6 +39,7 @@ urlpatterns = [
     path("imports/template/", BusinessImportTemplateView.as_view(), name="business-import-template"),
     path("imports/preview/", BusinessImportPreviewView.as_view(), name="business-import-preview"),
     path("imports/commit/", BusinessImportCommitView.as_view(), name="business-import-commit"),
+    path("imports/<uuid:token>/cut-length/", BusinessImportCutLengthView.as_view(), name="business-import-cut-length"),
     path("imports/history/", BusinessImportHistoryView.as_view(), name="business-import-history"),
     path(
         "imports/history/<uuid:token>/",

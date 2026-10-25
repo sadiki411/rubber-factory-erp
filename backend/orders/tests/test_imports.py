@@ -338,7 +338,9 @@ class BusinessImportTests(TestCase):
 
     def commit(self, result):
         return commit_business_batch(
-            BusinessImportBatch.objects.get(pk=result["token"]), self.user
+            BusinessImportBatch.objects.get(pk=result["token"]), self.user,
+            cut_length_acknowledged=True,
+            cut_length_digest=(result.get("cut_length_check") or {}).get("digest", ""),
         )
 
     def test_literal_custom_number_format_uses_display_text_and_keeps_raw_value(self):

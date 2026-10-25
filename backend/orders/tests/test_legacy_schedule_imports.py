@@ -60,7 +60,11 @@ class LegacyScheduleImportTests(APITestCase):
         return preview_business_workbook(upload("3-30.xlsx", content or legacy_schedule()), self.user, **filters)
 
     def commit(self, preview):
-        return commit_business_batch(BusinessImportBatch.objects.get(pk=preview["token"]), self.user)
+        return commit_business_batch(
+            BusinessImportBatch.objects.get(pk=preview["token"]), self.user,
+            cut_length_acknowledged=True,
+            cut_length_digest=(preview.get("cut_length_check") or {}).get("digest", ""),
+        )
 
     def test_multiple_sheets_keep_demand_items_and_allocated_quantities(self):
         preview = self.preview(legacy_schedule(repeat_header=True))
@@ -194,6 +198,9 @@ class LegacyScheduleImportTests(APITestCase):
         batch = BusinessImportBatch.objects.get(pk=response.data["token"])
         with batch.original_file.open("rb") as original:
             self.assertEqual(original.read(), content)
-        response = self.client.post("/api/orders/imports/commit/", {"token": str(batch.pk)})
+        response = self.client.post("/api/orders/imports/commit/", {
+            "token": str(batch.pk), "cut_length_acknowledged": True,
+            "cut_length_digest": response.data["cut_length_check"]["digest"],
+        }, format="json")
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(QualityOrder.objects.count(), 2)

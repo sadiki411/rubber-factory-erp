@@ -26,6 +26,7 @@ from .imports import (
     create_business_template,
     preview_business_workbook,
 )
+from .cut_length_checks import build_cut_length_check, cut_length_report, CutLengthConfirmationRequired
 from .models import (
     BusinessImportBatch,
     BusinessRecordRevision,
@@ -537,7 +538,21 @@ class BusinessImportCommitView(APIView):
             raise DRFValidationError({"token": "无效的业务导入批次标识。"}) from exc
         batch = get_object_or_404(BusinessImportBatch, pk=batch_id, created_by=request.user)
         try:
-            result = commit_business_batch(batch, request.user)
+            result = commit_business_batch(
+                batch, request.user,
+                cut_length_acknowledged=request.data.get("cut_length_acknowledged") is True,
+                cut_length_digest=request.data.get("cut_length_digest", ""),
+            )
+        except CutLengthConfirmationRequired as exc:
+            from django.db import transaction
+
+            with transaction.atomic():
+                current = BusinessImportBatch.objects.select_for_update().get(pk=batch.pk)
+                if current.status == BusinessImportBatch.Status.PREVIEWED:
+                    current.payload["cut_length_check"] = exc.check
+                    current.save(update_fields=["payload"])
+            return Response({"detail": str(exc), "code": "CUT_LENGTH_CONFIRMATION_REQUIRED",
+                             "cut_length_check": exc.check}, status=409)
         except ValueError as exc:
             message = _safe_business_message(exc, "导入提交失败，请重新预检后再试。")
             try:
@@ -591,6 +606,30 @@ class BusinessImportErrorReportView(APIView):
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         response["Content-Disposition"] = f"attachment; filename=business-import-errors-{batch.pk}.xlsx"
+        return response
+
+
+class BusinessImportCutLengthView(APIView):
+    @extend_schema(request=dict, responses=dict)
+    def post(self, request, token):
+        from django.db import transaction
+
+        with transaction.atomic():
+            batch = get_object_or_404(
+                BusinessImportBatch.objects.select_for_update(), pk=token, created_by=request.user,
+            )
+            if batch.status != BusinessImportBatch.Status.PREVIEWED:
+                raise DRFValidationError({"detail": "仅未提交的预检批次可以重新核对，历史快照不会重算。"})
+            check = build_cut_length_check(_batch_rows(batch), batch.source_type)
+            batch.payload["cut_length_check"] = check
+            batch.save(update_fields=["payload"])
+        return Response({"cut_length_check": check})
+
+    @extend_schema(responses={(200, "text/csv"): bytes})
+    def get(self, request, token):
+        batch = get_object_or_404(BusinessImportBatch, pk=token, created_by=request.user)
+        response = HttpResponse(cut_length_report(batch.payload.get("cut_length_check")), content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = f"attachment; filename=cut-length-reminders-{batch.pk}.csv"
         return response
 
 
@@ -792,6 +831,8 @@ class BusinessImportHistoryDetailView(APIView):
         payload.update(
             {
                 "issues": [*_issue_list(batch.errors), *_issue_list(batch.warnings)],
+                "cut_length_check": batch.payload.get("cut_length_check"),
+                "cut_length_confirmation": batch.payload.get("cut_length_confirmation"),
                 "rows": [
                     _history_row(row, batch.errors, batch.warnings)
                     for row in _batch_rows(batch)

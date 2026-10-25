@@ -36,6 +36,7 @@ from .models import (
     normalize_product_key,
 )
 from .services import json_safe, model_snapshot, record_revision
+from .cut_length_checks import build_cut_length_check, CutLengthConfirmationRequired
 
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -2692,6 +2693,7 @@ def preview_business_workbook(uploaded_file, user, *, specification="", material
             "rows": json_safe(records),
             "parser": parser,
             "filters": {"specification": specification, "material": material},
+            "cut_length_check": build_cut_length_check(records, source_type),
         },
         errors=errors,
         warnings=warnings,
@@ -2719,6 +2721,7 @@ def business_preview_result(batch, records, issues):
         "counts": counts,
         "error_count": len(errors),
         "warning_count": len(warnings),
+        "cut_length_check": batch.payload.get("cut_length_check"),
         "rows": [
             {
                 "row_key": record["row_key"],
@@ -2868,7 +2871,7 @@ def _relink_unlinked_receipts(order, user, source_batch):
     return len(receipts)
 
 
-def commit_business_batch(batch, user):
+def commit_business_batch(batch, user, *, cut_length_acknowledged=False, cut_length_digest=""):
     try:
         with transaction.atomic():
             current = BusinessImportBatch.objects.filter(pk=batch.pk).first()
@@ -2903,6 +2906,12 @@ def commit_business_batch(batch, user):
                 raise ValueError(
                     f"提交前复检失败：{commit_errors[0].get('message', '存在数据冲突。')}"
                 )
+            cut_length_check = build_cut_length_check(records, current.source_type, lock=True)
+            if cut_length_check and cut_length_check["alert_count"] and (
+                cut_length_acknowledged is not True
+                or cut_length_digest != cut_length_check["digest"]
+            ):
+                raise CutLengthConfirmationRequired(cut_length_check)
             counter_names = (
                 "product_specifications",
                 "orders",
@@ -3122,6 +3131,14 @@ def commit_business_batch(batch, user):
             committed_at = timezone.now()
             payload = current.payload
             payload["rows"] = json_safe(records)
+            if cut_length_check is not None:
+                payload["cut_length_check"] = cut_length_check
+                if cut_length_check["alert_count"]:
+                    payload["cut_length_confirmation"] = {
+                        "digest": cut_length_check["digest"], "user_id": user.pk,
+                        "username": user.get_username(), "confirmed_at": committed_at.isoformat(),
+                        "meaning": "已知悉提醒并继续导入，不代表已补录实际值或客户已更正。",
+                    }
             changed = BusinessImportBatch.objects.filter(
                 pk=current.pk, status=BusinessImportBatch.Status.COMMITTING
             ).update(

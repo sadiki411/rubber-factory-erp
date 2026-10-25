@@ -4,6 +4,7 @@ import type { TableColumnsType } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { businessImportApi } from '../api/client'
+import { CutLengthReminder } from './CutLengthReminder'
 import type { BusinessImportHistoryRow, BusinessImportHistorySummary, ImportIssue } from '../types'
 
 interface Props {
@@ -161,6 +162,7 @@ export function BusinessImportHistoryDrawer({ open, onClose }: Props) {
             <Descriptions.Item label="完成时间">{timestamp(detail.committed_at)}</Descriptions.Item>
             <Descriptions.Item label="结果">{actionSummary(detail)}</Descriptions.Item>
           </Descriptions>
+          <CutLengthReminder check={detail.cut_length_check} token={detail.token} confirmation={detail.cut_length_confirmation} />
           <Space wrap>
             <Tag color="error">错误 {detail.error_count}</Tag>
             <Tag color="warning">警告 {detail.warning_count}</Tag>

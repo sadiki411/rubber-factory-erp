@@ -442,9 +442,11 @@ export const businessImportApi = {
     if (filters.material?.trim()) body.append('material', filters.material.trim())
     return apiFetch<BusinessImportPreview>('/api/orders/imports/preview/', { method: 'POST', body })
   },
-  commit: (token: string) => apiFetch<BusinessImportCommitResult>('/api/orders/imports/commit/', {
-    method: 'POST', body: JSON.stringify({ token }),
+  commit: (token: string, confirmation?: { cut_length_acknowledged: boolean; cut_length_digest: string }) => apiFetch<BusinessImportCommitResult>('/api/orders/imports/commit/', {
+    method: 'POST', body: JSON.stringify({ token, ...confirmation }),
   }),
+  refreshCutLength: (token: string) => apiFetch<{ cut_length_check: BusinessImportPreview['cut_length_check'] }>(`/api/orders/imports/${token}/cut-length/`, { method: 'POST' }),
+  cutLengthReportUrl: (token: string) => `/api/orders/imports/${token}/cut-length/`,
   history: (filters: { q?: string; status?: string; source_type?: string; page?: number; page_size?: number } = {}) =>
     apiFetch<ApiList<BusinessImportHistorySummary> | BusinessImportHistorySummary[]>(`/api/orders/imports/history/${queryString(filters)}`),
   historyDetail: (token: string) => apiFetch<BusinessImportHistoryDetail>(`/api/orders/imports/history/${token}/`),

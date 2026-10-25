@@ -526,6 +526,41 @@ export interface BusinessImportPreviewRow {
   [key: string]: unknown
 }
 
+export interface CutLengthCheckRow {
+  row_key: string
+  sheet: string
+  row: number
+  order_no: string
+  item_no: string
+  specification: string
+  material: string
+  product_id: number | null
+  customer_length: string
+  actual_length: string
+  customer_mm: string | null
+  actual_mm: string | null
+  difference_mm: string | null
+  status: 'IN_TOLERANCE' | 'SHORTER' | 'LONGER' | 'MISSING_ACTUAL' | 'UNREADABLE_ACTUAL' | 'MISSING_CUSTOMER' | 'UNREADABLE_CUSTOMER' | 'AMBIGUOUS_PRODUCT'
+  message: string
+  candidates: { id: number; specification: string; material: string; actual_material_length: string }[]
+}
+
+export interface CutLengthCheck {
+  version: number
+  tolerance_mm: string
+  rows: CutLengthCheckRow[]
+  alert_count: number
+  digest: string
+}
+
+export interface CutLengthConfirmation {
+  digest: string
+  user_id: number
+  username: string
+  confirmed_at: string
+  meaning: string
+}
+
 export interface BusinessImportPreview {
   token: string
   source_type?: string
@@ -535,6 +570,7 @@ export interface BusinessImportPreview {
   warning_count: number
   rows: BusinessImportPreviewRow[]
   issues: ImportIssue[]
+  cut_length_check?: CutLengthCheck | null
 }
 
 export interface PurchaseImageRow {
@@ -614,6 +650,8 @@ export interface BusinessImportHistoryRow extends BusinessImportPreviewRow {
 export interface BusinessImportHistoryDetail extends BusinessImportHistorySummary {
   rows: BusinessImportHistoryRow[]
   issues: ImportIssue[]
+  cut_length_check?: CutLengthCheck | null
+  cut_length_confirmation?: CutLengthConfirmation | null
 }
 
 export interface RackConfigInput {
