@@ -240,7 +240,21 @@ export function QualityPage() {
   const dailyTab = activeTab === 'daily'
   const reworksTab = activeTab === 'reworks'
   const ordersTab = activeTab === 'orders'
+  // A scan session needs authoritative per-card requests, not repeated full
+  // history refreshes between packages. Dirty ledgers refetch once on closing.
+  const scanWorkOpen = Boolean(shipmentForm || flowCardReturnOpen)
   const orderDataEnabled = workflowTab || dailyTab || ordersTab || Boolean(shipmentForm)
+
+  useEffect(() => {
+    if (!scanWorkOpen) return
+    const historyKeys = new Set(['summary', 'shipments', 'shipment-ledger', 'process-cards', 'unit-weights', 'shipment-batches', 'rework-cases', 'reworks'])
+    // Abort GET downloads as well as pausing refetch: otherwise the browser's
+    // connection slots can still be occupied by an already-open history page.
+    void queryClient.cancelQueries({ predicate: ({ queryKey }) =>
+      (queryKey[0] === 'quality' && historyKeys.has(String(queryKey[1])))
+      || (queryKey[0] === 'orders' && queryKey[1] === 'quality-options'),
+    })
+  }, [queryClient, scanWorkOpen])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -264,8 +278,8 @@ export function QualityPage() {
 
   const summaryQuery = useQuery({
     queryKey: ['quality', 'summary', dateFrom, dateTo],
-    queryFn: () => qualityApi.summary({ date_from: dateFrom, date_to: dateTo }),
-    enabled: activeTab !== 'employees',
+    queryFn: ({ signal }) => qualityApi.summary({ date_from: dateFrom, date_to: dateTo }, { signal }),
+    enabled: activeTab !== 'employees' && !scanWorkOpen,
   })
   const employeesQuery = useQuery({
     queryKey: ['quality', 'employees'],
@@ -291,8 +305,8 @@ export function QualityPage() {
   })
   const ordersQuery = useQuery({
     queryKey: ['orders', 'quality-options'],
-    queryFn: async () => toList(await orderApi.list({ page_size: 200 })),
-    enabled: orderDataEnabled,
+    queryFn: async ({ signal }) => toList(await orderApi.list({ page_size: 200 }, { signal })),
+    enabled: orderDataEnabled && !scanWorkOpen,
   })
   const shipmentLedgerQuery = useQuery({
     queryKey: ['quality', 'shipment-ledger', { dateFrom, dateTo, dueDateFrom, dueDateTo, debouncedQuery, shipmentStatus, orderStatus, deliveryStatus, debouncedSpecificationFilter, debouncedMaterialFilter, inspectorFilter, ordering, ledgerPage, ledgerPageSize, workflowTab }],
@@ -314,29 +328,29 @@ export function QualityPage() {
       page: ledgerPage,
       page_size: ledgerPageSize,
     }, { signal }),
-    enabled: workflowTab || dailyTab,
+    enabled: (workflowTab || dailyTab) && !scanWorkOpen,
   })
   const shipmentOptionsQuery = useQuery({
     queryKey: ['quality', 'shipments', 'options'],
-    queryFn: async () => toList(await qualityApi.listShipments({ page_size: 200 })),
-    enabled: workflowTab || dailyTab || reworksTab || Boolean(shipmentForm),
+    queryFn: async ({ signal }) => toList(await qualityApi.listShipments({ page_size: 200 }, { signal })),
+    enabled: (workflowTab || dailyTab || reworksTab) && !scanWorkOpen,
   })
   const reworksQuery = useQuery({
     queryKey: ['quality', 'reworks', { dateFrom, dateTo, debouncedQuery }],
-    queryFn: async () => toList(await qualityApi.listReworks({ q: debouncedQuery, date_from: dateFrom, date_to: dateTo, page_size: 200 })),
-    enabled: reworksTab,
+    queryFn: async ({ signal }) => toList(await qualityApi.listReworks({ q: debouncedQuery, date_from: dateFrom, date_to: dateTo, page_size: 200 }, { signal })),
+    enabled: reworksTab && !scanWorkOpen,
   })
   const processCardsQuery = useQuery({
     queryKey: ['quality', 'process-cards', { debouncedQuery, debouncedSpecificationFilter, debouncedMaterialFilter }],
     queryFn: async ({ signal }) => qualityWorkflowApi.listProcessCards({ q: debouncedQuery, specification: debouncedSpecificationFilter || undefined, material: debouncedMaterialFilter || undefined, page_size: 200 }, { signal }),
     retry: false,
-    enabled: workflowTab || Boolean(replacementOpen),
+    enabled: (workflowTab || Boolean(replacementOpen)) && !scanWorkOpen,
   })
   const unitWeightsQuery = useQuery({
     queryKey: ['quality', 'unit-weights', debouncedQuery],
     queryFn: async ({ signal }) => qualityWorkflowApi.listUnitWeights({ q: debouncedQuery, page_size: 200 }, { signal }),
     retry: false,
-    enabled: workflowTab,
+    enabled: workflowTab && !scanWorkOpen,
   })
   const batchesQuery = useQuery({
     queryKey: ['quality', 'shipment-batches', { dateFrom, dateTo, dueDateFrom, dueDateTo, debouncedQuery, shipmentStatus, orderStatus, deliveryStatus, debouncedSpecificationFilter, debouncedMaterialFilter, inspectorFilter, ordering }],
@@ -356,23 +370,23 @@ export function QualityPage() {
       page_size: 200,
     }, { signal }),
     retry: false,
-    enabled: workflowTab,
+    enabled: workflowTab && !scanWorkOpen,
   })
   const shipmentBatchOptionsQuery = useQuery({
     queryKey: ['quality', 'shipment-batches', 'confirmed-options'],
-    queryFn: async () => toList(await qualityWorkflowApi.listShipmentBatches({ status: 'CONFIRMED', ordering: '-shipment_date', page_size: 200 })),
+    queryFn: async ({ signal }) => toList(await qualityWorkflowApi.listShipmentBatches({ status: 'CONFIRMED', ordering: '-shipment_date', page_size: 200 }, { signal })),
     retry: false,
     // A new shipment only needs the server-side duplicate check. Loading the
     // full confirmed-batch history here can be megabytes of nested line data
     // and competes with the first process-card scan on SQLite. Keep this
     // option list for workflows that actually select a historical batch.
-    enabled: reworksTab || returnReworkOpen,
+    enabled: (reworksTab || returnReworkOpen) && !scanWorkOpen,
   })
   const reworkCasesQuery = useQuery({
     queryKey: ['quality', 'rework-cases'],
     queryFn: async ({ signal }) => qualityWorkflowApi.listReworkCases({ page_size: 200 }, { signal }),
     retry: false,
-    enabled: workflowTab || reworksTab,
+    enabled: (workflowTab || reworksTab) && !scanWorkOpen,
   })
 
   const employees = useMemo(() => employeesQuery.data || [], [employeesQuery.data])
@@ -430,6 +444,12 @@ export function QualityPage() {
   }), [keyword, reworkCases, reworkCustomerFilter, reworkQuickFilter, reworkRange, reworkReasonFilter])
 
   const refreshAfterShipment = async () => {
+    if (scanWorkOpen) {
+      await Promise.all(['quality', 'orders', 'analytics', 'dashboard', 'product-specifications'].map((key) =>
+        queryClient.invalidateQueries({ queryKey: [key], refetchType: 'none' }),
+      ))
+      return
+    }
     const tasks: Array<Promise<unknown>> = []
     if (orderDataEnabled) tasks.push(ordersQuery.refetch())
     if (dailyTab) tasks.push(shipmentLedgerQuery.refetch(), summaryQuery.refetch())
@@ -474,13 +494,17 @@ export function QualityPage() {
     keys.forEach((queryKey) => {
       // Mounted consumers refetch immediately; do not wait for the analytics
       // 60-second timer. Inactive pages remain stale and refetch on opening.
-      void queryClient.invalidateQueries({ queryKey }).catch(() => {
+      void queryClient.invalidateQueries({ queryKey, refetchType: scanWorkOpen ? 'none' : 'active' }).catch(() => {
         message.warning('记录已保存，关联页面读取失败，请重试刷新。')
       })
     })
   }
 
   const refreshReturnDataInBackground = (tasks: Array<() => Promise<unknown>>) => {
+    if (scanWorkOpen) {
+      void queryClient.invalidateQueries({ queryKey: ['quality'], refetchType: 'none' })
+      return
+    }
     void Promise.allSettled(tasks.map((task) => task()))
   }
 

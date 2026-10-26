@@ -165,7 +165,45 @@ class MoldModelReferenceSerializer(serializers.ModelSerializer):
         fields = ["id", "code", "product_name", "is_active"]
 
 
-class QualityOrderSerializer(ValidatedModelSerializer):
+class RequestReadCacheMixin:
+    """Reuse nested representations only within this response, never globally."""
+
+    def to_representation(self, instance):
+        cache = self.context.setdefault('_quality_representations', {})
+        key = (type(self), instance.pk)
+        if key not in cache:
+            cache[key] = super().to_representation(instance)
+        return cache[key]
+
+
+class CardReadDecimalField(serializers.DecimalField):
+    def get_attribute(self, instance):
+        from .read_models import card_read_metrics
+        metrics = card_read_metrics(instance, self.context)
+        if metrics is not None and self.source in metrics:
+            return metrics[self.source]
+        return super().get_attribute(instance)
+
+
+class BatchReadDecimalField(serializers.DecimalField):
+    def get_attribute(self, instance):
+        lines = getattr(instance, '_prefetched_objects_cache', {}).get('lines')
+        if lines is not None:
+            return sum((line.net_weight_kg for line in lines), Decimal('0'))
+        return super().get_attribute(instance)
+
+
+class BatchReadIntegerField(serializers.IntegerField):
+    def get_attribute(self, instance):
+        lines = getattr(instance, '_prefetched_objects_cache', {}).get('lines')
+        if lines is not None:
+            if self.source == 'line_count':
+                return len(lines)
+            return sum(int(line.piece_quantity or 0) for line in lines)
+        return super().get_attribute(instance)
+
+
+class QualityOrderSerializer(RequestReadCacheMixin, ValidatedModelSerializer):
     source_batch_id = serializers.UUIDField(read_only=True)
     last_source_batch_id = serializers.UUIDField(read_only=True)
     created_by_name = serializers.SerializerMethodField()
@@ -816,18 +854,18 @@ class ProcessCardUnitBindingSerializer(serializers.ModelSerializer):
         return cache[key]
 
 
-class ProcessCardSerializer(ValidatedModelSerializer):
+class ProcessCardSerializer(RequestReadCacheMixin, ValidatedModelSerializer):
     order_id = serializers.PrimaryKeyRelatedField(source="order", queryset=QualityOrder.objects.all())
     product_specification_id = serializers.PrimaryKeyRelatedField(source="product_specification", queryset=ProductSpecification.objects.all(), required=False, allow_null=True)
     unit_weight_config_id = serializers.PrimaryKeyRelatedField(source="unit_weight_config", queryset=ProductUnitWeight.objects.all(), required=False, allow_null=True)
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     theoretical_weight_kg = serializers.DecimalField(max_digits=14, decimal_places=3, read_only=True)
     max_allowed_weight_kg = serializers.DecimalField(max_digits=14, decimal_places=3, read_only=True)
-    shipped_net_weight_kg = serializers.DecimalField(max_digits=14, decimal_places=3, read_only=True)
-    delivered_net_weight_kg = serializers.DecimalField(max_digits=14, decimal_places=3, read_only=True)
-    remaining_weight_kg = serializers.DecimalField(max_digits=14, decimal_places=3, read_only=True)
+    shipped_net_weight_kg = CardReadDecimalField(max_digits=14, decimal_places=3, read_only=True)
+    delivered_net_weight_kg = CardReadDecimalField(max_digits=14, decimal_places=3, read_only=True)
+    remaining_weight_kg = CardReadDecimalField(max_digits=14, decimal_places=3, read_only=True)
     expected_weight_kg = serializers.DecimalField(source="theoretical_weight_kg", max_digits=14, decimal_places=3, read_only=True)
-    shipped_weight_kg = serializers.DecimalField(source="shipped_net_weight_kg", max_digits=14, decimal_places=3, read_only=True)
+    shipped_weight_kg = CardReadDecimalField(source="shipped_net_weight_kg", max_digits=14, decimal_places=3, read_only=True)
     shipped_quantity = serializers.SerializerMethodField()
     returned_piece_quantity = serializers.SerializerMethodField()
     delivered_piece_quantity = serializers.SerializerMethodField()
@@ -888,15 +926,31 @@ class ProcessCardSerializer(ValidatedModelSerializer):
         return attrs
 
     def get_shipped_quantity(self, obj) -> int:
+        from .read_models import card_read_metrics
+        metrics = card_read_metrics(obj, self.context)
+        if metrics is not None:
+            return metrics['shipped_piece_quantity']
         return obj.shipped_piece_quantity
 
     def get_returned_piece_quantity(self, obj) -> int:
+        from .read_models import card_read_metrics
+        metrics = card_read_metrics(obj, self.context)
+        if metrics is not None:
+            return metrics['returned_piece_quantity']
         return obj.returned_piece_quantity
 
     def get_delivered_piece_quantity(self, obj) -> int:
+        from .read_models import card_read_metrics
+        metrics = card_read_metrics(obj, self.context)
+        if metrics is not None:
+            return metrics['delivered_piece_quantity']
         return obj.delivered_piece_quantity
 
     def get_rework_count(self, obj) -> int:
+        from .read_models import card_read_metrics
+        metrics = card_read_metrics(obj, self.context)
+        if metrics is not None:
+            return metrics['rework_count']
         return QualityReworkCase.objects.filter(
             process_card__tracking_id=obj.tracking_id,
         ).exclude(status=QualityReworkCase.Status.CANCELLED).count()
@@ -905,6 +959,9 @@ class ProcessCardSerializer(ValidatedModelSerializer):
         return (obj.material_issue_weight_kg * Decimal("1000")) if obj.material_issue_weight_kg is not None else None
 
     def get_replaced_by_card_no(self, obj) -> str | None:
+        if 'replaced_by' in obj._state.fields_cache:
+            replacement = obj._state.fields_cache['replaced_by']
+            return replacement.card_no if replacement else None
         replacement = ProcessCard.objects.filter(replaces_id=obj.pk).only("card_no").first()
         return replacement.card_no if replacement else None
 
@@ -915,6 +972,18 @@ class ProcessCardSerializer(ValidatedModelSerializer):
         return obj.active_replacement.card_no
 
     def get_current_return(self, obj) -> dict | None:
+        from .read_models import card_read_metrics
+        metrics = card_read_metrics(obj, self.context)
+        if metrics is not None:
+            case = metrics['current_return']
+            if case is None:
+                return None
+            return {
+                'id': case['id'], 'case_no': case['case_no'],
+                'return_round': case['return_round'],
+                'return_label': f"第{case['return_round']}次退货返工" if case['return_round'] else '退货返工记录',
+                'status': case['status'], 'opened_on': case['opened_on'],
+            }
         case = (
             QualityReworkCase.objects.filter(
                 process_card__tracking_id=obj.tracking_id,
@@ -1142,7 +1211,7 @@ class QualityShipmentLineSerializer(ValidatedModelSerializer):
         return attrs
 
 
-class QualityShipmentBatchSerializer(ValidatedModelSerializer):
+class QualityShipmentBatchSerializer(RequestReadCacheMixin, ValidatedModelSerializer):
     shipment_no = serializers.CharField(
         required=False, allow_blank=True, validators=[]
     )
@@ -1170,8 +1239,8 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
         required=False,
     )
     lines = QualityShipmentLineSerializer(many=True, required=False)
-    net_weight_kg = serializers.DecimalField(max_digits=14, decimal_places=3, read_only=True)
-    total_net_weight_kg = serializers.DecimalField(
+    net_weight_kg = BatchReadDecimalField(max_digits=14, decimal_places=3, read_only=True)
+    total_net_weight_kg = BatchReadDecimalField(
         max_digits=14, decimal_places=3, required=False, allow_null=True
     )
     single_batch_net_weight_kg = serializers.DecimalField(
@@ -1181,12 +1250,12 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
     process_card_shipment_quantity = serializers.IntegerField(
         required=False, allow_null=True, min_value=1
     )
-    actual_weight_kg = serializers.DecimalField(max_digits=14, decimal_places=3, read_only=True)
-    shipped_quantity = serializers.IntegerField(read_only=True)
+    actual_weight_kg = BatchReadDecimalField(max_digits=14, decimal_places=3, read_only=True)
+    shipped_quantity = BatchReadIntegerField(read_only=True)
     # Accepted as a legacy one-line input alias; the line serializer still
     # recalculates it for the new contract before confirmation.
-    piece_quantity = serializers.IntegerField(required=False, allow_null=True)
-    line_count = serializers.IntegerField(read_only=True)
+    piece_quantity = BatchReadIntegerField(required=False, allow_null=True)
+    line_count = BatchReadIntegerField(read_only=True)
     date_pending = serializers.BooleanField(read_only=True)
     warnings = serializers.SerializerMethodField()
     process_card_bindings = ProcessCardUnitBindingSerializer(many=True, read_only=True)
@@ -1291,7 +1360,10 @@ class QualityShipmentBatchSerializer(ValidatedModelSerializer):
 
     def get_warnings(self, obj) -> list[str]:
         warnings: list[str] = []
-        for line in obj.lines.select_related("process_card", "order"):
+        lines = getattr(obj, '_prefetched_objects_cache', {}).get('lines')
+        if lines is None:
+            lines = obj.lines.select_related("process_card", "order")
+        for line in lines:
             card = line.process_card
             theoretical = line.theoretical_weight_kg_snapshot
             if theoretical is None and card:

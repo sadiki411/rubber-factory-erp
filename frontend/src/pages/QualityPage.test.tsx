@@ -47,6 +47,8 @@ vi.mock('../api/client', () => ({
     updateProcessCard: vi.fn(),
   },
   toList: (payload: any) => Array.isArray(payload) ? payload : payload.results || [],
+  updateListRows: (payload: any, update: (rows: any[]) => any[]) => Array.isArray(payload)
+    ? update(payload) : { ...payload, results: update(payload.results || []) },
 }))
 
 vi.mock('../components/QualityShippingWorkflow', () => ({ QualityShippingWorkflow: () => <div>流程卡区域</div> }))
@@ -65,7 +67,7 @@ vi.mock('../components/QualityReturnReworkDrawer', () => ({
   QualityReworkCaseDetailDrawer: () => null,
 }))
 vi.mock('../components/QualityFlowCardReturnDrawer', () => ({
-  QualityFlowCardReturnDrawer: ({ open }: any) => open ? <div role="dialog" aria-label="流程卡退货抽屉">流程卡退货扫码</div> : null,
+  QualityFlowCardReturnDrawer: ({ open, onSaved, onClose }: any) => open ? <div role="dialog" aria-label="流程卡退货抽屉">流程卡退货扫码<button onClick={() => onSaved({ id: 123, case_no: 'R123', status: 'WAITING_REWORK' })}>模拟退货保存</button><button onClick={onClose}>关闭退货扫码</button></div> : null,
   QualityProcessCardReplacementDrawer: () => null,
 }))
 
@@ -209,6 +211,24 @@ describe('QualityPage unified shipment ledger', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /扫码登记退货/ })[0])
     expect(await screen.findByText('流程卡退货扫码')).toBeInTheDocument()
     expect(completeHistoryCallCount()).toBe(beforeOpen)
+  })
+
+  it('defers dirty history refreshes until a continuous scan session closes', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<MemoryRouter><QueryClientProvider client={client}><App><QualityPage /></App></QueryClientProvider></MemoryRouter>)
+    await waitFor(() => expect(apiMocks.listProcessCards).toHaveBeenCalled())
+    await waitFor(() => expect(client.isFetching()).toBe(0))
+    fireEvent.click(screen.getAllByRole('button', { name: /扫码登记退货/ })[0])
+    const saves = await screen.findByRole('button', { name: '模拟退货保存' })
+    const requests = () => [apiMocks.listProcessCards, apiMocks.listReworkCases, apiMocks.listShipmentLedger, apiMocks.summary, apiMocks.listOrders].map((mock) => mock.mock.calls.length)
+    const before = requests()
+    fireEvent.click(saves)
+    fireEvent.click(saves)
+    await client.invalidateQueries({ queryKey: ['quality'] })
+    expect(requests()).toEqual(before)
+    fireEvent.click(screen.getByRole('button', { name: '关闭退货扫码' }))
+    await waitFor(() => expect(apiMocks.listProcessCards.mock.calls.length).toBe(before[0] + 1))
+    await waitFor(() => expect(apiMocks.listReworkCases.mock.calls.length).toBe(before[1] + 1))
   })
 
   it('filters return cases by source shipment, order, specification and material', async () => {

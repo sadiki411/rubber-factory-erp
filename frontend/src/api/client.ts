@@ -645,8 +645,8 @@ export const qualityApi = {
     body: JSON.stringify(body),
   }),
 
-  listShipments: (filters: QualityListFilters = {}) =>
-    apiFetch<ApiList<QualityShipment> | QualityShipment[]>(`/api/quality/shipments/${queryString(filters)}`),
+  listShipments: (filters: QualityListFilters = {}, init: RequestInit = {}) =>
+    apiFetch<ApiList<QualityShipment> | QualityShipment[]>(`/api/quality/shipments/${queryString(filters)}`, init),
   listShipmentLedger: (filters: QualityListFilters = {}, init: RequestInit = {}) =>
     apiFetch<ApiList<QualityShipmentLedgerRow> | QualityShipmentLedgerRow[]>(`/api/quality/shipment-ledger/${queryString(filters)}`, init),
   createShipment: (body: Record<string, unknown>) => apiFetch<QualityShipment>('/api/quality/shipments/', {
@@ -667,8 +667,8 @@ export const qualityApi = {
   listShipmentCandidates: (filters: QualityListFilters = {}) =>
     apiFetch<ApiList<QualityShipmentCandidate> | QualityShipmentCandidate[]>(`/api/quality/shipments/candidates/${queryString(filters)}`),
 
-  listReworks: (filters: QualityListFilters = {}) =>
-    apiFetch<ApiList<ReturnRework> | ReturnRework[]>(`/api/quality/reworks/${queryString(filters)}`),
+  listReworks: (filters: QualityListFilters = {}, init: RequestInit = {}) =>
+    apiFetch<ApiList<ReturnRework> | ReturnRework[]>(`/api/quality/reworks/${queryString(filters)}`, init),
   createRework: (body: Record<string, unknown>) => apiFetch<ReturnRework>('/api/quality/reworks/', {
     method: 'POST',
     body: JSON.stringify(body),
@@ -678,8 +678,8 @@ export const qualityApi = {
     body: JSON.stringify(body),
   }),
 
-  summary: (filters: Pick<QualityListFilters, 'date_from' | 'date_to'>) =>
-    apiFetch<QualitySummary>(`/api/quality/summary/${queryString(filters)}`),
+  summary: (filters: Pick<QualityListFilters, 'date_from' | 'date_to'>, init: RequestInit = {}) =>
+    apiFetch<QualitySummary>(`/api/quality/summary/${queryString(filters)}`, init),
 }
 
 /**

@@ -793,13 +793,17 @@ def shipment_return_groups(
     """
 
     if lines is None:
-        lines = list(
-            batch.lines.select_related(
-                "order", "process_card__order", "product_specification"
+        prefetched = getattr(batch, '_prefetched_objects_cache', {}).get('lines')
+        if prefetched is not None:
+            lines = sorted(prefetched, key=lambda item: item.pk)
+        else:
+            lines = list(
+                batch.lines.select_related(
+                    "order", "process_card__order", "product_specification"
+                )
+                .prefetch_related("order_allocations__order")
+                .order_by("id")
             )
-            .prefetch_related("order_allocations__order")
-            .order_by("id")
-        )
     else:
         lines = sorted(lines, key=lambda item: item.pk)
     if not lines:

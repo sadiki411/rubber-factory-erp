@@ -177,6 +177,17 @@ class WorkflowModelViewSet(viewsets.ModelViewSet):
     pagination_class = QualityPagination
     http_method_names = ["get", "post", "put", "patch", "head", "options"]
 
+    def get_serializer(self, *args, **kwargs):
+        if args and not kwargs.get('data'):
+            roots = list(args[0]) if kwargs.get('many') else [args[0]]
+            if roots and isinstance(roots[0], (ProcessCard, QualityShipmentBatch, QualityReworkCase)):
+                from .read_models import prepare_quality_read_context
+                context = kwargs.setdefault('context', self.get_serializer_context())
+                prepare_quality_read_context(roots, context)
+                if kwargs.get('many'):
+                    args = (roots, *args[1:])
+        return super().get_serializer(*args, **kwargs)
+
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
 
