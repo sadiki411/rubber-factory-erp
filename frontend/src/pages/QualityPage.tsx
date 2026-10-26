@@ -242,7 +242,9 @@ export function QualityPage() {
   const ordersTab = activeTab === 'orders'
   // A scan session needs authoritative per-card requests, not repeated full
   // history refreshes between packages. Dirty ledgers refetch once on closing.
-  const scanWorkOpen = Boolean(shipmentForm || flowCardReturnOpen)
+  const scanWorkOpen = flowCardReturnOpen || Boolean(
+    shipmentForm && shipmentForm.mode !== 'PIECES' && !shipmentForm.shipment,
+  )
   const orderDataEnabled = workflowTab || dailyTab || ordersTab || Boolean(shipmentForm)
 
   useEffect(() => {

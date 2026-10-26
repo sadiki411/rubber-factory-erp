@@ -231,6 +231,23 @@ describe('QualityPage unified shipment ledger', () => {
     await waitFor(() => expect(apiMocks.listReworkCases.mock.calls.length).toBe(before[1] + 1))
   })
 
+  it('keeps order options loading for non-scanning piece shipments', async () => {
+    let orderSignal: AbortSignal | undefined
+    let finishOrders: ((rows: unknown[]) => void) | undefined
+    apiMocks.listOrders.mockImplementation((_filters: unknown, init: RequestInit) => {
+      orderSignal = init.signal as AbortSignal
+      return new Promise((resolve) => { finishOrders = resolve })
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<MemoryRouter><QueryClientProvider client={client}><App><QualityPage /></App></QueryClientProvider></MemoryRouter>)
+    await waitFor(() => expect(orderSignal).toBeDefined())
+    fireEvent.click(screen.getByRole('button', { name: '采购单件数出货（无流程卡）' }))
+    expect(await screen.findByRole('dialog', { name: '采购单件数出货' })).toBeInTheDocument()
+    expect(orderSignal!.aborted).toBe(false)
+    finishOrders!([])
+    await waitFor(() => expect(client.isFetching()).toBe(0))
+  })
+
   it('filters return cases by source shipment, order, specification and material', async () => {
     apiMocks.listReworkCases.mockResolvedValue([
       { id: 1, case_no: 'R1', origin: 'CUSTOMER_RETURN', opened_on: '2026-08-21', status: 'OPEN', reason_category: 'OTHER', source: { shipment_no: 'QS-NBR', order_no: 'XB-NBR', item_no: '11', product_name: '油封圈', specification: 'Φ32×18', material: 'NBR-T3', shipment_unit_no: 1, total_batches: 2, pieces_per_batch: 100, single_batch_net_weight_kg: '1.000' } },
