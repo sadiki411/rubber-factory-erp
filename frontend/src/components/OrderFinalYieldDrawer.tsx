@@ -1,6 +1,6 @@
 import { Alert, App, Button, Card, Descriptions, Drawer, Form, Input, InputNumber, Space, Statistic, Typography } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { orderApi } from '../api/client'
 import type { Order, OrderFinalYield } from '../types'
 
@@ -26,6 +26,7 @@ export function OrderFinalYieldDrawer({ open, order, onClose }: Props) {
   const [form] = Form.useForm<Values>()
   const { message } = App.useApp()
   const queryClient = useQueryClient()
+  const submitLock = useRef(false)
   const query = useQuery({
     queryKey: ['orders', 'final-yield', order?.id],
     queryFn: () => orderApi.finalYield(order!.id),
@@ -51,8 +52,22 @@ export function OrderFinalYieldDrawer({ open, order, onClose }: Props) {
     },
     onError: (error: Error) => message.error(error.message),
   })
+  const save = async () => {
+    // Lock before asynchronous validation, not after the mutation starts:
+    // a rapid double click can otherwise validate twice before loading renders.
+    if (submitLock.current || !ready) return
+    submitLock.current = true
+    try {
+      const values = await form.validateFields()
+      await mutation.mutateAsync(values)
+    } catch {
+      // Field validation and the mutation's error handler show the reason.
+    } finally {
+      submitLock.current = false
+    }
+  }
   return <Drawer rootClassName="order-final-yield-drawer" open={open} onClose={onClose} size={560} title={`订单良品率 · ${order?.order_no || ''}`}
-    footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>关闭</Button><Button onClick={() => void query.refetch()} loading={query.isFetching} disabled={mutation.isPending}>重新读取</Button><Button type="primary" disabled={!ready} loading={mutation.isPending} onClick={() => void form.validateFields().then(values => mutation.mutate(values)).catch(() => {})}>保存剩余并重算</Button></Space>}>
+    footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>关闭</Button><Button onClick={() => void query.refetch()} loading={query.isFetching} disabled={mutation.isPending}>重新读取</Button><Button type="primary" disabled={!ready} loading={mutation.isPending} onClick={() => void save()}>保存剩余并重算</Button></Space>}>
     <Alert type="info" showIcon title="计算口径" description="（净有效出货 + 本次剩余合格成品）÷ 实际生产件数。未填剩余按0；剩余只用于本次良品率，不增加或扣减仓库库存。" />
     {query.isError && <Alert type="error" showIcon title="良品率读取失败" description={(query.error as Error).message} action={<Button onClick={() => void query.refetch()}>重试</Button>} />}
     <Card loading={query.isFetching} size="small" style={{ marginTop: 16 }}>

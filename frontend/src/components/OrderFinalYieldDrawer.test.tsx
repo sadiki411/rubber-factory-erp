@@ -77,6 +77,18 @@ describe('completed order yield', () => {
     await waitFor(() => expect(mocks.save).toHaveBeenCalledWith(1, expect.objectContaining({ remaining_quantity: 0 })))
   })
 
+  it('locks before async validation so rapid double clicks cannot submit twice', async () => {
+    let resolveSave: (value: OrderFinalYield) => void = () => {}
+    mocks.save.mockImplementation(() => new Promise(resolve => { resolveSave = resolve }))
+    const { onClose } = show()
+    await readyInput()
+    await userEvent.dblClick(screen.getByRole('button', { name: '保存剩余并重算' }))
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(1))
+    resolveSave(base)
+    await waitFor(() => expect(onClose).toHaveBeenCalled())
+    expect(mocks.save).toHaveBeenCalledTimes(1)
+  })
+
   it('does not close or discard the typed remainder after a source conflict', async () => {
     mocks.save.mockRejectedValue(new Error('生产、出货或剩余数量已变化，请重新读取后再确认。'))
     const { onClose } = show()
