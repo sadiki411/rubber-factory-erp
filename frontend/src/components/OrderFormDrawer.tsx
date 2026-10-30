@@ -4,7 +4,8 @@ import dayjs, { type Dayjs } from 'dayjs'
 import utc from 'dayjs/plugin/utc'
 import { useEffect } from 'react'
 import { orderApi, productSpecificationApi, toList } from '../api/client'
-import type { Order, OrderMaterialStatus, OrderProcessCardStatus } from '../types'
+import { ORDER_MATERIAL_META as MATERIAL_META } from '../orderStatus'
+import type { Order, OrderProcessCardStatus } from '../types'
 
 dayjs.extend(utc)
 
@@ -12,14 +13,6 @@ interface Props {
   open: boolean
   order?: Order
   onClose: () => void
-}
-
-const MATERIAL_META: Record<OrderMaterialStatus, { text: string; color: string }> = {
-  UNKNOWN: { text: '未核算', color: 'default' },
-  NOT_RECEIVED: { text: '未收到', color: 'error' },
-  PARTIAL: { text: '未发够', color: 'warning' },
-  SUFFICIENT: { text: '已发够', color: 'success' },
-  OVER: { text: '超额到料', color: 'blue' },
 }
 
 const PROCESS_CARD_META: Record<OrderProcessCardStatus, { text: string; color: string }> = {

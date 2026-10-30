@@ -184,6 +184,35 @@ describe('order server pagination and table navigation', () => {
     expect(screen.getByTitle('3')).toBeInTheDocument()
   })
 
+  it.each([false, true])('uses one sufficient-material filter, resets pagination and accepts cached excess status (mobile: %s)', async (mobile) => {
+    vi.mocked(Grid.useBreakpoint).mockReturnValue({ md: !mobile, lg: !mobile, xl: !mobile })
+    const user = userEvent.setup()
+    let resolveFilter: (value: unknown) => void = () => {}
+    apiMocks.listOrders.mockImplementation(({ page, page_size, material_status }) => material_status === 'SUFFICIENT'
+      ? new Promise(resolve => { resolveFilter = resolve }) : Promise.resolve(pageResponse(page, page_size)))
+    renderPage()
+    await screen.findByText('TEST-ORDER-001 / 5')
+    await user.click(screen.getByTitle('3'))
+    await screen.findByText('TEST-ORDER-041 / 5')
+    await user.click(screen.getByRole('combobox', { name: '胶料状态筛选' }))
+    expect(screen.queryByText('超额到料')).not.toBeInTheDocument()
+    await user.click(await screen.findByText('已发够'))
+    await waitFor(() => expect(apiMocks.listOrders).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 1, material_status: 'SUFFICIENT' }), expect.anything(),
+    ))
+    expect(screen.queryByText('TEST-ORDER-041 / 5')).not.toBeInTheDocument()
+    await act(async () => resolveFilter({ count: 2, next: null, previous: null,
+      results: pageResponse().results.slice(0, 2).map((row, index) => ({
+        ...row, material_status: index === 0 ? 'SUFFICIENT' : 'OVER',
+      })),
+    }))
+    await screen.findByText('TEST-ORDER-001 / 5')
+    expect(screen.getByText('TEST-ORDER-002 / 5')).toBeInTheDocument()
+    expect(screen.queryByText('超额到料')).not.toBeInTheDocument()
+    expect(document.querySelectorAll('.ant-tag-green, .ant-tag-success').length).toBeGreaterThanOrEqual(2)
+    if (mobile) expect(screen.queryByRole('table')).not.toBeInTheDocument()
+  })
+
   it('fixes the four identity columns on the left and renders a sticky header on desktop', async () => {
     renderPage()
     await screen.findByText('TEST-ORDER-001 / 5')

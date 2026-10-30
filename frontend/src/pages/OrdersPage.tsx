@@ -12,6 +12,7 @@ import { MaterialReceiptDrawer } from '../components/MaterialReceiptDrawer'
 import { OrderFormDrawer } from '../components/OrderFormDrawer'
 import { OrderFinalYieldDrawer, OrderYieldCell } from '../components/OrderFinalYieldDrawer'
 import { PageTitle } from '../components/PageTitle'
+import { ORDER_MATERIAL_FILTER_OPTIONS, ORDER_MATERIAL_META as MATERIAL_META } from '../orderStatus'
 import type { ApiList, MaterialReceipt, Order, OrderMaterialStatus, OrderProcessCardStatus, OrderStatus } from '../types'
 
 type OrderTab = 'orders-open' | 'orders-completed' | 'orders-cancelled' | 'receipts'
@@ -40,14 +41,6 @@ const ORDER_STATUS_META: Record<OrderStatus, { text: string; color: string }> = 
   OPEN: { text: '进行中', color: 'processing' },
   COMPLETED: { text: '已完成', color: 'success' },
   CANCELLED: { text: '已取消', color: 'default' },
-}
-
-const MATERIAL_META: Record<OrderMaterialStatus, { text: string; color: string }> = {
-  UNKNOWN: { text: '未核算', color: 'default' },
-  NOT_RECEIVED: { text: '未收到', color: 'error' },
-  PARTIAL: { text: '未发够', color: 'warning' },
-  SUFFICIENT: { text: '已发够', color: 'success' },
-  OVER: { text: '超额到料', color: 'blue' },
 }
 
 const PROCESS_CARD_META: Record<OrderProcessCardStatus, { text: string; color: string }> = {
@@ -298,7 +291,7 @@ export function OrdersPage() {
             <div className="business-filter-row order-filter-row">
               <Input allowClear prefix={<SearchOutlined />} placeholder="搜索订单号、项次、产品、规格、材质或批次" value={query} onChange={(event) => setQuery(event.target.value)} />
               <Select aria-label="生产安排筛选" value={productionRequired} onChange={(value) => { setOrderPage(1); setProductionRequired(value) }} options={[{ value: '', label: '全部生产安排' }, { value: 'yes', label: '需要生产' }, { value: 'no', label: '无需生产' }]} />
-              <Select value={materialStatus} onChange={(value) => { setOrderPage(1); setMaterialStatus(value) }} options={[{ value: '', label: '全部胶料状态' }, ...Object.entries(MATERIAL_META).map(([value, meta]) => ({ value, label: meta.text }))]} />
+              <Select aria-label="胶料状态筛选" title="已发够包含超额到料" value={materialStatus} onChange={(value) => { setOrderPage(1); setMaterialStatus(value) }} options={ORDER_MATERIAL_FILTER_OPTIONS} />
               <Select value={processCardStatus} onChange={(value) => { setOrderPage(1); setProcessCardStatus(value) }} options={[{ value: '', label: '全部流程卡状态' }, ...Object.entries(PROCESS_CARD_META).map(([value, meta]) => ({ value, label: meta.text }))]} />
               <Select<string>
                 aria-label="订单排序"

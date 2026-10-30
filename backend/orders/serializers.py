@@ -493,9 +493,7 @@ class BusinessOrderSerializer(AuditedModelSerializer):
             return "NOT_RECEIVED"
         if received < required:
             return "PARTIAL"
-        if received == required:
-            return "SUFFICIENT"
-        return "OVER"
+        return "SUFFICIENT"
 
     def get_process_card_status(self, obj) -> str:
         count_value = obj.process_card_count

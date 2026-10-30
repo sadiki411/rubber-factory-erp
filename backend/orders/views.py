@@ -293,9 +293,12 @@ class BusinessOrderViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
             elif material_status == "SUFFICIENT":
                 queryset = queryset.filter(
                     required_material_kg__isnull=False,
-                    received_material_kg_value=F("required_material_kg"),
+                    received_material_kg_value__gt=0,
+                    received_material_kg_value__gte=F("required_material_kg"),
                 )
             elif material_status == "OVER":
+                # Compatibility for old clients; the current UI has one
+                # sufficient-material filter, including excess receipts.
                 queryset = queryset.filter(
                     required_material_kg__isnull=False,
                     received_material_kg_value__gt=F("required_material_kg"),

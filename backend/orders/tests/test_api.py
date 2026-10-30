@@ -210,7 +210,7 @@ class BusinessApiTests(APITestCase):
         )
         self.assertEqual(updated.status_code, 200, updated.content)
         self.assertEqual(updated.json()["received_material_kg"], "110.500")
-        self.assertEqual(updated.json()["material_status"], "OVER")
+        self.assertEqual(updated.json()["material_status"], "SUFFICIENT")
         self.assertEqual(updated.json()["process_card_status"], "RECEIVED")
 
     def test_process_card_text_is_used_only_without_structured_counts(self):
