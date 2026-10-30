@@ -6,7 +6,7 @@ import { QualityReworkDrawer, QualityShipmentDrawer } from './QualityFormDrawers
 import type { QualityOrder, QualityShipment, ReturnRework } from '../types'
 
 const api = vi.hoisted(() => ({
-  listOrders: vi.fn(), listShipments: vi.fn(), createShipment: vi.fn(),
+  listOrders: vi.fn(), listShipmentCandidates: vi.fn(), listShipments: vi.fn(), createShipment: vi.fn(),
   updateShipment: vi.fn(), createRework: vi.fn(), updateRework: vi.fn(),
 }))
 vi.mock('../api/client', () => ({
@@ -21,7 +21,7 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 
 const order = {
   id: 907, source_system: '艾斯霖', order_no: 'ASL-REMOTE-907', item_no: '20',
-  product_name: '包装密封圈', specification: '20×30', material: 'NBR', order_quantity: 100,
+  product_name: '包装密封圈', specification: '20×30', material: 'NBR', order_quantity: 100, status: 'OPEN',
 } as QualityOrder & { source_system: string }
 const shipment = {
   id: 807, order, shipment_no: 'ASL-REMOTE-SHIP', shipment_date: '2026-10-21',
@@ -48,6 +48,7 @@ function confirmQualifiedPieces() {
 beforeEach(() => {
   vi.clearAllMocks()
   api.listOrders.mockResolvedValue({ results: [order] })
+  api.listShipmentCandidates.mockResolvedValue({ results: [{ order, remaining_quantity: 100, is_candidate: true }] })
   api.listShipments.mockResolvedValue({ results: [shipment] })
   api.createShipment.mockResolvedValue(shipment)
   api.updateShipment.mockResolvedValue(shipment)
@@ -129,7 +130,7 @@ it('updates the existing quantity return and keeps original shipment locked', as
 })
 
 it('keeps old source employee requirement', async () => {
-  api.listOrders.mockResolvedValue([{ ...order, source_system: '翔邦' }])
+  api.listShipmentCandidates.mockResolvedValue([{ order: { ...order, source_system: '翔邦' }, remaining_quantity: 100 }])
   wrapper(<QualityShipmentDrawer open mode="PIECES" orders={[]} employees={[]} onClose={vi.fn()} />)
   await choose('采购单 / 项次', /ASL-REMOTE-907/)
   fireEvent.change(screen.getByLabelText(/出货单号/), { target: { value: 'OLD' } })
@@ -137,6 +138,52 @@ it('keeps old source employee requirement', async () => {
   fireEvent.click(screen.getByRole('button', { name: '保 存' }))
   expect(await screen.findByText('请选择品检员')).toBeInTheDocument()
   expect(api.createShipment).not.toHaveBeenCalled()
+})
+
+it('uses only available server candidates, not completed, cancelled, full or stale page orders', async () => {
+  const completed = { ...order, id: 908, order_no: 'ASL-DONE', status: 'COMPLETED' } as QualityOrder
+  const full = { ...order, id: 909, order_no: 'ASL-FULL' }
+  const cancelled = { ...order, id: 910, order_no: 'ASL-CANCELLED', status: 'CANCELLED' } as QualityOrder
+  const stale = { ...order, id: 911, order_no: 'ASL-STALE' }
+  api.listShipmentCandidates.mockResolvedValue({ results: [
+    { order, remaining_quantity: 20 },
+    { order: completed, remaining_quantity: 0 },
+    { order: full, remaining_quantity: 0 },
+    { order: cancelled, remaining_quantity: 100 },
+  ] })
+  wrapper(<QualityShipmentDrawer open mode="PIECES" orders={[completed, full, cancelled, stale]} employees={[]} onClose={vi.fn()} />)
+  await choose('采购单 / 项次', /ASL-REMOTE-907.*待出 20 件/)
+  expect(api.listShipmentCandidates).toHaveBeenCalledWith({ q: '', page_size: 1000 })
+  expect(api.listOrders).not.toHaveBeenCalled()
+  for (const name of ['ASL-DONE', 'ASL-FULL', 'ASL-CANCELLED', 'ASL-STALE']) {
+    expect(screen.queryByText(new RegExp(name))).not.toBeInTheDocument()
+  }
+})
+
+it('does not expose cached candidates while checking the latest balance on reopen', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  client.setQueryData(['quality', 'piece-shipment-candidates', ''], [{ ...order, remaining_quantity: 100 }])
+  let finish: (data: unknown) => void = () => {}
+  api.listShipmentCandidates.mockReturnValue(new Promise((resolve) => { finish = resolve }))
+  render(<QueryClientProvider client={client}><App><QualityShipmentDrawer open mode="PIECES" orders={[order]} employees={[]} onClose={vi.fn()} /></App></QueryClientProvider>)
+  await waitFor(() => expect(api.listShipmentCandidates).toHaveBeenCalled())
+  fireEvent.mouseDown(screen.getByLabelText('采购单 / 项次'))
+  expect(await screen.findByText('正在读取可出货订单…')).toBeInTheDocument()
+  expect(screen.queryByText(/ASL-REMOTE-907/)).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '保 存' })).toBeDisabled()
+  finish({ results: [] })
+  expect(await screen.findByText('暂无可出货订单')).toBeInTheDocument()
+})
+
+it('retains completed source orders when editing an existing shipment', async () => {
+  const existing = { ...shipment, returned_quantity: 0, order: { ...order, status: 'COMPLETED' } } as QualityShipment
+  api.listOrders.mockResolvedValue({ results: [] })
+  wrapper(<QualityShipmentDrawer open shipment={existing} orders={[]} employees={[]} onClose={vi.fn()} />)
+  expect(await screen.findByText(/ASL-REMOTE-907/)).toBeInTheDocument()
+  fireEvent.change(screen.getByLabelText(/备注/), { target: { value: '修正包装备注' } })
+  fireEvent.click(screen.getByRole('button', { name: '保 存' }))
+  await waitFor(() => expect(api.updateShipment).toHaveBeenCalledWith(807, expect.objectContaining({ notes: '修正包装备注', order_id: 907 })))
+  expect(api.listShipmentCandidates).not.toHaveBeenCalled()
 })
 
 it('requires explicit inspection confirmation before deriving inspection and qualified quantities', async () => {

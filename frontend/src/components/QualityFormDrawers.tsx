@@ -37,16 +37,32 @@ function LegacyQualityShipmentDrawer({ open, shipment, orders, employees, onClos
   const submitting = useRef(false)
   const clientRequestId = useRef<string | undefined>(undefined)
   const [orderSearch, setOrderSearch] = useState('')
+  const directPieces = !shipment
   const orderOptionsQuery = useQuery({
-    queryKey: ['orders', 'piece-shipment-options', orderSearch],
-    queryFn: async () => toList(await orderApi.list({ q: orderSearch, page_size: 1000 })),
+    queryKey: directPieces
+      ? ['quality', 'piece-shipment-candidates', orderSearch]
+      : ['orders', 'piece-shipment-options', orderSearch],
+    queryFn: async (): Promise<QualityOrder[]> => {
+      if (!directPieces) return toList(await orderApi.list({ q: orderSearch, page_size: 1000 }))
+      const candidates = toList(await qualityApi.listShipmentCandidates({ q: orderSearch, page_size: 1000 }))
+      return candidates.flatMap((candidate) => candidate.order?.status === 'OPEN'
+        && candidate.is_candidate !== false && Number(candidate.remaining_quantity) > 0
+        ? [{ ...candidate.order, remaining_quantity: Number(candidate.remaining_quantity) }]
+        : [])
+    },
     enabled: open,
+    refetchOnMount: 'always',
   })
-  const orderOptions = [...new Map([...orders, ...(shipment?.order ? [shipment.order] : []), ...(orderOptionsQuery.data || [])].map((item) => [item.id, item])).values()]
+  // A new shipment must use the fresh server candidate set, never the full
+  // page's orders or a cached result from before another shipment/return.
+  // Editing remains separate: completed source orders must stay editable.
+  const candidatesReady = !directPieces || (orderOptionsQuery.isSuccess && !orderOptionsQuery.isFetching)
+  const orderOptions = directPieces
+    ? (candidatesReady ? orderOptionsQuery.data || [] : [])
+    : [...new Map([...orders, ...(shipment?.order ? [shipment.order] : []), ...(orderOptionsQuery.data || [])].map((item) => [item.id, item])).values()]
   const orderId = Form.useWatch('order_id', form) ?? shipment?.order?.id
   const selectedOrder = orderOptions.find((item) => String(item.id) === String(orderId))
   const optionalEmployees = orderSourceSystem(selectedOrder) === '艾斯霖'
-  const directPieces = !shipment
   const closeDrawer = () => {
     setOrderSearch('')
     onClose()
@@ -99,17 +115,21 @@ function LegacyQualityShipmentDrawer({ open, shipment, orders, employees, onClos
       onClose={closeDrawer}
       size={680}
       title={shipment ? `编辑出货 · ${shipment.shipment_no}` : '按采购单件数出货（无需流程卡）'}
-      footer={<Space className="drawer-footer-actions"><Button onClick={closeDrawer}>取消</Button><Button type="primary" loading={mutation.isPending} onClick={() => void submit()}>保存</Button></Space>}
+      footer={<Space className="drawer-footer-actions"><Button onClick={closeDrawer}>取消</Button><Button type="primary" disabled={!candidatesReady} loading={mutation.isPending} onClick={() => void submit()}>保存</Button></Space>}
     >
-      <Alert className="quality-form-alert" type="info" showIcon title="直接选择采购单按件数出货，无需流程卡或重量。" description="只关联所选订单。艾斯霖按采购单有效剩余件数校验，退货后可再次出货；员工选填，不会自动新增。" />
+      <Alert className="quality-form-alert" type="info" showIcon title="直接选择采购单按件数出货，无需流程卡或重量。" description="只关联所选订单。出足数量后自动完成并移出可选列表；登记退货后，按有效剩余件数重新可选。艾斯霖员工选填，不会自动新增。" />
       {orderOptionsQuery.isError && <Alert type="error" message="采购单读取失败" description={(orderOptionsQuery.error as Error).message} action={<Button onClick={() => void orderOptionsQuery.refetch()}>重试</Button>} />}
       <Form form={form} layout="vertical" requiredMark="optional">
         <Row gutter={14}>
           <Col xs={24} sm={12}><Form.Item name="shipment_no" label="出货单号" extra={!shipment ? '系统已生成，可修改；留空也会自动生成。' : undefined} rules={shipment ? [{ required: true, whitespace: true, message: '请输入出货单号' }] : []}><Input placeholder="留空由系统自动生成" /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="shipment_date" label="出货日期" rules={[{ required: true, message: '请选择出货日期' }]}><DatePicker style={{ width: '100%' }} /></Form.Item></Col>
         </Row>
-        <Form.Item name="order_id" label="采购单 / 项次" rules={[{ required: true, message: '请选择采购单项次' }]}>
-          <Select showSearch virtual={false} optionRender={(option) => <div style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{option.label}</div>} onSearch={setOrderSearch} optionFilterProp="label" loading={orderOptionsQuery.isFetching} placeholder="搜索并选择采购单项次" disabled={Boolean(shipment?.returned_quantity)} options={orderOptions.map((item) => ({ value: item.id, label: [orderSourceSystem(item), item.order_no, item.item_no, item.product_name, item.specification, item.material, `采购 ${item.order_quantity} 件`].filter(Boolean).join(' · ') }))} />
+        <Form.Item name="order_id" label="采购单 / 项次" rules={[
+          { required: true, message: '请选择采购单项次' },
+          { validator: (_, value) => !directPieces || orderOptions.some((item) => item.id === value)
+            ? Promise.resolve() : Promise.reject(new Error('该订单已无可出货余量或状态已变化，请重新选择')) },
+        ]}>
+          <Select showSearch virtual={false} optionRender={(option) => <div style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{option.label}</div>} onSearch={setOrderSearch} optionFilterProp="label" loading={orderOptionsQuery.isFetching} notFoundContent={orderOptionsQuery.isFetching ? '正在读取可出货订单…' : orderOptionsQuery.isError ? '订单读取失败，请重试' : '暂无可出货订单'} placeholder="搜索并选择采购单项次" disabled={Boolean(shipment?.returned_quantity)} options={orderOptions.map((item) => ({ value: item.id, label: [orderSourceSystem(item), item.order_no, item.item_no, item.product_name, item.specification, item.material, `采购 ${item.order_quantity} 件`, directPieces ? `待出 ${item.remaining_quantity} 件` : ''].filter(Boolean).join(' · ') }))} />
         </Form.Item>
         <Form.Item name="inspector_id" label={optionalEmployees ? '责任品检员（选填）' : '责任品检员'} rules={[{ required: !optionalEmployees, message: '请选择品检员' }]}>
           <Select allowClear showSearch optionFilterProp="label" placeholder="可选择现有品检员" options={employees.filter((item) => item.is_active && ['INSPECTOR', 'BOTH'].includes(item.role)).map((item) => ({ value: item.id, label: item.name }))} />

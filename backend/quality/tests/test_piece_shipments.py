@@ -68,6 +68,53 @@ class PieceShipmentSetup:
 
 
 class PieceShipmentTests(PieceShipmentSetup, TestCase):
+    def purchase_candidates(self):
+        response = self.client.get('/api/quality/shipments/candidates/', {
+            'q': self.order.order_no, 'page_size': 1000,
+        })
+        self.assertEqual(response.status_code, 200, response.data)
+        return {row['order_id']: row for row in response.data['results']}
+
+    def test_purchase_candidates_follow_partial_full_return_and_reship_balance(self):
+        self.assertEqual(self.purchase_candidates()[self.order.pk]['remaining_quantity'], 100)
+        self.ship(quantity=60)
+        self.assertEqual(self.purchase_candidates()[self.order.pk]['remaining_quantity'], 40)
+        second = self.ship('SECOND', 40)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, QualityOrder.Status.COMPLETED)
+        self.assertNotIn(self.order.pk, self.purchase_candidates())
+        self.returned(second, 20)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, QualityOrder.Status.OPEN)
+        self.assertEqual(self.purchase_candidates()[self.order.pk]['remaining_quantity'], 20)
+        self.ship('AFTER-RETURN', 20)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, QualityOrder.Status.COMPLETED)
+        self.assertNotIn(self.order.pk, self.purchase_candidates())
+
+    def test_purchase_candidates_exclude_full_balance_even_if_status_is_stale(self):
+        self.ship()
+        QualityOrder.objects.filter(pk=self.order.pk).update(status=QualityOrder.Status.OPEN)
+        self.assertNotIn(self.order.pk, self.purchase_candidates())
+        self.assertEqual(QualityOrder.objects.get(pk=self.order.pk).status, QualityOrder.Status.OPEN)
+        # The read endpoint must not repair historical statuses as a side effect.
+
+    def test_purchase_candidates_exclude_manually_completed_and_cancelled_orders(self):
+        for status in (QualityOrder.Status.COMPLETED, QualityOrder.Status.CANCELLED):
+            QualityOrder.objects.filter(pk=self.order.pk).update(status=status)
+            self.assertNotIn(self.order.pk, self.purchase_candidates())
+
+    def test_purchase_candidate_balance_refreshes_after_shipment_and_return_corrections(self):
+        shipment_id = self.ship()
+        return_id = self.returned(shipment_id, 20)
+        self.assertEqual(self.purchase_candidates()[self.order.pk]['remaining_quantity'], 20)
+        response = self.client.patch(f'/api/quality/reworks/{return_id}/', {'returned_quantity': 30})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.purchase_candidates()[self.order.pk]['remaining_quantity'], 30)
+        response = self.client.patch(f'/api/quality/shipments/{shipment_id}/', {'shipped_quantity': 90})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.purchase_candidates()[self.order.pk]['remaining_quantity'], 40)
+
     def test_system_generates_unique_piece_numbers_when_omitted_or_blank(self):
         numbers = []
         for blank in (False, True):
