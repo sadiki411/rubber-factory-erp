@@ -530,3 +530,20 @@ class OrderStatusChange(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("订单状态变更记录不可删除。")
+
+
+class OrderYieldRemainder(TimeStampedModel):
+    """A manual remainder for one explicit order/production group, not stock."""
+
+    group_key = models.CharField(max_length=64, unique=True)
+    source_order_ids = models.JSONField(default=list)
+    source_run_ids = models.JSONField(default=list)
+    production_quantity_snapshot = models.PositiveBigIntegerField()
+    shipped_quantity_snapshot = models.PositiveBigIntegerField()
+    remaining_quantity = models.PositiveIntegerField(default=0)
+    notes = models.CharField(max_length=500, blank=True)
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="order_yield_remainders",
+    )

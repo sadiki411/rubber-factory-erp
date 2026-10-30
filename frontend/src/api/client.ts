@@ -26,6 +26,7 @@ import type {
   MoldModel,
   MoldMovement,
   Order,
+  OrderFinalYield,
   OrderStatusChange,
   Processor,
   ProductionBoard,
@@ -409,6 +410,9 @@ export const orderApi = {
     method: 'PATCH', body: JSON.stringify(body),
   }),
   statusHistory: (id: number | string) => apiFetch<OrderStatusChange[]>(`/api/orders/orders/${id}/status-history/`),
+  finalYield: (id: number) => apiFetch<OrderFinalYield>(`/api/orders/orders/${id}/final-yield/`),
+  saveFinalYield: (id: number, body: { remaining_quantity: number; source_token: string; notes: string }) =>
+    apiFetch<OrderFinalYield>(`/api/orders/orders/${id}/final-yield/`, { method: 'POST', body: JSON.stringify(body) }),
 }
 
 export interface MaterialReceiptFilters {

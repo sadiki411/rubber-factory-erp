@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Sum
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from molds.models import MoldModel
@@ -277,6 +278,34 @@ class ProductSpecificationSummarySerializer(serializers.ModelSerializer):
         return weight.measured_on.isoformat() if weight and weight.measured_on else None
 
 
+class OrderFinalYieldSerializer(serializers.Serializer):
+    group_key = serializers.CharField()
+    source_token = serializers.CharField()
+    order_ids = serializers.ListField(child=serializers.IntegerField())
+    run_ids = serializers.ListField(child=serializers.IntegerField())
+    orders = serializers.ListField(child=serializers.DictField())
+    combined = serializers.BooleanField()
+    status = serializers.CharField()
+    production_quantity = serializers.IntegerField()
+    effective_shipped_quantity = serializers.IntegerField()
+    remaining_quantity = serializers.IntegerField()
+    remaining_recorded = serializers.BooleanField()
+    saved_remaining_quantity = serializers.IntegerField(allow_null=True)
+    scope_changed = serializers.BooleanField()
+    source_changed = serializers.BooleanField()
+    yield_percent = serializers.CharField(allow_null=True)
+    over_100 = serializers.BooleanField()
+    notes = serializers.CharField(allow_blank=True)
+    confirmed_at = serializers.DateTimeField(allow_null=True)
+    confirmed_by_name = serializers.CharField(allow_null=True)
+
+
+class OrderYieldRemainderInputSerializer(serializers.Serializer):
+    remaining_quantity = serializers.IntegerField(min_value=0, max_value=2147483647)
+    source_token = serializers.RegexField(r"^[a-f0-9]{64}$")
+    notes = serializers.CharField(max_length=500, allow_blank=True, default="")
+
+
 class BusinessOrderSerializer(AuditedModelSerializer):
     source_batch_id = serializers.UUIDField(read_only=True)
     last_source_batch_id = serializers.UUIDField(read_only=True)
@@ -303,6 +332,7 @@ class BusinessOrderSerializer(AuditedModelSerializer):
     production_requirement_status = serializers.SerializerMethodField()
     production_target_reached = serializers.SerializerMethodField()
     production_run_count = serializers.SerializerMethodField()
+    final_yield = serializers.SerializerMethodField()
     inventory_total_quantity = serializers.SerializerMethodField()
     inventory_available_quantity = serializers.SerializerMethodField()
     inventory_waiting_inspection_quantity = serializers.SerializerMethodField()
@@ -346,6 +376,7 @@ class BusinessOrderSerializer(AuditedModelSerializer):
             "production_requirement_status",
             "production_target_reached",
             "production_run_count",
+            "final_yield",
             "inventory_total_quantity",
             "inventory_available_quantity",
             "inventory_waiting_inspection_quantity",
@@ -503,6 +534,21 @@ class BusinessOrderSerializer(AuditedModelSerializer):
         # quantity used everywhere: confirmed weighted rows plus historical
         # shipments, less valid customer returns.
         return self._delivered_quantity(obj)
+
+    @extend_schema_field(OrderFinalYieldSerializer(allow_null=True))
+    def get_final_yield(self, obj):
+        if obj.status != QualityOrder.Status.COMPLETED:
+            return None
+        from .yields import order_yields
+
+        if "order_yields" in self.context:
+            return self.context["order_yields"].get(obj.pk)
+        cache = self.context.setdefault("_order_yield_cache", {})
+        if obj.pk not in cache:
+            cache.update(order_yields(
+                [obj.pk], delivered=self.context.get("delivered_quantities_by_order")
+            ))
+        return cache.get(obj.pk)
 
     def _delivered_quantity(self, obj) -> int:
         from quality.services import delivered_quantities_by_order

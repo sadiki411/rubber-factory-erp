@@ -437,6 +437,7 @@ export interface Order {
   production_requirement_status?: 'NOT_REQUIRED' | 'DELIVERY_COMPLETE' | 'CANCELLED' | 'PRODUCTION_COMPLETE' | 'REQUIRED' | 'UNRECORDED'
   production_target_reached?: boolean
   production_run_count?: number
+  final_yield?: OrderFinalYield | null
   inventory_total_quantity?: number
   inventory_available_quantity?: number
   inventory_waiting_inspection_quantity?: number
@@ -455,6 +456,28 @@ export interface Order {
   created_by_name?: string
   created_at?: string
   updated_at?: string
+}
+
+export interface OrderFinalYield {
+  group_key: string
+  source_token: string
+  order_ids: number[]
+  run_ids: number[]
+  orders: Pick<Order, 'id' | 'order_no' | 'item_no' | 'status' | 'specification' | 'material'>[]
+  combined: boolean
+  status: 'READY' | 'NO_PRODUCTION' | 'GROUP_INCOMPLETE' | 'PRODUCTION_INCOMPLETE' | 'SOURCE_MISMATCH'
+  production_quantity: number
+  effective_shipped_quantity: number
+  remaining_quantity: number
+  remaining_recorded: boolean
+  saved_remaining_quantity: number | null
+  scope_changed: boolean
+  source_changed: boolean
+  yield_percent: string | null
+  over_100: boolean
+  notes: string
+  confirmed_at: string | null
+  confirmed_by_name: string | null
 }
 
 export interface OrderStatusChange {

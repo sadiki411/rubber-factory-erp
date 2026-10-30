@@ -5,6 +5,7 @@ from uuid import UUID
 from zipfile import BadZipFile
 
 from django.core.files.base import ContentFile
+from django.db import OperationalError, transaction
 from django.db.models import Case, F, IntegerField, Q, Value, When
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
@@ -31,6 +32,7 @@ from .models import (
     BusinessImportBatch,
     BusinessRecordRevision,
     MaterialReceipt,
+    OrderYieldRemainder,
     ProductInspectionCriterion,
     ProductSpecification,
 )
@@ -39,6 +41,8 @@ from .serializers import (
     BusinessRecordRevisionSerializer,
     MaterialReceiptSerializer,
     OrderStatusChangeSerializer,
+    OrderFinalYieldSerializer,
+    OrderYieldRemainderInputSerializer,
     ProductInspectionCriterionSerializer,
     ProductSpecificationSerializer,
 )
@@ -248,6 +252,10 @@ class BusinessOrderViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
         return queryset.filter(pk__in=matching).prefetch_related(None)
 
     def get_queryset(self):
+        # The yield service reads its own batched source facts. Do not load
+        # every production log a second time just to resolve the order id.
+        if getattr(self, "action", None) == "final_yield":
+            return QualityOrder.objects.only("id")
         queryset = _business_order_queryset()
         params = self.request.query_params
         q = str(params.get("q", "") or "").strip()
@@ -354,6 +362,12 @@ class BusinessOrderViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
                     "measured_on": weight.measured_on,
                 })
             context["latest_product_unit_weights"] = latest_weights
+        from .yields import order_yields
+
+        context["order_yields"] = order_yields(
+            [row.pk for row in rows if row.status == QualityOrder.Status.COMPLETED],
+            delivered=context.get("delivered_quantities_by_order"),
+        )
         serializer = self.get_serializer(rows, many=True, context=context)
         if page is not None:
             return self.get_paginated_response(serializer.data)
@@ -367,6 +381,42 @@ class BusinessOrderViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
         order = self.get_object()
         changes = order.status_changes.select_related("operator").all()
         return Response(OrderStatusChangeSerializer(changes, many=True).data)
+
+    @extend_schema(methods=["GET"], responses=OrderFinalYieldSerializer)
+    @extend_schema(methods=["POST"], request=OrderYieldRemainderInputSerializer, responses=OrderFinalYieldSerializer)
+    @action(detail=True, methods=["get", "post"], url_path="final-yield")
+    def final_yield(self, request, pk=None):
+        from .yields import order_yields
+
+        order = self.get_object()
+        if request.method == "GET":
+            return Response(order_yields([order.pk])[order.pk])
+        inputs = OrderYieldRemainderInputSerializer(data=request.data)
+        inputs.is_valid(raise_exception=True)
+        values = inputs.validated_data
+        try:
+            with transaction.atomic():
+                current = order_yields([order.pk])[order.pk]
+                if current["source_token"] != values["source_token"]:
+                    return Response({"detail": "生产、出货或剩余数量已变化，请重新读取后再确认。"}, status=409)
+                if current["status"] != "READY":
+                    raise DRFValidationError({"detail": "生产数量未登记，或合并组订单/生产尚未全部完成，暂不能确认最终良品率。"})
+                OrderYieldRemainder.objects.update_or_create(
+                    group_key=current["group_key"],
+                    defaults={
+                        "source_order_ids": current["order_ids"],
+                        "source_run_ids": current["run_ids"],
+                        "production_quantity_snapshot": current["production_quantity"],
+                        "shipped_quantity_snapshot": current["effective_shipped_quantity"],
+                        "remaining_quantity": values["remaining_quantity"],
+                        "notes": values["notes"], "confirmed_by": request.user,
+                    },
+                )
+                return Response(order_yields([order.pk])[order.pk])
+        except OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                raise
+            return Response({"detail": "数据库正忙，剩余数量未保存，请稍后重试。"}, status=503, headers={"Retry-After": "1"})
 
 
 class MaterialReceiptViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):

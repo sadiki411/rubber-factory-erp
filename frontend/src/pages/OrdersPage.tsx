@@ -10,6 +10,7 @@ import { BusinessImportDrawer } from '../components/BusinessImportDrawer'
 import { BusinessImportHistoryDrawer } from '../components/BusinessImportHistoryDrawer'
 import { MaterialReceiptDrawer } from '../components/MaterialReceiptDrawer'
 import { OrderFormDrawer } from '../components/OrderFormDrawer'
+import { OrderFinalYieldDrawer, OrderYieldCell } from '../components/OrderFinalYieldDrawer'
 import { PageTitle } from '../components/PageTitle'
 import type { ApiList, MaterialReceipt, Order, OrderMaterialStatus, OrderProcessCardStatus, OrderStatus } from '../types'
 
@@ -113,6 +114,7 @@ export function OrdersPage() {
   const [receiptLink, setReceiptLink] = useState<'' | 'linked' | 'unlinked'>('')
   const [editing, setEditing] = useState<Order>()
   const [formOpen, setFormOpen] = useState(false)
+  const [yieldOrder, setYieldOrder] = useState<Order>()
   const [editingReceipt, setEditingReceipt] = useState<MaterialReceipt>()
   const [receiptFormOpen, setReceiptFormOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
@@ -244,6 +246,7 @@ export function OrdersPage() {
     { title: '生产进度（模数折算）', key: 'production_progress', width: 190, render: (_, row) => <span>{productionProgressText(row)}</span> },
     { title: '出货日期', dataIndex: 'shipment_date', width: 120, render: (value) => exactOrderValue(value) },
     { title: '净有效出货', key: 'weighted_shipped_quantity', width: 135, render: (_, row) => <span>{exactOrderValue(row.weighted_shipped_quantity)} / {exactOrderValue(row.order_quantity)}<br /><Typography.Text type="secondary">待出 {exactOrderValue(row.weighted_remaining_quantity)}</Typography.Text></span> },
+    ...(activeTab === 'orders-completed' ? [{ title: '良品率', key: 'final_yield', width: 190, render: (_: unknown, row: Order) => <OrderYieldCell value={row.final_yield} onOpen={() => setYieldOrder(row)} /> }] : []),
     { title: '最后更新', key: 'last_updated', width: 155, render: (_, row) => formattedTimestamp(row.last_data_updated_at || row.updated_at) },
     { title: '胶料状态', dataIndex: 'material_status', width: 100, render: (value) => <MaterialStatusTag status={value} /> },
     { title: '订单状态', dataIndex: 'status', width: 100, render: (value: OrderStatus, row) => <Tag color={ORDER_STATUS_META[value]?.color}>{row.status_display || ORDER_STATUS_META[value]?.text || value}</Tag> },
@@ -362,6 +365,7 @@ export function OrdersPage() {
                       <span><small>最后更新</small><b>{formattedTimestamp(record.last_data_updated_at || record.updated_at)}</b></span>
                       {((record.process_card_count !== null && record.process_card_count !== undefined) || (record.process_card_covered_quantity !== null && record.process_card_covered_quantity !== undefined)) && <span><small>流程卡明细</small><b>{exactOrderValue(record.process_card_count, ' 张')} / 覆盖 {exactOrderValue(record.process_card_covered_quantity)}</b></span>}
                     </div>
+                    {record.status === 'COMPLETED' && <div onClick={event => event.stopPropagation()} style={{ marginBottom: 12 }}><OrderYieldCell value={record.final_yield} onOpen={() => setYieldOrder(record)} /></div>}
                     <Button block icon={<EditOutlined />} onClick={(event) => { event.stopPropagation(); openForm(record) }}>编辑订单</Button>
                   </Card>
                 </List.Item>
@@ -467,6 +471,7 @@ export function OrdersPage() {
       )}
 
       <OrderFormDrawer open={formOpen} order={editing} onClose={() => setFormOpen(false)} />
+      <OrderFinalYieldDrawer open={Boolean(yieldOrder)} order={yieldOrder} onClose={() => setYieldOrder(undefined)} />
       <MaterialReceiptDrawer open={receiptFormOpen} receipt={editingReceipt} orders={orderOptionsQuery.data || []} ordersLoading={orderOptionsQuery.isLoading} onClose={() => setReceiptFormOpen(false)} />
       <BusinessImportDrawer open={importOpen} context="orders" onClose={() => setImportOpen(false)} />
       <BusinessImportHistoryDrawer open={importHistoryOpen} onClose={() => setImportHistoryOpen(false)} />

@@ -134,6 +134,9 @@ button, input, textarea, select { font: inherit; }
 .record-card-heading h4 { margin: 0; }
 .record-location { margin-bottom: 14px; }
 .drawer-footer-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; width: 100%; }
+@media (max-width: 767px) {
+  .order-final-yield-drawer .drawer-footer-actions > .ant-space-item:last-child { grid-column: 1 / -1; }
+}
 .quality-employee-select { width: 100%; min-width: 0; max-width: 100%; }
 .quality-employee-select .ant-select { max-width: 100%; }
 .quality-employee-select-popup { max-width: calc(100vw - 24px); }

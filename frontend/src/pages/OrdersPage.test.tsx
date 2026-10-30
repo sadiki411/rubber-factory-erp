@@ -204,4 +204,23 @@ describe('order server pagination and table navigation', () => {
     expect(screen.getByTitle('3')).toHaveClass('ant-pagination-item-active')
     expect(screen.queryByText('TEST-ORDER-001 / 5')).not.toBeInTheDocument()
   })
+
+  it.each([false, true])('shows yield and missing-production states on completed orders (mobile: %s)', async (mobile) => {
+    vi.mocked(Grid.useBreakpoint).mockReturnValue({ md: !mobile, lg: !mobile, xl: !mobile })
+    apiMocks.listOrders.mockImplementation(({ status }) => Promise.resolve({ count: 2, next: null, previous: null,
+      results: pageResponse().results.slice(0, 2).map((row, index) => ({ ...row, status,
+        final_yield: index === 0
+          ? { status: 'READY', combined: true, yield_percent: '92.50', over_100: false }
+          : { status: 'NO_PRODUCTION', yield_percent: null },
+      })),
+    }))
+    renderPage()
+    await screen.findByText('TEST-ORDER-001 / 5')
+    await userEvent.click(screen.getByRole('tab', { name: '已完成订单' }))
+    expect(await screen.findByText('合并良品率 92.50%')).toBeInTheDocument()
+    expect(screen.getByText('未记录生产数量')).toBeInTheDocument()
+    expect(screen.queryByText('0.00%')).not.toBeInTheDocument()
+    if (!mobile) expect(screen.getByRole('columnheader', { name: '良品率' })).toBeInTheDocument()
+    else expect(screen.queryByRole('table')).not.toBeInTheDocument()
+  })
 })
