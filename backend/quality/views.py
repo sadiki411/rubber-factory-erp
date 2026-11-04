@@ -12,7 +12,7 @@ from django.db.models.functions import Coalesce, Least
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from drf_spectacular.utils import OpenApiParameter, extend_schema
-from rest_framework import viewsets
+from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import APIException, ValidationError as DRFValidationError
 from rest_framework.pagination import PageNumberPagination
@@ -584,6 +584,10 @@ def _shipment_batch_snapshot(batch, *, lines=None, bindings=None):
                         allocation.net_weight_kg
                     ),
                     "is_overflow": allocation.is_overflow,
+                    "order_no_snapshot": allocation.order_no_snapshot,
+                    "item_no_snapshot": allocation.item_no_snapshot,
+                    "specification_snapshot": allocation.specification_snapshot,
+                    "material_snapshot": allocation.material_snapshot,
                 }
                 for allocation in line.order_allocations.all()
             ],
@@ -599,6 +603,19 @@ def _shipment_batch_snapshot(batch, *, lines=None, bindings=None):
             "net_weight_kg": _shipment_snapshot_value(binding.net_weight_kg),
         }
         for binding in bindings
+    ]
+    # Preserve actual work as audit evidence; a corrected scale reading is
+    # not permission to proportionally rewrite measured rework outcomes.
+    result["rework_attempts"] = [
+        {key: _shipment_snapshot_value(value) for key, value in row.items()}
+        for row in QualityReworkAttempt.objects.filter(
+            Q(case__shipment_batch=batch) | Q(case__shipment_line__batch=batch)
+        ).distinct().order_by("id").values(
+            "id", "case_id", "attempt_no", "attempt_date", "rework_employee_id",
+            "status", "input_quantity", "reworked_quantity", "recovered_quantity",
+            "scrap_quantity", "input_weight_kg", "reworked_weight_kg",
+            "recovered_weight_kg", "scrap_weight_kg",
+        )
     ]
     return result
 
@@ -1074,8 +1091,9 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
         order allocations.  Customer-return records remain the audit history;
         this method points them at the rebuilt package and refreshes their
         quantity/weight snapshots.  If the exact returned package was deleted,
-        an unfinished return is cancelled while a completed/reshipped history
-        is retained without subtracting a shipment that no longer exists.
+        an unfinished return with no registered actual work is cancelled.
+        Deletion that would orphan registered work is rejected until an
+        explicit work-correction workflow can preserve its attribution.
         """
 
         removed = sorted({int(value) for value in removed_units if int(value) > 0})
@@ -1087,8 +1105,11 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
         for stale_case in cases:
             old_line_id = stale_case.shipment_line_id
             case = QualityReworkCase.objects.select_for_update().get(pk=stale_case.pk)
+            has_actual_work = case.attempts.exists()
             old_unit = case.shipment_unit_no
             if old_unit is not None and old_unit in removed:
+                if has_actual_work:
+                    raise DRFValidationError({"removed_shipment_units": "该包已有实际返工作业，不能删除其来源。可更正原单数值并保留作业原值；来源作废须另走作业更正方案。"})
                 updates = {
                     "shipment_line": None,
                     "shipment_unit_no": None,
@@ -1103,7 +1124,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                         if value
                     ),
                 }
-                if case.status not in terminal:
+                if case.status not in terminal and not has_actual_work:
                     updates["status"] = QualityReworkCase.Status.CANCELLED
                     updates["closed_on"] = timezone.localdate()
                 QualityReworkCase.objects.filter(pk=case.pk).update(**updates)
@@ -1112,6 +1133,8 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             if old_unit is None:
                 representative = line_replacements.get(old_line_id)
                 if representative is None:
+                    if has_actual_work:
+                        raise DRFValidationError({"lines": "该明细已有实际返工作业，不能删除其来源。请保留原明细进行更正。"})
                     updates = {
                         "shipment_line": None,
                         "is_current_return": False,
@@ -1125,7 +1148,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                             if value
                         ),
                     }
-                    if case.status not in terminal:
+                    if case.status not in terminal and not has_actual_work:
                         updates["status"] = QualityReworkCase.Status.CANCELLED
                         updates["closed_on"] = timezone.localdate()
                     QualityReworkCase.objects.filter(pk=case.pk).update(**updates)
@@ -1155,6 +1178,8 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                     lines=lines,
                 )
             except ValueError:
+                if has_actual_work:
+                    raise DRFValidationError({"lines": "更正后的包装布局无法对应已登记返工作业，不能自动断开来源。请保留原包结构后重试。"})
                 # A direct API caller may replace the entire physical layout
                 # without supplying removed unit numbers.  Preserve the case
                 # as historical evidence but do not leave stale line FKs.
@@ -1164,12 +1189,12 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                     is_current_return=False,
                     status=(
                         case.status
-                        if case.status in terminal
+                        if case.status in terminal or has_actual_work
                         else QualityReworkCase.Status.CANCELLED
                     ),
                     closed_on=(
                         case.closed_on
-                        if case.status in terminal
+                        if case.status in terminal or has_actual_work
                         else timezone.localdate()
                     ),
                     updated_at=timezone.now(),
@@ -1179,17 +1204,22 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             representative = allocations[0]["shipment_line"]
             quantity = int(group["pieces_per_batch"])
             weight = Decimal(group["single_batch_net_weight_kg"])
+            notes = case.notes
+            if has_actual_work and (
+                case.affected_quantity != quantity or case.affected_weight_kg != weight
+            ):
+                notes = "\n".join(filter(None, [
+                    str(notes or "").strip(),
+                    f"原出货更正：退回基数由{case.affected_quantity}件/{case.affected_weight_kg}kg"
+                    f"调整为{quantity}件/{weight}kg；已登记返工作业保留原值，不按比例重算。",
+                ]))
             QualityReworkCase.objects.filter(pk=case.pk).update(
                 shipment_line=representative,
                 shipment_unit_no=new_unit,
                 affected_quantity=quantity,
                 affected_weight_kg=weight,
+                notes=notes,
                 updated_at=timezone.now(),
-            )
-            QualityShipmentBatchViewSet._scale_amended_attempts(
-                case.pk,
-                quantity,
-                weight,
             )
             for allocation in allocations:
                 QualityReturnAllocation.objects.create(
@@ -1201,76 +1231,6 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                     piece_quantity=allocation["piece_quantity"],
                     net_weight_kg=allocation["net_weight_kg"],
                 )
-
-    @staticmethod
-    def _scale_amended_attempts(case_id, quantity, weight):
-        """Keep completed rework outcomes valid after source quantity changes."""
-
-        quantity = max(int(quantity or 0), 0)
-        weight = max(Decimal(weight or 0), Decimal("0")).quantize(
-            Decimal("0.001"), rounding=ROUND_HALF_UP
-        )
-
-        def scaled_integer(value, previous_total):
-            previous_total = max(int(previous_total or 0), 0)
-            if previous_total == 0:
-                return 0
-            return min(
-                quantity,
-                int(
-                    (
-                        Decimal(int(value or 0))
-                        * Decimal(quantity)
-                        / Decimal(previous_total)
-                    ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-                ),
-            )
-
-        def scaled_weight(value, previous_total):
-            previous_total = Decimal(previous_total or 0)
-            if previous_total <= 0:
-                return Decimal("0.000")
-            return min(
-                weight,
-                (
-                    Decimal(value or 0) * weight / previous_total
-                ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP),
-            )
-
-        attempts = QualityReworkAttempt.objects.select_for_update().filter(
-            case_id=case_id
-        )
-        for attempt in attempts:
-            recovered_quantity = scaled_integer(
-                attempt.recovered_quantity,
-                attempt.reworked_quantity,
-            )
-            scrap_quantity = min(
-                scaled_integer(attempt.scrap_quantity, attempt.reworked_quantity),
-                max(quantity - recovered_quantity, 0),
-            )
-            recovered_weight = scaled_weight(
-                attempt.recovered_weight_kg,
-                attempt.reworked_weight_kg,
-            )
-            scrap_weight = min(
-                scaled_weight(
-                    attempt.scrap_weight_kg,
-                    attempt.reworked_weight_kg,
-                ),
-                max(weight - recovered_weight, Decimal("0")),
-            )
-            QualityReworkAttempt.objects.filter(pk=attempt.pk).update(
-                input_quantity=quantity,
-                reworked_quantity=quantity,
-                recovered_quantity=recovered_quantity,
-                scrap_quantity=scrap_quantity,
-                input_weight_kg=weight,
-                reworked_weight_kg=weight,
-                recovered_weight_kg=recovered_weight,
-                scrap_weight_kg=scrap_weight,
-                updated_at=timezone.now(),
-            )
 
     @staticmethod
     def _apply_explicit_binding_line_intent(
@@ -1577,6 +1537,22 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             )
             serializer.is_valid(raise_exception=True)
             serializer.save()
+
+            # Metadata-only corrections must not silently repartition a
+            # historical shipment under today's automatic matching rules.
+            original = {row["id"]: row for row in before["lines"]}
+            self._amend_preserved_allocations = {}
+            replay_lines = list(batch.lines.order_by("id"))
+            for index, source_id in enumerate(source_line_ids):
+                old = original.get(int(source_id)) if source_id not in (None, "") else None
+                new = replay_lines[index] if index < len(replay_lines) else None
+                if old and new and old["order_allocations"] and (
+                    old["piece_quantity"] == new.piece_quantity
+                    and old["order_id"] == new.order_id
+                    and old["process_card_id"] == new.process_card_id
+                    and (old["product_specification_id"] is None or old["product_specification_id"] == new.product_specification_id)
+                ):
+                    self._amend_preserved_allocations[new.pk] = old["order_allocations"]
 
             # Replay the exact confirmation transaction.  A proxy request
             # keeps the original request immutable and supplies preserved or
@@ -1973,7 +1949,8 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                             setattr(batch, field_name, value)
             try:
                 allocation_plans = build_shipment_line_allocation_plans(
-                    lines, lock=True
+                    lines, lock=True,
+                    preserved_allocations=getattr(self, "_amend_preserved_allocations", None),
                 )
             except ValueError as exc:
                 raise DRFValidationError({"lines": str(exc)}) from exc
@@ -1992,10 +1969,10 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                             piece_quantity=item["piece_quantity"],
                             net_weight_kg=item["net_weight_kg"],
                             is_overflow=item["is_overflow"],
-                            order_no_snapshot=order.order_no,
-                            item_no_snapshot=order.item_no,
-                            specification_snapshot=order.specification,
-                            material_snapshot=order.material,
+                            order_no_snapshot=item.get("snapshots", {}).get("order_no_snapshot", order.order_no),
+                            item_no_snapshot=item.get("snapshots", {}).get("item_no_snapshot", order.item_no),
+                            specification_snapshot=item.get("snapshots", {}).get("specification_snapshot", order.specification),
+                            material_snapshot=item.get("snapshots", {}).get("material_snapshot", order.material),
                         )
                     )
             QualityShipmentOrderAllocation.objects.bulk_create(allocation_rows)
@@ -2489,6 +2466,40 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
     @extend_schema(request=dict, responses=dict)
     @action(detail=False, methods=["post"], url_path="allocation-preview")
     def allocation_preview(self, request):
+        if "lines" in request.data:
+            class PreviewLine(serializers.Serializer):
+                order_id = serializers.IntegerField(min_value=1)
+                piece_quantity = serializers.IntegerField(min_value=1, max_value=2_147_483_647)
+
+            class PreviewRequest(serializers.Serializer):
+                lines = PreviewLine(many=True, min_length=1, max_length=500)
+
+            payload = PreviewRequest(data=request.data)
+            payload.is_valid(raise_exception=True)
+            entries = payload.validated_data["lines"]
+            orders = QualityOrder.objects.in_bulk({entry["order_id"] for entry in entries})
+            if len(orders) != len({entry["order_id"] for entry in entries}):
+                raise DRFValidationError({"lines": "所选订单不存在，请刷新。"})
+            # Unsaved preview-only lines preserve physical row order and use
+            # the exact same shared-balance planner as confirmation. The
+            # nominal weight is never saved or presented as an actual weight.
+            lines = [QualityShipmentLine(
+                pk=index, order=orders[entry["order_id"]],
+                piece_quantity=entry["piece_quantity"],
+                net_weight_kg=Decimal(entry["piece_quantity"]) / Decimal("1000"),
+            ) for index, entry in enumerate(entries, 1)]
+            try:
+                plans = build_shipment_line_allocation_plans(lines)
+            except ValueError as exc:
+                raise DRFValidationError({"detail": str(exc)}) from exc
+            results = []
+            for plan in plans:
+                source = plan["source_order"]
+                plan.update(specification=source.specification, material=source.material)
+                for allocation in plan["allocations"]:
+                    allocation["allocated_quantity"] = allocation["piece_quantity"]
+                results.append(serialize_order_allocation_plan(plan))
+            return Response({"results": results})
         try:
             order_id = int(request.data.get("order_id"))
             piece_quantity = int(request.data.get("piece_quantity"))

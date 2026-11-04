@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; form-action 'none'; base-uri 'none'">
+  <title>已暂不实施 · 返工历史方案DEMO</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#f2f5fa;color:#17253a;font:16px/1.65 system-ui,'Microsoft YaHei',sans-serif}main{max-width:1040px;margin:auto;padding:24px}h1{font-size:26px;margin:0}h2{font-size:19px;margin:0 0 12px}.note{padding:12px 16px;background:#fff2d3;border-left:4px solid #d99a25;border-radius:6px;margin:18px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:16px}article{background:white;border:1px solid #dfe6f0;border-radius:12px;padding:20px;min-width:0}button,select{font:inherit;padding:10px 14px;border-radius:7px;border:1px solid #c4d0e3;max-width:100%;margin:5px 5px 5px 0}button{cursor:pointer;background:#1761be;color:white}button.secondary{background:white;color:#194d87}button:disabled{opacity:.45;cursor:default}label{display:block}.badge{display:inline-block;background:#e6efff;color:#1957a3;border-radius:5px;padding:2px 9px}li{margin:8px 0}p,li{overflow-wrap:anywhere}small{color:#5b6b80}#events{padding-left:22px}.facts{display:flex;flex-wrap:wrap;gap:12px}.facts span{background:#f0f5fc;padding:8px 12px;border-radius:6px}@media(max-width:480px){main{padding:14px}article{padding:16px}button,select{width:100%}}
+  </style>
+</head>
+<body><main>
+  <small>已暂不实施 / 仅留历史方案 / 不连接ERP / 全部为合成数据</small>
+  <h1>退回 → 返工 → 复检 → 再出货</h1>
+  <div class="note">2026-11-04用户已决定：保留现有退货、重新出货流程，不实施本试点。此页仅留历史演示，不是已上线或待上线功能，不会保存、修改订单、出退货或库存。</div>
+  <article><h2>DEMO-CARD-01 · 客户退回第1轮</h2><div class="facts"><span>原物理出货 300件</span><span>原分摊 A100 / B200</span><span id="net">净交付合计 0件（已退回）</span><span>仓库库存不变</span></div><p>原出货品检员：演示原品检。退回责任继承原人；下面的返工、复检及再发人员分别记录，不自动代填。</p><span class="badge" id="state">退回已登记，作业未登记</span></article>
+  <div class="grid" style="margin-top:16px">
+    <article><h2>1. 实际返工</h2><label>实际返工人员<select id="worker"><option value="">请选择演示人员</option><option>演示返工甲</option><option>演示返工乙</option></select></label><p>此演示采用整批：投入/处理300件，实际合格280件，报废20件。数量仅为展示例子，不是系统自动测得。</p><button id="work">模拟登记本轮作业</button><p><small>合格量不自动变成已出货。未登记不是实际返工为0。</small></p></article>
+    <article><h2>2. 复检事实（新增候选）</h2><label>实际复检人员<select id="checker"><option value="">请选择演示人员</option><option>演示复检甲</option><option>演示复检乙</option></select></label><button id="pass" disabled>模拟复检通过</button><button id="fail" class="secondary" disabled>模拟复检未通过</button><p><small>未通过仍在同一退回案中，后续实际作业需重新登记，不凭按钮增加客户退回轮次。</small></p></article>
+    <article><h2>3. 再次出货</h2><label>本轮出货品检员<select id="shipper"><option value="">请选择演示人员</option><option>演示本轮品检甲</option><option>演示本轮品检乙</option></select></label><p>示例再发280件。客户净交付此时才增加；不自动扣库存。</p><button id="ship" disabled>模拟正常再出货</button><button id="skip" class="secondary">模拟缺记录直接再发</button><p><small>缺记录直接再发仅展示“允许但提示”的候选方案，不代表已批准正式规则。</small></p></article>
+  </div>
+  <article style="margin-top:16px"><h2>事件证据</h2><p id="message" role="status" aria-live="polite">请先选择实际返工人员；也可演示缺记录直接再发的例外。</p><ol id="events"><li>DEMO：原包300件退回，回冲原分摊A100/B200。作业和复检均未登记。</li></ol><button id="reset" class="secondary">清空本页演示，重新开始</button></article>
+</main><script>
+  'use strict';
+  const byId = id => document.getElementById(id);
+  let worked = false, checked = false, shipped = false, attempt = 0;
+  function say(text) { byId('message').textContent = text; }
+  function add(text) { const li = document.createElement('li'); li.textContent = text; byId('events').appendChild(li); }
+  function controls() { byId('work').disabled = shipped || worked; byId('pass').disabled = shipped || !worked || checked; byId('fail').disabled = shipped || !worked || checked; byId('ship').disabled = shipped || !checked; byId('skip').disabled = shipped; }
+  byId('work').addEventListener('click', () => { const person=byId('worker').value; if(!person)return say('请选择实际返工人员，不能用原责任品检员代填。'); worked=true; checked=false; attempt++; add(`实际作业第${attempt}次：${person}处理300件，合格280、报废20（合成例子）。不增加交付。`); byId('state').textContent='作业已登记，待复检'; say('作业事实与出货数量分开；请选择实际复检人员。'); controls(); });
+  byId('pass').addEventListener('click', () => { const person=byId('checker').value; if(!person)return say('请选择实际复检人员。'); checked=true; add(`复检：${person}确认通过。仍未再出货，不增加净交付。`); byId('state').textContent='复检通过，待再发'; say('可以继续模拟本轮再出货。'); controls(); });
+  byId('fail').addEventListener('click', () => { const person=byId('checker').value; if(!person)return say('请选择实际复检人员。'); add(`复检：${person}确认未通过；原作业保留，本退回案等待下一次实际处理。`); worked=false; checked=false; byId('state').textContent='复检未通过，待继续处理'; say('客户退回仍是第1轮；如继续处理，应登记新的实际作业，不覆盖上一次。'); controls(); });
+  function ship(skip) { const person=byId('shipper').value; if(!person)return say('请选择本轮出货品检员，不能自动沿用原人。'); if(!skip&&!checked)return; shipped=true; add(`${person}模拟再出货280件；`+(checked?'已有本页复检事实。':'作业或复检证据缺失，保留缺项提示，不补造。')); byId('net').textContent='净交付合计 280件（再发）'; byId('state').textContent=checked?'已再出货':'已再出货 / 过程证据不完整'; say('这里只增加演示净交付，不动库存；缺记录不是0，更不是系统已证明做完。'); controls(); }
+  byId('ship').addEventListener('click',()=>ship(false)); byId('skip').addEventListener('click',()=>ship(true));
+  byId('reset').addEventListener('click',()=>{worked=false;checked=false;shipped=false;attempt=0;byId('events').replaceChildren();add('DEMO：原包300件退回，回冲原分摊A100/B200。作业和复检均未登记。');byId('net').textContent='净交付合计 0件（已退回）';byId('state').textContent='退回已登记，作业未登记';for(const id of ['worker','checker','shipper'])byId(id).value='';say('已重置本页合成演示，未调用任何业务接口。');controls();});
+</script></body></html>

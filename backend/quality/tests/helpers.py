@@ -21,6 +21,18 @@ def response_results(response):
 
 
 class QualityTestMixin:
+    @staticmethod
+    def identify_same_customer_product(*orders):
+        """Explicit fixture evidence required by the new matching boundary."""
+        from orders.models import ProductSpecification
+        product = ProductSpecification.objects.create(
+            specification=orders[0].specification, material=orders[0].material,
+        )
+        for order in orders:
+            order.source_system = "翔邦"
+            order.product_specification = product
+            order.save(update_fields=["source_system", "product_specification", "updated_at"])
+
     @classmethod
     def setUpTestData(cls):
         super().setUpTestData()

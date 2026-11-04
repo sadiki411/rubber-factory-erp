@@ -24,6 +24,16 @@ from .helpers import QualityTestMixin
 class ConfirmedShipmentCorrectionApiTests(QualityTestMixin, TestCase):
     endpoint = "/api/quality/shipment-batches/"
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        from orders.models import ProductSpecification
+        cls.order.product_specification = ProductSpecification.objects.create(
+            specification=cls.order.specification, material=cls.order.material,
+        )
+        cls.order.source_system = "翔邦"
+        cls.order.save()
+
     def create_order(self, order_no, quantity, *, due_days=10):
         return QualityOrder.objects.create(
             order_no=order_no,
@@ -34,6 +44,8 @@ class ConfirmedShipmentCorrectionApiTests(QualityTestMixin, TestCase):
             order_date=timezone.localdate(),
             due_date=timezone.localdate() + timedelta(days=due_days),
             created_by=self.user,
+            source_system=self.order.source_system,
+            product_specification=self.order.product_specification,
         )
 
     def create_confirmed_repeat(
@@ -384,7 +396,7 @@ class ConfirmedShipmentCorrectionApiTests(QualityTestMixin, TestCase):
         )
         self.assertFalse(batch.revisions.exists())
 
-    def test_downstream_return_is_recalculated_by_amend_but_still_blocks_void(self):
+    def test_amend_recalculates_return_but_preserves_actual_work_and_blocks_void(self):
         batch = self.create_confirmed_repeat()
         returned = self.client.post(
             "/api/quality/rework-cases/",
@@ -431,14 +443,21 @@ class ConfirmedShipmentCorrectionApiTests(QualityTestMixin, TestCase):
         self.assertEqual(allocation.piece_quantity, 800)
         self.assertEqual(allocation.net_weight_kg, Decimal("8.000"))
         attempt.refresh_from_db()
-        self.assertEqual(attempt.input_quantity, 800)
-        self.assertEqual(attempt.reworked_quantity, 800)
-        self.assertEqual(attempt.recovered_quantity, 720)
-        self.assertEqual(attempt.scrap_quantity, 40)
-        self.assertEqual(attempt.input_weight_kg, Decimal("8.000"))
-        self.assertEqual(attempt.reworked_weight_kg, Decimal("8.000"))
-        self.assertEqual(attempt.recovered_weight_kg, Decimal("7.200"))
-        self.assertEqual(attempt.scrap_weight_kg, Decimal("0.400"))
+        self.assertEqual(attempt.input_quantity, 1000)
+        self.assertEqual(attempt.reworked_quantity, 1000)
+        self.assertEqual(attempt.recovered_quantity, 900)
+        self.assertEqual(attempt.scrap_quantity, 50)
+        self.assertEqual(attempt.input_weight_kg, Decimal("10.000"))
+        self.assertEqual(attempt.reworked_weight_kg, Decimal("10.000"))
+        self.assertEqual(attempt.recovered_weight_kg, Decimal("9.000"))
+        self.assertEqual(attempt.scrap_weight_kg, Decimal("0.500"))
+        self.assertIn("已登记返工作业保留原值", case.notes)
+        revision = batch.revisions.get()
+        self.assertEqual(revision.before_snapshot["rework_attempts"], revision.after_snapshot["rework_attempts"])
+        attempt.notes = "源单更正后只补作业说明"
+        attempt.save()
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.recovered_quantity, 900)
         voided = self.client.post(
             f"{self.endpoint}{batch.pk}/void-confirmed/",
             {"void_reason": "不应成功"},
@@ -447,6 +466,55 @@ class ConfirmedShipmentCorrectionApiTests(QualityTestMixin, TestCase):
         self.assertEqual(voided.status_code, 400, voided.content)
         batch.refresh_from_db()
         self.assertEqual(batch.status, QualityShipmentBatch.Status.CONFIRMED)
+
+    def test_metadata_amend_preserves_historical_cross_customer_allocation(self):
+        second = self.create_order("HISTORICAL-TARGET", 1000)
+        self.order.order_quantity = 500
+        self.order.save()
+        batch = self.create_confirmed_repeat()
+        fields = ("order_id", "piece_quantity", "net_weight_kg", "order_no_snapshot", "item_no_snapshot", "specification_snapshot", "material_snapshot")
+        before = list(batch.lines.get().order_allocations.values_list(*fields))
+        second.source_system = "艾斯霖"
+        second.item_no = "人工修订后项次"
+        second.save()
+        response = self.amend(batch, notes="只更正备注，不重排旧分摊")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(list(batch.lines.get().order_allocations.values_list(*fields)), before)
+
+    def test_removing_returned_package_cannot_orphan_registered_actual_work(self):
+        self.order.order_quantity = 5000
+        self.order.save()
+        batch = self.create_confirmed_repeat(batch_count=2)
+        returned = self.client.post("/api/quality/rework-cases/", {
+            "origin": "CUSTOMER_RETURN", "shipment_batch_id": batch.pk,
+            "shipment_unit_no": 2, "reason_category": "APPEARANCE", "reason": "整包退回",
+        }, format="json")
+        self.assertEqual(returned.status_code, 201, returned.content)
+        was_current = QualityReworkCase.objects.get(pk=returned.json()["id"]).is_current_return
+        attempt = QualityReworkAttempt.objects.create(
+            case_id=returned.json()["id"], rework_employee=self.reworker,
+            input_quantity=1000, reworked_quantity=1000, recovered_quantity=900,
+            scrap_quantity=50, input_weight_kg=Decimal("10.000"),
+            reworked_weight_kg=Decimal("10.000"), recovered_weight_kg=Decimal("9.000"),
+            scrap_weight_kg=Decimal("0.500"), created_by=self.user,
+        )
+        before = (attempt.input_quantity, attempt.reworked_quantity, attempt.recovered_quantity, attempt.scrap_quantity)
+        line = batch.lines.get()
+        response = self.amend(batch, product_batch_count=1, lines=[{
+            "line_id": line.pk, "order_id": self.order.pk,
+            "unit_weight_g_snapshot": "10.00000", "single_batch_net_weight_kg": "10.000",
+            "process_card_shipment_quantity": 1000, "product_batch_count": 1,
+        }], removed_shipment_units=[2])
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("实际返工作业", str(response.json()))
+        attempt.refresh_from_db()
+        case = attempt.case
+        self.assertNotEqual(case.status, QualityReworkCase.Status.CANCELLED)
+        self.assertEqual(case.shipment_line_id, line.pk)
+        self.assertEqual(case.is_current_return, was_current)
+        self.assertEqual((attempt.input_quantity, attempt.reworked_quantity, attempt.recovered_quantity, attempt.scrap_quantity), before)
+        self.assertEqual(delivered_quantities_by_order([self.order.pk])[self.order.pk], 1000)
+        self.assertFalse(batch.revisions.exists())
 
     def test_amend_deletes_one_scanned_physical_shipment_and_recalculates_totals(self):
         self.order.order_quantity = 5_000

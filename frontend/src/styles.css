@@ -1096,6 +1096,26 @@ button, input, textarea, select { font: inherit; }
   margin-bottom: 16px;
 }
 
+.operations-page > .ant-alert, .order-overview-page > .ant-alert,
+.operations-filter-card { margin-bottom: 16px; }
+.operations-task-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.operations-task-grid > .ant-card { min-width: 0; }
+.operations-task-grid .ant-card-head-title { white-space: normal; overflow-wrap: anywhere; }
+.operations-task-grid .ant-typography { overflow-wrap: anywhere; }
+.operations-filters { width: 100%; margin-bottom: 12px; }
+.operations-filters .ant-input-search { width: min(100%, 360px); }
+.operations-filters .ant-select { min-width: 180px; }
+@media (max-width: 767px) {
+  .operations-filters, .operations-filters > .ant-space-item,
+  .operations-filters .ant-input-search, .operations-filters .ant-select { width: 100%; }
+  .operations-filters > .ant-space-item { min-width: 0; }
+}
+
 .production-order-allocation-row {
   display: flex;
   align-items: center;

@@ -1796,6 +1796,8 @@ export interface AnalyticsOperatorPerformance {
   employee_no?: string
   operator: string
   automatic_mold_count: number
+  primary_mold_count?: number
+  assisted_mold_count?: number
   manual_mold_count: number
   total_mold_count: number
   theoretical_output_quantity: number

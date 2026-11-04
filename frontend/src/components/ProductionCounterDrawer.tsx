@@ -5,6 +5,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { useEffect, useState } from 'react'
 import { productionApi } from '../api/client'
 import type { ProductionDailyLog, ProductionEmployee, ProductionRun } from '../types'
+import { suggestedProductionShift } from '../production'
 
 interface Props {
   open: boolean
@@ -17,8 +18,7 @@ interface Props {
 }
 
 function currentShift(): 'DAY' | 'NIGHT' {
-  const hour = dayjs().hour()
-  return hour >= 8 && hour < 20 ? 'DAY' : 'NIGHT'
+  return suggestedProductionShift()
 }
 
 function latestCumulative(run?: ProductionRun) {

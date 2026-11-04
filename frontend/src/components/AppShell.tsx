@@ -22,6 +22,7 @@ const { Header, Sider, Content } = Layout
 
 const menuItems = [
   { key: '/', icon: <HomeOutlined />, label: '工作台' },
+  { key: '/operations', icon: <ScheduleOutlined />, label: '全厂待办' },
   { key: '/product-specifications', icon: <ProfileOutlined />, label: '产品规格资料' },
   { key: '/orders', icon: <OrderedListOutlined />, label: '订单管理' },
   { key: '/production', icon: <ScheduleOutlined />, label: '前端生产' },

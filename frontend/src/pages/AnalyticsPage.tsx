@@ -221,7 +221,7 @@ export function AnalyticsPage() {
   const operatorColumns: TableColumnsType<AnalyticsOperatorPerformance> = [
     { title: '作业员', dataIndex: 'operator', fixed: 'left', width: 130, render: (value) => <strong>{value || '未填写'}</strong> },
     { title: '来源', dataIndex: 'source', width: 125, render: (value) => <SourceTag source={value} /> },
-    { title: '自动 / 手工 / 合计模数', key: 'molds', width: 190, render: (_, row) => `${numberText(row.automatic_mold_count)} / ${numberText(row.manual_mold_count)} / ${numberText(row.total_mold_count)}` },
+    { title: '参与自动 / 手工 / 合计模数', key: 'molds', width: 200, render: (_, row) => <span>{`${numberText(row.automatic_mold_count)} / ${numberText(row.manual_mold_count)} / ${numberText(row.total_mold_count)}`}<br /><Typography.Text type="secondary">主作业 {numberText(row.primary_mold_count)} · 协助 {numberText(row.assisted_mold_count)}</Typography.Text></span> },
     { title: '生产天数', dataIndex: 'production_days', width: 105, render: (value) => `${numberText(value)} 天` },
     { title: '折算工时', dataIndex: 'automatic_equivalent_hours', width: 110, render: (value) => `${numberText(value, 2)} h` },
     { title: '填报工时', dataIndex: 'manual_reported_hours', width: 110, render: (_, row) => manualHoursText(row) },
@@ -233,7 +233,7 @@ export function AnalyticsPage() {
     { title: '来源', dataIndex: 'source', width: 125, render: (value) => <SourceTag source={value} /> },
     { title: '自动 / 手工 / 合计模数', key: 'molds', width: 190, render: (_, row) => `${numberText(row.automatic_mold_count)} / ${numberText(row.manual_mold_count)} / ${numberText(row.total_mold_count)}` },
     { title: '折算 / 上下机间隔 / 填报工时', key: 'hours', width: 245, render: (_, row) => `${numberText(row.automatic_equivalent_hours, 2)} / ${row.actual_machine_time_record_count ? numberText(row.automatic_actual_machine_hours, 2) : '未登记'} / ${manualHoursText(row)}` },
-    { title: '自动机台效率', dataIndex: 'automatic_efficiency_percent', width: 125, render: rateText },
+    { title: '折算工时 / 上下机间隔（非实测效率）', dataIndex: 'automatic_efficiency_percent', width: 200, render: rateText },
     { title: '订单数', dataIndex: 'run_count', width: 90, render: (value) => numberText(value) },
     { title: '收入', dataIndex: 'revenue', width: 120, render: (value, row) => row.finance_record_count ? moneyText(value) : '未录入' },
     { title: '成本', dataIndex: 'total_cost', width: 120, render: (value, row) => row.finance_record_count ? moneyText(value) : '未录入' },
@@ -433,6 +433,7 @@ export function AnalyticsPage() {
       <Card className="analytics-chart-card analytics-profit-trend-card" title="每日收入 · 成本 · 利润趋势"><DailyProfitChart rows={data?.daily_trend || []} /></Card>
 
       <Card className="analytics-tabs-card data-card">
+        <Alert type="info" showIcon title="人员为参与量，不可相加为全厂产量" description="主要作业员和协助人员各显示参与的全部模数；全厂、机台和订单只计一次。折算工时与上下机间隔不是已扣休息的个人实测工时。" />
         <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
           { key: 'production', label: '生产绩效', children: <div className="analytics-tab-content"><Row gutter={[16, 16]}><Col xs={24} xl={10}><Card title="人员模数排行"><RankBarChart items={(data?.operator_performance || []).map((row) => ({ key: row.operator, label: row.operator, value: row.total_mold_count, detail: `${row.production_days}天 · 日均${numberText(row.average_daily_mold_count, 2)}`, source: row.source }))} valueSuffix=" 模" /></Card></Col><Col xs={24} xl={14}><Card title="机台效率与利润" styles={{ body: { padding: 0 } }}><Table rowKey={(row) => row.machine_id || row.station_id || row.machine_code} dataSource={data?.station_performance || []} columns={stationColumns} scroll={{ x: 1130 }} pagination={{ pageSize: 10 }} /></Card></Col></Row><Card className="analytics-detail-table" title="人员绩效明细" styles={{ body: { padding: 0 } }}><Table rowKey="operator" dataSource={data?.operator_performance || []} columns={operatorColumns} scroll={{ x: 1080 }} pagination={{ pageSize: 15 }} /></Card></div> },
           { key: 'quality', label: '品检与返工绩效', children: <div className="analytics-tab-content"><Row gutter={[16, 16]}><Col xs={24} xl={12}><Card title="归属出货＋已登记返工作业件数排行"><RankBarChart items={(data?.quality_employee_performance || []).filter((row) => row.shipped_quantity + row.reworked_quantity > 0).map((row) => ({ key: row.employee_id || row.name, label: row.name, value: row.shipped_quantity + row.reworked_quantity, detail: `归属出货${numberText(row.shipped_quantity)} · ${reworkMetricText(row)}`, source: row.source }))} valueSuffix=" 件" emptyText="所选期间暂无已归属员工的出货或返工数据" /></Card></Col><Col xs={24} xl={12}><Card title="退回原因排行与占比"><RankBarChart items={(data?.defect_reason_breakdown || []).map((row) => ({ key: row.reason_category, label: row.reason_category_display || row.reason_category, value: row.returned_quantity, detail: `占退回 ${rateText(row.share_of_returns)} · 返工通过 ${rateText(row.rework_pass_rate)}`, source: row.source }))} valueSuffix=" 件" emptyText="所选期间暂无退回原因数据" /></Card></Col></Row><Card className="analytics-detail-table" title="员工绩效明细" styles={{ body: { padding: 0 } }}>{qualityEmployeeSection}</Card></div> },

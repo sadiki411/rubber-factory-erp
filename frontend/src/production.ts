@@ -1,6 +1,13 @@
 import dayjs, { type Dayjs } from 'dayjs'
 import type { ProductionReminderStatus, ProductionRunStatus, ProductionStation, ProductionStationGroup } from './types'
 
+export function suggestedProductionShift(now = new Date()): 'DAY' | 'NIGHT' {
+  // Shift boundaries follow the factory's China time, not the device timezone.
+  const china = new Date(now.getTime() + 8 * 60 * 60 * 1000)
+  const minute = china.getUTCHours() * 60 + china.getUTCMinutes()
+  return minute >= 450 && minute < 1170 ? 'DAY' : 'NIGHT'
+}
+
 type MonthlyPerformanceTotals = {
   production_days: number
   operator_day_count?: number

@@ -206,7 +206,7 @@ export function QualityPage() {
   const [ordering, setOrdering] = useState('-shipment_date')
   const [ledgerPage, setLedgerPage] = useState(1)
   const [ledgerPageSize, setLedgerPageSize] = useState(20)
-  const [activeTab, setActiveTab] = useState('workflow')
+  const [activeTab, setActiveTab] = useState(() => ['workflow', 'daily', 'reworks', 'orders', 'employees'].includes(new URLSearchParams(window.location.search).get('tab') || '') ? new URLSearchParams(window.location.search).get('tab')! : 'workflow')
   const [shipmentForm, setShipmentForm] = useState<{ shipment?: QualityShipment; mode?: 'PIECES' | 'WEIGHTED' }>()
   const [pieceReturnForm, setPieceReturnForm] = useState<{ rework?: ReturnRework }>()
   const [shipmentSessionKey, setShipmentSessionKey] = useState(0)

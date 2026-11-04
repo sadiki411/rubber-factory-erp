@@ -12,6 +12,8 @@ const ImportPage = lazy(() => import('./pages/ImportPage').then((module) => ({ d
 const MoldDetailPage = lazy(() => import('./pages/MoldDetailPage').then((module) => ({ default: module.MoldDetailPage })))
 const MoldsPage = lazy(() => import('./pages/MoldsPage').then((module) => ({ default: module.MoldsPage })))
 const OrdersPage = lazy(() => import('./pages/OrdersPage').then((module) => ({ default: module.OrdersPage })))
+const OperationsPage = lazy(() => import('./pages/OperationsPage').then((module) => ({ default: module.OperationsPage })))
+const OrderOverviewPage = lazy(() => import('./pages/OrderOverviewPage').then((module) => ({ default: module.OrderOverviewPage })))
 const ProductionPage = lazy(() => import('./pages/ProductionPage').then((module) => ({ default: module.ProductionPage })))
 const ProductSpecificationsPage = lazy(() => import('./pages/ProductSpecificationsPage').then((module) => ({ default: module.ProductSpecificationsPage })))
 const QualityPage = lazy(() => import('./pages/QualityPage').then((module) => ({ default: module.QualityPage })))
@@ -83,6 +85,8 @@ export function App() {
           <Route index element={<DashboardPage />} />
           <Route path="product-specifications" element={<ProductSpecificationsPage />} />
           <Route path="orders" element={<OrdersPage />} />
+          <Route path="operations" element={<OperationsPage />} />
+          <Route path="order-overview/:id" element={<OrderOverviewPage />} />
           <Route path="production" element={<ProductionPage />} />
           <Route path="quality" element={<QualityPage />} />
           <Route path="analytics" element={<AnalyticsPage />} />

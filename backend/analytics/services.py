@@ -455,6 +455,8 @@ def _operator_row(operator, employee=None):
         "employee_no": employee.employee_no if employee else "",
         "operator": operator,
         "automatic_mold_count": 0,
+        "primary_mold_count": 0,
+        "assisted_mold_count": 0,
         "manual_mold_count": 0,
         "total_mold_count": 0,
         "theoretical_output_quantity": 0,
@@ -1068,7 +1070,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         is_cancelled=False,
     ).exclude(run__status=ProductionRun.Status.CANCELLED).select_related(
         "run__station__machine", "run__mold__mold_model", "run__order", "employee"
-    ).prefetch_related("run__order_links__order")
+    ).prefetch_related("run__order_links__order", "assistant_employees")
     logs_qs = _filter_production(
         logs_qs, group=group, machine_id=machine_id, prefix="run__"
     )
@@ -1254,15 +1256,25 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         day["automatic_equivalent_hours"] += equivalent_hours
 
         operator_name = log.employee.name if log.employee_id else (" ".join(str(log.operator or "未指定").split()) or "未指定")
-        operator_key = _employee_key(log.employee, operator_name)
-        operator = operators.setdefault(operator_key, _operator_row(operator_name, log.employee))
-        operator["automatic_mold_count"] += molds
-        operator["total_mold_count"] += molds
-        operator["theoretical_output_quantity"] += output
-        operator["automatic_equivalent_hours"] += equivalent_hours
-        operator["production_days"].add(log.production_date)
-        operator["run_ids"].add(run.pk)
-        operator["automatic_record_count"] += 1
+        participants = [(log.employee, operator_name, "primary_mold_count")]
+        participants.extend(
+            (employee, employee.name, "assisted_mold_count")
+            for employee in log.assistant_employees.all()
+            if employee.pk != log.employee_id
+        )
+        # Participation is shown in full for each person. Factory/day/machine
+        # and order totals above/below remain one count per physical log.
+        for employee, name, role_field in participants:
+            operator_key = _employee_key(employee, name)
+            operator = operators.setdefault(operator_key, _operator_row(name, employee))
+            operator["automatic_mold_count"] += molds
+            operator[role_field] += molds
+            operator["total_mold_count"] += molds
+            operator["theoretical_output_quantity"] += output
+            operator["automatic_equivalent_hours"] += equivalent_hours
+            operator["production_days"].add(log.production_date)
+            operator["run_ids"].add(run.pk)
+            operator["automatic_record_count"] += 1
 
         machine = run.station.machine
         machine_key = _machine_key(machine, run.station)

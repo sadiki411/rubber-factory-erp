@@ -1428,10 +1428,11 @@ class ProductionCounterLogSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def suggested_shift():
-        hour = timezone.localtime().hour
+        local = timezone.localtime()
+        minute = local.hour * 60 + local.minute
         return (
             ProductionDailyLog.Shift.DAY
-            if 8 <= hour < 20
+            if 7 * 60 + 30 <= minute < 19 * 60 + 30
             else ProductionDailyLog.Shift.NIGHT
         )
 

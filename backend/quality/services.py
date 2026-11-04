@@ -8,6 +8,7 @@ from typing import Iterable
 from django.db import IntegrityError, OperationalError, connection, transaction
 from django.db.models import Max, Prefetch, Q, Sum
 from django.utils import timezone
+from orders.identities import can_auto_allocate_orders
 
 from .models import (
     DefectReason,
@@ -399,7 +400,7 @@ def build_order_allocation_plan(
     matching_ids = list(matching_query.values_list("pk", flat=True))
     all_ids = sorted({source_order.pk, *matching_ids})
     locked_query = QualityOrder.objects.filter(pk__in=all_ids).select_related(
-        "product_specification"
+        "product_specification", "source_batch", "last_source_batch"
     )
     if lock:
         locked_query = locked_query.select_for_update()
@@ -429,6 +430,7 @@ def build_order_allocation_plan(
             == locked_specification
             and str(orders_by_id[order_id].material or "").strip().casefold()
             == locked_material
+            and can_auto_allocate_orders(source, orders_by_id[order_id])
         ),
         key=_allocation_order_key,
     )
@@ -569,7 +571,8 @@ def split_allocation_weights(
 
 
 def build_shipment_line_allocation_plans(
-    lines: Iterable[QualityShipmentLine], *, lock: bool = False
+    lines: Iterable[QualityShipmentLine], *, lock: bool = False,
+    preserved_allocations: dict | None = None,
 ) -> list[dict]:
     """Allocate physical shipment lines while sharing one locked order balance.
 
@@ -598,6 +601,8 @@ def build_shipment_line_allocation_plans(
             identities.add((specification, material))
 
     all_ids = set(source_ids)
+    for shares in (preserved_allocations or {}).values():
+        all_ids.update(share["order_id"] for share in shares)
     for specification, material in identities:
         all_ids.update(
             QualityOrder.objects.filter(
@@ -607,13 +612,16 @@ def build_shipment_line_allocation_plans(
             ).values_list("pk", flat=True)
         )
     order_query = QualityOrder.objects.filter(pk__in=all_ids).select_related(
-        "product_specification"
+        "product_specification", "source_batch", "last_source_batch"
     )
     if lock:
         order_query = order_query.select_for_update()
     orders = {item.pk: item for item in order_query.order_by("pk")}
     delivered = delivered_quantities_by_order(all_ids)
     reserved = {order_id: int(value) for order_id, value in delivered.items()}
+    for shares in (preserved_allocations or {}).values():
+        for share in shares:
+            reserved[share["order_id"]] = reserved.get(share["order_id"], 0) + int(share["piece_quantity"])
     plans = []
 
     for line in physical_lines:
@@ -630,6 +638,36 @@ def build_shipment_line_allocation_plans(
         requested = shipment_line_piece_quantity(line)
         if requested < 1:
             raise ValueError("本次出货件数必须大于0。")
+        fixed = (preserved_allocations or {}).get(line.pk)
+        if fixed:
+            if sum(int(share["piece_quantity"]) for share in fixed) != requested:
+                raise ValueError("原分摊与当前物理数量不一致，不能沿用。")
+            weights = [Decimal(share["net_weight_kg"]) for share in fixed]
+            if sum(weights, Decimal("0")) != line.net_weight_kg:
+                weights = split_allocation_weights(line.net_weight_kg, [share["piece_quantity"] for share in fixed])
+            segments = []
+            cursor = 0
+            for sequence, (share, weight) in enumerate(zip(fixed, weights), 1):
+                quantity = int(share["piece_quantity"])
+                order = orders[share["order_id"]]
+                segments.append({
+                    "order": order, "sequence": sequence, "piece_start": cursor,
+                    "piece_end": cursor + quantity, "piece_quantity": quantity,
+                    "net_weight_kg": weight, "is_overflow": share["is_overflow"],
+                    "is_source": order.pk == source.pk,
+                    "snapshots": {field: share[field] for field in (
+                        "order_no_snapshot", "item_no_snapshot", "specification_snapshot", "material_snapshot",
+                    ) if field in share},
+                })
+                cursor += quantity
+            plans.append({
+                "shipment_line": line, "source_order": source,
+                "requested_quantity": requested, "allocations": segments,
+                "matching_allocated_quantity": sum(item["piece_quantity"] for item in segments if not item["is_source"]),
+                "overflow_quantity": sum(item["piece_quantity"] for item in segments if item["is_overflow"]),
+                "total_allocated_quantity": cursor,
+            })
+            continue
         specification = str(source.specification or "").strip().casefold()
         material = str(source.material or "").strip().casefold()
         candidates = sorted(
@@ -643,6 +681,7 @@ def build_shipment_line_allocation_plans(
                 and str(item.specification or "").strip().casefold()
                 == specification
                 and str(item.material or "").strip().casefold() == material
+                and can_auto_allocate_orders(source, item)
             ),
             key=_allocation_order_key,
         )

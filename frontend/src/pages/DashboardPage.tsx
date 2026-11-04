@@ -88,6 +88,7 @@ export function DashboardPage() {
           aria-label="搜索模具"
         />
         <div className="quick-links">
+          <Button onClick={() => navigate('/operations')}>全厂待办与订单追踪</Button>
           <Button icon={<AppstoreOutlined />} onClick={() => navigate('/racks')}>查看货架正面图</Button>
           <Button icon={<ToolOutlined />} onClick={() => navigate('/molds')}>打开完整台账</Button>
         </div>

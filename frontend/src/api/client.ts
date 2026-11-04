@@ -1,3 +1,4 @@
+import type { OrderOverviewResult, OrderTraceSection, WorkbenchResult } from '../operations'
 import type {
   ApiList,
   AnalyticsDashboard,
@@ -401,6 +402,8 @@ export interface OrderFilters {
 }
 
 export const orderApi = {
+  workbench: (filters: { q?: string; kind?: string; page?: number; page_size?: number } = {}, init: RequestInit = {}) => apiFetch<WorkbenchResult>(`/api/orders/workbench/${queryString(filters)}`, init),
+  overview: (id: number, filters: { section?: OrderTraceSection; page?: number; page_size?: number } = {}, init: RequestInit = {}) => apiFetch<OrderOverviewResult>(`/api/orders/orders/${id}/overview/${queryString(filters)}`, init),
   list: (filters: OrderFilters = {}, init: RequestInit = {}) => apiFetch<ApiList<Order> | Order[]>(`/api/orders/orders/${queryString(filters)}`, init),
   detail: (id: number | string) => apiFetch<Order>(`/api/orders/orders/${id}/`),
   create: (body: Partial<Order>) => apiFetch<Order>('/api/orders/orders/', {
@@ -710,6 +713,10 @@ export const qualityWorkflowApi = {
     apiFetch<QualityShipmentAllocationPreview>('/api/quality/shipment-batches/allocation-preview/', {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+  previewShipmentAllocations: (lines: { order_id: number; piece_quantity: number }[]) =>
+    apiFetch<{ results: QualityShipmentAllocationPreview[] }>('/api/quality/shipment-batches/allocation-preview/', {
+      method: 'POST', body: JSON.stringify({ lines }),
     }),
   checkShipmentNo: (shipmentNo: string, excludeId?: number | string) =>
     apiFetch<{ exists?: boolean; duplicate?: boolean; shipment?: QualityShipmentBatch }>(`/api/quality/shipment-batches/check-shipment-no/${queryString({ shipment_no: shipmentNo, exclude_id: excludeId })}`),

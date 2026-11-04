@@ -16,6 +16,7 @@ const apiMocks = vi.hoisted(() => ({
   checkShipmentNo: vi.fn(),
   listShipmentCandidates: vi.fn(),
   previewShipmentAllocation: vi.fn(),
+  previewShipmentAllocations: vi.fn(),
   getShipmentBatch: vi.fn(),
   createShipmentBatch: vi.fn(),
   updateShipmentBatch: vi.fn(),
@@ -95,6 +96,7 @@ vi.mock('../api/client', () => ({
     checkShipmentNo: apiMocks.checkShipmentNo,
     listShipmentCandidates: apiMocks.listShipmentCandidates,
     previewShipmentAllocation: apiMocks.previewShipmentAllocation,
+    previewShipmentAllocations: apiMocks.previewShipmentAllocations,
     getShipmentBatch: apiMocks.getShipmentBatch,
     createShipmentBatch: apiMocks.createShipmentBatch,
     updateShipmentBatch: apiMocks.updateShipmentBatch,
@@ -135,6 +137,9 @@ describe('QualityWeightShipmentDrawer', () => {
     apiMocks.checkShipmentNo.mockReset().mockResolvedValue({ exists: false })
     apiMocks.listShipmentCandidates.mockReset().mockResolvedValue([])
     apiMocks.previewShipmentAllocation.mockReset()
+    apiMocks.previewShipmentAllocations.mockReset().mockImplementation(async (lines: { order_id: number; piece_quantity: number }[]) => ({
+      results: await Promise.all(lines.map((line) => apiMocks.previewShipmentAllocation(line))),
+    }))
     apiMocks.getShipmentBatch.mockReset()
     apiMocks.createShipmentBatch.mockReset()
     apiMocks.updateShipmentBatch.mockReset()
@@ -381,7 +386,9 @@ describe('QualityWeightShipmentDrawer', () => {
     expect(weightInputs[1]).toHaveValue('2.500')
     fireEvent.change(weightInputs[0], { target: { value: '2.4' } })
     fireEvent.change(weightInputs[1], { target: { value: '2.5' } })
-    await waitFor(() => expect(apiMocks.previewShipmentAllocation).toHaveBeenLastCalledWith({ order_id: order.id, piece_quantity: 196 }))
+    await waitFor(() => expect(apiMocks.previewShipmentAllocations).toHaveBeenLastCalledWith([
+      { order_id: order.id, piece_quantity: 96 }, { order_id: order.id, piece_quantity: 100 },
+    ]))
     expect(screen.getByText('按重量明细顺序跨订单分配')).toBeInTheDocument()
     const confirmButton = screen.getByRole('button', { name: '确认出货' })
     // Allocation rendering and the debounced number check finish separately.
@@ -443,7 +450,7 @@ describe('QualityWeightShipmentDrawer', () => {
     ])
   }, 120_000)
 
-  it('shows a grouped allocation preview and submits process-card basket lines', async () => {
+  it('previews basket rows with one shared balance and submits their physical lines', async () => {
     const user = userEvent.setup()
     const sourceOrder: QualityOrder = { ...order, remaining_quantity: 100 }
     const nextOrder: QualityOrder = { ...order, id: 9, order_no: 'BASKET-NEXT-009', item_no: '30', remaining_quantity: 500 }
@@ -461,19 +468,44 @@ describe('QualityWeightShipmentDrawer', () => {
       total_allocated_quantity: 200,
     })
     const lines = [1, 2].map((id) => ({ key: id, process_card_id: id, card_no: `BASKET-CARD-${id}`, order_id: sourceOrder.id, order: sourceOrder, remaining_quantity: 100, unit_weight_g: 25, net_weight_kg: 2.5, specification_snapshot: sourceOrder.specification, material_snapshot: sourceOrder.material }))
+    apiMocks.previewShipmentAllocations.mockResolvedValue({ results: [
+      { source_order_id: sourceOrder.id, total_allocated_quantity: 100, matching_allocated_quantity: 0, overflow_quantity: 0, allocations: [{ order_id: sourceOrder.id, order_no: sourceOrder.order_no, allocated_quantity: 100, remaining_before: 100, remaining_after: 0, is_source: true }] },
+      { source_order_id: sourceOrder.id, total_allocated_quantity: 100, matching_allocated_quantity: 100, overflow_quantity: 0, allocations: [{ order_id: nextOrder.id, order_no: nextOrder.order_no, allocated_quantity: 100, remaining_before: 500, remaining_after: 400, is_source: false }] },
+    ] })
     const confirmed = { id: 901, order_allocations: [{ id: 1, order_id: sourceOrder.id, piece_quantity: 100 }, { id: 2, order_id: nextOrder.id, piece_quantity: 100 }] }
     const onSubmit = vi.fn().mockResolvedValue(confirmed)
     renderDrawer(onSubmit, { orders: [sourceOrder, nextOrder], lines })
 
     fireEvent.change(screen.getByLabelText('规格'), { target: { value: sourceOrder.specification } })
     fireEvent.change(screen.getByLabelText('材质 / 胶料'), { target: { value: sourceOrder.material } })
-    await waitFor(() => expect(apiMocks.previewShipmentAllocation).toHaveBeenLastCalledWith({ order_id: sourceOrder.id, piece_quantity: 200 }))
+    await waitFor(() => expect(apiMocks.previewShipmentAllocations).toHaveBeenLastCalledWith([
+      { order_id: sourceOrder.id, piece_quantity: 100 }, { order_id: sourceOrder.id, piece_quantity: 100 },
+    ]))
     expect(screen.getByText('按重量明细顺序跨订单分配')).toBeInTheDocument()
     expect(screen.getByText(/BASKET-NEXT-009/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '确认出货' }))
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     expect(await screen.findByText('重量出货已保存，实际计入 2 个订单')).toBeInTheDocument()
   }, 30_000)
+
+  it('does not merge same-specification basket rows from different source orders', async () => {
+    const nextOrder = { ...order, id: 42, order_no: 'EXPLICIT-OTHER-CUSTOMER' }
+    const lines = [order, nextOrder, order].map((source, index) => ({
+      key: index, order_id: source.id, order: source, unit_weight_g: 25,
+      net_weight_kg: 2.5, process_card_shipment_quantity: 100, remaining_quantity: 100,
+      specification_snapshot: source.specification, material_snapshot: source.material,
+    }))
+    apiMocks.previewShipmentAllocations.mockResolvedValue({ results: [order, nextOrder, order].map((source) => ({
+      source_order_id: source.id, total_allocated_quantity: 100, matching_allocated_quantity: 0,
+      overflow_quantity: 0, allocations: [],
+    })) })
+    renderDrawer(undefined, { orders: [order, nextOrder], lines })
+    await waitFor(() => expect(apiMocks.previewShipmentAllocations).toHaveBeenLastCalledWith([
+      { order_id: order.id, piece_quantity: 100 }, { order_id: nextOrder.id, piece_quantity: 100 },
+      { order_id: order.id, piece_quantity: 100 },
+    ]))
+    expect(screen.getByText(/跨客户请明确选单另列明细/)).toBeInTheDocument()
+  }, 20_000)
 
   it('uses the process-card planned quantity when a new card has delivered quantity zero', async () => {
     const user = userEvent.setup()

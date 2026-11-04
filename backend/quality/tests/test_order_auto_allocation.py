@@ -3,6 +3,8 @@ from decimal import Decimal
 
 from django.db.models import Sum
 from django.test import TestCase
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from quality.models import (
@@ -19,6 +21,17 @@ from .helpers import QualityTestMixin, response_results
 
 
 class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        from orders.models import ProductSpecification
+        product = ProductSpecification.objects.create(
+            specification=cls.order.specification, material=cls.order.material,
+        )
+        cls.order.product_specification = product
+        cls.order.source_system = "翔邦"
+        cls.order.save()
+
     def create_order(self, order_no, quantity, *, due_days=10, **overrides):
         values = {
             "order_no": order_no,
@@ -29,9 +42,75 @@ class OrderAutoAllocationApiTests(QualityTestMixin, TestCase):
             "order_date": timezone.localdate(),
             "due_date": timezone.localdate() + timedelta(days=due_days),
             "created_by": self.user,
+            "source_system": self.order.source_system,
+            "product_specification": self.order.product_specification,
         }
         values.update(overrides)
         return QualityOrder.objects.create(**values)
+
+    def test_automatic_allocation_requires_known_same_customer_and_product(self):
+        from orders.models import ProductSpecification
+        self.order.order_quantity = 100
+        self.order.save()
+        self.create_order("OTHER-CUSTOMER", 100, source_system="艾斯霖")
+        self.create_order("UNKNOWN-CUSTOMER", 100, source_system="")
+        self.create_order("NO-PRODUCT", 100, product_specification=None)
+        other = ProductSpecification.objects.create(
+            product_name="另一档案", specification=self.order.specification,
+            material=self.order.material,
+        )
+        self.create_order("OTHER-PRODUCT", 100, product_specification=other)
+        allowed = self.create_order("SAME-IDENTITY", 100)
+        preview = self.client.post(
+            "/api/quality/shipment-batches/allocation-preview/",
+            {"order_id": self.order.pk, "piece_quantity": 300}, format="json",
+        )
+        self.assertEqual(preview.status_code, 200, preview.content)
+        self.assertEqual(
+            [row["order_id"] for row in preview.json()["allocations"]],
+            [self.order.pk, allowed.pk, self.order.pk],
+        )
+        draft = self.repeat_draft(batch_count=3)
+        self.assertEqual(self.confirm(draft.json()["id"]).status_code, 200)
+        self.assertEqual(self.line_quantities(draft.json()["id"]), {
+            self.order.pk: 200, allowed.pk: 100,
+        })
+
+    def test_unknown_source_does_not_guess_customer_from_matching_specification(self):
+        self.order.source_system = "供应商名不是客户"
+        self.order.save()
+        self.create_order("UNKNOWN-SAME-SUPPLIER", 100)
+        from quality.services import build_order_allocation_plan
+        plan = build_order_allocation_plan(self.order, 2000)
+        self.assertEqual({row["order"].pk for row in plan["allocations"]}, {self.order.pk})
+
+    def test_multi_source_preview_shares_balance_and_preserves_row_order_without_writes(self):
+        self.order.order_quantity = 100
+        self.order.save()
+        second = self.create_order("PREVIEW-B", 100)
+        other = self.create_order("PREVIEW-OTHER-CUSTOMER", 100, source_system="艾斯霖")
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.post(
+                "/api/quality/shipment-batches/allocation-preview/",
+                {"lines": [
+                    {"order_id": self.order.pk, "piece_quantity": 150},
+                    {"order_id": second.pk, "piece_quantity": 100},
+                    {"order_id": self.order.pk, "piece_quantity": 25},
+                    {"order_id": other.pk, "piece_quantity": 100},
+                ]}, format="json",
+            )
+        self.assertEqual(response.status_code, 200, response.content)
+        rows = response.json()["results"]
+        self.assertEqual([row["source_order_id"] for row in rows], [self.order.pk, second.pk, self.order.pk, other.pk])
+        self.assertEqual([row["overflow_quantity"] for row in rows], [0, 50, 25, 0])
+        self.assertEqual([row["allocated_quantity"] for row in rows[0]["allocations"]], [100, 50])
+        self.assertEqual(rows[1]["allocations"][0]["remaining_before"], 50)
+        self.assertFalse(any(row["sql"].lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for row in queries))
+
+    def test_multi_preview_rejects_invalid_quantities_and_missing_orders(self):
+        for lines in ([], [{"order_id": self.order.pk, "piece_quantity": "1.5"}], [{"order_id": 999999, "piece_quantity": 10}]):
+            response = self.client.post("/api/quality/shipment-batches/allocation-preview/", {"lines": lines}, format="json")
+            self.assertEqual(response.status_code, 400, response.content)
 
     def repeat_draft(
         self,

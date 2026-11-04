@@ -685,33 +685,27 @@ export function QualityWeightShipmentDrawer({
       }]
     }
 
-    const groups = new Map<string, AllocationPreviewGroup>()
-    activeLines.forEach((line) => {
+    const groups: AllocationPreviewGroup[] = []
+    activeLines.forEach((line, index) => {
       const order = lineOrder(line, allKnownOrders)
       const orderId = numeric(line.order_id ?? order?.id)
       const quantity = numeric(editableLineMetrics(line).quantity)
       if (orderId == null || quantity == null || quantity < 1) return
       const specification = text(line.specification_snapshot || order?.specification)
       const material = text(line.material_snapshot || order?.material)
-      const productKey = specification && material
-        ? `${specification.toLocaleLowerCase()}\u0000${material.toLocaleLowerCase()}`
-        : `order-${orderId}`
-      const current = groups.get(productKey)
-      if (current) {
-        current.pieceQuantity += Math.round(quantity)
-        current.lineCount += 1
-      } else {
-        groups.set(productKey, {
-          key: productKey,
+      // Preserve physical row order, including A/B/A source orders. Grouping
+      // by spec/material (or by order alone) hides customer identity and can
+      // change which row consumes a shared remaining balance first.
+      groups.push({
+          key: `line-${index}-order-${orderId}`,
           orderId,
           pieceQuantity: Math.round(quantity),
           specification,
           material,
           lineCount: 1,
         })
-      }
     })
-    return [...groups.values()]
+    return groups
   }, [activeLines, allKnownOrders, calculatedPieces, effectiveBatchCount, isLineMode, materialValue, selectedOrder, specificationValue])
 
   const allocationPreviewGroupKey = useMemo(() => JSON.stringify(allocationPreviewGroups.map((group) => ({
@@ -833,7 +827,6 @@ export function QualityWeightShipmentDrawer({
     // line mode; otherwise every historic card would reappear in the next new
     // shipment and hide the scanner.
     const seededLines = seedLines(draftLines, EMPTY_PROCESS_CARDS)
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLines(seededLines)
     setEditableBindings(amendConfirmed && activeBatch?.status === 'CONFIRMED'
       ? editableBindingSeeds(activeBatch, seededLines)
@@ -1110,17 +1103,25 @@ export function QualityWeightShipmentDrawer({
       setLoadingAllocationPreview(true)
     }, 0)
     const timer = window.setTimeout(async () => {
-      const results = await Promise.all(allocationPreviewGroups.map(async (group): Promise<AllocationPreviewResult> => {
-        try {
+      let results: AllocationPreviewResult[]
+      try {
+        if (allocationPreviewGroups.length === 1) {
+          const group = allocationPreviewGroups[0]
           const preview = await qualityWorkflowApi.previewShipmentAllocation({
             order_id: group.orderId,
             piece_quantity: group.pieceQuantity,
           })
-          return { ...group, preview }
-        } catch (error) {
-          return { ...group, error: (error as Error).message || '自动分配预览读取失败。' }
+          results = [{ ...group, preview }]
+        } else {
+          const response = await qualityWorkflowApi.previewShipmentAllocations(allocationPreviewGroups.map((group) => ({
+            order_id: group.orderId, piece_quantity: group.pieceQuantity,
+          })))
+          if (response.results.length !== allocationPreviewGroups.length) throw new Error('预览明细数量不一致，请重试。')
+          results = allocationPreviewGroups.map((group, index) => ({ ...group, preview: response.results[index] }))
         }
-      }))
+      } catch (error) {
+        results = allocationPreviewGroups.map((group) => ({ ...group, error: (error as Error).message || '自动分配预览读取失败。' }))
+      }
       if (requestId !== allocationRequestRef.current) return
       setAllocationPreviews(results)
       setLoadingAllocationPreview(false)
@@ -1873,9 +1874,10 @@ export function QualityWeightShipmentDrawer({
       type="info"
       showIcon
       message="按重量明细顺序跨订单分配"
-      description="流程卡上的唯一订单作为来源身份锚点；系统按规格、材质分组汇总预览，确认时再逐条包装分配到仍未完成的匹配订单。"
+      description="仅自动补入同客户、同产品档案、同规格材质的订单。客户或产品身份不明时不自动扩单；跨客户请明确选单另列明细。历史分摊不因本次规则自动重排。"
     />}
-    {loadingAllocationPreview && <Typography.Text type="secondary">正在根据相同规格、相同材质订单计算分配…</Typography.Text>}
+    <Typography.Paragraph type="secondary">自动分配范围：同客户且产品档案明确一致；缺身份不猜配，来源订单仍可正常出货。</Typography.Paragraph>
+    {loadingAllocationPreview && <Typography.Text type="secondary">正在按客户、产品档案及规格材质计算分配…</Typography.Text>}
     {!loadingAllocationPreview && !allocationPreviews.length && <Typography.Text type="secondary">正在准备分配预览…</Typography.Text>}
     {!loadingAllocationPreview && allocationPreviews.map((item) => {
       const preview = item.preview

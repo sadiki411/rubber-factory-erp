@@ -58,6 +58,7 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
             product_name=self.order.product_name, order_quantity=71579,
             order_date=timezone.localdate(), created_by=self.user,
         )
+        self.identify_same_customer_product(self.order, target)
         card = ProcessCard.objects.create(
             card_no="04-M003-2607080061", order=self.order, quantity=8082,
             unit_weight_g=Decimal("1.12600"), created_by=self.user,
@@ -862,11 +863,13 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
 
     def test_cross_order_repeat_bindings_infer_each_physical_units_order(self):
         """A selected source order must not be copied onto every scanned card."""
-
+        self.identify_same_customer_product(self.order)
         self.order.order_quantity = 1_000
         self.order.save(update_fields=["order_quantity", "updated_at"])
         second = QualityOrder.objects.create(
             order_no="ORD-CARD-AUTO-SECOND",
+            source_system=self.order.source_system,
+            product_specification=self.order.product_specification,
             item_no="20",
             product_name=self.order.product_name,
             specification=self.order.specification,
@@ -916,11 +919,13 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
 
     def test_cross_order_boundary_inside_one_package_still_binds_scanned_cards(self):
         """One physical package may finish one order and start the next."""
-
+        self.identify_same_customer_product(self.order)
         self.order.order_quantity = 500
         self.order.save(update_fields=["order_quantity", "updated_at"])
         second = QualityOrder.objects.create(
             order_no="ORD-CARD-BOUNDARY-SECOND",
+            source_system="翔邦",
+            product_specification=self.order.product_specification,
             item_no="20",
             product_name=self.order.product_name,
             specification=self.order.specification,
@@ -979,11 +984,13 @@ class ProcessCardTrackingApiTests(QualityTestMixin, TestCase):
 
     def test_existing_source_cards_remain_bound_when_fulfilment_moves_to_next_order(self):
         """Printed card ownership and logical order allocation are independent."""
-
+        self.identify_same_customer_product(self.order)
         self.order.order_quantity = 1_000
         self.order.save(update_fields=["order_quantity", "updated_at"])
         second = QualityOrder.objects.create(
             order_no="ORD-EXISTING-CARD-SECOND",
+            source_system=self.order.source_system,
+            product_specification=self.order.product_specification,
             item_no="20",
             product_name=self.order.product_name,
             specification=self.order.specification,

@@ -2275,17 +2275,33 @@ class QualityReworkAttempt(TimeStampedModel):
             # Each record is a processing round of the same returned goods,
             # not additive consumption.  A full batch may therefore be put
             # through R1, R2 and R3 after repeated failed reinspections.
+            input_fields = (
+                "input_quantity", "reworked_quantity", "input_weight_kg", "reworked_weight_kg",
+            )
+            previous_input = type(self).objects.filter(pk=self.pk).values("case_id", *input_fields).first() if self.pk else None
+            preserved_input = previous_input is not None and previous_input["case_id"] == self.case_id and all(
+                getattr(self, field) == previous_input[field] for field in input_fields
+            )
+            # Shipment corrections may change the accounting return base.
+            # Existing unchanged work inputs are historical snapshots, not
+            # values to coerce to the corrected source just to edit a note.
             if (
+                not preserved_input
+                and
                 case.affected_quantity is not None
                 and int(self.input_quantity or 0) > case.affected_quantity
             ):
                 errors["input_quantity"] = "本轮投入件数不能超过退货返工记录的退货件数。"
             if (
+                not preserved_input
+                and
                 case.affected_weight_kg is not None
                 and Decimal(self.input_weight_kg or 0) > case.affected_weight_kg
             ):
                 errors["input_weight_kg"] = "本轮投入重量不能超过退货返工记录的退货重量。"
             if (
+                not preserved_input
+                and
                 case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
                 and case.shipment_unit_no is not None
             ):

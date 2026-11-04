@@ -30,6 +30,28 @@ from quality.models import (
 
 
 class AnalyticsApiTests(TestCase):
+    def test_assistants_receive_full_participation_without_duplicating_factory_output(self):
+        day = timezone.localdate()
+        self.create_automatic_records(day)
+        log = ProductionDailyLog.objects.first()
+        primary = QualityEmployee.objects.create(name="主作业", role="PRODUCTION")
+        assistant = QualityEmployee.objects.create(name="协作员", role="PRODUCTION")
+        log.employee = primary
+        log.save()
+        log.assistant_employees.add(primary, assistant)
+        response = self.client.get("/api/analytics/dashboard/", {
+            "date_from": day.isoformat(), "date_to": day.isoformat(),
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+        data = response.json()
+        people = {row["employee_id"]: row for row in data["operator_performance"] if row["employee_id"]}
+        self.assertEqual(people[primary.pk]["automatic_mold_count"], 10)
+        self.assertEqual(people[primary.pk]["primary_mold_count"], 10)
+        self.assertEqual(people[assistant.pk]["automatic_mold_count"], 10)
+        self.assertEqual(people[assistant.pk]["assisted_mold_count"], 10)
+        self.assertEqual(people[assistant.pk]["production_days"], 1)
+        self.assertEqual(sum(row["automatic_produced_mold_count"] for row in data["daily_trend"]), 10)
+
     def test_employee_details_remain_read_only_and_do_not_create_business_records(self):
         from erp.permissions import READ_ONLY_GROUP_NAME
 

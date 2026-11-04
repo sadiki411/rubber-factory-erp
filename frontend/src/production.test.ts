@@ -1,6 +1,13 @@
 import { calculateGoodQuantity, canCreateProductionDailyLog, canSettleProductionRun, defaultProductionLogDate, formatProductionDate, isKeyboardActivationKey, isProductionLogDateAllowed, productionOperatorDayCount, productionReminderKey, productionSettlementInitialValues, productionSettlementRiskReasons, productionStationGroupLabel, productionStationNumber, requiresProductionUnloadTime, settlementExpectedQuantity, settlementInitialGoodQuantity, settlementQuantityMatches } from './production'
+import { suggestedProductionShift } from './production'
 
 describe('production helpers', () => {
+  it('uses China-time 07:30 and 19:30 shift boundaries', () => {
+    expect(suggestedProductionShift(new Date('2026-11-04T07:29:00+08:00'))).toBe('NIGHT')
+    expect(suggestedProductionShift(new Date('2026-11-04T07:30:00+08:00'))).toBe('DAY')
+    expect(suggestedProductionShift(new Date('2026-11-04T19:29:00+08:00'))).toBe('DAY')
+    expect(suggestedProductionShift(new Date('2026-11-04T19:30:00+08:00'))).toBe('NIGHT')
+  })
   it('uses the station code as the visible global machine number', () => {
     expect(productionStationNumber({ code: '6', position_no: 5 })).toBe('6')
     expect(productionStationNumber({ code: '  ', position_no: 5 })).toBe('5')

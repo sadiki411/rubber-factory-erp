@@ -96,7 +96,7 @@ export function OrdersPage() {
   const compactTable = screens.xxl === false
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
-  const [activeTab, setActiveTab] = useState<OrderTab>('orders-open')
+  const [activeTab, setActiveTab] = useState<OrderTab>(() => new URLSearchParams(window.location.search).get('tab') === 'receipts' ? 'receipts' : 'orders-open')
   const [productionRequired, setProductionRequired] = useState<'' | 'yes' | 'no'>('')
   const [materialStatus, setMaterialStatus] = useState<OrderMaterialStatus | ''>('')
   const [processCardStatus, setProcessCardStatus] = useState<OrderProcessCardStatus | ''>('')
@@ -104,7 +104,7 @@ export function OrdersPage() {
   const [orderPage, setOrderPage] = useState(1)
   const [orderPageSize, setOrderPageSize] = useState(20)
   const [receiptQuery, setReceiptQuery] = useState('')
-  const [receiptLink, setReceiptLink] = useState<'' | 'linked' | 'unlinked'>('')
+  const [receiptLink, setReceiptLink] = useState<'' | 'linked' | 'unlinked'>(() => new URLSearchParams(window.location.search).get('linked') === 'false' ? 'unlinked' : '')
   const [editing, setEditing] = useState<Order>()
   const [formOpen, setFormOpen] = useState(false)
   const [yieldOrder, setYieldOrder] = useState<Order>()
@@ -207,7 +207,7 @@ export function OrdersPage() {
   }
 
   const columns: TableColumnsType<Order> = [
-    { title: '订单号 / 项次', key: 'order', fixed: mobile ? undefined : 'left', width: compactTable ? 150 : 205, render: (_, row) => <Button type="link" className="table-primary-link" onClick={() => openForm(row)}>{row.order_no}{row.item_no ? ` / ${row.item_no}` : ''}</Button> },
+    { title: '订单号 / 项次', key: 'order', fixed: mobile ? undefined : 'left', width: compactTable ? 150 : 205, render: (_, row) => <span><Button type="link" className="table-primary-link" onClick={() => openForm(row)}>{row.order_no}{row.item_no ? ` / ${row.item_no}` : ''}</Button><br /><Button type="link" href={`/order-overview/${row.id}`}>完整查看</Button></span> },
     { title: '流程卡', key: 'process_card', fixed: mobile ? undefined : 'left', width: compactTable ? 130 : 190, render: (_, row) => <span>{exactOrderValue(row.process_card_text)}{(row.process_card_count !== null && row.process_card_count !== undefined) || (row.process_card_covered_quantity !== null && row.process_card_covered_quantity !== undefined) ? <><br /><Typography.Text type="secondary">{exactOrderValue(row.process_card_count, ' 张')} · 覆盖 {exactOrderValue(row.process_card_covered_quantity)}</Typography.Text></> : null}<br /><ProcessCardStatusTag status={row.process_card_status} /></span> },
     { title: '规格 / 产品', key: 'specification', fixed: mobile ? undefined : 'left', width: compactTable ? 135 : 220, render: (_, row) => <span>{row.specification || '-'}<br /><Typography.Text type="secondary">{row.product_name || row.product_code || '-'}</Typography.Text></span> },
     { title: '材质', dataIndex: 'material', fixed: mobile ? undefined : 'left', width: compactTable ? 85 : 125, render: (value) => value || '-' },

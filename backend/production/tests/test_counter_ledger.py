@@ -1,4 +1,6 @@
 import io
+from datetime import datetime
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -16,9 +18,21 @@ from production.ledger_imports import create_ledger_template
 from production.ocr import _extract_log_rows, _extract_task
 
 from .helpers import ProductionTestMixin
+from production.serializers import ProductionCounterLogSerializer
 
 
 class ProductionCounterLedgerApiTests(ProductionTestMixin, TestCase):
+    def test_suggested_shift_uses_0730_and_1930_without_rewriting_logs(self):
+        for hour, minute, expected in (
+            (7, 29, "NIGHT"), (7, 30, "DAY"), (19, 29, "DAY"),
+            (19, 30, "NIGHT"), (0, 0, "NIGHT"),
+        ):
+            with self.subTest(hour=hour, minute=minute), patch(
+                "production.serializers.timezone.localtime",
+                return_value=datetime(2026, 11, 4, hour, minute),
+            ):
+                self.assertEqual(ProductionCounterLogSerializer.suggested_shift(), expected)
+
     @classmethod
     def setUpTestData(cls):
         super().setUpTestData()

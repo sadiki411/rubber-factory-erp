@@ -466,10 +466,13 @@ class WholeBatchCustomerReturnTests(QualityTestMixin, TestCase):
             )
 
     def test_one_physical_unit_crossing_auto_allocated_orders_restores_both(self):
+        self.identify_same_customer_product(self.order)
         self.order.order_quantity = 500
         self.order.save(update_fields=["order_quantity", "updated_at"])
         second = QualityOrder.objects.create(
             order_no="ORD-QA-SECOND",
+            source_system=self.order.source_system,
+            product_specification=self.order.product_specification,
             product_name=self.order.product_name,
             specification=self.order.specification,
             material=self.order.material,
