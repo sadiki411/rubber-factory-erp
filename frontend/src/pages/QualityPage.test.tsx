@@ -24,6 +24,7 @@ const apiMocks = vi.hoisted(() => ({
   listUnitWeights: vi.fn(),
   listShipmentBatches: vi.fn(),
   listReworkCases: vi.fn(),
+  getReworkCase: vi.fn(),
   getShipmentBatch: vi.fn(),
 }))
 
@@ -42,6 +43,7 @@ vi.mock('../api/client', () => ({
     listUnitWeights: apiMocks.listUnitWeights,
     listShipmentBatches: apiMocks.listShipmentBatches,
     listReworkCases: apiMocks.listReworkCases,
+    getReworkCase: apiMocks.getReworkCase,
     createAndConfirmShipmentBatch: vi.fn(),
     createProcessCard: vi.fn(),
     updateProcessCard: vi.fn(),
@@ -64,7 +66,7 @@ vi.mock('../components/QualityFormDrawers', () => ({
 vi.mock('../components/QualityReturnReworkDrawer', () => ({
   QualityReturnReworkDrawer: ({ open, onBackfillShipment }: any) => open ? <div role="dialog" aria-label="整批退货抽屉"><span>整批退货候选</span><button onClick={onBackfillShipment}>补录原出货</button></div> : null,
   QualityReturnReworkAttemptDrawer: () => null,
-  QualityReworkCaseDetailDrawer: () => null,
+  QualityReworkCaseDetailDrawer: ({ open, item }: any) => open ? <div>指定退回原单 {item?.case_no}</div> : null,
 }))
 vi.mock('../components/QualityFlowCardReturnDrawer', () => ({
   QualityFlowCardReturnDrawer: ({ open, onSaved, onClose }: any) => open ? <div role="dialog" aria-label="流程卡退货抽屉">流程卡退货扫码<button onClick={() => onSaved({ id: 123, case_no: 'R123', status: 'WAITING_REWORK' })}>模拟退货保存</button><button onClick={onClose}>关闭退货扫码</button></div> : null,
@@ -84,6 +86,17 @@ const weightedBatch = {
 }
 
 describe('QualityPage unified shipment ledger', () => {
+  it('opens an exact old return source independently of the recent list and dates', async () => {
+    window.history.replaceState({}, '', '/quality?tab=reworks&rework_case_id=111&q=R111&date_from=2026-11-01&date_to=2026-11-05')
+    apiMocks.getReworkCase.mockResolvedValue({ id: 111, case_no: 'R111', origin: 'CUSTOMER_RETURN', status: 'WAITING_REWORK' })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    try {
+      render(<MemoryRouter><QueryClientProvider client={client}><App><QualityPage /></App></QueryClientProvider></MemoryRouter>)
+      expect(await screen.findByText('指定退回原单 R111')).toBeInTheDocument()
+      expect(apiMocks.getReworkCase).toHaveBeenCalledWith(111, expect.objectContaining({ signal: expect.anything() }))
+      expect(apiMocks.listReworkCases).toHaveBeenCalledWith(expect.objectContaining({ page_size: 50, page: 1 }), expect.anything())
+    } finally { window.history.replaceState({}, '', '/') }
+  })
   beforeEach(() => {
     apiMocks.getShipmentBatch.mockResolvedValue(weightedBatch)
     apiMocks.summary.mockResolvedValue({
@@ -141,6 +154,8 @@ describe('QualityPage unified shipment ledger', () => {
     expect(screen.getByText('密封圈A')).toBeInTheDocument()
     expect(screen.getByText('20×30 · NBR')).toBeInTheDocument()
     expect(screen.getByText('7.5 kg')).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: '质检 / 合格 / 不良' })).not.toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('button', { name: '显示完整出货字段（人员、退回、质检）' }))
     const legacyRow = screen.getByText('OLD-001').closest('tr')
     expect(legacyRow).toHaveTextContent('25 / 23 / 2')
     expect(legacyRow).toHaveTextContent('3')
@@ -249,10 +264,11 @@ describe('QualityPage unified shipment ledger', () => {
   })
 
   it('filters return cases by source shipment, order, specification and material', async () => {
-    apiMocks.listReworkCases.mockResolvedValue([
+    const cases = [
       { id: 1, case_no: 'R1', origin: 'CUSTOMER_RETURN', opened_on: '2026-08-21', status: 'OPEN', reason_category: 'OTHER', source: { shipment_no: 'QS-NBR', order_no: 'XB-NBR', item_no: '11', product_name: '油封圈', specification: 'Φ32×18', material: 'NBR-T3', shipment_unit_no: 1, total_batches: 2, pieces_per_batch: 100, single_batch_net_weight_kg: '1.000' } },
       { id: 2, case_no: 'R2', origin: 'CUSTOMER_RETURN', opened_on: '2026-08-21', status: 'OPEN', reason_category: 'OTHER', source: { shipment_no: 'QS-EPDM', order_no: 'XB-EPDM', item_no: '12', product_name: '垫片', specification: '20×30', material: 'EPDM', shipment_unit_no: 1, total_batches: 2, pieces_per_batch: 100, single_batch_net_weight_kg: '1.000' } },
-    ])
+    ]
+    apiMocks.listReworkCases.mockImplementation(({ q }) => Promise.resolve({ count: q ? 1 : 2, results: q ? cases.slice(0, 1) : cases }))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<MemoryRouter><QueryClientProvider client={client}><App><QualityPage /></App></QueryClientProvider></MemoryRouter>)
     await userEvent.setup().click(await screen.findByRole('tab', { name: '退货返工' }))
@@ -261,6 +277,7 @@ describe('QualityPage unified shipment ledger', () => {
 
     await userEvent.setup().type(screen.getByPlaceholderText('搜索出货单、订单、产品、规格、材质或品检员'), 'NBR-T3')
     await waitFor(() => expect(screen.queryByText('QS-EPDM · XB-EPDM / 12')).not.toBeInTheDocument())
-    expect(screen.getByText('QS-NBR · XB-NBR / 11')).toBeInTheDocument()
+    expect(await screen.findByText('QS-NBR · XB-NBR / 11')).toBeInTheDocument()
+    expect(apiMocks.listReworkCases).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'NBR-T3', page: 1, page_size: 50 }), expect.anything())
   })
 })

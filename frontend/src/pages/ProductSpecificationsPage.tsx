@@ -1,5 +1,5 @@
 import { EditOutlined, FileExcelOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Empty, Grid, Image, Input, List, Select, Space, Table, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Descriptions, Drawer, Empty, Grid, Image, Input, List, Select, Space, Table, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
@@ -8,6 +8,7 @@ import { BusinessImportDrawer } from '../components/BusinessImportDrawer'
 import { PageTitle } from '../components/PageTitle'
 import { ProductSpecificationDrawer } from '../components/ProductSpecificationDrawer'
 import type { ProductSpecification } from '../types'
+import { useReadOnly } from '../access'
 
 function exactText(value: unknown) {
   return value === null || value === undefined || value === '' ? '-' : String(value)
@@ -30,6 +31,8 @@ function moldDetailsText(record: ProductSpecification) {
 }
 
 export function ProductSpecificationsPage() {
+  const readOnly = useReadOnly()
+  const [viewing, setViewing] = useState<ProductSpecification>()
   const screens = Grid.useBreakpoint()
   const mobile = screens.md === false
   const [query, setQuery] = useState('')
@@ -53,7 +56,7 @@ export function ProductSpecificationsPage() {
 
   const columns: TableColumnsType<ProductSpecification> = [
     { title: '照片', key: 'image', width: 76, fixed: 'left', render: (_, row) => row.image ? <Image src={row.image} alt={`${productSpecificationTitle(row)}产品照片`} width={48} height={48} style={{ objectFit: 'cover', borderRadius: 6 }} preview /> : <Typography.Text type="secondary">无</Typography.Text> },
-    { title: '产品名称', dataIndex: 'product_name', fixed: 'left', width: 190, render: (_, row) => <Button type="link" className="table-primary-link" onClick={() => openForm(row)}>{productSpecificationTitle(row)}</Button> },
+    { title: '产品名称', dataIndex: 'product_name', fixed: 'left', width: 190, render: (_, row) => <Button type="link" className="table-primary-link" onClick={() => setViewing(row)}>{productSpecificationTitle(row)}</Button> },
     { title: '客户产品编号', dataIndex: 'customer_product_no', fixed: 'left', width: 155, render: exactText },
     { title: '规格', dataIndex: 'specification', width: 180, render: exactText },
     { title: '材质 / 胶料', dataIndex: 'material', width: 140, render: exactText },
@@ -91,7 +94,7 @@ export function ProductSpecificationsPage() {
           locale={{ emptyText: <Empty description="暂无产品规格资料" /> }}
           renderItem={(record) => (
             <List.Item>
-              <Card className="mobile-record-card business-mobile-card" role="button" tabIndex={0} onClick={() => openForm(record)}>
+              <Card className="mobile-record-card business-mobile-card" role="button" tabIndex={0} onClick={() => setViewing(record)} onKeyDown={(event) => { if (event.key === 'Enter') setViewing(record) }}>
                 <div className="record-card-heading">{record.image ? <Image src={record.image} alt={`${productSpecificationTitle(record)}产品照片`} width={56} height={56} style={{ objectFit: 'cover', borderRadius: 6 }} preview /> : <div className="product-specification-no-image">暂无照片</div>}<div><Typography.Title level={4}>{productSpecificationTitle(record)}</Typography.Title><Tag color={record.is_active ? 'success' : 'default'}>{record.is_active ? '启用' : '停用'}</Tag></div></div>
                 <Typography.Text>{exactText(record.customer_product_no)} · {exactText(record.specification)}</Typography.Text>
                 <Typography.Text type="secondary">材质 {exactText(record.material)} · 模具型号 {moldModelText(record)}</Typography.Text>
@@ -113,6 +116,21 @@ export function ProductSpecificationsPage() {
         </Card>
       )}
 
+      <Drawer open={!!viewing} onClose={() => setViewing(undefined)} width={600} title={viewing ? `${productSpecificationTitle(viewing)} · 产品资料` : '产品资料'} extra={<Button disabled={readOnly} icon={<EditOutlined />} onClick={() => { openForm(viewing); setViewing(undefined) }}>编辑资料</Button>}>
+        {viewing && <>
+          {viewing.image && <Image src={viewing.image} alt="产品照片" width={160} />}
+          <Descriptions column={1} bordered size="small" items={[
+            { key: 'identity', label: '客户产品编号 / 规格 / 材质', children: `${exactText(viewing.customer_product_no)} / ${exactText(viewing.specification)} / ${exactText(viewing.material)}` },
+            { key: 'weight', label: '最新成品单重', children: viewing.latest_unit_weight_g == null ? '未登记' : `${viewing.latest_unit_weight_g} g/件` },
+            { key: 'actual', label: '实际切料长 / 料重（人工维护）', children: `${exactText(viewing.actual_material_length)} / ${exactText(viewing.actual_cut_weight)}` },
+            { key: 'import', label: '导入料长 / 料重', children: `${exactText(viewing.material_length)} / ${exactText(viewing.cut_weight)}` },
+            { key: 'primary', label: '一次硫化参考', children: exactText(viewing.primary_curing) },
+            { key: 'secondary', label: '二烤参考（不代表本批已执行）', children: exactText(viewing.secondary_curing) },
+            { key: 'cavities', label: '有效 / 总孔数', children: `${exactText(viewing.effective_cavities)} / ${exactText(viewing.total_cavities)}` },
+            { key: 'mold', label: '模具型号 / 尺寸', children: `${moldModelText(viewing)} / ${moldDetailsText(viewing)}` },
+          ]} />
+        </>}
+      </Drawer>
       <ProductSpecificationDrawer open={formOpen} specification={editing} onClose={() => setFormOpen(false)} />
       <BusinessImportDrawer open={importOpen} context="product-specifications" onClose={() => setImportOpen(false)} />
     </div>

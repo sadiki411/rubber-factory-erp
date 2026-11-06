@@ -1,3 +1,4 @@
+import { useReadOnly } from '../access'
 import {
   Alert,
   App,
@@ -135,6 +136,7 @@ interface ReturnDrawerProps {
 }
 
 export function QualityReturnReworkDrawer({ open, employees = [], onClose, onSaved, onBackfillShipment }: ReturnDrawerProps) {
+  const readOnly = useReadOnly()
   const [form] = Form.useForm<Record<string, unknown>>()
   const { message } = App.useApp()
   const [search, setSearch] = useState('')
@@ -217,7 +219,7 @@ export function QualityReturnReworkDrawer({ open, employees = [], onClose, onSav
     className="quality-return-rework-drawer"
     afterOpenChange={(visible) => { if (visible) resetDrawer() }}
     title="登记客户整批退货返工"
-    footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} disabled={!activeSelected} onClick={() => void submit()}>确认登记整批退货</Button></Space>}
+    footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} disabled={readOnly || !activeSelected} onClick={() => void submit()}>确认登记整批退货</Button></Space>}
   >
     <Alert type="info" showIcon message="从已确认出货中选一整批" description="件数和重量按原出货自动带入且不可修改；同一次称重出货多批时，只需选择本次退回的物理批号。" />
     <div className="quality-return-source-search">
@@ -289,6 +291,7 @@ interface AttemptDrawerProps {
 }
 
 export function QualityReturnReworkAttemptDrawer({ open, item, employees, onClose, onSaved }: AttemptDrawerProps) {
+  const readOnly = useReadOnly()
   const [form] = Form.useForm<Record<string, unknown>>()
   const [saving, setSaving] = useState(false)
   const { message } = App.useApp()
@@ -329,7 +332,7 @@ export function QualityReturnReworkAttemptDrawer({ open, item, employees, onClos
     }
   }
 
-  return <Drawer open={open} onClose={onClose} width={560} className="quality-return-rework-drawer" title={item ? `${item.case_no} · 登记 R${attemptNo}` : '登记返工轮次'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} onClick={() => void submit()}>保存本轮返工</Button></Space>}>
+  return <Drawer open={open} onClose={onClose} width={560} className="quality-return-rework-drawer" title={item ? `${item.case_no} · 登记 R${attemptNo}` : '登记返工轮次'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void submit()}>保存本轮返工</Button></Space>}>
     <Alert type="info" showIcon message="每一轮都按原退货整批处理" description="整批件数和重量由系统自动带入，不再要求填写返工合格数量；R1、R2、R3会自动连续编号。" />
     {item?.source && <Descriptions className="quality-return-attempt-source" column={1} size="small" bordered>
       <Descriptions.Item label="原出货">{reworkCaseSourceTitle(item)}</Descriptions.Item>
@@ -347,6 +350,7 @@ export function QualityReturnReworkAttemptDrawer({ open, item, employees, onClos
 }
 
 export function QualityReworkCaseDetailDrawer({ open, item, employees = [], onClose, onAddAttempt, onSaved }: { open: boolean; item?: QualityReworkCase; employees?: QualityEmployee[]; onClose: () => void; onAddAttempt: (item: QualityReworkCase) => void; onSaved: (saved: QualityReworkCase) => void | Promise<void> }) {
+  const readOnly = useReadOnly()
   const [form] = Form.useForm<Record<string, unknown>>()
   const [reshipInspectorForm] = Form.useForm<Record<string, unknown>>()
   const [localItem, setLocalItem] = useState<QualityReworkCase>()
@@ -471,12 +475,12 @@ export function QualityReworkCaseDetailDrawer({ open, item, employees = [], onCl
   }
 
   const footer = editing
-    ? <Space className="drawer-footer-actions"><Button onClick={() => setEditing(false)}>取消修改</Button><Button type="primary" loading={saving} onClick={() => void saveEdits()}>保存修改</Button></Space>
+    ? <Space className="drawer-footer-actions"><Button onClick={() => setEditing(false)}>取消修改</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void saveEdits()}>保存修改</Button></Space>
     : <Space className="drawer-footer-actions quality-return-detail-actions">
-      {currentItem?.origin === 'CUSTOMER_RETURN' && active && <Popconfirm title="确认取消这条误登记吗？" description="记录会保留审计历史，但原物理批号将释放并可重新登记。" okText="确认取消" cancelText="返回" onConfirm={() => void cancelCase()}><Button danger loading={cancelling}>取消误登记</Button></Popconfirm>}
+      {currentItem?.origin === 'CUSTOMER_RETURN' && active && <Popconfirm disabled={readOnly} title="确认取消这条误登记吗？" description="记录会保留审计历史，但原物理批号将释放并可重新登记。" okText="确认取消" cancelText="返回" onConfirm={() => void cancelCase()}><Button disabled={readOnly} danger loading={cancelling}>取消误登记</Button></Popconfirm>}
       <Button onClick={closeDrawer}>关闭</Button>
-      {currentItem && editable && <Button icon={<EditOutlined />} onClick={startEditing}>修改退货信息</Button>}
-      {processCardId == null && currentItem?.origin === 'CUSTOMER_RETURN' && active && <Button type="primary" onClick={() => { closeDrawer(); onAddAttempt(currentItem) }}>手工登记下一轮返工</Button>}
+      {currentItem && editable && <Button disabled={readOnly} icon={<EditOutlined />} onClick={startEditing}>修改退货信息</Button>}
+      {processCardId == null && currentItem?.origin === 'CUSTOMER_RETURN' && active && <Button disabled={readOnly} type="primary" onClick={() => { closeDrawer(); onAddAttempt(currentItem) }}>手工登记下一轮返工</Button>}
     </Space>
 
   return <Drawer open={open} onClose={closeDrawer} width={620} className="quality-return-rework-drawer" afterOpenChange={(visible) => { if (visible) { setLocalItem(undefined); setEditing(false) } }} title={currentItem ? `退货返工记录 · ${currentItem.case_no}` : '退货返工记录'} footer={footer}>
@@ -522,11 +526,11 @@ export function QualityReworkCaseDetailDrawer({ open, item, employees = [], onCl
           size="small"
           className="quality-return-reship-inspectors"
           title={`本轮重新出货 · ${reshipment.shipment_no}`}
-          extra={!editingReshipInspectors && <Button type="link" onClick={startEditingReshipInspectors}>{(reshipment.inspectors || []).length || reshipment.inspector ? '修改重新出货品检员' : '补录重新出货品检员'}</Button>}
+          extra={!editingReshipInspectors && <Button disabled={readOnly} type="link" onClick={startEditingReshipInspectors}>{(reshipment.inspectors || []).length || reshipment.inspector ? '修改重新出货品检员' : '补录重新出货品检员'}</Button>}
         >
           {editingReshipInspectors ? <Form form={reshipInspectorForm} layout="vertical">
             <Form.Item name="inspector_ids" label="本轮重新出货品检员（可多选）"><QualityEmployeeSelect employees={employees} multiple placeholder="选择或直接新增品检员" /></Form.Item>
-            <Space><Button onClick={() => setEditingReshipInspectors(false)}>取消</Button><Button type="primary" loading={savingReshipInspectors} onClick={() => void saveReshipInspectors()}>保存品检员</Button></Space>
+            <Space><Button onClick={() => setEditingReshipInspectors(false)}>取消</Button><Button disabled={readOnly} type="primary" loading={savingReshipInspectors} onClick={() => void saveReshipInspectors()}>保存品检员</Button></Space>
           </Form> : <Descriptions column={1} size="small">
             <Descriptions.Item label="出货日期">{formatQualityDate(reshipment.shipment_date)}</Descriptions.Item>
             <Descriptions.Item label="品检员">{sourceInspectors(reshipment)}</Descriptions.Item>

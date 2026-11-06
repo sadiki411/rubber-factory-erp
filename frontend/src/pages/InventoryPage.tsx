@@ -1,3 +1,4 @@
+import { useReadOnly } from '../access'
 import { CameraOutlined, EditOutlined, InboxOutlined, MinusCircleOutlined, PlusOutlined, PrinterOutlined, QrcodeOutlined, SearchOutlined, SwapOutlined } from '@ant-design/icons'
 import { Alert, App, Button, Card, Col, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Row, Select, Space, Statistic, Table, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
@@ -32,7 +33,9 @@ function qualityTag(value?: InventoryQualityStatus) {
 }
 
 export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { initialLocationCode?: string; onLocationDetailClose?: () => void } = {}) {
+  const readOnly = useReadOnly()
   const { message, modal } = App.useApp()
+  const sourceReturn = new URLSearchParams(window.location.search).get('return_to') || ''
   const queryClient = useQueryClient()
   const [query, setQuery] = useState('')
   const [printOpen, setPrintOpen] = useState(false)
@@ -41,6 +44,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
   const [printLocationIds, setPrintLocationIds] = useState<number[]>([])
   const [labelLocations, setLabelLocations] = useState<InventoryLocation[]>([])
   const [detailLocation, setDetailLocation] = useState<InventoryLocation>()
+  const [routedLocationDismissed, setRoutedLocationDismissed] = useState(false)
   const [productCorrectionTarget, setProductCorrectionTarget] = useState<NonNullable<InventoryLocation['container']>>()
   const [scanPurpose, setScanPurpose] = useState<LocationScanPurpose>()
   const [receiptOpen, setReceiptOpen] = useState(false)
@@ -183,8 +187,8 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
       && item.specification === specification && item.material === material)
   }, [products, selectedProductId, receiptProductCode, receiptSpecification, receiptMaterial])
   const rackCodes = useMemo(() => [...new Set(finishedLocations.map((location) => location.rack_code))], [finishedLocations])
-  const routedLocationCode = normalizeInventoryLocationCode(initialLocationCode)
-  const routedLocation = routedLocationCode ? finishedLocations.find((item) => item.code === routedLocationCode) : undefined
+  const routedLocationCode = normalizeInventoryLocationCode(initialLocationCode || new URLSearchParams(window.location.search).get('location_code') || '')
+  const routedLocation = routedLocationCode && !routedLocationDismissed ? finishedLocations.find((item) => item.code === routedLocationCode) : undefined
   // Keep an open drawer bound to fresh query data, not the clicked snapshot.
   const activeDetailLocation = detailLocation ? finishedLocations.find((item) => item.id === detailLocation.id) : routedLocation
   const visibleLocations = useMemo(() => {
@@ -232,6 +236,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
 
   const closeLocationDetail = () => {
     setDetailLocation(undefined)
+    setRoutedLocationDismissed(true)
     onLocationDetailClose?.()
   }
 
@@ -336,7 +341,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
     { title: '数量', key: 'quantity', width: 100, render: (_, row) => row.container?.quantity ?? '-' },
     { title: '质量状态', key: 'quality', width: 110, render: (_, row) => qualityTag(row.container?.quality_status) },
     { title: '最近品检员', key: 'inspector', width: 120, render: (_, row) => row.container?.inspector_name || '未登记' },
-    { title: '操作', key: 'actions', width: 320, render: (_, row) => <Space size={0} wrap><Button type="link" size="small" onClick={() => setDetailLocation(row)}>查看</Button>{row.container ? <><Button type="link" size="small" onClick={() => openProductCorrection(row.container!)}>改产品资料</Button><Button type="link" size="small" onClick={() => openQuality(row.container!)}>改质量状态</Button><Button type="link" size="small" onClick={() => openMove(row)}>移库</Button></> : null}</Space> },
+    { title: '操作', key: 'actions', width: 320, render: (_, row) => <Space size={0} wrap><Button type="link" size="small" onClick={() => setDetailLocation(row)}>查看</Button>{row.container ? <><Button disabled={readOnly} type="link" size="small" onClick={() => openProductCorrection(row.container!)}>改产品资料</Button><Button disabled={readOnly} type="link" size="small" onClick={() => openQuality(row.container!)}>改质量状态</Button><Button disabled={readOnly} type="link" size="small" onClick={() => openMove(row)}>移库</Button></> : null}</Space> },
   ]
 
   const submitReceipt = async () => {
@@ -434,7 +439,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
     { title: '入冰箱时间', dataIndex: 'stored_on', width: 180, render: (value) => new Date(value).toLocaleString('zh-CN', { hour12: false }) },
     { title: '记录人', dataIndex: 'created_by_name', width: 110 },
     { title: '备注', dataIndex: 'note', ellipsis: true },
-    { title: '操作', key: 'actions', width: 100, render: (_, row) => Number(row.remaining_weight_kg) > 0 ? <Button type="link" size="small" onClick={() => { setRemainderUseTarget(row); remainderUseForm.resetFields() }}>登记使用</Button> : <Typography.Text type="secondary">已用完</Typography.Text> },
+    { title: '操作', key: 'actions', width: 100, render: (_, row) => Number(row.remaining_weight_kg) > 0 ? <Button disabled={readOnly} type="link" size="small" onClick={() => { setRemainderUseTarget(row); remainderUseForm.resetFields() }}>登记使用</Button> : <Typography.Text type="secondary">已用完</Typography.Text> },
   ]
 
   return (
@@ -442,18 +447,22 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
       <PageTitle
         title="成品库存"
         description="库存直接入库、人工选取出库；流程卡只在品检出货页面单独扫描，不会重复扣减库存。"
-        extra={<Space wrap className="inventory-actions"><Button icon={<QrcodeOutlined />} onClick={() => setScanPurpose('LOOKUP')}>扫码查库位</Button><Button icon={<PrinterOutlined />} onClick={() => setPrintOpen(true)}>打印库位标签</Button><Button icon={<SwapOutlined />} onClick={() => openOutbound()}>库存出库</Button><Button type="primary" icon={<InboxOutlined />} onClick={() => setReceiptOpen(true)}>直接入库</Button></Space>}
+        extra={<Space wrap className="inventory-actions"><Button icon={<QrcodeOutlined />} onClick={() => setScanPurpose('LOOKUP')}>扫码查库位</Button><Button icon={<PrinterOutlined />} onClick={() => setPrintOpen(true)}>打印库位标签</Button><Button disabled={readOnly} icon={<SwapOutlined />} onClick={() => openOutbound()}>库存出库</Button><Button disabled={readOnly} type="primary" icon={<InboxOutlined />} onClick={() => setReceiptOpen(true)}>直接入库</Button></Space>}
       />
 
+      {/^\/(?:operations|order-overview\/\d+)(?:\?|$)/.test(sourceReturn) && <Button href={sourceReturn}>返回待办筛选</Button>}
+      {summaryQuery.isError && <Alert type="error" title="库存汇总读取失败" action={<Button onClick={() => void summaryQuery.refetch()}>重试汇总</Button>} />}
       <Row gutter={[12, 12]} className="inventory-stats">
-        <Col xs={12} sm={6}><Card><Statistic title="库存总量" value={summaryQuery.data?.total_quantity ?? 0} suffix="件" /></Card></Col>
-        <Col xs={12} sm={6}><Card><Statistic title="已检可用" value={summaryQuery.data?.available_quantity ?? 0} suffix="件" /></Card></Col>
-        <Col xs={12} sm={6}><Card><Statistic title="待检库存" value={summaryQuery.data?.waiting_inspection_quantity ?? 0} suffix="件" /></Card></Col>
-        <Col xs={12} sm={6}><Card><Statistic title="占用库位" value={`${summaryQuery.data?.occupied_locations ?? 0} / ${summaryQuery.data?.location_count ?? 0}`} /></Card></Col>
+        <Col xs={12} sm={6}><Card><Statistic title="库存总量" value={summaryQuery.isSuccess ? summaryQuery.data.total_quantity : '读取中/失败'} suffix="件" /></Card></Col>
+        <Col xs={12} sm={6}><Card><Statistic title="已检可用" value={summaryQuery.isSuccess ? summaryQuery.data.available_quantity : '读取中/失败'} suffix="件" /></Card></Col>
+        <Col xs={12} sm={6}><Card><Statistic title="待检库存" value={summaryQuery.isSuccess ? summaryQuery.data.waiting_inspection_quantity : '读取中/失败'} suffix="件" /></Card></Col>
+        <Col xs={12} sm={6}><Card><Statistic title="不合格库存" value={summaryQuery.isSuccess ? summaryQuery.data.failed_quantity ?? 0 : '读取中/失败'} suffix="件" /></Card></Col>
+        <Col xs={12} sm={6}><Card><Statistic title="冻结库存" value={summaryQuery.isSuccess ? summaryQuery.data.held_quantity ?? 0 : '读取中/失败'} suffix="件" /></Card></Col>
+        <Col xs={12} sm={6}><Card><Statistic title="占用库位" value={summaryQuery.isSuccess ? `${summaryQuery.data.occupied_locations} / ${summaryQuery.data.location_count}` : summaryQuery.isError ? '读取失败' : '读取中'} /></Card></Col>
       </Row>
 
       {locationsQuery.isError && <Alert type="error" showIcon message="库位读取失败，不能据此判断为空库位" action={<Button onClick={() => void locationsQuery.refetch()}>重新读取</Button>} style={{ marginBottom: 16 }} />}
-      {!finishedLocations.length && !locationsQuery.isLoading && !locationsQuery.isError ? <Card><Empty description="还没有初始化库存固定库位"><Button type="primary" onClick={() => bootstrapMutation.mutate()} loading={bootstrapMutation.isPending}>初始化 K01-K09 库位</Button></Empty></Card> : null}
+      {!finishedLocations.length && !locationsQuery.isLoading && !locationsQuery.isError ? <Card><Empty description="还没有初始化库存固定库位"><Button disabled={readOnly} type="primary" onClick={() => bootstrapMutation.mutate()} loading={bootstrapMutation.isPending}>初始化 K01-K09 库位</Button></Empty></Card> : null}
 
       <Card className="inventory-map-card">
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -463,7 +472,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
               const sorted = [...items].sort((a, b) => (b.level_no || 0) - (a.level_no || 0) || (a.position_no || 0) - (b.position_no || 0))
               return <Card key={rack} size="small" title={`${rack} · ${items[0]?.rack_type === 'SMALL' ? '小货架（袋位）' : '大货架（筐/袋位）'}`} className="inventory-rack-card">
                 <div className="inventory-location-grid">
-                  {sorted.map((location) => <button type="button" key={location.id} onClick={() => setDetailLocation(location)} className={`inventory-location-tile ${location.container ? 'occupied' : 'empty'} ${location.container?.quality_status === 'WAITING' ? 'waiting' : ''}`}>
+                  {sorted.map((location) => <button type="button" key={location.id} onClick={() => setDetailLocation(location)} className={`inventory-location-tile ${location.container ? 'occupied' : 'empty'} ${location.container?.quality_status?.toLowerCase() || ''}`}>
                     <strong>{location.code}</strong>
                     {location.container ? <><span>{location.container.product_code || location.container.product_name || '未命名产品'}</span><span className="inventory-tile-quantity">{location.container.quantity} 件</span>{qualityTag(location.container.quality_status)}</> : <Typography.Text type="secondary">空位</Typography.Text>}
                   </button>)}
@@ -481,7 +490,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
       <Card
         title="冰箱胶料余料"
         className="inventory-table-card"
-        extra={<Button type="primary" size="small" onClick={() => { remainderForm.setFieldsValue({ stored_on: new Date().toISOString().slice(0, 16) }); setRemainderOpen(true) }}>登记余料</Button>}
+        extra={<Button disabled={readOnly} type="primary" size="small" onClick={() => { remainderForm.setFieldsValue({ stored_on: new Date().toISOString().slice(0, 16) }); setRemainderOpen(true) }}>登记余料</Button>}
       >
         <Alert type="info" showIcon message="这里只记录订单剩余胶料的重量和使用流水，不占用成品货架库位。" style={{ marginBottom: 12 }} />
         <Table rowKey="id" size="small" loading={remaindersQuery.isLoading} dataSource={remaindersQuery.data || []} columns={remainderColumns} pagination={{ pageSize: 8 }} scroll={{ x: 900 }} locale={{ emptyText: '暂无冰箱胶料记录' }} />
@@ -519,20 +528,20 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
             <Descriptions.Item label="库存批次">{activeDetailLocation.container.batch_no}</Descriptions.Item>
             <Descriptions.Item label="品检员">{activeDetailLocation.container.inspector_name || '未登记'}</Descriptions.Item>
             <Descriptions.Item label="入库日期">{activeDetailLocation.container.received_on || '-'}</Descriptions.Item>
-          </Descriptions> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前为空库位"><Button type="primary" icon={<InboxOutlined />} onClick={() => { receiptForm.setFieldValue('location_id', activeDetailLocation.id); closeLocationDetail(); setReceiptOpen(true) }}>在此库位入库</Button></Empty>}
+          </Descriptions> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前为空库位"><Button disabled={readOnly} type="primary" icon={<InboxOutlined />} onClick={() => { receiptForm.setFieldValue('location_id', activeDetailLocation.id); closeLocationDetail(); setReceiptOpen(true) }}>在此库位入库</Button></Empty>}
           {activeDetailLocation.container && <>
             {activeDetailLocation.container.quality_status !== 'PASSED' && <Alert style={{ marginTop: 16 }} type="warning" showIcon message="当前库存尚不可正常出库" description="可先移库整理；实际检验合格后，请在下方更新质量状态并登记品检员，再办理出库。更正状态不会改变数量或库位。" />}
             <Space direction="vertical" className="inventory-detail-actions" style={{ width: '100%', marginTop: 16 }}>
-              <Button block type="primary" onClick={() => openQuality(activeDetailLocation.container!)}>更新质量状态</Button>
-              <Button block icon={<SwapOutlined />} onClick={() => openMove(activeDetailLocation)}>移库</Button>
-              {activeDetailLocation.container.quality_status === 'PASSED' && <Button block onClick={() => openOutbound(activeDetailLocation.container!)}>办理出库</Button>}
-              <Button block icon={<EditOutlined />} onClick={() => openProductCorrection(activeDetailLocation.container!)}>更正产品资料</Button>
+              <Button disabled={readOnly} block type="primary" onClick={() => openQuality(activeDetailLocation.container!)}>更新质量状态</Button>
+              <Button disabled={readOnly} block icon={<SwapOutlined />} onClick={() => openMove(activeDetailLocation)}>移库</Button>
+              {activeDetailLocation.container.quality_status === 'PASSED' && <Button disabled={readOnly} block onClick={() => openOutbound(activeDetailLocation.container!)}>办理出库</Button>}
+              <Button disabled={readOnly} block icon={<EditOutlined />} onClick={() => openProductCorrection(activeDetailLocation.container!)}>更正产品资料</Button>
             </Space>
           </>}
         </>}
       </Drawer>
 
-      <Modal className="inventory-modal" title="库存直接入库" open={receiptOpen} onCancel={() => setReceiptOpen(false)} onOk={() => void submitReceipt()} confirmLoading={receiptMutation.isPending} width={720} okText="确认入库">
+      <Modal className="inventory-modal" title="库存直接入库" open={receiptOpen} onCancel={() => setReceiptOpen(false)} okButtonProps={{ disabled: readOnly }} onOk={() => void submitReceipt()} confirmLoading={receiptMutation.isPending} width={720} okText="确认入库">
         <Alert type="info" showIcon message="本表单不需要订单或流程卡；库存批次由系统生成，可手工填写现场批次号。" style={{ marginBottom: 16 }} />
         <Form form={receiptForm} layout="vertical" initialValues={{ quality_status: 'WAITING', container_type: 'BAG', bag_count: 1 }}>
           <Form.Item label="已有产品" name="product_id"><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} onChange={selectReceiptProduct} placeholder="选择后自动带出产品资料和最新单重" options={products.map((item) => ({ value: item.id, label: `${item.product_code || item.product_name || '-'} · ${item.specification} · ${item.material || '-'}` }))} /></Form.Item>
@@ -553,7 +562,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
         </Form>
       </Modal>
 
-      <Modal className="inventory-modal" title="库存出库" open={outboundOpen} onCancel={() => setOutboundOpen(false)} onOk={() => void submitOutbound()} confirmLoading={outboundMutation.isPending} width={620} okText="确认出库">
+      <Modal className="inventory-modal" title="库存出库" open={outboundOpen} onCancel={() => setOutboundOpen(false)} okButtonProps={{ disabled: readOnly }} onOk={() => void submitOutbound()} confirmLoading={outboundMutation.isPending} width={620} okText="确认出库">
         <Alert type="warning" showIcon message="这里只扣减已检合格库存，不自动登记出货。待检、冻结或不合格库存请从库位详情更新质量状态或移库。" style={{ marginBottom: 16 }} />
         <Form form={outboundForm} layout="vertical" initialValues={{ lines: [{}] }}>
           <Form.List name="lines">
@@ -572,7 +581,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
         </Form>
       </Modal>
 
-      <Modal className="inventory-modal" title={`更新库存质量状态${qualityTarget ? ` · ${qualityTarget.container_code}` : ''}`} open={!!qualityTarget} onCancel={() => setQualityTarget(undefined)} onOk={() => void submitQuality()} confirmLoading={qualityMutation.isPending} okText="保存状态">
+      <Modal className="inventory-modal" title={`更新库存质量状态${qualityTarget ? ` · ${qualityTarget.container_code}` : ''}`} open={!!qualityTarget} onCancel={() => setQualityTarget(undefined)} okButtonProps={{ disabled: readOnly }} onOk={() => void submitQuality()} confirmLoading={qualityMutation.isPending} okText="保存状态">
         <Alert type="info" showIcon message="更正当前库存批次的质量状态，不改变数量或库位。只有实际检验合格才可设为已检合格；这里不需要订单或流程卡。" style={{ marginBottom: 16 }} />
         <Form form={qualityForm} layout="vertical">
           <Form.Item label="质量状态" name="quality_status" rules={[{ required: true }]}><Select onChange={(value) => { if (value === 'PASSED' && !qualityForm.getFieldValue('inspected_on')) qualityForm.setFieldValue('inspected_on', dayjs().format('YYYY-MM-DD')) }} options={Object.entries(QUALITY_META).map(([value, meta]) => ({ value, label: meta.label }))} /></Form.Item>
@@ -581,7 +590,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
         </Form>
       </Modal>
 
-      <Modal className="inventory-modal" title={`更正库存产品资料${productCorrectionTarget ? ` · ${productCorrectionTarget.container_code}` : ''}`} open={!!productCorrectionTarget} onCancel={() => setProductCorrectionTarget(undefined)} onOk={() => void submitProductCorrection()} confirmLoading={productCorrectionMutation.isPending} width={680} okText="保存更正">
+      <Modal className="inventory-modal" title={`更正库存产品资料${productCorrectionTarget ? ` · ${productCorrectionTarget.container_code}` : ''}`} open={!!productCorrectionTarget} onCancel={() => setProductCorrectionTarget(undefined)} okButtonProps={{ disabled: readOnly }} onOk={() => void submitProductCorrection()} confirmLoading={productCorrectionMutation.isPending} width={680} okText="保存更正">
         <Alert type="warning" showIcon message="漏填或填错可在这里更正。若本次入库选错了产品，请选择另一个已有产品；直接修改字段时，其他使用同一产品资料的库存批次也会同步显示更正。" style={{ marginBottom: 16 }} />
         <Form form={productCorrectionForm} layout="vertical">
           <Form.Item label="更换为已有产品（可选）" name="replacement_product_id"><Select allowClear showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} onChange={fillProductCorrectionForm} placeholder="仅选错产品时使用" options={products.filter((item) => item.id !== productCorrectionTarget?.product_id).map((item) => ({ value: item.id, label: `${item.product_code || item.product_name || '-'} · ${item.specification || '-'} · ${item.material || '-'}` }))} /></Form.Item>
@@ -592,7 +601,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
         </Form>
       </Modal>
 
-      <Modal className="inventory-modal" title={`库存移库${moveTarget ? ` · ${moveTarget.containerCode}` : ''}`} open={!!moveTarget} onCancel={() => setMoveTarget(undefined)} onOk={() => void submitMove()} confirmLoading={moveMutation.isPending} okText="确认移库">
+      <Modal className="inventory-modal" title={`库存移库${moveTarget ? ` · ${moveTarget.containerCode}` : ''}`} open={!!moveTarget} onCancel={() => setMoveTarget(undefined)} okButtonProps={{ disabled: readOnly }} onOk={() => void submitMove()} confirmLoading={moveMutation.isPending} okText="确认移库">
         <Alert type="info" showIcon message="移库只改变固定库位，不改变产品、批次、质量状态或库存数量。" style={{ marginBottom: 16 }} />
         <Form form={moveForm} layout="vertical">
           <Form.Item label="目标库位" required><div className="inventory-scan-field"><Form.Item name="location_id" noStyle rules={[{ required: true, message: '请选择目标库位' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} options={moveLocationOptions} /></Form.Item><Button aria-label="扫描目标库位" icon={<CameraOutlined />} onClick={() => setScanPurpose('MOVE')}>扫码</Button></div></Form.Item>
@@ -600,7 +609,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
         </Form>
       </Modal>
 
-      <Modal className="inventory-modal" title="登记冰箱胶料余料" open={remainderOpen} onCancel={() => setRemainderOpen(false)} onOk={() => void submitRemainder()} confirmLoading={remainderMutation.isPending} okText="保存记录">
+      <Modal className="inventory-modal" title="登记冰箱胶料余料" open={remainderOpen} onCancel={() => setRemainderOpen(false)} okButtonProps={{ disabled: readOnly }} onOk={() => void submitRemainder()} confirmLoading={remainderMutation.isPending} okText="保存记录">
         <Form form={remainderForm} layout="vertical">
           <Row gutter={12}><Col xs={24} sm={12}><Form.Item label="胶料材质" name="material" rules={[{ required: true, message: '请填写胶料材质' }]}><Input placeholder="例如：PP、ABS" /></Form.Item></Col><Col xs={24} sm={12}><Form.Item label="重量(kg)" name="weight_kg" rules={[{ required: true, type: 'number', min: 0.001, message: '请输入大于0的重量' }]}><InputNumber min={0.001} precision={3} style={{ width: '100%' }} /></Form.Item></Col></Row>
           <Form.Item label="入冰箱时间" name="stored_on"><Input type="datetime-local" /></Form.Item>
@@ -608,7 +617,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
         </Form>
       </Modal>
 
-      <Modal className="inventory-modal" title={`登记胶料使用${remainderUseTarget ? ` · ${remainderUseTarget.material}` : ''}`} open={!!remainderUseTarget} onCancel={() => setRemainderUseTarget(undefined)} onOk={() => void submitRemainderUse()} confirmLoading={remainderUseMutation.isPending} okText="保存使用记录">
+      <Modal className="inventory-modal" title={`登记胶料使用${remainderUseTarget ? ` · ${remainderUseTarget.material}` : ''}`} open={!!remainderUseTarget} onCancel={() => setRemainderUseTarget(undefined)} okButtonProps={{ disabled: readOnly }} onOk={() => void submitRemainderUse()} confirmLoading={remainderUseMutation.isPending} okText="保存使用记录">
         <Alert type="info" showIcon message={`当前剩余 ${remainderUseTarget?.remaining_weight_kg ?? 0} kg`} style={{ marginBottom: 16 }} />
         <Form form={remainderUseForm} layout="vertical">
           <Form.Item label="使用重量(kg)" name="weight_kg" rules={[{ required: true, type: 'number', min: 0.001, message: '请输入大于0的重量' }]}><InputNumber min={0.001} max={Number(remainderUseTarget?.remaining_weight_kg || 0)} precision={3} style={{ width: '100%' }} /></Form.Item>

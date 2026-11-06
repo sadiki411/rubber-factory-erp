@@ -2,6 +2,7 @@ import { App } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { vi } from 'vitest'
 import { AnalyticsPage } from './AnalyticsPage'
 
@@ -46,12 +47,50 @@ const qualityMetrics = {
 const financeMetrics = { revenue: '12000.00', material_cost: '4000.00', labor_cost: '1500.00', energy_cost: '500.00', other_cost: '0.00', total_cost: '6000.00', profit: '6000.00', profit_margin: '50.00' }
 
 describe('AnalyticsPage', () => {
+  it.each(['Server Error (500)', '请求超时'])('does not replace a failed query with zero: %s', async (reason) => {
+    apiMocks.dashboard.mockRejectedValue(new Error(reason))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><MemoryRouter><App><AnalyticsPage /></App></MemoryRouter></QueryClientProvider>)
+    expect(await screen.findByText('综合分析读取失败')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重试读取分析' })).toBeInTheDocument()
+    expect(screen.queryByText('生产模数')).not.toBeInTheDocument()
+    expect(screen.queryByText('出货数量')).not.toBeInTheDocument()
+    expect(document.querySelector('.analytics-source-strip')).not.toBeInTheDocument()
+  })
+
+  it('keeps pending state separate from successful empty data and real zero', async () => {
+    const success = await apiMocks.dashboard()
+    let finish!: (data: unknown) => void
+    apiMocks.dashboard.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><MemoryRouter><App><AnalyticsPage /></App></MemoryRouter></QueryClientProvider>)
+    expect(screen.getByLabelText('分析加载中')).toBeInTheDocument()
+    expect(screen.queryByText('出货数量')).not.toBeInTheDocument()
+    const empty = { ...success, sources: Object.fromEntries(Object.keys(success.sources).map((key) => [key, { automatic: 0, manual: 0, total: 0 }])), quality: { ...success.quality, total: { ...success.quality.total, shipped_quantity: 0 } } }
+    finish(empty)
+    expect(await screen.findByText('所选期间没有已登记的分析记录')).toBeInTheDocument()
+    expect(screen.getByText('出货数量').closest('.ant-statistic')).toHaveTextContent('0')
+    expect(screen.queryByText('综合分析读取失败')).not.toBeInTheDocument()
+  })
+
+  it('uses the linked date range as the only active date and hides cached totals after refresh fails', async () => {
+    const success = await apiMocks.dashboard()
+    apiMocks.dashboard.mockRejectedValue(new Error('刷新失败'))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    client.setQueryData(['analytics', 'dashboard', { dateFrom: '2026-10-01', dateTo: '2026-10-31', group: '', machineId: undefined }], success)
+    render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/analytics?date_from=2026-10-01&date_to=2026-10-31']}><App><AnalyticsPage /></App></MemoryRouter></QueryClientProvider>)
+    expect(await screen.findByText('综合分析读取失败')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('2026年10月')).toBeInTheDocument()
+    expect(apiMocks.dashboard).toHaveBeenLastCalledWith(expect.objectContaining({ date_from: '2026-10-01', date_to: '2026-10-31' }), expect.objectContaining({ signal: expect.anything() }))
+    expect(screen.queryByText('出货数量')).not.toBeInTheDocument()
+  })
+
   it('does not report an empty employee archive during a pending or failed lookup', async () => {
     const user = userEvent.setup()
     let reject!: (error: Error) => void
     apiMocks.qualityEmployeeDetails.mockImplementation(() => new Promise((_resolve, rejectPromise) => { reject = rejectPromise }))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(<QueryClientProvider client={client}><App><AnalyticsPage /></App></QueryClientProvider>)
+    render(<QueryClientProvider client={client}><MemoryRouter><App><AnalyticsPage /></App></MemoryRouter></QueryClientProvider>)
     await user.click(await screen.findByRole('tab', { name: '品检与返工绩效' }))
     await user.click(await screen.findByRole('button', { name: /查看工作明细/ }))
     expect(await screen.findByText('正在读取员工产品记录…')).toBeInTheDocument()
@@ -89,10 +128,12 @@ describe('AnalyticsPage', () => {
 
   it('shows a separate transparent analysis board using dynamic data', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(<QueryClientProvider client={client}><App><AnalyticsPage /></App></QueryClientProvider>)
+    render(<QueryClientProvider client={client}><MemoryRouter><App><AnalyticsPage /></App></MemoryRouter></QueryClientProvider>)
 
     expect(await screen.findByText('数据分析与绩效')).toBeInTheDocument()
     expect((await screen.findAllByText('张三')).length).toBeGreaterThan(0)
+    expect(screen.queryByText('合计收入')).not.toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('tab', { name: '收支与结算' }))
     expect(screen.getByText('合计收入')).toBeInTheDocument()
     expect(screen.getByText('有 2 个已完成订单尚未结算')).toBeInTheDocument()
     expect(screen.getByText('这些订单尚未计入系统自动收入、成本和利润；完成结算后，本页数据会自动更新。')).toBeInTheDocument()

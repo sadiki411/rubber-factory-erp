@@ -1,3 +1,4 @@
+import { useReadOnly } from '../access'
 import {
   Alert,
   App,
@@ -13,6 +14,7 @@ import {
   Grid,
   Input,
   InputNumber,
+  Pagination,
   Popconfirm,
   Row,
   Select,
@@ -62,6 +64,8 @@ interface Props {
   reworkCasesLoading?: boolean
   reworkCasesError?: string
   reworkCasesTotal?: number
+  reworkCasesPage?: number
+  onReworkCasesPageChange?: (page: number) => void
   onOpenReturnRework?: () => void
   onOpenReturnReworkDetail?: (item: QualityReworkCase) => void
   onOpenReturnReworkAttempt?: (item: QualityReworkCase) => void
@@ -113,6 +117,7 @@ export function ShipmentBatchReviewDrawer({
   onSaved,
   onAmend,
 }: ShipmentBatchReviewDrawerProps) {
+  const readOnly = useReadOnly()
   const [form] = Form.useForm<Record<string, unknown>>()
   const [saving, setSaving] = useState(false)
   const { message } = App.useApp()
@@ -328,8 +333,8 @@ export function ShipmentBatchReviewDrawer({
     footer={item?.status === 'VOID'
       ? <Button onClick={onClose}>关闭</Button>
       : item?.status === 'CONFIRMED'
-      ? <Space className="drawer-footer-actions"><Popconfirm title="确定作废这张已确认出货单吗？" description="作废会恢复订单/流程卡可出货余量，且仅允许在没有退货或返工关联时执行。" okText="确认作废" cancelText="取消" onConfirm={() => void voidConfirmed()}><Button danger loading={saving}>作废出货</Button></Popconfirm><Button onClick={() => onAmend?.(item)}>纠正出货</Button><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} onClick={() => void submit(false)}>保存品检员</Button></Space>
-      : <Space className="drawer-footer-actions"><Popconfirm title="确定作废这个草稿批次吗？" onConfirm={() => void voidDraft()}><Button danger loading={saving}>作废草稿</Button></Popconfirm><Button onClick={onClose}>取消</Button><Button loading={saving} onClick={() => void submit(false)}>保存草稿</Button><Button type="primary" loading={saving} onClick={() => void submit(true)}>保存并确认</Button></Space>}
+      ? <Space className="drawer-footer-actions"><Popconfirm disabled={readOnly} title="确定作废这张已确认出货单吗？" description="作废会恢复订单/流程卡可出货余量，且仅允许在没有退货或返工关联时执行。" okText="确认作废" cancelText="取消" onConfirm={() => void voidConfirmed()}><Button disabled={readOnly} danger loading={saving}>作废出货</Button></Popconfirm><Button disabled={readOnly} onClick={() => onAmend?.(item)}>纠正出货</Button><Button onClick={onClose}>取消</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void submit(false)}>保存品检员</Button></Space>
+      : <Space className="drawer-footer-actions"><Popconfirm disabled={readOnly} title="确定作废这个草稿批次吗？" onConfirm={() => void voidDraft()}><Button disabled={readOnly} danger loading={saving}>作废草稿</Button></Popconfirm><Button onClick={onClose}>取消</Button><Button disabled={readOnly} loading={saving} onClick={() => void submit(false)}>保存草稿</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void submit(true)}>保存并确认</Button></Space>}
   >
     {hasAutoAllocation && <Alert
       className="quality-batch-allocation-alert"
@@ -423,6 +428,7 @@ function WeightDrawer({
   onClose: () => void
   onSaved: () => Promise<void>
 }) {
+  const readOnly = useReadOnly()
   const [form] = Form.useForm<Record<string, unknown>>()
   const [saving, setSaving] = useState(false)
   const { message } = App.useApp()
@@ -489,7 +495,7 @@ function WeightDrawer({
     }
   }
 
-  return <Drawer open={open} onClose={onClose} width={520} title={item ? '编辑成品单重标准' : '新增成品单重标准'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} onClick={() => void submit()}>保存</Button></Space>}>
+  return <Drawer open={open} onClose={onClose} width={520} title={item ? '编辑成品单重标准' : '新增成品单重标准'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void submit()}>保存</Button></Space>}>
     <Alert type="info" showIcon message="单重单位为 g/件" description="标准单重=样品总净重÷抽样件数。胶料重量不填在这里；流程卡建立时会保存单重快照。" />
     <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
       <Form.Item name="product_specification_id" label="产品规格"><Select allowClear showSearch optionFilterProp="label" options={specs.map((spec) => ({ value: spec.id, label: spec.label }))} placeholder="按产品规格关联（推荐）" /></Form.Item>
@@ -519,6 +525,7 @@ function ReworkCaseDrawer({
   onClose: () => void
   onSaved: () => Promise<void>
 }) {
+  const readOnly = useReadOnly()
   const [form] = Form.useForm<Record<string, unknown>>()
   const [saving, setSaving] = useState(false)
   const { message } = App.useApp()
@@ -568,7 +575,7 @@ function ReworkCaseDrawer({
       setSaving(false)
     }
   }
-  return <Drawer open={open} onClose={onClose} width={560} title={item ? '编辑退货返工记录' : '新增退货返工记录'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} onClick={() => void submit()}>保存</Button></Space>}>
+  return <Drawer open={open} onClose={onClose} width={560} title={item ? '编辑退货返工记录' : '新增退货返工记录'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void submit()}>保存</Button></Space>}>
     <Alert type="info" showIcon message="内部返工与客户退回分开记录" description="内部返工不要求出货记录；客户退回必须选择已确认的出货明细，退回重量会返还流程卡可重发额度。" />
     <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
       <Form.Item name="origin" label="返工来源" rules={[{ required: true }]}><Select disabled options={[{ value: 'INTERNAL', label: '内部返工（出货前）' }]} /></Form.Item>
@@ -593,6 +600,7 @@ function AttemptDrawer({
   onClose: () => void
   onSaved: () => Promise<void>
 }) {
+  const readOnly = useReadOnly()
   const [form] = Form.useForm<Record<string, unknown>>()
   const [saving, setSaving] = useState(false)
   const { message } = App.useApp()
@@ -631,7 +639,7 @@ function AttemptDrawer({
       setSaving(false)
     }
   }
-  return <Drawer open={open} onClose={onClose} width={540} title={item ? `${item.case_no} · 新增下一轮返工` : '新增返工轮次'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button type="primary" loading={saving} onClick={() => void submit()}>保存</Button></Space>}>
+  return <Drawer open={open} onClose={onClose} width={540} title={item ? `${item.case_no} · 新增下一轮返工` : '新增返工轮次'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void submit()}>保存</Button></Space>}>
     <Alert type="info" showIcon message="系统自动生成 R1、R2、R3…" description="可以按件数、重量或两者记录；同一条退货返工记录累计投入不能超过影响数量。" />
     <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
       <Form.Item name="attempt_date" label="处理日期" rules={[{ required: true }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
@@ -644,9 +652,10 @@ function AttemptDrawer({
   </Drawer>
 }
 
-export function QualityWorkflowManagement({ orders, employees, cards, unitWeights, weightsLoading, weightsError, unitWeightsTotal, filtered, onClearFilter, batches, batchesLoading = false, batchesError, batchesTotal, shipmentOptions = batches, reworkCases, reworkCasesLoading = false, reworkCasesError, reworkCasesTotal, onOpenReturnRework, onOpenReturnReworkDetail, onOpenReturnReworkAttempt, onRefresh }: Props) {
+export function QualityWorkflowManagement({ orders, employees, cards, unitWeights, weightsLoading, weightsError, unitWeightsTotal, filtered, onClearFilter, batches, batchesLoading = false, batchesError, batchesTotal, shipmentOptions = batches, reworkCases, reworkCasesLoading = false, reworkCasesError, reworkCasesTotal, reworkCasesPage = 1, onReworkCasesPageChange, onOpenReturnRework, onOpenReturnReworkDetail, onOpenReturnReworkAttempt, onRefresh }: Props) {
   const screens = Grid.useBreakpoint()
   const mobile = screens.md === false
+  const readOnly = useReadOnly()
   const [weightItem, setWeightItem] = useState<QualityUnitWeight | null | undefined>(undefined)
   const [caseItem, setCaseItem] = useState<QualityReworkCase | null | undefined>(undefined)
   const [attemptCase, setAttemptCase] = useState<QualityReworkCase | undefined>(undefined)
@@ -669,7 +678,7 @@ export function QualityWorkflowManagement({ orders, employees, cards, unitWeight
     { title: '抽样', key: 'sample', render: (_, row) => row.sample_count && row.sample_total_weight_g ? `${row.sample_count}件 / ${row.sample_total_weight_g}g` : '直接录入' },
     { title: '测量日期', dataIndex: 'measured_on', render: dateText },
     { title: '状态', dataIndex: 'is_active', render: (value) => <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag> },
-    { title: '操作', key: 'action', render: (_, row) => <Button type="link" onClick={() => setWeightItem(row)}>编辑</Button> },
+    { title: '操作', key: 'action', render: (_, row) => <Button disabled={readOnly} type="link" onClick={() => setWeightItem(row)}>编辑</Button> },
   ]
   const batchColumns: TableColumnsType<QualityShipmentBatch> = [
     { title: '批次', dataIndex: 'shipment_no', width: 205, render: (value, row) => <span><Button type="link" className="table-primary-link" onClick={() => setBatchItem(row)}><strong>{value}</strong></Button><br /><Typography.Text type="secondary">{dateText(row.shipment_date)}</Typography.Text></span> },
@@ -723,25 +732,25 @@ export function QualityWorkflowManagement({ orders, employees, cards, unitWeight
         : <Typography.Text type="secondary">-</Typography.Text> },
   ]
   const caseColumns: TableColumnsType<QualityReworkCase> = [
-    { title: '记录编号', dataIndex: 'case_no', width: 155, render: (value, row) => <span><Button type="link" className="table-primary-link" onClick={() => row.origin === 'CUSTOMER_RETURN' ? onOpenReturnReworkDetail?.(row) : setCaseItem(row)}><strong>{value}</strong></Button><br /><Typography.Text type="secondary">{row.origin === 'INTERNAL' ? '内部返工' : '客户整批退货'} · {dateText(row.opened_on)}</Typography.Text></span> },
+    { title: '记录编号', dataIndex: 'case_no', width: 155, render: (value, row) => <span><Button disabled={readOnly && row.origin !== 'CUSTOMER_RETURN'} type="link" className="table-primary-link" onClick={() => row.origin === 'CUSTOMER_RETURN' ? onOpenReturnReworkDetail?.(row) : setCaseItem(row)}><strong>{value}</strong></Button><br /><Typography.Text type="secondary">{row.origin === 'INTERNAL' ? '内部返工' : '客户整批退货'} · {dateText(row.opened_on)}</Typography.Text></span> },
     { title: '原出货 / 流程卡', key: 'source', width: 220, render: (_, row) => row.source ? <span><strong>{row.source.shipment_no}</strong><br /><Typography.Text type="secondary">{row.source.order_no || '-'}{row.source.item_no ? ` / ${row.source.item_no}` : ''} · 第{row.source.shipment_unit_no}批</Typography.Text></span> : cardLabels.get(String(row.process_card_id)) || `卡#${row.process_card_id || '-'}` },
     { title: '产品 / 规格材质', key: 'product', width: 220, render: (_, row) => row.source ? <span><strong>{row.source.product_name || '-'}</strong><br /><Typography.Text type="secondary">{[row.source.specification, row.source.material].filter(Boolean).join(' · ') || '-'}</Typography.Text></span> : '-' },
     { title: '问题', dataIndex: 'reason', ellipsis: true, render: (value) => value || '-' },
     { title: '轮次', key: 'attempts', width: 155, render: (_, row) => {
       const scannedReturn = Boolean(row.process_card_id || row.process_card_no || row.active_process_card_no || row.process_card?.id)
-      return <Space><BadgeCount count={row.attempt_count || row.attempts?.length || 0} />{!scannedReturn && !['CANCELLED', 'SCRAPPED'].includes(row.status) && <Button type="link" size="small" onClick={() => row.origin === 'CUSTOMER_RETURN' ? onOpenReturnReworkAttempt?.(row) : setAttemptCase(row)}>手工新增轮次</Button>}</Space>
+      return <Space><BadgeCount count={row.attempt_count || row.attempts?.length || 0} />{!scannedReturn && !['CANCELLED', 'SCRAPPED'].includes(row.status) && <Button disabled={readOnly} type="link" size="small" onClick={() => row.origin === 'CUSTOMER_RETURN' ? onOpenReturnReworkAttempt?.(row) : setAttemptCase(row)}>手工新增轮次</Button>}</Space>
     } },
     { title: '状态', dataIndex: 'status', render: (value) => <Tag color={value === 'COMPLETED' ? 'success' : value === 'SCRAPPED' ? 'error' : 'warning'}>{value}</Tag> },
-    { title: '操作', key: 'action', render: (_, row) => <Button type="link" onClick={() => row.origin === 'CUSTOMER_RETURN' ? onOpenReturnReworkDetail?.(row) : setCaseItem(row)}>{row.origin === 'CUSTOMER_RETURN' ? '查看' : '编辑'}</Button> },
+    { title: '操作', key: 'action', render: (_, row) => <Button disabled={readOnly && row.origin !== 'CUSTOMER_RETURN'} type="link" onClick={() => row.origin === 'CUSTOMER_RETURN' ? onOpenReturnReworkDetail?.(row) : setCaseItem(row)}>{row.origin === 'CUSTOMER_RETURN' ? '查看' : '编辑'}</Button> },
   ]
   const BadgeCount = ({ count }: { count: number }) => <Tag color={count > 2 ? 'error' : 'blue'}>{count}轮</Tag>
   return <div className="quality-workflow-management">
     <Tabs items={[
       { key: 'weights', label: `成品单重标准（${weightsLoading ? '查询中' : weightsError ? '读取失败' : `${listCountLabel(unitWeightsTotal, unitWeights.length, filtered ? '·当前筛选' : '')}`}）`, children: <Card title="成品单重标准" extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setWeightItem(null)}>新增标准</Button>}><Typography.Paragraph type="secondary">按产品规格/模具型号维护成品单重；流程卡建立时保存快照，后续修改不会改变历史出货计算。</Typography.Paragraph>{weightsError ? <Alert type="error" title="单重标准读取失败" description={weightsError} action={<Button onClick={() => void onRefresh()}>重试</Button>} /> : weightsLoading && !unitWeights.length ? <Spin description="正在查询单重标准…" /> : unitWeights.length ? <Table loading={weightsLoading} rowKey="id" dataSource={unitWeights} columns={weightColumns} scroll={{ x: 720 }} pagination={{ pageSize: 8 }} /> : <Empty description={filtered ? '当前筛选无匹配单重标准' : '尚未维护单重标准，可直接在流程卡上填写单重'}>{filtered && <Button onClick={onClearFilter}>清空筛选</Button>}</Empty>}</Card> },
       { key: 'batches', label: `重量出货批次（${batchesLoading ? '查询中' : batchesError ? '读取失败' : listCountLabel(batchesTotal, batches.length)}）`, children: <Card title="重量出货批次（兼容入口）" extra={<Tag color="blue">完整统计请看上方流程卡出货台账</Tag>}>{batchesError ? <Alert type="error" showIcon message="重量出货批次读取失败" description={batchesError} action={<Button onClick={() => void onRefresh()}>重试</Button>} /> : batchesLoading && !batches.length ? <Spin description="正在读取重量出货批次…" /> : batches.length ? <Table loading={batchesLoading} rowKey="id" dataSource={batches} columns={batchColumns} scroll={{ x: 1550 }} pagination={{ pageSize: 8 }} /> : <Empty description="当前条件下暂无重量出货批次" />}</Card> },
-      { key: 'rework', label: `退货返工记录（${reworkCasesLoading ? '查询中' : reworkCasesError ? '读取失败' : listCountLabel(reworkCasesTotal, reworkCases.length)}）`, children: <Card title="内部返工 / 客户整批退货" extra={<Space wrap>{onOpenReturnRework && <Button type="primary" icon={<PlusOutlined />} onClick={onOpenReturnRework}>登记客户整批退货</Button>}<Button icon={<PlusOutlined />} onClick={() => setCaseItem(null)}>新增内部返工</Button></Space>}><Typography.Paragraph type="secondary">带流程卡的客户退货由再次扫码自动生成下一轮，页面不再提供容易误点的“登记下一轮”；只有手工订单或内部返工保留人工新增入口。</Typography.Paragraph>{reworkCasesError ? <Alert type="error" showIcon message="退货返工记录读取失败" description={reworkCasesError} action={<Button onClick={() => void onRefresh()}>重试</Button>} /> : reworkCasesLoading && !reworkCases.length ? <Spin description="正在读取退货返工记录…" /> : mobile
+      { key: 'rework', label: `退货返工记录（${reworkCasesLoading ? '查询中' : reworkCasesError ? '读取失败' : listCountLabel(reworkCasesTotal, reworkCases.length)}）`, children: <Card title="内部返工 / 客户整批退货" extra={<Space wrap>{onOpenReturnRework && <Button disabled={readOnly} type="primary" icon={<PlusOutlined />} onClick={onOpenReturnRework}>登记客户整批退货</Button>}<Button disabled={readOnly} icon={<PlusOutlined />} onClick={() => setCaseItem(null)}>新增内部返工</Button></Space>}><Typography.Paragraph type="secondary">带流程卡的客户退货由再次扫码自动生成下一轮，页面不再提供容易误点的“登记下一轮”；只有手工订单或内部返工保留人工新增入口。</Typography.Paragraph>{reworkCasesError ? <Alert type="error" showIcon message="退货返工记录读取失败" description={reworkCasesError} action={<Button onClick={() => void onRefresh()}>重试</Button>} /> : reworkCasesLoading && !reworkCases.length ? <Spin description="正在读取退货返工记录…" /> : mobile
         ? <QualityReworkCaseMobileList items={reworkCases} onOpen={(row) => { if (row.origin === 'CUSTOMER_RETURN') onOpenReturnReworkDetail?.(row); else setCaseItem(row) }} onAddAttempt={(row) => { if (row.origin === 'CUSTOMER_RETURN') onOpenReturnReworkAttempt?.(row); else setAttemptCase(row) }} />
-        : reworkCases.length ? <Table loading={reworkCasesLoading} rowKey="id" dataSource={reworkCases} columns={caseColumns} scroll={{ x: 1260 }} pagination={{ pageSize: 8 }} /> : <Empty description="当前条件下暂无退货返工记录" />}</Card> },
+        : reworkCases.length ? <Table loading={reworkCasesLoading} rowKey="id" dataSource={reworkCases} columns={caseColumns} scroll={{ x: 1260 }} pagination={{ pageSize: 8 }} /> : <Empty description="当前条件下暂无退货返工记录" />}{onReworkCasesPageChange && <Pagination current={reworkCasesPage} total={reworkCasesTotal} pageSize={50} showSizeChanger={false} onChange={onReworkCasesPageChange} showTotal={(total) => `完整查询共 ${total} 条`} />}</Card> },
     ]} />
     <WeightDrawer open={weightItem !== undefined} item={weightItem || undefined} orders={orders} onClose={() => setWeightItem(undefined)} onSaved={onRefresh} />
     <ShipmentBatchReviewDrawer

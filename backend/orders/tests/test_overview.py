@@ -153,3 +153,15 @@ class ReadOnlyOrderOverviewTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertLessEqual(len(after), len(before) + 1)
         self.assertLess(len(after), 20)
+
+    def test_due_scope_and_exact_source_urls_do_not_change_business_state(self):
+        from datetime import timedelta
+        self.order("OLD", 10).due_date = self.day - timedelta(days=1)
+        result = self.client.get("/api/orders/workbench/", {"due_scope": "today"})
+        self.assertEqual(result.status_code, 200, result.content)
+        self.assertTrue(all(row["due_date"] == self.day.isoformat() for row in result.json()["results"]))
+        returns = self.client.get("/api/orders/workbench/", {"kind": "RETURN_PENDING"}).json()
+        self.assertIn(f"rework_case_id={self.case.pk}", returns["results"][0]["url"])
+        receipt = MaterialReceipt.objects.create(order_no="UNLINKED", weight_kg=1)
+        receipts = self.client.get("/api/orders/workbench/", {"kind": "RECEIPT_UNLINKED"}).json()
+        self.assertIn(f"receipt_id={receipt.pk}", receipts["results"][0]["url"])

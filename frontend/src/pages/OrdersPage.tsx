@@ -1,5 +1,6 @@
+import { useReadOnly } from '../access'
 import { EditOutlined, FileExcelOutlined, HistoryOutlined, PlusOutlined, SearchOutlined, WarningOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Empty, Grid, Input, List, Pagination, Select, Space, Table, Tabs, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Descriptions, Drawer, Empty, Grid, Input, List, Pagination, Select, Space, Table, Tabs, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import dayjs from 'dayjs'
@@ -50,7 +51,7 @@ const PROCESS_CARD_META: Record<OrderProcessCardStatus, { text: string; color: s
 }
 
 function exactOrderValue(value: unknown, suffix = '') {
-  return value === null || value === undefined || value === '' ? '未登记' : `${String(value)}${suffix}`
+  return value === null || value === undefined || value === '' ? '未登记' : `${typeof value === 'number' ? value.toLocaleString('zh-CN') : String(value)}${suffix}`
 }
 
 function formattedTimestamp(value?: string | null) {
@@ -90,6 +91,11 @@ function ProcessCardStatusTag({ status = 'NOT_RECEIVED' }: { status?: OrderProce
 }
 
 export function OrdersPage() {
+  const readOnly = useReadOnly()
+  const [allColumns, setAllColumns] = useState(false)
+  const [showTargetReceipt, setShowTargetReceipt] = useState(true)
+  const targetReceiptId = Number(new URLSearchParams(window.location.search).get('receipt_id')) || undefined
+  const targetReceiptQuery = useQuery({ queryKey: ['material-receipts', 'detail', targetReceiptId], queryFn: () => materialReceiptApi.detail(targetReceiptId!), enabled: Boolean(targetReceiptId), retry: false })
   const analysisReturn = new URLSearchParams(window.location.search).get('return_to') || ''
   const screens = Grid.useBreakpoint()
   const mobile = screens.md === false
@@ -207,7 +213,7 @@ export function OrdersPage() {
   }
 
   const columns: TableColumnsType<Order> = [
-    { title: '订单号 / 项次', key: 'order', fixed: mobile ? undefined : 'left', width: compactTable ? 150 : 205, render: (_, row) => <span><Button type="link" className="table-primary-link" onClick={() => openForm(row)}>{row.order_no}{row.item_no ? ` / ${row.item_no}` : ''}</Button><br /><Button type="link" href={`/order-overview/${row.id}`}>完整查看</Button></span> },
+    { title: '订单号 / 项次', key: 'order', fixed: mobile ? undefined : 'left', width: compactTable ? 150 : 205, render: (_, row) => <span><Button disabled={readOnly} type="link" className="table-primary-link" onClick={() => openForm(row)}>{row.order_no}{row.item_no ? ` / ${row.item_no}` : ''}</Button><br /><Button type="link" href={`/order-overview/${row.id}`}>完整查看</Button></span> },
     { title: '流程卡', key: 'process_card', fixed: mobile ? undefined : 'left', width: compactTable ? 130 : 190, render: (_, row) => <span>{exactOrderValue(row.process_card_text)}{(row.process_card_count !== null && row.process_card_count !== undefined) || (row.process_card_covered_quantity !== null && row.process_card_covered_quantity !== undefined) ? <><br /><Typography.Text type="secondary">{exactOrderValue(row.process_card_count, ' 张')} · 覆盖 {exactOrderValue(row.process_card_covered_quantity)}</Typography.Text></> : null}<br /><ProcessCardStatusTag status={row.process_card_status} /></span> },
     { title: '规格 / 产品', key: 'specification', fixed: mobile ? undefined : 'left', width: compactTable ? 135 : 220, render: (_, row) => <span>{row.specification || '-'}<br /><Typography.Text type="secondary">{row.product_name || row.product_code || '-'}</Typography.Text></span> },
     { title: '材质', dataIndex: 'material', fixed: mobile ? undefined : 'left', width: compactTable ? 85 : 125, render: (value) => value || '-' },
@@ -245,10 +251,11 @@ export function OrdersPage() {
     { title: '订单状态', dataIndex: 'status', width: 100, render: (value: OrderStatus, row) => <Tag color={ORDER_STATUS_META[value]?.color}>{row.status_display || ORDER_STATUS_META[value]?.text || value}</Tag> },
     { title: '操作', key: 'action', fixed: mobile ? undefined : 'right', width: 90, render: (_, row) => <Button type="link" className="table-primary-link" icon={<EditOutlined />} onClick={() => openForm(row)}>编辑</Button> },
   ]
-  const orderScrollWidth = columns.reduce((total, column) => total + Number(column.width || 0), 0)
+  const visibleColumns = allColumns ? columns : columns.filter((column) => ['order', 'specification', 'weighted_shipped_quantity', 'action', 'final_yield'].includes(String(column.key)) || ['material', 'due_date', 'order_quantity', 'status'].includes(String('dataIndex' in column ? column.dataIndex : '')))
+  const orderScrollWidth = visibleColumns.reduce((total, column) => total + Number(column.width || 0), 0)
   const receiptColumns: TableColumnsType<MaterialReceipt> = [
     { title: '关联状态', key: 'linked', fixed: 'left', width: 115, render: (_, row) => row.order_id || row.order ? <Tag color="success">已关联订单</Tag> : <Tag color="error" icon={<WarningOutlined />}>待关联</Tag> },
-    { title: '订单号 / 项次', key: 'order', fixed: 'left', width: 205, render: (_, row) => <Button type="link" className="table-primary-link" onClick={() => openReceiptForm(row)}>{row.order?.order_no || row.order_no || '未填写'}{row.order?.item_no || row.item_no ? ` / ${row.order?.item_no || row.item_no}` : ''}</Button> },
+    { title: '订单号 / 项次', key: 'order', fixed: 'left', width: 205, render: (_, row) => <Button disabled={readOnly} type="link" className="table-primary-link" onClick={() => openReceiptForm(row)}>{row.order?.order_no || row.order_no || '未填写'}{row.order?.item_no || row.item_no ? ` / ${row.order?.item_no || row.item_no}` : ''}</Button> },
     { title: '成品 / 规格', key: 'product', width: 210, render: (_, row) => <span>{row.finished_product_name || '-'}<br /><Typography.Text type="secondary">{row.specification || '-'}</Typography.Text></span> },
     { title: '材质 / 批次', key: 'material', width: 170, render: (_, row) => <span>{row.material || '-'}<br /><Typography.Text type="secondary">{row.batch_no || '-'}</Typography.Text></span> },
     { title: '片材尺寸', dataIndex: 'sheet_size', width: 135, render: (value) => value || '-' },
@@ -268,7 +275,7 @@ export function OrdersPage() {
       <PageTitle
         title="订单管理"
         description="统一管理订单、胶料到料和流程卡状态；空值表示尚未登记，实际为零时会明确显示 0。"
-        extra={<Space wrap>{/^\/analytics(?:\?|$)/.test(analysisReturn) && <Button href={analysisReturn}>返回原分析筛选</Button>}<Button icon={<HistoryOutlined />} onClick={() => setImportHistoryOpen(true)}>导入记录</Button><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入订单 / 发料单</Button>{showingOrders ? <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增订单</Button> : <Button type="primary" icon={<PlusOutlined />} onClick={() => openReceiptForm()}>新增发料记录</Button>}</Space>}
+        extra={<Space wrap>{/^\/(?:analytics|operations|order-overview\/\d+)(?:\?|$)/.test(analysisReturn) && <Button href={analysisReturn}>返回原来源筛选</Button>}<Button icon={<HistoryOutlined />} onClick={() => setImportHistoryOpen(true)}>导入记录</Button><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入订单 / 发料单</Button>{showingOrders ? <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增订单</Button> : <Button type="primary" icon={<PlusOutlined />} onClick={() => openReceiptForm()}>新增发料记录</Button>}</Space>}
       />
       <Tabs
         className="business-page-tabs"
@@ -382,14 +389,14 @@ export function OrdersPage() {
               )}
             </>
           ) : (
-            <Card className="data-card" styles={{ body: { padding: 0 } }}>
+            <Card className="data-card" extra={<Button onClick={() => setAllColumns((value) => !value)}>{allColumns ? '常用列' : '全部字段（含流程卡、胶料、生产）'}</Button>} styles={{ body: { padding: 0 } }}>
               <Table
                 className="orders-table"
                 rowKey="id"
                 loading={ordersQuery.isFetching}
                 locale={{ emptyText: ordersQuery.isFetching ? '正在查询订单…' : ordersQuery.isError ? '订单读取失败，请重试' : '当前筛选无匹配订单' }}
                 dataSource={orders}
-                columns={columns}
+                columns={visibleColumns}
                 scroll={{ x: orderScrollWidth }}
                 sticky={{ offsetHeader: 64 }}
                 pagination={{ current: orderPage, pageSize: orderPageSize, total: orderTotal, showSizeChanger: true, showTotal: (total) => `共 ${total} 条` }}
@@ -465,6 +472,15 @@ export function OrdersPage() {
 
       <OrderFormDrawer open={formOpen} order={editing} onClose={() => setFormOpen(false)} />
       <OrderFinalYieldDrawer open={Boolean(yieldOrder)} order={yieldOrder} onClose={() => setYieldOrder(undefined)} />
+      {targetReceiptQuery.isError && <Alert type="error" title="指定发料记录无法读取" description={(targetReceiptQuery.error as Error).message} action={<Button onClick={() => void targetReceiptQuery.refetch()}>重试原发料</Button>} />}
+      <Drawer title="指定发料记录" open={Boolean(showTargetReceipt && targetReceiptId)} onClose={() => setShowTargetReceipt(false)} loading={targetReceiptQuery.isPending} extra={targetReceiptQuery.data && <Button disabled={readOnly} onClick={() => { openReceiptForm(targetReceiptQuery.data); setShowTargetReceipt(false) }}>编辑 / 关联原记录</Button>}>
+        {targetReceiptQuery.data && <Descriptions column={1} bordered items={[
+          { key: 'no', label: '订单 / 项次', children: `${targetReceiptQuery.data.order_no} / ${targetReceiptQuery.data.item_no}` },
+          { key: 'product', label: '规格 / 材质', children: `${targetReceiptQuery.data.specification} / ${targetReceiptQuery.data.material}` },
+          { key: 'weight', label: '发料重量', children: `${targetReceiptQuery.data.weight_kg} kg` },
+          { key: 'link', label: '关联', children: targetReceiptQuery.data.order_id ? '已关联订单' : '未关联订单，未计入订单到料量' },
+        ]} />}
+      </Drawer>
       <MaterialReceiptDrawer open={receiptFormOpen} receipt={editingReceipt} orders={orderOptionsQuery.data || []} ordersLoading={orderOptionsQuery.isLoading} onClose={() => setReceiptFormOpen(false)} />
       <BusinessImportDrawer open={importOpen} context="orders" onClose={() => setImportOpen(false)} />
       <BusinessImportHistoryDrawer open={importHistoryOpen} onClose={() => setImportHistoryOpen(false)} />

@@ -80,6 +80,8 @@ export interface InventoryLocation {
 }
 
 export interface InventorySummary {
+  failed_quantity?: number
+  held_quantity?: number
   total_quantity: number
   available_quantity: number
   waiting_inspection_quantity: number
@@ -1903,6 +1905,7 @@ export interface AnalyticsShipmentAttribution {
 }
 
 export interface AnalyticsQualityWorkRecord {
+  rework_case_id?: number
   product_key?: string
   product_code?: string
   product_specification_id?: number | null

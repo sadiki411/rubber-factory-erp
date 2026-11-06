@@ -209,6 +209,7 @@ describe('order server pagination and table navigation', () => {
     await screen.findByText('TEST-ORDER-001 / 5')
     expect(screen.getByText('TEST-ORDER-002 / 5')).toBeInTheDocument()
     expect(screen.queryByText('超额到料')).not.toBeInTheDocument()
+    if (!mobile) await user.click(screen.getByRole('button', { name: /全部字段/ }))
     expect(document.querySelectorAll('.ant-tag-green, .ant-tag-success').length).toBeGreaterThanOrEqual(2)
     if (mobile) expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
@@ -216,6 +217,8 @@ describe('order server pagination and table navigation', () => {
   it('fixes the four identity columns on the left and renders a sticky header on desktop', async () => {
     renderPage()
     await screen.findByText('TEST-ORDER-001 / 5')
+    expect(screen.queryByRole('columnheader', { name: '流程卡' })).not.toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('button', { name: /全部字段/ }))
     for (const name of ['订单号 / 项次', '流程卡', '规格 / 产品', '材质']) {
       expect(screen.getByRole('columnheader', { name })).toHaveClass('ant-table-cell-fix-start')
     }

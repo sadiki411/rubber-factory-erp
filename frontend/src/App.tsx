@@ -82,7 +82,8 @@ export function App() {
     <Suspense fallback={<div className="route-loading"><Skeleton active /></div>}>
       <Routes>
         <Route element={<AppShell user={sessionQuery.data.user} onLogout={logout} />}>
-          <Route index element={<DashboardPage />} />
+          <Route index element={<OperationsPage />} />
+          <Route path="mold-search" element={<DashboardPage />} />
           <Route path="product-specifications" element={<ProductSpecificationsPage />} />
           <Route path="orders" element={<OrdersPage />} />
           <Route path="operations" element={<OperationsPage />} />

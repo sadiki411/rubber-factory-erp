@@ -1,5 +1,7 @@
 import { App } from 'antd'
 import { render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { qualityWorkflowApi } from '../api/client'
 import type { QualityOrder } from '../types'
 import { QualityShippingWorkflow } from './QualityShippingWorkflow'
 
@@ -55,6 +57,18 @@ const baseProps = {
 }
 
 describe('QualityShippingWorkflow', () => {
+  it('reads the complete tracking history rather than the truncated page prop', async () => {
+    const timeline = vi.spyOn(qualityWorkflowApi, 'listReworkTimeline').mockResolvedValue(Array.from({ length: 9 }, (_, index) => ({ id: index + 1, case_no: `R-HISTORY-${index + 1}`, origin: 'CUSTOMER_RETURN', status: 'RESHIPPED', opened_on: '2026-09-01', reason_category: 'OTHER', reason: '', affected_quantity: 10, attempts: [], return_round: index + 1 } as any)))
+    try {
+      render(<App><QualityShippingWorkflow {...baseProps} processCards={[{ id: 63, order, order_id: 1, card_no: 'READ-CARD', quantity: 100, rework_count: 9, status: 'ACTIVE' } as any]} /></App>)
+      await userEvent.setup().click(screen.getByRole('button', { name: /时间线/ }))
+      expect(await screen.findByText('R-HISTORY-1')).toBeInTheDocument()
+      expect(screen.getByText('R-HISTORY-9')).toBeInTheDocument()
+      expect(screen.getAllByText('实际返工作业未登记')).toHaveLength(9)
+      expect(timeline).toHaveBeenCalledWith(63)
+      expect(screen.queryByText('0轮返工')).not.toBeInTheDocument()
+    } finally { timeline.mockRestore() }
+  })
   it('preserves a successful empty process-card response without listing unrelated orders', () => {
     render(<App><QualityShippingWorkflow {...baseProps} processCardsTotal={0} /></App>)
     expect(screen.getByText('当前条件下暂无可用流程卡')).toBeInTheDocument()

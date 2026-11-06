@@ -324,10 +324,14 @@ class InventorySummaryView(APIView):
         total = active.aggregate(total=Sum("quantity"))["total"] or 0
         available = active.filter(batch__quality_status=InventoryBatch.QualityStatus.PASSED).aggregate(total=Sum("quantity"))["total"] or 0
         waiting = active.filter(batch__quality_status=InventoryBatch.QualityStatus.WAITING).aggregate(total=Sum("quantity"))["total"] or 0
+        failed = active.filter(batch__quality_status=InventoryBatch.QualityStatus.FAILED).aggregate(total=Sum("quantity"))["total"] or 0
+        held = active.filter(batch__quality_status=InventoryBatch.QualityStatus.HOLD).aggregate(total=Sum("quantity"))["total"] or 0
         return Response({
             "total_quantity": total,
             "available_quantity": available,
             "waiting_inspection_quantity": waiting,
+            "failed_quantity": failed,
+            "held_quantity": held,
             "active_containers": active.count(),
             "occupied_locations": active.filter(location__isnull=False, location__rack_type__in=[InventoryLocation.RackType.LARGE, InventoryLocation.RackType.SMALL]).count(),
             "location_count": InventoryLocation.objects.filter(is_active=True, rack_type__in=[InventoryLocation.RackType.LARGE, InventoryLocation.RackType.SMALL]).count(),

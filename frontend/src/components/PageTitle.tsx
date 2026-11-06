@@ -4,7 +4,7 @@ import { Typography } from 'antd'
 export function PageTitle({ title, description, extra }: { title: string; description?: string; extra?: ReactNode }) {
   return (
     <div className="page-title-row">
-      <div>
+      <div className="page-title-content">
         <Typography.Title level={2}>{title}</Typography.Title>
         {description && <Typography.Text type="secondary">{description}</Typography.Text>}
       </div>

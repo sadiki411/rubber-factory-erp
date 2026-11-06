@@ -4,6 +4,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { InventoryPage } from './InventoryPage'
+import { ReadOnlyContext } from '../access'
 
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
@@ -424,5 +425,29 @@ describe('InventoryPage mobile inventory forms', () => {
     expect(screen.queryByRole('button', { name: '初始化 K01-K09 库位' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '重新读取' }))
     expect((await screen.findAllByText('K09-L05-P02')).length).toBeGreaterThan(0)
+  })
+
+  it('does not show zero occupied locations while the summary is loading or failed', async () => {
+    let rejectSummary: (reason: Error) => void = () => {}
+    apiMocks.summary.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSummary = reject }))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><InventoryPage /></App></QueryClientProvider>)
+    const metric = screen.getByText('占用库位').closest('.ant-statistic') as HTMLElement
+    expect(within(metric).getByText('读取中')).toBeInTheDocument()
+    expect(within(metric).queryByText('0 / 0')).not.toBeInTheDocument()
+    rejectSummary(new Error('汇总超时'))
+    expect(await within(metric).findByText('读取失败')).toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('button', { name: '重试汇总' }))
+    expect(await within(metric).findByText('0 / 150')).toBeInTheDocument()
+  })
+
+  it('keeps lookup available but disables warehouse writes for a read-only account', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<ReadOnlyContext value><QueryClientProvider client={client}><App><InventoryPage /></App></QueryClientProvider></ReadOnlyContext>)
+    expect(await screen.findByRole('button', { name: /直接入库/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /库存出库/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /登记余料/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /扫码查库位/ })).toBeEnabled()
+    expect(apiMocks.receipt).not.toHaveBeenCalled()
   })
 })

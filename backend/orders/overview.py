@@ -1,6 +1,6 @@
 """Read-only workbench and order trace, derived only from explicit relations."""
 from collections import Counter
-from datetime import date
+from datetime import date, timedelta
 from urllib.parse import urlencode
 
 from django.db.models import Prefetch, Q
@@ -32,6 +32,7 @@ KINDS = ("ORDER_SHORTAGE", "RETURN_PENDING", "INVENTORY_QUALITY", "RECEIPT_UNLIN
 class ReadQuery(serializers.Serializer):
     q = serializers.CharField(required=False, default="", max_length=200, allow_blank=True)
     kind = serializers.ChoiceField(choices=("", *KINDS), default="", required=False)
+    due_scope = serializers.ChoiceField(choices=("", "today", "overdue", "upcoming"), default="", required=False)
     section = serializers.ChoiceField(choices=SECTIONS, default="production", required=False)
     page = serializers.IntegerField(min_value=1, default=1, required=False)
     page_size = serializers.IntegerField(min_value=1, max_value=50, default=20, required=False)
@@ -53,7 +54,7 @@ def identity(order):
             "due_date": order.due_date, "order_quantity": order.order_quantity}
 
 
-def build_workbench(*, q="", kind="", page=1, page_size=20, **_):
+def build_workbench(*, q="", kind="", due_scope="", page=1, page_size=20, **_):
     tasks = []
     orders = list(QualityOrder.objects.filter(status="OPEN").only(
         "id", "order_no", "item_no", "specification", "material", "product_name",
@@ -87,7 +88,7 @@ def build_workbench(*, q="", kind="", page=1, page_size=20, **_):
             "material": order.material if order else (case.shipment_batch.material_snapshot if case.shipment_batch_id else ""), "quantity": case.affected_quantity,
             "unit": "件", "due_date": None, "order_id": order.pk if order else None,
             "owner": None, "reason": f"{case.get_status_display()}；" + ("尚未登记再发；" if case.status == QualityReworkCase.Status.COMPLETED else "") + "责任品检员不自动作为处理负责人。",
-            "source": "QualityReworkCase", "url": "/quality?" + urlencode({"tab": "reworks", "q": case.case_no, "date_from": case.opened_on or '2000-01-01', "date_to": timezone.localdate()}),
+            "source": "QualityReworkCase", "url": "/quality?" + urlencode({"tab": "reworks", "q": case.case_no, "rework_case_id": case.pk}),
         })
     for container in InventoryContainer.objects.filter(status="ACTIVE").exclude(
         batch__quality_status="PASSED"
@@ -99,7 +100,7 @@ def build_workbench(*, q="", kind="", page=1, page_size=20, **_):
             "material": product.material, "quantity": container.quantity, "unit": "件",
             "due_date": None, "order_id": None, "owner": None,
             "reason": f"{container.batch.get_quality_status_display()}；位置：{container.location.code if container.location_id else '未登记'}",
-            "source": "InventoryContainer＋Batch", "url": f"/inventory/locations/{container.location.code}" if container.location_id else "/inventory",
+            "source": "InventoryContainer＋Batch", "url": "/inventory?" + urlencode({"location_code": container.location.code}) if container.location_id else "/inventory",
         })
     for receipt in MaterialReceipt.objects.filter(order__isnull=True):
         tasks.append({
@@ -108,20 +109,27 @@ def build_workbench(*, q="", kind="", page=1, page_size=20, **_):
             "specification": receipt.specification, "material": receipt.material,
             "quantity": receipt.weight_kg, "unit": "kg", "due_date": None,
             "order_id": None, "owner": None, "reason": "有发料记录但没有明确订单关联；不能当作到料0。",
-            "source": "MaterialReceipt", "url": "/orders?tab=receipts&linked=false",
+            "source": "MaterialReceipt", "url": f"/orders?tab=receipts&linked=false&receipt_id={receipt.pk}",
         })
     term = q.casefold().strip()
     if term:
         tasks = [row for row in tasks if term in " ".join(str(row[key] or "") for key in (
             "document_no", "specification", "material", "title", "reason",
         )).casefold()]
+    today = timezone.localdate()
+    if due_scope:
+        tasks = [row for row in tasks if row["due_date"] and (
+            (due_scope == "today" and row["due_date"] == today)
+            or (due_scope == "overdue" and row["due_date"] < today)
+            or (due_scope == "upcoming" and today < row["due_date"] <= today + timedelta(days=7))
+        )]
     counts = Counter(row["kind"] for row in tasks)
     selected = [row for row in tasks if not kind or row["kind"] == kind]
     selected.sort(key=lambda row: (row["due_date"] is None, row["due_date"] or date.max, row["kind"], row["id"]))
     return {
         **page_rows(selected, page, page_size),
         "summary": {key: counts[key] for key in KINDS},
-        "summary_scope": "全部匹配搜索的已登记事项（不受当前类别和分页影响）",
+        "summary_scope": "全部匹配搜索及交期范围的事项条数（不受当前类别和分页影响）",
         "generated_at": timezone.now(),
         "limitations": [
             "这是已有记录的只读待处理清单，不代表全厂所有在制品。",
@@ -211,7 +219,7 @@ def trace_row(obj, section, order, binding_cards):
             share.shipment_order_allocation.order_id == order.pk if share.shipment_order_allocation_id else share.shipment_line.order_id == order.pk
         )) if shares else None
         row.update(document_no=obj.case_no, date=obj.opened_on, status=obj.get_status_display(),
-                   physical_quantity=obj.affected_quantity, own_quantity=own, url=f"/quality?q={obj.case_no}",
+                   physical_quantity=obj.affected_quantity, own_quantity=own, url=f"/quality?tab=reworks&rework_case_id={obj.pk}",
                    details=f"第{obj.return_round or '未登记'}轮；原单{obj.shipment_batch.shipment_no if obj.shipment_batch_id else '未关联'}；再发{obj.reshipment_batch.shipment_no if obj.reshipment_batch_id else '未登记'}；实际作业{len(obj.attempts.all())}条（0条表示未登记，不代表未返工）。")
     elif section == "piece_returns":
         row.update(document_no=f"退回#{obj.pk} / {obj.shipment.shipment_no}", date=obj.rework_date,

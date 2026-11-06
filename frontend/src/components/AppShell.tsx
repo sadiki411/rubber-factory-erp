@@ -17,11 +17,13 @@ import { Alert, Avatar, Button, Drawer, Dropdown, Grid, Layout, Menu, Space, Tag
 import { useMemo, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import type { User } from '../types'
+import { ReadOnlyContext } from '../access'
 
 const { Header, Sider, Content } = Layout
 
 const menuItems = [
   { key: '/', icon: <HomeOutlined />, label: '工作台' },
+  { key: '/mold-search', icon: <ToolOutlined />, label: '查模具 / 扫库位' },
   { key: '/operations', icon: <ScheduleOutlined />, label: '全厂待办' },
   { key: '/product-specifications', icon: <ProfileOutlined />, label: '产品规格资料' },
   { key: '/orders', icon: <OrderedListOutlined />, label: '订单管理' },
@@ -47,6 +49,7 @@ export function AppShell({ user, onLogout }: Props) {
   const desktop = !!screens.lg
   const [drawerOpen, setDrawerOpen] = useState(false)
   const selectedKey = useMemo(() => {
+    if (location.pathname.startsWith('/order-overview/')) return '/orders'
     const item = [...menuItems].reverse().find((entry) => entry.key === '/' ? location.pathname === '/' : location.pathname.startsWith(entry.key))
     return item?.key || '/'
   }, [location.pathname])
@@ -55,7 +58,14 @@ export function AppShell({ user, onLogout }: Props) {
     <Menu
       mode="inline"
       selectedKeys={[selectedKey]}
-      items={menuItems}
+      items={[
+        { type: 'group', label: '工作台', children: menuItems.filter((item) => ['/', '/operations', '/mold-search'].includes(item.key)) },
+        { type: 'group', label: '订单与生产', children: menuItems.filter((item) => ['/orders', '/production'].includes(item.key)) },
+        { type: 'group', label: '品检与出货', children: menuItems.filter((item) => item.key === '/quality') },
+        { type: 'group', label: '库存与模具', children: menuItems.filter((item) => ['/inventory', '/molds', '/racks'].includes(item.key)) },
+        { type: 'group', label: '资料与分析', children: menuItems.filter((item) => ['/product-specifications', '/analytics'].includes(item.key)) },
+        { type: 'group', label: '设置', children: menuItems.filter((item) => ['/rack-config', '/imports'].includes(item.key)) },
+      ]}
       onClick={({ key }) => {
         navigate(key)
         setDrawerOpen(false)
@@ -64,7 +74,7 @@ export function AppShell({ user, onLogout }: Props) {
   )
 
   return (
-    <Layout className="app-layout">
+    <ReadOnlyContext value={Boolean(user?.read_only)}><Layout className="app-layout">
       {desktop ? (
         <Sider width={236} theme="light" className="app-sider">
           <div className="brand-block">
@@ -115,6 +125,6 @@ export function AppShell({ user, onLogout }: Props) {
           <Outlet />
         </Content>
       </Layout>
-    </Layout>
+    </Layout></ReadOnlyContext>
   )
 }

@@ -51,6 +51,23 @@ class InventoryApiTests(APITestCase):
         self.assertTrue(self.large.allows_basket)
         self.assertTrue(self.large.allows_bag)
 
+    def test_summary_accounts_for_every_quality_status_without_changing_stock(self):
+        locations = list(InventoryLocation.objects.filter(rack_type="LARGE").order_by("id")[:4])
+        expected = {"PASSED": 100, "WAITING": 200, "FAILED": 300, "HOLD": 400}
+        for location, (quality_status, quantity) in zip(locations, expected.items()):
+            response = self.receipt(location_id=location.pk, batch_no=f"SUMMARY-{quality_status}",
+                                    quality_status=quality_status, quantity=quantity,
+                                    inspector_id=self.inspector.pk if quality_status == "PASSED" else None)
+            self.assertEqual(response.status_code, 201, response.content)
+        before = list(InventoryContainer.objects.order_by("id").values_list("id", "quantity", "location_id", "batch__quality_status"))
+        summary = self.client.get("/api/inventory/summary/")
+        self.assertEqual(summary.status_code, 200)
+        data = summary.json()
+        self.assertEqual([data[key] for key in ("available_quantity", "waiting_inspection_quantity", "failed_quantity", "held_quantity")], [100, 200, 300, 400])
+        self.assertEqual(data["total_quantity"], 1000)
+        self.assertEqual(data["occupied_locations"], 4)
+        self.assertEqual(before, list(InventoryContainer.objects.order_by("id").values_list("id", "quantity", "location_id", "batch__quality_status")))
+
     def test_location_selector_returns_every_active_fixed_position(self):
         response = self.client.get("/api/inventory/locations/?active=true")
 

@@ -371,11 +371,9 @@ class ProcessCardViewSet(WorkflowModelViewSet):
     @action(detail=True, methods=["get"], url_path="rework-timeline")
     def rework_timeline(self, request, pk=None):
         card = self.get_object()
-        cases = QualityReworkCase.objects.filter(
+        cases = QualityReworkCaseViewSet.queryset.filter(
             process_card__tracking_id=card.tracking_id
-        ).prefetch_related(
-            "attempts", "inspectors", "secondary_reasons"
-        ).select_related("primary_reason").order_by("opened_on", "id")
+        ).order_by("opened_on", "id")
         return Response(QualityReworkCaseSerializer(cases, many=True, context={"request": request}).data)
 
 
@@ -2678,6 +2676,29 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
                     secondary_reasons__id=int(reason_value)
                 )
             queryset = queryset.filter(reason_filter)
+        reason_text = str(params.get("reason_text", "") or "").strip()
+        if reason_text:
+            queryset = queryset.filter(
+                Q(primary_reason__name__icontains=reason_text)
+                | Q(secondary_reasons__name__icontains=reason_text)
+                | Q(reason__icontains=reason_text)
+            )
+        customer = str(params.get("customer", "") or "").strip()
+        if customer:
+            queryset = queryset.filter(
+                Q(process_card__customer_snapshot__icontains=customer)
+                | Q(shipment_line__batch__customer__icontains=customer)
+                | Q(shipment_batch__customer__icontains=customer)
+            )
+        quick = str(params.get("quick_filter", "") or "").strip()
+        if quick == "WAITING_REWORK":
+            queryset = queryset.filter(status__in=["WAITING_REWORK", "OPEN", "PROCESSING"])
+        elif quick == "RESHIPPED":
+            queryset = queryset.filter(status__in=["RESHIPPED", "COMPLETED"])
+        elif quick in {"ROUND_1", "ROUND_2", "ROUND_3"}:
+            queryset = queryset.filter(return_round=int(quick[-1]))
+        elif quick == "ROUND_4_PLUS":
+            queryset = queryset.filter(return_round__gte=4)
         date_from, date_to = _date_range(params)
         if date_from:
             queryset = queryset.filter(opened_on__gte=date_from)

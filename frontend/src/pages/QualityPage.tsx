@@ -22,6 +22,7 @@ import {
   QualityReworkDrawer,
   QualityShipmentDrawer,
 } from '../components/QualityFormDrawers'
+import { useReadOnly } from '../access'
 import { PageTitle } from '../components/PageTitle'
 import { QualityShippingWorkflow } from '../components/QualityShippingWorkflow'
 import { QualityWorkflowManagement, ShipmentBatchReviewDrawer } from '../components/QualityWorkflowManagement'
@@ -181,6 +182,9 @@ function ShipmentLedgerMobileList({
 type OrderRow = { order: QualityOrder; stats?: QualityOrderStatistics }
 
 export function QualityPage() {
+  const readOnly = useReadOnly()
+  const [moreFilters, setMoreFilters] = useState(false)
+  const [expandedLedger, setExpandedLedger] = useState(false)
   const navigate = useNavigate()
   const screens = Grid.useBreakpoint()
   const mobile = screens.md === false
@@ -227,6 +231,9 @@ export function QualityPage() {
   const [resumeReturnAfterShipment, setResumeReturnAfterShipment] = useState(false)
   const [employeeForm, setEmployeeForm] = useState<{ employee?: QualityEmployee }>()
   const [reworkQuickFilter, setReworkQuickFilter] = useState('ALL')
+  const [reworkPage, setReworkPage] = useState(1)
+  const [linkedReworkId, setLinkedReworkId] = useState(() => Number(new URLSearchParams(window.location.search).get('rework_case_id')) || undefined)
+  const linkedReworkQuery = useQuery({ queryKey: ['quality', 'rework-case-detail', linkedReworkId], queryFn: ({ signal }) => qualityWorkflowApi.getReworkCase(linkedReworkId!, { signal }), enabled: Boolean(linkedReworkId), retry: false })
   const [reworkMoreOpen, setReworkMoreOpen] = useState(false)
   const [reworkRange, setReworkRange] = useState<[Dayjs, Dayjs] | null>(null)
   const [reworkReasonFilter, setReworkReasonFilter] = useState('')
@@ -264,9 +271,10 @@ export function QualityPage() {
       setDebouncedSpecificationFilter(specificationFilter.trim())
       setDebouncedMaterialFilter(materialFilter.trim())
       setLedgerPage(1)
+      setReworkPage(1)
     }, 350)
     return () => window.clearTimeout(timer)
-  }, [query, specificationFilter, materialFilter, dateFrom, dateTo, dueDateFrom, dueDateTo, shipmentStatus, orderStatus, deliveryStatus, inspectorFilter, ordering])
+  }, [query, specificationFilter, materialFilter, dateFrom, dateTo, dueDateFrom, dueDateTo, shipmentStatus, orderStatus, deliveryStatus, inspectorFilter, ordering, reworkQuickFilter, reworkRange, reworkReasonFilter, reworkCustomerFilter])
 
   const openShipmentForm = (shipment?: QualityShipment, mode?: 'PIECES' | 'WEIGHTED') => {
     setShipmentSessionKey((value) => value + 1)
@@ -274,6 +282,7 @@ export function QualityPage() {
   }
 
   const openFlowCardReturn = () => {
+    if (readOnly) return
     setFlowCardReturnSessionKey((value) => value + 1)
     setFlowCardReturnOpen(true)
   }
@@ -385,8 +394,8 @@ export function QualityPage() {
     enabled: (reworksTab || returnReworkOpen) && !scanWorkOpen,
   })
   const reworkCasesQuery = useQuery({
-    queryKey: ['quality', 'rework-cases'],
-    queryFn: async ({ signal }) => qualityWorkflowApi.listReworkCases({ page_size: 200 }, { signal }),
+    queryKey: ['quality', 'rework-cases', { debouncedQuery, reworkPage, reworkQuickFilter, reworkRange, reworkReasonFilter, reworkCustomerFilter }],
+    queryFn: async ({ signal }) => qualityWorkflowApi.listReworkCases({ q: debouncedQuery, page: reworkPage, page_size: 50, quick_filter: reworkQuickFilter, date_from: reworkRange?.[0].format('YYYY-MM-DD'), date_to: reworkRange?.[1].format('YYYY-MM-DD'), reason_text: reworkReasonFilter || undefined, customer: reworkCustomerFilter || undefined }, { signal }),
     retry: false,
     enabled: (workflowTab || reworksTab) && !scanWorkOpen,
   })
@@ -424,26 +433,7 @@ export function QualityPage() {
     ...shipmentLedger.flatMap((row) => row.materials || []),
   ].map((value) => String(value || '').trim()).filter(Boolean))].sort(), [orders, processCards, shipmentLedger])
   const keyword = query.trim().toLowerCase()
-  const filteredReworkCases = useMemo(() => reworkCases.filter((item) => {
-    const source = item.source
-    const searchMatch = !keyword || [item.case_no, item.active_process_card_no, item.process_card_no, item.process_card?.card_no, item.reason, item.notes, source?.shipment_no, source?.order_no, source?.item_no, source?.product_name, source?.specification, source?.material]
-      .some((value) => String(value || '').toLowerCase().includes(keyword))
-    const round = Number(item.return_round || item.attempt_count || item.attempts?.length || 0)
-    const quickMatch = reworkQuickFilter === 'ALL'
-      || (reworkQuickFilter === 'WAITING_REWORK' && ['WAITING_REWORK', 'OPEN', 'PROCESSING'].includes(item.status))
-      || (reworkQuickFilter === 'RESHIPPED' && ['RESHIPPED', 'COMPLETED'].includes(item.status))
-      || (reworkQuickFilter === 'ROUND_1' && round === 1)
-      || (reworkQuickFilter === 'ROUND_2' && round === 2)
-      || (reworkQuickFilter === 'ROUND_3' && round === 3)
-      || (reworkQuickFilter === 'ROUND_4_PLUS' && round >= 4)
-    const opened = dayjs(item.opened_on)
-    const dateMatch = !reworkRange || (opened.isValid() && !opened.isBefore(reworkRange[0].startOf('day')) && !opened.isAfter(reworkRange[1].endOf('day')))
-    const reasonText = [item.primary_reason_detail?.name, item.primary_reason?.name, ...(item.secondary_reason_details || item.secondary_reasons || []).map((value) => value.name), item.reason_category_display, item.reason].join(' ').toLowerCase()
-    const reasonMatch = !reworkReasonFilter || reasonText.includes(reworkReasonFilter.trim().toLowerCase())
-    const sourceCustomer = String(source?.customer || '').toLowerCase()
-    const customerMatch = !reworkCustomerFilter || sourceCustomer.includes(reworkCustomerFilter.trim().toLowerCase())
-    return searchMatch && quickMatch && dateMatch && reasonMatch && customerMatch
-  }), [keyword, reworkCases, reworkCustomerFilter, reworkQuickFilter, reworkRange, reworkReasonFilter])
+  const filteredReworkCases = reworkCases
 
   const refreshAfterShipment = async () => {
     if (scanWorkOpen) {
@@ -637,7 +627,7 @@ export function QualityPage() {
     { title: '返工合格 / 报废', key: 'result', width: 145, render: (_, record) => <span><span className="quality-good-text">{qualityNumber(record.recovered_quantity)}</span> / <span className={record.scrap_quantity ? 'quality-danger-text' : ''}>{qualityNumber(record.scrap_quantity)}</span></span> },
     { title: '返工工时', dataIndex: 'work_hours', width: 105, render: (value) => `${qualityNumber(value, 2)} h` },
     { title: '状态', dataIndex: 'status', width: 100, render: (value: ReturnReworkStatus) => <Tag color={REWORK_STATUS_META[value].color}>{REWORK_STATUS_META[value].text}</Tag> },
-    { title: '操作', key: 'action', fixed: 'right', width: 110, render: (_, record) => <Button type="link" onClick={() => setPieceReturnForm({ rework: record })}>修改退货</Button> },
+    { title: '操作', key: 'action', fixed: 'right', width: 110, render: (_, record) => <Button disabled={readOnly} type="link" onClick={() => setPieceReturnForm({ rework: record })}>修改退货</Button> },
   ]
 
   const reworkCaseColumns: TableColumnsType<QualityReworkCase> = [
@@ -646,9 +636,9 @@ export function QualityPage() {
     { title: '原出货 / 订单', key: 'source', width: 230, render: (_, row) => <span><strong>{reworkCaseSourceTitle(row)}</strong><br /><Typography.Text type="secondary">{row.source ? `物理批号 ${row.source.shipment_unit_no} · 本组共${row.source.total_batches}批` : '历史来源摘要不完整'}</Typography.Text></span> },
     { title: '产品 / 规格 / 材质', key: 'product', width: 245, render: (_, row) => <span><strong>{row.source?.product_name || '-'}</strong><br /><Typography.Text type="secondary">{[row.source?.specification, row.source?.material].filter(Boolean).join(' · ') || '-'}</Typography.Text></span> },
     { title: '退回整批', key: 'wholeBatch', width: 150, render: (_, row) => row.source ? <span>{qualityNumber(row.source.pieces_per_batch)} 件<br /><Typography.Text type="secondary">{qualityNumber(row.source.single_batch_net_weight_kg, 3)} kg</Typography.Text></span> : `${qualityNumber(row.affected_quantity)} 件` },
-    { title: '当前返工次数', key: 'attempts', width: 125, render: (_, row) => reworkCountTag(row.return_round || row.attempt_count || row.attempts?.length || 0) },
+    { title: '客户退回 / 实际作业', key: 'attempts', width: 170, render: (_, row) => <span>{row.origin === 'CUSTOMER_RETURN' ? `第 ${row.return_round || '未登记'} 次退回` : '内部返工'}<br />{row.attempt_count || row.attempts?.length ? `已登记 ${row.attempt_count || row.attempts?.length} 次作业` : '实际作业未登记'}</span> },
     { title: '状态', dataIndex: 'status', width: 120, render: (value) => <Tag color={value === 'RESHIPPED' || value === 'COMPLETED' ? 'success' : value === 'SCRAPPED' || value === 'CANCELLED' ? 'default' : 'warning'}>{value === 'WAITING_REWORK' || value === 'OPEN' || value === 'PROCESSING' ? '待返工' : value === 'RESHIPPED' || value === 'COMPLETED' ? '已重新出货' : value === 'WAITING_REINSPECTION' ? '待复检' : value === 'SCRAPPED' ? '已报废' : '已取消'}</Tag> },
-    { title: '操作', key: 'action', fixed: 'right', width: 180, render: (_, row) => <Space size={2}><Button type="link" onClick={() => setReturnReworkDetail(row)}>查看</Button>{row.origin === 'CUSTOMER_RETURN' && !['CANCELLED', 'SCRAPPED'].includes(row.status) && <Button type="link" onClick={() => setReturnReworkAttempt(row)}>登记下一轮</Button>}</Space> },
+    { title: '操作', key: 'action', fixed: 'right', width: 180, render: (_, row) => <Space size={2}><Button type="link" onClick={() => setReturnReworkDetail(row)}>查看</Button>{row.origin === 'CUSTOMER_RETURN' && !['CANCELLED', 'SCRAPPED'].includes(row.status) && <Button disabled={readOnly} type="link" onClick={() => setReturnReworkAttempt(row)}>登记下一轮</Button>}</Space> },
   ]
 
   const orderColumns: TableColumnsType<OrderRow> = [
@@ -685,7 +675,8 @@ export function QualityPage() {
   )
   const renderShipmentLedger = (rows: QualityShipmentLedgerRow[], loading: boolean, emptyText: string) => <>
     {shipmentLedgerQuery.error && <Alert type="error" showIcon message="出货查询失败，不代表没有记录" description={(shipmentLedgerQuery.error as Error).message} action={<Button onClick={() => void shipmentLedgerQuery.refetch()}>重试查询</Button>} />}
-    {mobile ? <ShipmentLedgerMobileList rows={searchUpdating ? [] : rows} loading={loading || searchUpdating} onOpen={openLedgerDetail} emptyText={emptyText} /> : <Card className="data-card" styles={{ body: { padding: 0 } }}><Table rowKey="key" loading={loading || searchUpdating} dataSource={searchUpdating ? [] : rows} columns={ledgerColumns} scroll={{ x: 1765 }} pagination={false} locale={{ emptyText: loading || searchUpdating ? '正在查询出货记录…' : shipmentLedgerQuery.error ? '查询失败，请重试' : emptyText }} /></Card>}
+    {!mobile && <Button onClick={() => setExpandedLedger((value) => !value)}>{expandedLedger ? '精简出货字段' : '显示完整出货字段（人员、退回、质检）'}</Button>}
+    {mobile ? <ShipmentLedgerMobileList rows={searchUpdating ? [] : rows} loading={loading || searchUpdating} onOpen={openLedgerDetail} emptyText={emptyText} /> : <Card className="data-card" styles={{ body: { padding: 0 } }}><Table rowKey="key" loading={loading || searchUpdating} dataSource={searchUpdating ? [] : rows} columns={expandedLedger ? ledgerColumns : ledgerColumns.filter((column) => ['shipment_date', 'shipment_no', 'product', 'shipped_quantity', 'net_weight_kg', 'status', 'action'].includes(String(column.key ?? ('dataIndex' in column ? column.dataIndex : ''))))} scroll={{ x: expandedLedger ? 1765 : 965 }} pagination={false} locale={{ emptyText: loading || searchUpdating ? '正在查询出货记录…' : shipmentLedgerQuery.error ? '查询失败，请重试' : emptyText }} /></Card>}
     <Pagination current={ledgerPage} pageSize={ledgerPageSize} total={ledgerTotal} onChange={(page, pageSize) => { setLedgerPage(page); setLedgerPageSize(pageSize) }} showSizeChanger showTotal={(total) => `共 ${total} 条`} style={{ marginTop: 16 }} />
   </>
 
@@ -698,14 +689,14 @@ export function QualityPage() {
         <QualityShippingWorkflow orders={orders} employees={employees} processCards={processCards} processCardsTotal={processCardsTotal} processCardsLoading={processCardsQuery.isFetching} processCardsError={processCardsQuery.isError ? (processCardsQuery.error as Error).message : undefined} onRetryProcessCards={() => void processCardsQuery.refetch()} batchesLoading={batchesQuery.isFetching} batchesError={batchesQuery.isError ? (batchesQuery.error as Error).message : undefined} reworkCasesLoading={reworkCasesQuery.isFetching} reworkCasesError={reworkCasesQuery.isError ? (reworkCasesQuery.error as Error).message : undefined} shipments={shipmentOptions} batches={shipmentBatches} reworks={reworks} reworkCases={filteredReworkCases} searchText={query} loading={ordersQuery.isLoading} onOpenShipment={() => openShipmentForm()} onOpenRework={openFlowCardReturn} onOpenTimeline={() => undefined} onSubmitBatch={async (payload) => { await qualityWorkflowApi.createAndConfirmShipmentBatch(payload); refreshAfterShipmentInBackground() }} onSaveProcessCard={async (body, card) => { await (card ? qualityWorkflowApi.updateProcessCard(card.id, body) : qualityWorkflowApi.createProcessCard(body)); await processCardsQuery.refetch() }} />
         {workflowTab && <><div className="section-heading quality-shipment-ledger-heading"><div><Typography.Title level={3}>流程卡出货台账</Typography.Title><Typography.Text type="secondary">与“每日出货”使用同一套出货明细；点击出货单号可查看称重、品检员、退货和返工次数，并可修改品检员或进入出货更正。</Typography.Text></div></div>
         {renderShipmentLedger(workflowShipmentLedger, shipmentLedgerQuery.isLoading, '当前筛选条件下暂无流程卡出货记录')}</>}
-        <QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} weightsLoading={unitWeightsQuery.isFetching} weightsError={unitWeightsQuery.isError ? (unitWeightsQuery.error as Error).message : undefined} unitWeightsTotal={unitWeightsTotal} filtered={!!debouncedQuery} onClearFilter={() => setQuery('')} batches={shipmentBatches} batchesLoading={batchesQuery.isFetching} batchesError={batchesQuery.isError ? (batchesQuery.error as Error).message : undefined} batchesTotal={shipmentBatchesTotal} shipmentOptions={shipmentBatchOptions.length ? shipmentBatchOptions : shipmentBatches} reworkCases={filteredReworkCases} reworkCasesLoading={reworkCasesQuery.isFetching} reworkCasesError={reworkCasesQuery.isError ? (reworkCasesQuery.error as Error).message : undefined} reworkCasesTotal={reworkCasesTotal} onOpenReturnRework={() => setReturnReworkOpen(true)} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={refreshAfterShipment} /></div>,
+        <QualityWorkflowManagement orders={orders} employees={employees} cards={processCards} unitWeights={unitWeights} weightsLoading={unitWeightsQuery.isFetching} weightsError={unitWeightsQuery.isError ? (unitWeightsQuery.error as Error).message : undefined} unitWeightsTotal={unitWeightsTotal} filtered={!!debouncedQuery} onClearFilter={() => setQuery('')} batches={shipmentBatches} batchesLoading={batchesQuery.isFetching} batchesError={batchesQuery.isError ? (batchesQuery.error as Error).message : undefined} batchesTotal={shipmentBatchesTotal} shipmentOptions={shipmentBatchOptions.length ? shipmentBatchOptions : shipmentBatches} reworkCases={filteredReworkCases} reworkCasesLoading={reworkCasesQuery.isFetching} reworkCasesError={reworkCasesQuery.isError ? (reworkCasesQuery.error as Error).message : undefined} reworkCasesTotal={reworkCasesTotal} reworkCasesPage={reworkPage} onReworkCasesPageChange={setReworkPage} onOpenReturnRework={() => setReturnReworkOpen(true)} onOpenReturnReworkDetail={setReturnReworkDetail} onOpenReturnReworkAttempt={setReturnReworkAttempt} onRefresh={refreshAfterShipment} /></div>,
     },
     {
       key: 'daily',
       label: '每日出货',
       children: <div className="quality-tab-content">
         <DailyTrend rows={summary?.daily_trend || []} loading={summaryQuery.isLoading} />
-        <div className="section-heading"><div><Typography.Title level={3}>每日出货台账</Typography.Title><Typography.Text type="secondary">统一显示重量出货与件数出货；点击出货单号可查看或修改。</Typography.Text></div><Space wrap><Button onClick={() => openShipmentForm(undefined, 'PIECES')}>采购单件数出货（无流程卡）</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => openShipmentForm()}>新增出货</Button></Space></div>
+        <div className="section-heading"><div><Typography.Title level={3}>每日出货台账</Typography.Title><Typography.Text type="secondary">统一显示重量出货与件数出货；点击出货单号可查看或修改。</Typography.Text></div><Space wrap><Button disabled={readOnly} onClick={() => openShipmentForm(undefined, 'PIECES')}>采购单件数出货（无流程卡）</Button><Button disabled={readOnly} type="primary" icon={<PlusOutlined />} onClick={() => openShipmentForm()}>新增出货</Button></Space></div>
         {renderShipmentLedger(shipmentLedger, shipmentLedgerQuery.isLoading, '当前筛选条件下暂无出货记录')}
       </div>,
     },
@@ -714,8 +705,8 @@ export function QualityPage() {
       label: '退货返工',
       children: <div className="quality-tab-content">
         <Alert className="quality-responsibility-alert" type="info" showIcon title="绩效口径分开统计" description="责任品检员记录退货责任；返工处理人记录实际返工工作量，两项不会混为同一指标。" />
-        {mobile && <div className="quality-return-scan-toolbar"><Button type="primary" icon={<QrcodeOutlined />} onClick={openFlowCardReturn}>扫码登记退货</Button><Button onClick={() => setReplacementOpen(true)}>补卡换号</Button></div>}
-        <div className="section-heading"><div><Typography.Title level={3}>流程卡退货返工追踪</Typography.Title><Typography.Text type="secondary">每批产品按流程卡独立显示“第N次退货返工”；同卡再次退回会自动接续次数，点开可看完整时间线。</Typography.Text></div><Space wrap><Button onClick={() => setReplacementOpen(true)}>补卡换号</Button><Button type="primary" icon={<QrcodeOutlined />} onClick={openFlowCardReturn}>扫描登记退货</Button></Space></div>
+        {mobile && <div className="quality-return-scan-toolbar"><Button disabled={readOnly} type="primary" icon={<QrcodeOutlined />} onClick={openFlowCardReturn}>扫码登记退货</Button><Button disabled={readOnly} onClick={() => setReplacementOpen(true)}>补卡换号</Button></div>}
+        <div className="section-heading"><div><Typography.Title level={3}>流程卡退货返工追踪</Typography.Title><Typography.Text type="secondary">每批产品按流程卡独立显示“第N次退货返工”；同卡再次退回会自动接续次数，点开可看完整时间线。</Typography.Text></div><Space wrap><Button disabled={readOnly} onClick={() => setReplacementOpen(true)}>补卡换号</Button><Button disabled={readOnly} type="primary" icon={<QrcodeOutlined />} onClick={openFlowCardReturn}>扫描登记退货</Button></Space></div>
         <div className="quality-return-filter-chips" aria-label="退货返工快捷筛选">
           {[
             ['ALL', '全部'],
@@ -738,8 +729,9 @@ export function QualityPage() {
         {mobile
           ? <QualityReworkCaseMobileList items={filteredReworkCases} loading={reworkCasesQuery.isLoading} emptyText={keyword ? '没有符合当前搜索条件的退货返工记录' : '暂无整批退货返工记录'} onOpen={setReturnReworkDetail} onAddAttempt={setReturnReworkAttempt} />
           : tableCard(filteredReworkCases, reworkCaseColumns, reworkCasesQuery.isLoading, 'id', 1420, keyword ? '没有符合当前搜索条件的退货返工记录' : '暂无整批退货返工记录')}
-        <div className="quality-return-manual-fallback"><Typography.Text type="secondary">旧数据没有流程卡或首次扫码无法找到原出货？</Typography.Text><Button type="link" onClick={() => setReturnReworkOpen(true)}>登记整批退货返工（手工选择原出货）</Button></div>
-        <div className="quality-legacy-reworks"><div className="section-heading"><div><Typography.Title level={4}>件数退货返工（无流程卡）</Typography.Title><Typography.Text type="secondary">选择原件数出货，按退回件数回冲原采购单；可修改记录并在退货后重新出货。</Typography.Text></div><Button onClick={() => setPieceReturnForm({})}>登记件数退货（无流程卡）</Button></div>{tableCard(reworks, reworkColumns, reworksQuery.isLoading, 'id', 1350, '暂无件数退货记录')}</div>
+        <Pagination current={reworkPage} total={reworkCasesTotal} pageSize={50} showSizeChanger={false} onChange={setReworkPage} showTotal={(total) => `共 ${total} 条客户退回记录`} />
+        <div className="quality-return-manual-fallback"><Typography.Text type="secondary">旧数据没有流程卡或首次扫码无法找到原出货？</Typography.Text><Button disabled={readOnly} type="link" onClick={() => setReturnReworkOpen(true)}>登记整批退货返工（手工选择原出货）</Button></div>
+        <div className="quality-legacy-reworks"><div className="section-heading"><div><Typography.Title level={4}>件数退货返工（无流程卡）</Typography.Title><Typography.Text type="secondary">选择原件数出货，按退回件数回冲原采购单；可修改记录并在退货后重新出货。</Typography.Text></div><Button disabled={readOnly} onClick={() => setPieceReturnForm({})}>登记件数退货（无流程卡）</Button></div>{tableCard(reworks, reworkColumns, reworksQuery.isLoading, 'id', 1350, '暂无件数退货记录')}</div>
       </div>,
     },
     {
@@ -779,24 +771,30 @@ export function QualityPage() {
 
   const anyError = summaryQuery.error || employeesQuery.error || ordersQuery.error || shipmentLedgerQuery.error || reworksQuery.error
   const analysisReturn = new URLSearchParams(window.location.search).get('return_to') || ''
-  const analysisLink = /^\/analytics(?:\?|$)/.test(analysisReturn) ? analysisReturn : `/analytics?date_from=${dateFrom}&date_to=${dateTo}&tab=quality`
+  const analysisLink = /^\/(?:analytics|operations|order-overview\/\d+)(?:\?|$)/.test(analysisReturn) ? analysisReturn : `/analytics?date_from=${dateFrom}&date_to=${dateTo}&tab=quality`
 
   return (
     <div className="page-container quality-page">
       {linkedBatchQuery.isLoading && <Alert type="info" title="正在读取指定出货单…" />}
       {linkedBatchQuery.isError && <Alert type="error" title="指定出货单读取失败" description={(linkedBatchQuery.error as Error).message} action={<Button onClick={() => void linkedBatchQuery.refetch()}>重试</Button>} />}
+      {linkedReworkQuery.isPending && linkedReworkId && <Alert type="info" title="正在读取指定退回单…" />}
+      {linkedReworkQuery.isError && <Alert type="error" title="指定退回单无法读取，不是普通无匹配" description={(linkedReworkQuery.error as Error).message} action={<Button onClick={() => void linkedReworkQuery.refetch()}>重试原单</Button>} />}
       <PageTitle
         title="品检出货与退货返工"
         description="记录每日质检与出货、每次退货返工和订单批次；员工绩效与跨模块趋势统一在“数据分析”查看。"
-        extra={<Space wrap><Button href={analysisLink}>{analysisReturn ? '返回原分析筛选' : '查看本期品检分析'}</Button><Button onClick={() => openShipmentForm(undefined, 'PIECES')}>采购单件数出货（无流程卡）</Button><Button onClick={() => setPieceReturnForm({})}>登记件数退货（无流程卡）</Button><Button icon={<QrcodeOutlined />} onClick={openFlowCardReturn}>扫码登记退货</Button><Button onClick={() => setReturnReworkOpen(true)}>登记整批退货返工（无扫码）</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => openShipmentForm()}>新增出货</Button></Space>}
+        extra={<Button disabled={readOnly} type="primary" icon={<PlusOutlined />} onClick={() => openShipmentForm()}>新增出货 / 扫码出货</Button>}
       />
 
+      <Card size="small" className="quality-operation-actions" title="现场操作"><Space wrap><Button href={analysisLink}>{analysisReturn ? '返回原来源筛选' : '查看本期品检分析'}</Button><Button disabled={readOnly} onClick={() => openShipmentForm(undefined, 'PIECES')}>采购单件数出货（无流程卡）</Button><Button disabled={readOnly} onClick={() => setPieceReturnForm({})}>登记件数退货（无流程卡）</Button><Button disabled={readOnly} icon={<QrcodeOutlined />} onClick={openFlowCardReturn}>扫码登记退货</Button><Button disabled={readOnly} onClick={() => setReturnReworkOpen(true)}>登记整批退货返工（无扫码）</Button></Space></Card>
+      <Typography.Title level={4}>历史查询</Typography.Title>
       <Card className="filter-card quality-filter-card">
         <div className="quality-filter-row">
           <RangePicker allowClear={false} value={range} onChange={(value) => value?.[0] && value?.[1] && setRange([value[0], value[1]])} placeholder={['出货开始日期', '出货结束日期']} />
           <Input allowClear prefix={<SearchOutlined />} placeholder="搜索出货单、订单、产品、规格、材质或品检员" value={query} onChange={(event) => setQuery(event.target.value)} />
           <Select value={shipmentStatus} onChange={setShipmentStatus} options={[{ value: 'CONFIRMED', label: '已确认出货' }, { value: 'DRAFT', label: '草稿 / 待确认' }, { value: 'VOID', label: '已作废' }]} />
         </div>
+        <Button onClick={() => setMoreFilters((value) => !value)}>{moreFilters ? '收起更多筛选' : '更多筛选（规格、材质、人员、交期）'}</Button>
+        {moreFilters && <>
         <div className="quality-filter-row">
           <RangePicker allowClear value={dueRange} onChange={(value) => setDueRange(value?.[0] && value?.[1] ? [value[0], value[1]] : null)} placeholder={['交期开始', '交期结束']} />
           <AutoComplete allowClear value={specificationFilter} onChange={setSpecificationFilter} options={specificationOptions.map((value) => ({ value }))} placeholder="填写/选择规格" filterOption={(input, option) => String(option?.value || '').toLowerCase().includes(input.toLowerCase())} />
@@ -811,16 +809,19 @@ export function QualityPage() {
           <Select allowClear value={inspectorFilter} onChange={setInspectorFilter} showSearch optionFilterProp="label" placeholder="按品检员筛选（可清空）" options={employees.filter((employee) => ['INSPECTOR', 'BOTH'].includes(employee.role)).map((employee) => ({ value: employee.id, label: `${employee.employee_no} · ${employee.name}` }))} />
           <Select allowClear value={orderStatus || undefined} onChange={(value) => setOrderStatus(value || '')} placeholder="按订单状态筛选" options={[{ value: 'OPEN', label: '进行中订单' }, { value: 'COMPLETED', label: '已完成订单' }, { value: 'CANCELLED', label: '已取消订单' }]} />
         </div>
+        </>}
+        <Space wrap>{specificationFilter && <Tag closable onClose={() => setSpecificationFilter('')}>规格 {specificationFilter}</Tag>}{materialFilter && <Tag closable onClose={() => setMaterialFilter('')}>材质 {materialFilter}</Tag>}{inspectorFilter && <Tag closable onClose={() => setInspectorFilter(undefined)}>品检员 {employees.find((item) => item.id === inspectorFilter)?.name || inspectorFilter}</Tag>}{dueRange && <Tag closable onClose={() => setDueRange(null)}>交期 {dueDateFrom} 至 {dueDateTo}</Tag>}{orderStatus && <Tag closable onClose={() => setOrderStatus('')}>订单状态 {ORDER_STATUS_META[orderStatus as keyof typeof ORDER_STATUS_META]?.text}</Tag>}{deliveryStatus && <Tag closable onClose={() => setDeliveryStatus('')}>出货进度 {deliveryStatus}</Tag>}</Space>
       </Card>
 
       {anyError && <Alert className="quality-page-alert" type="error" showIcon title="部分品检数据读取失败" description={(anyError as Error).message} />}
 
-      <Row gutter={[14, 14]} className="quality-kpis">
+      {summaryQuery.isPending && <Skeleton active paragraph={{ rows: 1 }} />}
+      {summaryQuery.isSuccess && <Row gutter={[14, 14]} className="quality-kpis">
         <Col xs={12} md={6}><Card className="quality-kpi inspection"><Statistic title="质检数量" value={totals?.inspection_record_count ? totals.inspection_quantity : '未登记'} suffix={totals?.inspection_record_count ? '件' : undefined} prefix={<AuditOutlined />} /><span>一次合格率 {rateText(totals?.first_pass_rate)}</span></Card></Col>
         <Col xs={12} md={6}><Card className="quality-kpi shipment"><Statistic title="出货数量" value={totals?.shipped_quantity || 0} suffix="件" prefix={<SendOutlined />} /><span>共 {qualityNumber(totals?.shipment_count)} 批出货</span></Card></Col>
         <Col xs={12} md={6}><Card className="quality-kpi return"><Statistic title="退货数量" value={totals?.returned_quantity || 0} suffix="件" prefix={<WarningOutlined />} /><span>当期退回/出货比 {rateText(totals?.return_rate)}</span></Card></Col>
         <Col xs={12} md={6}><Card className="quality-kpi rework"><Statistic title="返工处理数量" value={totals?.rework_record_count ? totals.reworked_quantity : '未登记'} suffix={totals?.rework_record_count ? '件' : undefined} prefix={<CheckCircleOutlined />} /><span>返工通过率 {rateText(totals?.rework_pass_rate)}</span></Card></Col>
-      </Row>
+      </Row>}
       {!!shipmentAttribution && (shipmentAttribution.unassigned_employee_quantity > 0 || shipmentAttribution.collaborative_unallocated_quantity > 0 || shipmentAttribution.other_unattributed_quantity > 0) && <Alert
         className="quality-page-alert"
         type="warning"
@@ -910,7 +911,7 @@ export function QualityPage() {
       />
       <QualityProcessCardReplacementDrawer open={replacementOpen} onClose={() => setReplacementOpen(false)} onSaved={refreshAfterCardReplacement} />
       <QualityReturnReworkAttemptDrawer open={!!returnReworkAttempt} item={returnReworkAttempt} employees={employees} onClose={() => setReturnReworkAttempt(undefined)} onSaved={refreshAfterReworkAttempt} />
-      <QualityReworkCaseDetailDrawer open={!!returnReworkDetail} item={returnReworkDetail} employees={employees} onClose={() => setReturnReworkDetail(undefined)} onAddAttempt={setReturnReworkAttempt} onSaved={refreshAfterReturnChange} />
+      <QualityReworkCaseDetailDrawer open={!!returnReworkDetail || Boolean(linkedReworkId && linkedReworkQuery.data)} item={returnReworkDetail || linkedReworkQuery.data} employees={employees} onClose={() => { setReturnReworkDetail(undefined); setLinkedReworkId(undefined) }} onAddAttempt={setReturnReworkAttempt} onSaved={refreshAfterReturnChange} />
       <QualityEmployeeDrawer open={!!employeeForm} employee={employeeForm?.employee} onClose={() => setEmployeeForm(undefined)} />
     </div>
   )

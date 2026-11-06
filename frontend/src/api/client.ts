@@ -402,7 +402,7 @@ export interface OrderFilters {
 }
 
 export const orderApi = {
-  workbench: (filters: { q?: string; kind?: string; page?: number; page_size?: number } = {}, init: RequestInit = {}) => apiFetch<WorkbenchResult>(`/api/orders/workbench/${queryString(filters)}`, init),
+  workbench: (filters: { q?: string; kind?: string; due_scope?: string; page?: number; page_size?: number } = {}, init: RequestInit = {}) => apiFetch<WorkbenchResult>(`/api/orders/workbench/${queryString(filters)}`, init),
   overview: (id: number, filters: { section?: OrderTraceSection; page?: number; page_size?: number } = {}, init: RequestInit = {}) => apiFetch<OrderOverviewResult>(`/api/orders/orders/${id}/overview/${queryString(filters)}`, init),
   list: (filters: OrderFilters = {}, init: RequestInit = {}) => apiFetch<ApiList<Order> | Order[]>(`/api/orders/orders/${queryString(filters)}`, init),
   detail: (id: number | string) => apiFetch<Order>(`/api/orders/orders/${id}/`),
@@ -599,6 +599,9 @@ export const productionImportApi = {
 }
 
 export interface QualityListFilters {
+  quick_filter?: string
+  reason_text?: string
+  customer?: string
   compact?: boolean
   source_type?: 'WEIGHTED' | 'LEGACY'
   q?: string
@@ -769,6 +772,7 @@ export const qualityWorkflowApi = {
     return qualityWorkflowApi.confirmShipmentBatch(draft.id, processCardBindings)
   },
   listReworkCases: (filters: QualityListFilters = {}, init: RequestInit = {}) => apiFetch<ApiList<QualityReworkCase> | QualityReworkCase[]>(`/api/quality/rework-cases/${queryString(filters)}`, init),
+  getReworkCase: (id: number, init: RequestInit = {}) => apiFetch<QualityReworkCase>(`/api/quality/rework-cases/${id}/`, init),
   listReturnableBatches: (filters: Pick<QualityListFilters, 'q' | 'order_id' | 'page' | 'page_size'> = {}) =>
     apiFetch<ApiList<QualityReturnableBatch> | QualityReturnableBatch[]>(`/api/quality/rework-cases/returnable-batches/${queryString(filters)}`),
   createReworkCase: (body: Record<string, unknown>) => apiFetch<QualityReworkCase>('/api/quality/rework-cases/', { method: 'POST', body: JSON.stringify(body) }),
@@ -809,8 +813,8 @@ export interface AnalyticsQualityDetailFilters extends AnalyticsFilters {
 }
 
 export const analyticsApi = {
-  dashboard: (filters: AnalyticsFilters = {}) =>
-    apiFetch<AnalyticsDashboard>(`/api/analytics/dashboard/${queryString(filters)}`),
+  dashboard: (filters: AnalyticsFilters = {}, init: RequestInit = {}) =>
+    apiFetch<AnalyticsDashboard>(`/api/analytics/dashboard/${queryString(filters)}`, init),
   qualityEmployeeDetails: (filters: AnalyticsQualityDetailFilters) =>
     apiFetch<AnalyticsQualityEmployeeDetail>(`/api/analytics/quality-employee-details/${queryString(filters)}`),
   listManualEntries: (filters: AnalyticsEntryFilters = {}) =>
