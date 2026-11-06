@@ -1222,7 +1222,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
 
     now = timezone.now()
     for run in period_runs:
-        machine = run.station.machine
+        machine = run.station.machine if run.station_id else None
         machine_key = _machine_key(machine, run.station)
         machine_row = machines.setdefault(
             machine_key, _machine_row(machine, run.station)
@@ -1276,7 +1276,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             operator["run_ids"].add(run.pk)
             operator["automatic_record_count"] += 1
 
-        machine = run.station.machine
+        machine = run.station.machine if run.station_id else None
         machine_key = _machine_key(machine, run.station)
         machine_row = machines.setdefault(machine_key, _machine_row(machine, run.station))
         machine_row["automatic_mold_count"] += molds
@@ -1325,7 +1325,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             day["automatic_profit"] += finance["profit"]
             day["profit"] += finance["profit"]
 
-        machine = run.station.machine
+        machine = run.station.machine if run.station_id else None
         machine_key = _machine_key(machine, run.station)
         machine_row = machines.setdefault(machine_key, _machine_row(machine, run.station))
         _add_finance(machine_row, finance)

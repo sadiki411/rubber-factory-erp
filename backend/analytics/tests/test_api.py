@@ -30,6 +30,25 @@ from quality.models import (
 
 
 class AnalyticsApiTests(TestCase):
+    def test_unassigned_manual_run_preserves_production_people_and_settlement(self):
+        day = timezone.localdate()
+        self.create_automatic_records(day)
+        run = ProductionDailyLog.objects.first().run
+        run.station = None
+        run.save(update_fields=["station"])
+        filters = {"date_from": day.isoformat(), "date_to": day.isoformat()}
+        response = self.client.get("/api/analytics/dashboard/", filters)
+        self.assertEqual(response.status_code, 200, response.content)
+        data = response.json()
+        self.assertEqual(data["production"]["total"]["produced_mold_count"], 10)
+        unassigned = next(row for row in data["station_performance"] if row["machine_code"] == "未关联机台")
+        self.assertEqual(unassigned["automatic_mold_count"], 10)
+        self.assertTrue(any(row["total_mold_count"] == 10 for row in data["operator_performance"]))
+        self.assertEqual(data["production"]["settled_run_count"], 1)
+        filtered = self.client.get("/api/analytics/dashboard/", dict(filters, machine_id=self.stations[0].machine_id))
+        self.assertEqual(filtered.status_code, 200, filtered.content)
+        self.assertEqual(filtered.json()["production"]["total"]["produced_mold_count"], 0)
+
     def test_assistants_receive_full_participation_without_duplicating_factory_output(self):
         day = timezone.localdate()
         self.create_automatic_records(day)
