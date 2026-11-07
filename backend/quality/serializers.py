@@ -7,6 +7,7 @@ import uuid
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from rest_framework import serializers
+from drf_spectacular.utils import extend_schema_field
 
 from orders.models import BusinessRecordRevision, ProductSpecification
 from molds.models import MoldModel
@@ -29,6 +30,7 @@ from .services import (
     shipment_unit_allocations,
     sync_order_status_from_delivery,
 )
+from .tracing import attach_shipment_card_sources, shipment_card_sources
 
 
 def _validation_details(exc):
@@ -1211,6 +1213,13 @@ class QualityShipmentLineSerializer(ValidatedModelSerializer):
         return attrs
 
 
+class ShipmentTraceListSerializer(serializers.ListSerializer):
+    def to_representation(self, data):
+        rows = list(data.all() if hasattr(data, "all") else data)
+        attach_shipment_card_sources(rows)
+        return super().to_representation(rows)
+
+
 class QualityShipmentBatchSerializer(RequestReadCacheMixin, ValidatedModelSerializer):
     shipment_no = serializers.CharField(
         required=False, allow_blank=True, validators=[]
@@ -1259,8 +1268,15 @@ class QualityShipmentBatchSerializer(RequestReadCacheMixin, ValidatedModelSerial
     date_pending = serializers.BooleanField(read_only=True)
     warnings = serializers.SerializerMethodField()
     process_card_bindings = ProcessCardUnitBindingSerializer(many=True, read_only=True)
+    card_sources = serializers.SerializerMethodField()
+
+    @extend_schema_field({"type": "array", "items": {"type": "object", "additionalProperties": True}})
+    def get_card_sources(self, obj):
+        return shipment_card_sources(obj)
+
     class Meta:
         model = QualityShipmentBatch
+        list_serializer_class = ShipmentTraceListSerializer
         fields = [
             "id", "shipment_no", "client_key", "shipment_date", "order", "order_id",
             "product_specification", "product_specification_id", "product_name_snapshot", "specification_snapshot",
@@ -1269,7 +1285,7 @@ class QualityShipmentBatchSerializer(RequestReadCacheMixin, ValidatedModelSerial
             "inspector", "inspector_id", "inspectors", "inspector_ids", "status", "customer",
             "delivery_info", "backfill_reason", "notes", "lines", "net_weight_kg",
             "total_net_weight_kg", "actual_weight_kg", "shipped_quantity", "piece_quantity",
-            "line_count", "date_pending", "warnings", "process_card_bindings", "created_by", "created_at", "updated_at",
+            "line_count", "date_pending", "warnings", "process_card_bindings", "card_sources", "created_by", "created_at", "updated_at",
         ]
         read_only_fields = [
             "created_by", "created_at", "updated_at", "net_weight_kg", "actual_weight_kg",

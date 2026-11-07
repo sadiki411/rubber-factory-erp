@@ -172,7 +172,7 @@ describe('QualityPage unified shipment ledger', () => {
     await screen.findByText('品检出货与退货返工')
     await userEvent.setup().click(await screen.findByRole('tab', { name: '每日出货' }))
 
-    await userEvent.setup().type(screen.getByPlaceholderText('搜索出货单、订单、产品、规格、材质或品检员'), 'NBR')
+    await userEvent.setup().type(screen.getByPlaceholderText('搜索出货单、流程卡号、订单、产品、规格、材质或品检员'), 'NBR')
     await waitFor(() => expect(apiMocks.listShipmentLedger).toHaveBeenLastCalledWith(
       expect.objectContaining({ q: 'NBR', shipment_status: 'CONFIRMED' }),
       expect.objectContaining({ signal: expect.anything() }),
@@ -275,7 +275,7 @@ describe('QualityPage unified shipment ledger', () => {
     expect(await screen.findByText('QS-NBR · XB-NBR / 11')).toBeInTheDocument()
     expect(screen.getByText('QS-EPDM · XB-EPDM / 12')).toBeInTheDocument()
 
-    await userEvent.setup().type(screen.getByPlaceholderText('搜索出货单、订单、产品、规格、材质或品检员'), 'NBR-T3')
+    await userEvent.setup().type(screen.getByPlaceholderText('搜索出货单、流程卡号、订单、产品、规格、材质或品检员'), 'NBR-T3')
     await waitFor(() => expect(screen.queryByText('QS-EPDM · XB-EPDM / 12')).not.toBeInTheDocument())
     expect(await screen.findByText('QS-NBR · XB-NBR / 11')).toBeInTheDocument()
     expect(apiMocks.listReworkCases).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'NBR-T3', page: 1, page_size: 50 }), expect.anything())

@@ -27,6 +27,7 @@ import { EditOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useState } from 'react'
 import { qualityWorkflowApi } from '../api/client'
+import { ShipmentCardTraceDrawer } from './QualityShipmentTrace'
 import {
   expectedWeightKg,
   formatQualityDate,
@@ -292,6 +293,7 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
   const [basketSessionKey, setBasketSessionKey] = useState(0)
   const [onlyAlerts, setOnlyAlerts] = useState(false)
   const [timelineCard, setTimelineCard] = useState<WorkflowCard>()
+  const [traceCard, setTraceCard] = useState<WorkflowCard>()
   const [processCardForm, setProcessCardForm] = useState<QualityProcessCard | null | undefined>(undefined)
   const cards = useMemo(() => {
     // Do not fall back to the order list while the authoritative process-card
@@ -349,14 +351,14 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
   }
 
   const columns: TableColumnsType<WorkflowCard> = [
-    { title: '流程卡 / 待发需求', key: 'card', fixed: 'left', width: 190, render: (_, card) => <Space direction="vertical" size={0}><Button type="link" disabled={!card.processCard} className="table-primary-link" onClick={() => { setTimelineCard(card); onOpenTimeline(card) }}><strong>{card.cardNo}</strong><br /><Typography.Text type="secondary">{card.order.order_no} / {card.order.item_no || '-'}</Typography.Text></Button>{onSaveProcessCard && card.processCard && <Button disabled={readOnly} type="link" size="small" icon={<EditOutlined />} onClick={() => setProcessCardForm(card.processCard)}>编辑</Button>}</Space> },
+    { title: '流程卡 / 待发需求', key: 'card', fixed: 'left', width: 190, render: (_, card) => <Space direction="vertical" size={0}><Button type="link" disabled={!card.processCard} className="table-primary-link" onClick={() => setTraceCard(card)}><strong>{card.cardNo}</strong><br /><Typography.Text type="secondary">{card.order.order_no} / {card.order.item_no || '-'}</Typography.Text></Button>{onSaveProcessCard && card.processCard && <Button disabled={readOnly} type="link" size="small" icon={<EditOutlined />} onClick={() => setProcessCardForm(card.processCard)}>编辑</Button>}</Space> },
     { title: '产品 / 规格', key: 'product', width: 190, render: (_, card) => <span>{card.order.product_name || '-'}<br /><Typography.Text type="secondary">{card.order.specification} · {card.order.material}</Typography.Text></span> },
     { title: '计划 / 剩余', key: 'quantity', width: 130, render: (_, card) => <span>{qualityNumber(card.quantity)}<br /><Typography.Text type="secondary">剩余 {qualityNumber(card.remainingQuantity)}</Typography.Text></span> },
     { title: '单重 / 出货kg', key: 'weight', width: 160, render: (_, card) => <span>{card.unitWeightG ? `${qualityNumber(card.unitWeightG, 4)} g` : <Tag color="warning">待补单重</Tag>}<br /><Typography.Text type="secondary">已发 {card.shippedWeightKg.toFixed(3)} · 剩余理论 {card.expectedWeightKg === null ? '-' : `${card.expectedWeightKg.toFixed(3)} kg`}</Typography.Text></span> },
     { title: '交期', dataIndex: 'dueDate', width: 110, render: (value) => formatQualityDate(value) },
     { title: '状态', key: 'status', width: 130, render: (_, card) => statusTag(card) },
     { title: '客户退回', dataIndex: 'reworkCount', width: 95, render: (value) => value ? <Badge count={value} overflowCount={99} color="#c4433b" /> : '-' },
-    { title: '操作', key: 'actions', fixed: 'right', width: 170, render: (_, card) => <Space size={2}><Button type="link" size="small" disabled={readOnly || !card.processCard || !card.remainingQuantity || !card.unitWeightG} onClick={() => { setSelectedKeys([card.key]); openBasket() }}>加入出货篮</Button><Button type="link" size="small" disabled={!card.processCard} onClick={() => { setTimelineCard(card); onOpenTimeline(card) }}>时间线</Button></Space> },
+    { title: '操作', key: 'actions', fixed: 'right', width: 190, render: (_, card) => <Space size={2} wrap><Button type="link" size="small" disabled={readOnly || !card.processCard || !card.remainingQuantity || !card.unitWeightG} onClick={() => { setSelectedKeys([card.key]); openBasket() }}>加入出货篮</Button><Button type="link" size="small" disabled={!card.processCard} onClick={() => setTraceCard(card)}>出货追溯</Button><Button type="link" size="small" disabled={!card.processCard} onClick={() => { setTimelineCard(card); onOpenTimeline(card) }}>退回时间线</Button></Space> },
   ]
   const rowSelection: TableProps<WorkflowCard>['rowSelection'] = { selectedRowKeys: selectedKeys, onChange: setSelectedKeys, getCheckboxProps: (card) => ({ disabled: !card.processCard || !card.remainingQuantity || !card.unitWeightG }) }
   return (
@@ -376,6 +378,7 @@ export function QualityShippingWorkflow({ orders, employees = [], processCards =
       <BatchShipmentDrawer key={`shipment-basket-session-${basketSessionKey}`} open={basketOpen} cards={selectedCards} orders={orders} employees={employees} shipments={shipments} batches={batches} onClose={() => setBasketOpen(false)} onSubmit={async (payload) => { await onSubmitBatch(payload); setSelectedKeys([]) }} />
       <ProcessCardDrawer open={processCardForm !== undefined} card={processCardForm || undefined} orders={orders} onClose={() => setProcessCardForm(undefined)} onSave={onSaveProcessCard} />
       {timelineCard && <ReworkTimelineDrawer key={timelineCard.processCard?.id || timelineCard.cardNo} open card={timelineCard} reworkCases={reworkCases} shipments={shipments} onClose={() => setTimelineCard(undefined)} onAdd={() => onOpenRework()} />}
+      {traceCard?.processCard && <ShipmentCardTraceDrawer key={String(traceCard.processCard.id)} cardId={traceCard.processCard.id} cardNo={traceCard.cardNo} onClose={() => setTraceCard(undefined)} />}
     </div>
   )
 }

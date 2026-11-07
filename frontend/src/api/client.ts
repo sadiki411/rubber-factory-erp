@@ -45,6 +45,7 @@ import type {
   ProductSpecification,
   QualityEmployee,
   QualityProcessCard,
+  QualityCardShipmentTrace,
   QualityProcessCardScanResult,
   QualityUnitWeight,
   QualityShipmentBatch,
@@ -786,6 +787,8 @@ export const qualityWorkflowApi = {
   updateReworkAttempt: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityReworkAttempt>(`/api/quality/rework-attempts/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
   listReworkTimeline: (processCardId: string | number) =>
     apiFetch<QualityReworkCase[]>(`/api/quality/process-cards/${processCardId}/rework-timeline/`),
+  getCardShipmentTrace: (processCardId: string | number) =>
+    apiFetch<QualityCardShipmentTrace>(`/api/quality/process-cards/${processCardId}/shipment-trace/`),
   listReturnReasons: (filters: QualityListFilters = {}) =>
     apiFetch<ApiList<QualityReturnReason> | QualityReturnReason[]>(`/api/quality/defect-reasons/${queryString(filters)}`),
 }

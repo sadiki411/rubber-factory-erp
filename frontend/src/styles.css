@@ -1117,6 +1117,11 @@ button, input, textarea, select { font: inherit; }
 
 .operations-page > .ant-alert, .order-overview-page > .ant-alert,
 .operations-filter-card { margin-bottom: 16px; }
+.quality-shipment-sources { min-width: 0; }
+.quality-source-card { margin: 8px 0; min-width: 0; overflow-wrap: anywhere; }
+.quality-source-card .ant-space-item { min-width: 0; max-width: 100%; }
+.quality-shipment-sources summary, .quality-source-card summary { cursor: pointer; padding: 10px 0; }
+.quality-source-card .ant-typography { white-space: normal; overflow-wrap: anywhere; }
 .operations-task-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
@@ -1160,4 +1165,17 @@ button, input, textarea, select { font: inherit; }
   .production-order-allocation-row .ant-input-number-group-wrapper {
     width: 100%;
   }
+}
+.quality-shipment-trace-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.quality-shipment-trace-summary > *, .quality-shipment-trace-drawer .ant-timeline-item-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .quality-shipment-trace-summary { grid-template-columns: minmax(0, 1fr); }
 }

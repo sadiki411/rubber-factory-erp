@@ -75,6 +75,7 @@ from .unit_weights import (
     latest_saved_product_unit_weight,
     remember_confirmed_product_unit_weight,
 )
+from .tracing import attach_shipment_card_sources, batch_ids_for_card_query, build_card_shipment_trace
 
 
 class QualityWriteBusy(APIException):
@@ -375,6 +376,11 @@ class ProcessCardViewSet(WorkflowModelViewSet):
             process_card__tracking_id=card.tracking_id
         ).order_by("opened_on", "id")
         return Response(QualityReworkCaseSerializer(cases, many=True, context={"request": request}).data)
+
+    @action(detail=True, methods=["get"], url_path="shipment-trace")
+    @extend_schema(responses=dict)
+    def shipment_trace(self, request, pk=None):
+        return Response(build_card_shipment_trace(self.get_object()))
 
 
 class QualityShipmentLineViewSet(WorkflowModelViewSet):
@@ -680,8 +686,10 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
         params = self.request.query_params
         q = str(params.get("q", "")).strip()
         if q:
+            trace_batch_ids = batch_ids_for_card_query(q)
             queryset = queryset.filter(
                 Q(shipment_no__icontains=q)
+                | Q(pk__in=trace_batch_ids)
                 | Q(client_key__icontains=q)
                 | Q(customer__icontains=q)
                 | Q(delivery_info__icontains=q)
@@ -699,7 +707,6 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 | Q(inspector__name__icontains=q)
                 | Q(inspectors__employee_no__icontains=q)
                 | Q(inspectors__name__icontains=q)
-                | Q(lines__process_card__card_no__icontains=q)
                 | Q(lines__process_card__source_order_no__icontains=q)
                 | Q(lines__process_card__product_name_snapshot__icontains=q)
                 | Q(lines__process_card__product_code_snapshot__icontains=q)
@@ -3590,7 +3597,6 @@ def _weighted_ledger_row(
             *row["product_names"],
             *row["specifications"],
             *row["materials"],
-            *(line.process_card.card_no for line in lines if line.process_card_id),
             *(person.employee_no for person in people),
             *(person.name for person in people),
         ]
@@ -3750,6 +3756,7 @@ class QualityShipmentLedgerView(APIView):
 
         legacy_rows = list(legacy)
         weighted_rows = list(weighted)
+        attach_shipment_card_sources(weighted_rows)
         all_orders = []
         seen_orders = set()
         for shipment in legacy_rows:
@@ -3783,7 +3790,10 @@ class QualityShipmentLedgerView(APIView):
 
         q = str(params.get("q", "")).strip().casefold()
         if q:
-            rows = [row for row in rows if q in row["_search_text"]]
+            trace_batch_ids = batch_ids_for_card_query(q)
+            rows = [row for row in rows if q in row["_search_text"] or (
+                row["source_type"] == "WEIGHTED" and row["source_id"] in trace_batch_ids
+            )]
 
         order_status = str(params.get("order_status", "")).strip().upper()
         if order_status:

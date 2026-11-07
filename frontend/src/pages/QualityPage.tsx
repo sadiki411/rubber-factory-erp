@@ -790,9 +790,10 @@ export function QualityPage() {
       <Card className="filter-card quality-filter-card">
         <div className="quality-filter-row">
           <RangePicker allowClear={false} value={range} onChange={(value) => value?.[0] && value?.[1] && setRange([value[0], value[1]])} placeholder={['出货开始日期', '出货结束日期']} />
-          <Input allowClear prefix={<SearchOutlined />} placeholder="搜索出货单、订单、产品、规格、材质或品检员" value={query} onChange={(event) => setQuery(event.target.value)} />
+          <Input allowClear prefix={<SearchOutlined />} placeholder="搜索出货单、流程卡号、订单、产品、规格、材质或品检员" value={query} onChange={(event) => setQuery(event.target.value)} />
           <Select value={shipmentStatus} onChange={setShipmentStatus} options={[{ value: 'CONFIRMED', label: '已确认出货' }, { value: 'DRAFT', label: '草稿 / 待确认' }, { value: 'VOID', label: '已作废' }]} />
         </div>
+        <Typography.Paragraph type="secondary">出货列表受日期和状态筛选；在流程卡上点击“出货追溯”可查看全部历史。卡号片段至少4位，仅查询、不自动绑定。</Typography.Paragraph>
         <Button onClick={() => setMoreFilters((value) => !value)}>{moreFilters ? '收起更多筛选' : '更多筛选（规格、材质、人员、交期）'}</Button>
         {moreFilters && <>
         <div className="quality-filter-row">

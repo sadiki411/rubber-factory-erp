@@ -12,12 +12,13 @@ from rest_framework.exceptions import NotFound
 from inventory.models import InventoryContainer, InventoryOutbound
 from production.models import ProductionDailyLog, ProductionRun
 from quality.models import (
-    ProcessCard, ProcessCardUnitBinding, QualityOrder, QualityReworkCase,
+    ProcessCard, QualityOrder, QualityReworkCase,
     QualityReturnAllocation, QualityShipment, QualityShipmentLine, ReturnRework,
 )
 from quality.services import (
     PENDING_RETURN_STATUSES, delivered_quantities_by_order, shipment_line_piece_quantity,
 )
+from quality.tracing import attach_shipment_card_sources
 from .models import MaterialReceipt
 from .services import production_totals_by_order, order_production_requirement_status
 
@@ -209,7 +210,7 @@ def trace_row(obj, section, order, binding_cards):
         row.update(document_no=obj.batch.shipment_no, date=obj.batch.shipment_date,
                    status=obj.batch.get_status_display(), physical_quantity=shipment_line_piece_quantity(obj),
                    own_quantity=own, cards=cards, url=f"/quality?shipment_batch_id={obj.batch_id}",
-                   details=f"明细#{obj.pk}，净重{obj.net_weight_kg}kg；本单为原出货归属（尚未扣本页退回）。" + (" 卡号来自批级绑定候选，未逐行猜配。" if not obj.process_card_id and cards else ""))
+                   details=f"明细#{obj.pk}，净重{obj.net_weight_kg}kg；本单为原出货归属（尚未扣本页退回）。" + (" 卡号来自系统明确关联及历史证据，详见出货单；未逐行猜配，不按分摊猜配纸卡原始订单。" if not obj.process_card_id and cards else ""))
     elif section == "piece_shipments":
         row.update(document_no=obj.shipment_no, date=obj.shipment_date, physical_quantity=obj.shipped_quantity,
                    own_quantity=obj.shipped_quantity, details="件数出货；无流程卡可能为合法采购出货，不补造卡。", url="/quality")
@@ -244,8 +245,9 @@ def build_order_overview(order_id, *, section="production", page=1, page_size=20
     objects = list(queryset[start:start + page_size])
     bindings = {}
     if section == "shipments":
-        for binding in ProcessCardUnitBinding.objects.filter(shipment_batch_id__in={obj.batch_id for obj in objects}).select_related("process_card"):
-            bindings.setdefault(binding.shipment_batch_id, []).append(binding.process_card.card_no)
+        batches = {obj.batch_id: obj.batch for obj in objects}
+        attach_shipment_card_sources(batches.values())
+        bindings = {pk: list(dict.fromkeys(ref["card_no"] for ref in batch.trace_card_sources)) for pk, batch in batches.items()}
     return {
         "order": identity(order), "generated_at": timezone.now(),
         "summary": {"net_delivered": delivered, "delivery_remaining": max(order.order_quantity - delivered, 0),

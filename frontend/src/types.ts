@@ -1349,8 +1349,60 @@ export interface QualityShipmentBatchResult {
   order_allocations?: QualityShipmentOrderAllocation[]
   /** Physical flow-card bindings returned with a batch detail. */
   process_card_bindings?: QualityProcessCardBinding[]
+  card_sources?: QualityShipmentCardSource[]
   /** Optional audit reason returned by amendment/void actions. */
   void_reason?: string
+}
+
+/** Stored identity evidence, distinct from fulfilment allocation. */
+export interface QualityShipmentCardSource {
+  card_id?: string | number | null
+  card_no: string
+  shipment_unit_no?: number | null
+  line_id?: string | number | null
+  piece_quantity?: number | null
+  net_weight_kg?: string | number | null
+  quantity_scope?: 'PHYSICAL_UNIT' | 'LINE' | null
+  historical_only?: boolean
+  evidence: Array<{ code: string; label: string }>
+  current_system_order?: { id: number; order_no: string; item_no: string } | null
+  original_paper_order?: null
+  paper_order_evidence?: string
+}
+
+export interface QualityCardTraceEvent {
+  key: string
+  type: 'shipment' | 'reshipment' | 'return' | 'correction'
+  id: number
+  document_no: string
+  business_date?: string | null
+  occurred_at: string
+  status: string
+  card_sources?: QualityShipmentCardSource[]
+  batch_quantity?: number | null
+  quantity_evidence?: string
+  scope?: string
+  batch_weight_kg?: string
+  allocation_scope?: string
+  allocations?: Array<{ line_id: number; order_id: number; order_no: string; item_no: string; piece_quantity: number; net_weight_kg: string }>
+  piece_quantity?: number
+  net_weight_kg?: string | null
+  return_round?: number | null
+  reason?: string
+  operator_id?: number
+  before_card_nos?: string[]
+  after_card_nos?: string[]
+  url: string
+}
+
+export interface QualityCardShipmentTrace {
+  card_id: string | number
+  card_no: string
+  cards: Array<{ id: number; card_no: string; status: string }>
+  events: QualityCardTraceEvent[]
+  shipment_count: number
+  return_count: number
+  limitations: string[]
 }
 
 export interface QualityShipmentBatch extends QualityShipmentBatchResult {

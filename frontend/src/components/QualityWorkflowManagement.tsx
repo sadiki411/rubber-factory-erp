@@ -33,6 +33,7 @@ import { qualityWorkflowApi } from '../api/client'
 import { QualityReworkCaseMobileList } from './QualityReworkCaseMobileList'
 import { QualityEmployeeSelect } from './QualityEmployeeSelect'
 import { QualityWeightShipmentDrawer } from './QualityWeightShipmentDrawer'
+import { ShipmentCardSources } from './QualityShipmentTrace'
 import type {
   QualityEmployee,
   QualityOrder,
@@ -190,9 +191,8 @@ export function ShipmentBatchReviewDrawer({
       width: 190,
       render: (_, line) => {
         const lineOrder = line.order || line.process_card?.order
-        const autoAllocated = !line.process_card_id && hasAutoAllocation
         return <span>
-          <strong>{line.process_card?.card_no || line.card_no || (autoAllocated ? '自动分配订单' : '订单出货')}</strong>
+          <strong>{line.process_card?.card_no || line.card_no || '明细未直接挂卡（关联卡见上方）'}</strong>
           <br />
           <Typography.Text type="secondary">{lineOrder?.order_no || item?.order?.order_no || '-'} / {lineOrder?.item_no || item?.order?.item_no || '-'}</Typography.Text>
         </span>
@@ -336,7 +336,16 @@ export function ShipmentBatchReviewDrawer({
       ? <Space className="drawer-footer-actions"><Popconfirm disabled={readOnly} title="确定作废这张已确认出货单吗？" description="作废会恢复订单/流程卡可出货余量，且仅允许在没有退货或返工关联时执行。" okText="确认作废" cancelText="取消" onConfirm={() => void voidConfirmed()}><Button disabled={readOnly} danger loading={saving}>作废出货</Button></Popconfirm><Button disabled={readOnly} onClick={() => onAmend?.(item)}>纠正出货</Button><Button onClick={onClose}>取消</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void submit(false)}>保存品检员</Button></Space>
       : <Space className="drawer-footer-actions"><Popconfirm disabled={readOnly} title="确定作废这个草稿批次吗？" onConfirm={() => void voidDraft()}><Button disabled={readOnly} danger loading={saving}>作废草稿</Button></Popconfirm><Button onClick={onClose}>取消</Button><Button disabled={readOnly} loading={saving} onClick={() => void submit(false)}>保存草稿</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void submit(true)}>保存并确认</Button></Space>}
   >
-    {hasAutoAllocation && <Alert
+    <div className="quality-shipment-trace-summary">
+    <Card size="small" title="本次关联流程卡 / 实物来源">
+      <ShipmentCardSources sources={item?.card_sources || (item?.process_card_bindings || []).map((binding) => ({
+        card_id: binding.process_card_id, card_no: binding.card_no || '', shipment_unit_no: binding.shipment_unit_no,
+        piece_quantity: binding.piece_quantity, net_weight_kg: binding.net_weight_kg,
+        quantity_scope: 'PHYSICAL_UNIT', evidence: [{ code: 'UNIT_BINDING', label: '系统物理包绑定' }],
+      }))} />
+    </Card>
+    <Card size="small" title="本次计入哪些订单">
+    {hasAutoAllocation ? <Alert
       className="quality-batch-allocation-alert"
       type="info"
       showIcon
@@ -357,7 +366,9 @@ export function ShipmentBatchReviewDrawer({
             </span>
           })}
       </Space>}
-    />}
+    /> : <Typography.Text>{order ? `${order.order_no} / ${order.item_no || '-'}` : '未记录明确订单归属'}；交付数量以已保存明细为准。</Typography.Text>}
+    </Card>
+    </div>
     <Descriptions
       bordered
       size="small"
@@ -366,7 +377,7 @@ export function ShipmentBatchReviewDrawer({
         { key: 'shipmentNo', label: '出货单号', children: <strong>{item?.shipment_no || '-'}</strong> },
         { key: 'shipmentDate', label: '出货日期', children: dateText(item?.shipment_date) },
         { key: 'status', label: '状态', children: <Tag color={item?.status === 'CONFIRMED' ? 'success' : item?.status === 'VOID' ? 'default' : 'warning'}>{shipmentStatusText(item?.status)}</Tag> },
-        { key: 'order', label: '物理来源订单 / 项次', children: order ? `${order.order_no} / ${order.item_no || '-'}` : '-' },
+        { key: 'order', label: '登记的系统来源订单 / 项次', children: order ? `${order.order_no} / ${order.item_no || '-'}` : '-' },
         { key: 'dueDate', label: '交期', children: dateText(order?.due_date) },
         { key: 'product', label: '产品', children: productName },
         { key: 'specification', label: '规格', children: specification },
