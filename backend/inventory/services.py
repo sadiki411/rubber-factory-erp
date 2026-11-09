@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -13,6 +16,7 @@ from .models import (
     InventoryOutboundLine,
     InventoryProduct,
     InventoryTransaction,
+    InventoryTopUp,
 )
 
 
@@ -194,6 +198,69 @@ def _inventory_product_snapshot(product):
         str(product.material or "").strip(),
         f"{product.unit_weight_g}g" if product.unit_weight_g is not None else "",
     ])) or f"产品#{product.pk}"
+
+
+class InventoryTopUpConflict(ValueError):
+    pass
+
+
+def top_up_product_identity(product):
+    return {"id": product.pk, **{field: getattr(product, field) for field in ("product_code", "product_name", "specification", "material")}}
+
+
+@transaction.atomic
+def top_up_inventory_container(container_id, data, *, created_by):
+    """Increase one existing balance and retain an independent receipt fact."""
+    payload = {key: value for key, value in data.items() if key != "request_id"}
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+    previous = InventoryTopUp.objects.select_related("transaction").filter(request_id=data["request_id"]).first()
+    if previous:
+        if previous.transaction.container_id != container_id or previous.transaction.created_by_id != created_by.pk or previous.payload_hash != digest:
+            raise InventoryTopUpConflict("这次提交编号已用于其他内容，请刷新后重新核对，不能重复增加库存。")
+        return InventoryContainer.objects.get(pk=container_id), previous, True
+
+    container = InventoryContainer.objects.select_for_update().select_related("batch__product", "location").get(pk=container_id)
+    batch = InventoryBatch.objects.select_for_update().select_related("product").get(pk=container.batch_id)
+    if container.status != InventoryContainer.Status.ACTIVE or container.quantity <= 0 or not container.location_id:
+        raise ValueError("只能给当前在库的筐或袋追加入库；已空、已关闭的容器请重新办理直接入库。")
+    if not container.location.is_active or not batch.product.is_active:
+        raise ValueError("库位或产品资料已停用，请先核对后再追加。")
+    if (container.updated_at != data["expected_updated_at"] or container.quantity != data["expected_quantity"]
+            or container.location_id != data["expected_location_id"]
+            or top_up_product_identity(batch.product) != data["product_identity"]):
+        raise InventoryTopUpConflict("原库存数量、库位或产品资料已变化，请关闭窗口刷新后重新核对；本次未追加。")
+    if batch.quality_status != data["quality_status"]:
+        raise InventoryTopUpConflict("本次追加与原筐检验状态不同，不能混放；请核对状态或另选空库位入库。")
+    from quality.models import QualityEmployee
+    inspector = None
+    if data.get("inspector_id"):
+        inspector = QualityEmployee.objects.filter(pk=data["inspector_id"], is_active=True).first()
+        if not inspector:
+            raise ValueError("本次品检员不存在或已停用，请重新选择。")
+    quantity_after = container.quantity + data["quantity"]
+    if quantity_after > 2147483647:
+        raise ValueError("追加后数量超过系统支持范围，请核对填写的件数。")
+    bag_count_after = data.get("bag_count") or container.bag_count
+    changed = InventoryContainer.objects.filter(pk=container.pk, updated_at=data["expected_updated_at"], quantity=data["expected_quantity"]).update(
+        quantity=quantity_after, bag_count=bag_count_after, updated_at=timezone.now(),
+    )
+    if changed != 1:
+        raise InventoryTopUpConflict("库存正在被其他操作更新，请刷新后重新核对；本次未追加。")
+    entry = InventoryTransaction.objects.create(
+        transaction_type=InventoryTransaction.TransactionType.RECEIPT,
+        batch=batch, container=container, quantity=data["quantity"], to_location=container.location,
+        reason="追加入库" + (f"：{data['notes']}" if data.get("notes") else ""), created_by=created_by,
+    )
+    receipt = InventoryTopUp.objects.create(
+        request_id=data["request_id"], payload_hash=digest, transaction=entry,
+        received_on=data["received_on"], inspector=inspector, inspector_name=inspector.name if inspector else "",
+        inspected_on=data.get("inspected_on"), quality_status=data["quality_status"],
+        product_snapshot=top_up_product_identity(batch.product),
+        quantity_before=container.quantity, quantity_after=quantity_after,
+        bag_count_before=container.bag_count, bag_count_after=bag_count_after,
+    )
+    container.refresh_from_db()
+    return container, receipt, False
 
 
 @transaction.atomic

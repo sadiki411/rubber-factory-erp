@@ -1191,6 +1191,11 @@ button, input, textarea, select { font: inherit; }
 .production-parameter-orders { padding-left: 20px; margin: 6px 0; }
 .production-parameter-orders li { margin-bottom: 8px; overflow-wrap: anywhere; }
 .production-parameter-orders span { display: block; color: #617a73; }
+.inventory-top-up-preview { margin: 0 0 16px; padding: 12px; border-radius: 8px; background: #e8f3ee; font-weight: 600; overflow-wrap: anywhere; }
+.inventory-top-up-modal .ant-descriptions-view table { table-layout: fixed; }
+.inventory-top-up-modal .ant-descriptions-item-content,
+.inventory-top-up-history .ant-card-body { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+.inventory-top-up-history { margin-top: 20px; }
 .product-specification-view-drawer .ant-descriptions-item-content { overflow-wrap: anywhere; white-space: pre-wrap; }
 .product-specification-view-drawer .ant-descriptions-view table { table-layout: fixed; }
 @media (max-width: 767px) {

@@ -26,9 +26,12 @@ const apiMocks = vi.hoisted(() => ({
   setQuality: vi.fn(),
   outbound: vi.fn(),
   moveContainer: vi.fn(),
+  topUp: vi.fn(),
+  topUpHistory: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
+  ApiError: class extends Error { status = 400 },
   inventoryApi: {
     summary: apiMocks.summary,
     locations: apiMocks.locations,
@@ -43,6 +46,8 @@ vi.mock('../api/client', () => ({
     createMaterialRemainder: vi.fn(),
     useMaterialRemainder: vi.fn(),
     moveContainer: apiMocks.moveContainer,
+    topUp: apiMocks.topUp,
+    topUpHistory: apiMocks.topUpHistory,
   },
   qualityApi: { listEmployees: apiMocks.listEmployees },
   orderApi: { list: apiMocks.listOrders },
@@ -77,6 +82,8 @@ describe('InventoryPage mobile inventory forms', () => {
     apiMocks.setQuality.mockReset().mockResolvedValue({})
     apiMocks.outbound.mockReset().mockResolvedValue({})
     apiMocks.moveContainer.mockReset().mockResolvedValue({})
+    apiMocks.topUp.mockReset()
+    apiMocks.topUpHistory.mockReset().mockResolvedValue({ count: 0, results: [] })
   })
 
   it('loads complete selector datasets and exposes a mobile-safe location popup', async () => {
@@ -270,6 +277,7 @@ describe('InventoryPage mobile inventory forms', () => {
       material: 'NBR', quantity: 1000, quality_status: qualityStatus, bag_count: 1,
       inspector_id: inspectorId, inspector_name: inspectorId ? '品检员甲' : '',
       inspected_on: inspectorId ? '2026-10-21' : null,
+      updated_at: '2026-11-09T01:00:00Z',
     }
     apiMocks.locations.mockResolvedValue([{ ...lastLocation, container }])
     apiMocks.containers.mockResolvedValue([{
@@ -292,6 +300,23 @@ describe('InventoryPage mobile inventory forms', () => {
     await waitFor(() => expect(dialog).toBeVisible())
     return dialog
   }
+
+  it('opens top-up from both the location table and scanned location drawer', async () => {
+    seedStock()
+    const user = userEvent.setup()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><App><InventoryPage initialLocationCode="K09-L05-P02" /></App></QueryClientProvider>)
+    const drawer = await findLocationDrawer()
+    expect(await within(drawer).findByText('暂无追加入库记录')).toBeVisible()
+    await user.click(within(drawer).getByRole('button', { name: /追加入库/ }))
+    const modal = await findModal('追加入库 · CT-081')
+    expect(within(modal).getByText('原有 1,000 ＋ 本次 0 ＝ 追加后 1,000 件')).toBeVisible()
+    await user.click(within(modal).getByRole('button', { name: '关闭并核对库存' }))
+    await waitFor(() => expect(modal).not.toBeVisible())
+    const table = document.querySelector('.ant-table-wrapper') as HTMLElement
+    expect(within(table).getByRole('button', { name: '追加入库' })).toBeInTheDocument()
+    expect(apiMocks.topUp).not.toHaveBeenCalled()
+  }, 30000)
 
   it.each([
     { title: '库存直接入库', openName: /直接入库/, saveName: '确认入库' },

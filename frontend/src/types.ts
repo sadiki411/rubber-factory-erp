@@ -76,7 +76,27 @@ export interface InventoryLocation {
     inspected_on?: string | null
     received_on?: string
     unit_weight_g?: string | number | null
+    updated_at?: string
   } | null
+}
+
+export interface InventoryTopUp {
+  id: number
+  transaction_id: number
+  received_on: string
+  quality_status: InventoryQualityStatus
+  inspector_id?: number | null
+  inspector_name: string
+  inspected_on?: string | null
+  product_snapshot: { id: number; product_code: string; product_name: string; specification: string; material: string }
+  quantity: number
+  quantity_before: number
+  quantity_after: number
+  bag_count_before: number
+  bag_count_after: number
+  notes: string
+  created_by_name: string
+  created_at: string
 }
 
 export interface InventorySummary {

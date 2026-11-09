@@ -1,9 +1,13 @@
-from django.db import transaction
+from functools import wraps
+import random
+import time
+
+from django.db import IntegrityError, OperationalError, connection, transaction
 from django.db.models import DecimalField, OuterRef, Q, Subquery, Sum
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -19,6 +23,7 @@ from .models import (
     InventoryOutbound,
     InventoryProduct,
     InventoryTransaction,
+    InventoryTopUp,
     MaterialRemainder,
     MaterialRemainderUse,
 )
@@ -35,6 +40,9 @@ from .serializers import (
     InventoryQualityUpdateSerializer,
     InventoryReceiptSerializer,
     InventoryTransactionSerializer,
+    InventoryTopUpInputSerializer,
+    InventoryTopUpReadSerializer,
+    InventoryTopUpResponseSerializer,
     MaterialRemainderSerializer,
     MaterialRemainderUseSerializer,
 )
@@ -44,7 +52,41 @@ from .services import (
     move_inventory_container,
     product_availability,
     set_inventory_container_quality,
+    top_up_inventory_container,
+    InventoryTopUpConflict,
 )
+
+
+class InventoryWriteBusy(APIException):
+    status_code = 503
+    default_detail = "库存正在被其他操作更新，本次未入账；请稍后重试，同一次提交不会重复增加。"
+
+
+class InventoryWriteConflict(APIException):
+    status_code = 409
+
+
+def inventory_receipt_retry(operation):
+    @wraps(operation)
+    def wrapped(self, request, *args, **kwargs):
+        nested = connection.in_atomic_block
+        for attempt in range(4):
+            try:
+                with transaction.atomic():
+                    return operation(self, request, *args, **kwargs)
+            except OperationalError as exc:
+                if connection.vendor != "sqlite" or not any(text in str(exc).lower() for text in ("database is locked", "table is locked")):
+                    raise
+                if nested or attempt == 3:
+                    raise InventoryWriteBusy() from exc
+                time.sleep(random.uniform(0.025, 0.05) * (2 ** attempt))
+            except IntegrityError:
+                # A concurrent identical UUID may win on another container.
+                # Retry only after the whole failed transaction rolled back.
+                if nested or attempt == 3 or not InventoryTopUp.objects.filter(request_id=request.data.get("request_id")).exists():
+                    raise
+        raise InventoryWriteBusy()
+    return wrapped
 
 
 class InventoryPagination(PageNumberPagination):
@@ -122,7 +164,7 @@ class PublicInventoryLocationHistoryView(APIView):
         transactions = InventoryTransaction.objects.filter(
             Q(from_location=location) | Q(to_location=location)
         ).select_related(
-            "batch__product", "container", "from_location", "to_location",
+            "batch__product", "container", "from_location", "to_location", "top_up",
         ).order_by("-created_at", "-id")
         paginator = PublicLocationHistoryPagination()
         page = paginator.paginate_queryset(transactions, request, view=self)
@@ -130,13 +172,13 @@ class PublicInventoryLocationHistoryView(APIView):
             {
                 "id": entry.pk,
                 "created_at": entry.created_at,
-                "operation_label": "产品资料更正" if entry.transaction_type == InventoryTransaction.TransactionType.ADJUST
+                "operation_label": "追加入库" if hasattr(entry, "top_up") else "产品资料更正" if entry.transaction_type == InventoryTransaction.TransactionType.ADJUST
                 and entry.quantity == 0 and entry.reason.startswith("库存产品资料更正：")
                 else entry.get_transaction_type_display(),
-                "item_code": entry.batch.product.product_code,
-                "item_name": entry.batch.product.product_name,
-                "specification": entry.batch.product.specification,
-                "material": entry.batch.product.material,
+                "item_code": entry.top_up.product_snapshot.get("product_code", "") if hasattr(entry, "top_up") else entry.batch.product.product_code,
+                "item_name": entry.top_up.product_snapshot.get("product_name", "") if hasattr(entry, "top_up") else entry.batch.product.product_name,
+                "specification": entry.top_up.product_snapshot.get("specification", "") if hasattr(entry, "top_up") else entry.batch.product.specification,
+                "material": entry.top_up.product_snapshot.get("material", "") if hasattr(entry, "top_up") else entry.batch.product.material,
                 "batch_no": entry.batch.batch_no,
                 "container_code": entry.container.container_code,
                 "quantity_change": -entry.quantity if entry.transaction_type == InventoryTransaction.TransactionType.OUTBOUND
@@ -214,6 +256,32 @@ class InventoryContainerViewSet(viewsets.ReadOnlyModelViewSet):
         if self.request.query_params.get("active") in {"1", "true", "True"}:
             queryset = queryset.filter(status=InventoryContainer.Status.ACTIVE)
         return queryset
+
+    @extend_schema(request=InventoryTopUpInputSerializer, responses=InventoryTopUpResponseSerializer)
+    @action(detail=True, methods=["post"], url_path="top-up")
+    @inventory_receipt_retry
+    def top_up(self, request, pk=None):
+        self.get_object()
+        serializer = InventoryTopUpInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            container, receipt, replayed = top_up_inventory_container(int(pk), serializer.validated_data, created_by=request.user)
+        except InventoryTopUpConflict as exc:
+            raise InventoryWriteConflict(str(exc)) from exc
+        except ValueError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+        data = self.get_serializer(self.get_queryset().get(pk=container.pk)).data
+        data["top_up_receipt"] = InventoryTopUpReadSerializer(receipt).data
+        data["replayed"] = replayed
+        return Response(data)
+
+    @extend_schema(responses=InventoryTopUpReadSerializer(many=True))
+    @action(detail=True, methods=["get"], url_path="top-up-history")
+    def top_up_history(self, request, pk=None):
+        self.get_object()
+        rows = InventoryTopUp.objects.filter(transaction__container_id=pk).select_related("transaction__created_by")
+        page = self.paginate_queryset(rows)
+        return self.get_paginated_response(InventoryTopUpReadSerializer(page, many=True).data)
 
     @action(detail=True, methods=["post"])
     def move(self, request, pk=None):

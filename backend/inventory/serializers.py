@@ -11,6 +11,7 @@ from .models import (
     InventoryOutboundLine,
     InventoryProduct,
     InventoryTransaction,
+    InventoryTopUp,
     MaterialRemainder,
     MaterialRemainderUse,
 )
@@ -91,6 +92,7 @@ class InventoryLocationSerializer(serializers.ModelSerializer):
             "inspected_on": container.batch.inspected_on,
             "received_on": container.batch.received_on,
             "unit_weight_g": container.batch.product.unit_weight_g,
+            "updated_at": container.updated_at,
         }
 
 
@@ -244,6 +246,59 @@ class InventoryTransactionSerializer(serializers.ModelSerializer):
 
     def get_created_by_name(self, obj):
         return obj.created_by.get_full_name() or obj.created_by.get_username()
+
+
+class InventoryTopUpIdentitySerializer(serializers.Serializer):
+    id = serializers.IntegerField(min_value=1)
+    product_code = serializers.CharField(allow_blank=True, max_length=120, trim_whitespace=False)
+    product_name = serializers.CharField(allow_blank=True, max_length=200, trim_whitespace=False)
+    specification = serializers.CharField(allow_blank=True, max_length=200, trim_whitespace=False)
+    material = serializers.CharField(allow_blank=True, max_length=100, trim_whitespace=False)
+
+
+class InventoryTopUpInputSerializer(serializers.Serializer):
+    request_id = serializers.UUIDField()
+    expected_updated_at = serializers.DateTimeField()
+    expected_quantity = serializers.IntegerField(min_value=1)
+    expected_location_id = serializers.IntegerField(min_value=1)
+    product_identity = InventoryTopUpIdentitySerializer()
+    quality_status = serializers.ChoiceField(choices=InventoryBatch.QualityStatus.choices)
+    quantity = serializers.IntegerField(min_value=1, max_value=2147483647)
+    received_on = serializers.DateField()
+    inspector_id = serializers.IntegerField(required=False, allow_null=True, min_value=1, default=None)
+    inspected_on = serializers.DateField(required=False, allow_null=True, default=None)
+    bag_count = serializers.IntegerField(required=False, min_value=1, max_value=2147483647)
+    notes = serializers.CharField(required=False, allow_blank=True, max_length=400, default="")
+
+    def validate(self, attrs):
+        if attrs["quality_status"] == InventoryBatch.QualityStatus.PASSED and not attrs.get("inspector_id"):
+            raise serializers.ValidationError({"inspector_id": "本次已检合格追加必须登记本次品检员，不自动沿用原品检员。"})
+        return attrs
+
+
+class InventoryTopUpReadSerializer(serializers.ModelSerializer):
+    quantity = serializers.IntegerField(source="transaction.quantity", read_only=True)
+    notes = serializers.CharField(source="transaction.reason", read_only=True)
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = InventoryTopUp
+        fields = ["id", "transaction_id", "received_on", "quality_status", "inspector_id", "inspector_name", "inspected_on",
+                  "product_snapshot", "quantity", "quantity_before", "quantity_after", "bag_count_before", "bag_count_after",
+                  "notes", "created_by_name", "created_at"]
+        read_only_fields = fields
+
+    def get_created_by_name(self, obj) -> str:
+        user = obj.transaction.created_by
+        return user.get_full_name() or user.get_username()
+
+
+class InventoryTopUpResponseSerializer(InventoryContainerSerializer):
+    top_up_receipt = InventoryTopUpReadSerializer(read_only=True)
+    replayed = serializers.BooleanField(read_only=True)
+
+    class Meta(InventoryContainerSerializer.Meta):
+        fields = InventoryContainerSerializer.Meta.fields + ["top_up_receipt", "replayed"]
 
 
 class InventoryOutboundLineInputSerializer(serializers.Serializer):

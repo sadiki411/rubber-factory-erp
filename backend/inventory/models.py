@@ -216,6 +216,27 @@ class InventoryTransaction(TimeStampedModel):
         ordering = ["-created_at", "-id"]
 
 
+class InventoryTopUp(TimeStampedModel):
+    """One additional receipt into an existing container, not another stock balance."""
+
+    request_id = models.UUIDField(unique=True, editable=False)
+    payload_hash = models.CharField(max_length=64, editable=False)
+    transaction = models.OneToOneField(InventoryTransaction, related_name="top_up", on_delete=models.PROTECT)
+    received_on = models.DateField("本次入库日期")
+    inspector = models.ForeignKey("quality.QualityEmployee", related_name="inventory_top_ups", on_delete=models.PROTECT, null=True, blank=True)
+    inspector_name = models.CharField("本次品检员快照", max_length=100, blank=True, default="")
+    inspected_on = models.DateField("本次检验日期", null=True, blank=True)
+    quality_status = models.CharField(max_length=12, choices=InventoryBatch.QualityStatus.choices)
+    product_snapshot = models.JSONField(default=dict)
+    quantity_before = models.PositiveIntegerField()
+    quantity_after = models.PositiveIntegerField()
+    bag_count_before = models.PositiveIntegerField()
+    bag_count_after = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+
 class InventoryOutbound(TimeStampedModel):
     class Status(models.TextChoices):
         CONFIRMED = "CONFIRMED", "已确认"

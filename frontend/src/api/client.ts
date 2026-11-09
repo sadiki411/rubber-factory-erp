@@ -12,6 +12,7 @@ import type {
   ImportPreview,
   InventoryAvailability,
   InventoryContainer,
+  InventoryTopUp,
   InventoryLocation,
   InventoryProduct,
   InventorySummary,
@@ -372,6 +373,10 @@ export const inventoryApi = {
     apiFetch<ApiList<InventoryContainer> | InventoryContainer[]>(`/api/inventory/containers/${queryString(filters)}`),
   receipt: (body: Record<string, unknown>) =>
     apiFetch<InventoryContainer>('/api/inventory/receipts/', { method: 'POST', body: JSON.stringify(body) }),
+  topUp: (id: number, body: Record<string, unknown>) =>
+    apiFetch<InventoryContainer & { top_up_receipt: InventoryTopUp; replayed: boolean }>(`/api/inventory/containers/${id}/top-up/`, { method: 'POST', body: JSON.stringify(body) }),
+  topUpHistory: (id: number, page = 1) =>
+    apiFetch<ApiList<InventoryTopUp>>(`/api/inventory/containers/${id}/top-up-history/${queryString({ page })}`),
   setQuality: (id: number, body: Record<string, unknown>) =>
     apiFetch<InventoryContainer>(`/api/inventory/containers/${id}/set-quality/`, { method: 'POST', body: JSON.stringify(body) }),
   correctContainerProduct: (id: number, body: Record<string, unknown>) =>

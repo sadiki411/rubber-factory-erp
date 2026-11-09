@@ -11,6 +11,7 @@ import { qualityApi } from '../api/client'
 import { ThermalLocationLabel } from '../components/ThermalLocationLabel'
 import { PageTitle } from '../components/PageTitle'
 import { QualityQrScanner } from '../components/QualityQrScanner'
+import { InventoryTopUpHistory, InventoryTopUpModal } from '../components/InventoryTopUp'
 import { inventoryLocationDetailUrl, isInventoryLocationCode, normalizeInventoryLocationCode } from '../inventory'
 import type { InventoryLocation, InventoryQualityStatus, MaterialRemainder, Order, QualityEmployee } from '../types'
 
@@ -48,6 +49,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
   const [productCorrectionTarget, setProductCorrectionTarget] = useState<NonNullable<InventoryLocation['container']>>()
   const [scanPurpose, setScanPurpose] = useState<LocationScanPurpose>()
   const [receiptOpen, setReceiptOpen] = useState(false)
+  const [topUpTarget, setTopUpTarget] = useState<InventoryLocation>()
   const [outboundOpen, setOutboundOpen] = useState(false)
   const [remainderOpen, setRemainderOpen] = useState(false)
   const [remainderUseTarget, setRemainderUseTarget] = useState<MaterialRemainder>()
@@ -340,8 +342,8 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
     { title: '产品 / 规格', key: 'product', width: 230, render: (_, row) => row.container ? <span>{row.container.product_name || row.container.product_code || '-'}<br /><Typography.Text type="secondary">{row.container.specification || '-'} · {row.container.material || '-'}</Typography.Text></span> : '-' },
     { title: '数量', key: 'quantity', width: 100, render: (_, row) => row.container?.quantity ?? '-' },
     { title: '质量状态', key: 'quality', width: 110, render: (_, row) => qualityTag(row.container?.quality_status) },
-    { title: '最近品检员', key: 'inspector', width: 120, render: (_, row) => row.container?.inspector_name || '未登记' },
-    { title: '操作', key: 'actions', width: 320, render: (_, row) => <Space size={0} wrap><Button type="link" size="small" onClick={() => setDetailLocation(row)}>查看</Button>{row.container ? <><Button disabled={readOnly} type="link" size="small" onClick={() => openProductCorrection(row.container!)}>改产品资料</Button><Button disabled={readOnly} type="link" size="small" onClick={() => openQuality(row.container!)}>改质量状态</Button><Button disabled={readOnly} type="link" size="small" onClick={() => openMove(row)}>移库</Button></> : null}</Space> },
+    { title: '批次品检员', key: 'inspector', width: 120, render: (_, row) => row.container?.inspector_name || '未登记' },
+    { title: '操作', key: 'actions', width: 380, render: (_, row) => <Space size={0} wrap><Button type="link" size="small" onClick={() => setDetailLocation(row)}>查看</Button>{row.container ? <><Button disabled={readOnly} type="link" size="small" onClick={() => setTopUpTarget(row)}>追加入库</Button><Button disabled={readOnly} type="link" size="small" onClick={() => openProductCorrection(row.container!)}>改产品资料</Button><Button disabled={readOnly} type="link" size="small" onClick={() => openQuality(row.container!)}>改质量状态</Button><Button disabled={readOnly} type="link" size="small" onClick={() => openMove(row)}>移库</Button></> : null}</Space> },
   ]
 
   const submitReceipt = async () => {
@@ -484,7 +486,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
       </Card>
 
       <Card title="当前容器明细" className="inventory-table-card">
-        <Table rowKey="id" size="small" loading={locationsQuery.isLoading} dataSource={visibleLocations} columns={locationColumns} pagination={{ pageSize: 20, showSizeChanger: true }} scroll={{ x: 850 }} />
+        <Table rowKey="id" size="small" loading={locationsQuery.isLoading} dataSource={visibleLocations} columns={locationColumns} pagination={{ pageSize: 20, showSizeChanger: true }} scroll={{ x: 1210 }} />
       </Card>
 
       <Card
@@ -526,20 +528,24 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
             <Descriptions.Item label="成品单重">{activeDetailLocation.container.unit_weight_g ? `${Number(activeDetailLocation.container.unit_weight_g)} g` : '未记录'}</Descriptions.Item>
             <Descriptions.Item label="容器">{activeDetailLocation.container.container_code} · {activeDetailLocation.container.container_type === 'BASKET' ? '筐' : '袋'}</Descriptions.Item>
             <Descriptions.Item label="库存批次">{activeDetailLocation.container.batch_no}</Descriptions.Item>
-            <Descriptions.Item label="品检员">{activeDetailLocation.container.inspector_name || '未登记'}</Descriptions.Item>
-            <Descriptions.Item label="入库日期">{activeDetailLocation.container.received_on || '-'}</Descriptions.Item>
+            <Descriptions.Item label="批次品检员">{activeDetailLocation.container.inspector_name || '未登记'}（追加部分见本次入库记录）</Descriptions.Item>
+            <Descriptions.Item label="首次入库日期">{activeDetailLocation.container.received_on || '-'}</Descriptions.Item>
           </Descriptions> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前为空库位"><Button disabled={readOnly} type="primary" icon={<InboxOutlined />} onClick={() => { receiptForm.setFieldValue('location_id', activeDetailLocation.id); closeLocationDetail(); setReceiptOpen(true) }}>在此库位入库</Button></Empty>}
           {activeDetailLocation.container && <>
             {activeDetailLocation.container.quality_status !== 'PASSED' && <Alert style={{ marginTop: 16 }} type="warning" showIcon message="当前库存尚不可正常出库" description="可先移库整理；实际检验合格后，请在下方更新质量状态并登记品检员，再办理出库。更正状态不会改变数量或库位。" />}
             <Space direction="vertical" className="inventory-detail-actions" style={{ width: '100%', marginTop: 16 }}>
+              <Button disabled={readOnly} block icon={<PlusOutlined />} onClick={() => setTopUpTarget(activeDetailLocation)}>追加入库</Button>
               <Button disabled={readOnly} block type="primary" onClick={() => openQuality(activeDetailLocation.container!)}>更新质量状态</Button>
               <Button disabled={readOnly} block icon={<SwapOutlined />} onClick={() => openMove(activeDetailLocation)}>移库</Button>
               {activeDetailLocation.container.quality_status === 'PASSED' && <Button disabled={readOnly} block onClick={() => openOutbound(activeDetailLocation.container!)}>办理出库</Button>}
               <Button disabled={readOnly} block icon={<EditOutlined />} onClick={() => openProductCorrection(activeDetailLocation.container!)}>更正产品资料</Button>
             </Space>
+            <InventoryTopUpHistory key={activeDetailLocation.container.id} containerId={activeDetailLocation.container.id} />
           </>}
         </>}
       </Drawer>
+
+      <InventoryTopUpModal target={topUpTarget} onClose={() => { setTopUpTarget(undefined); void queryClient.invalidateQueries({ queryKey: ['inventory'] }) }} />
 
       <Modal className="inventory-modal" title="库存直接入库" open={receiptOpen} onCancel={() => setReceiptOpen(false)} okButtonProps={{ disabled: readOnly }} onOk={() => void submitReceipt()} confirmLoading={receiptMutation.isPending} width={720} okText="确认入库">
         <Alert type="info" showIcon message="本表单不需要订单或流程卡；库存批次由系统生成，可手工填写现场批次号。" style={{ marginBottom: 16 }} />
