@@ -1172,6 +1172,32 @@ button, input, textarea, select { font: inherit; }
   gap: 12px;
   margin-bottom: 16px;
 }
+
+.production-parameter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0;
+}
+.production-parameter-grid > div { min-width: 0; padding: 8px 10px; border-radius: 8px; background: #f3f7f5; }
+.production-parameter-grid dt { color: #617a73; font-size: 12px; }
+.production-parameter-grid dd { margin: 3px 0 0; color: #244f45; font-weight: 600; overflow-wrap: anywhere; white-space: pre-wrap; }
+.production-parameter-grid .material-layout-total,
+.production-parameter-grid .production-parameter-wide { grid-column: 1 / -1; }
+.production-parameter-grid .material-layout-total { background: #e8f3ee; }
+.production-run-parameters { min-width: 0; margin: 16px 0; }
+.production-run-parameters summary { cursor: pointer; padding: 5px 0; color: #416c5f; }
+.production-parameter-hint { display: block; color: #617a73; overflow-wrap: anywhere; }
+.production-parameter-orders { padding-left: 20px; margin: 6px 0; }
+.production-parameter-orders li { margin-bottom: 8px; overflow-wrap: anywhere; }
+.production-parameter-orders span { display: block; color: #617a73; }
+.product-specification-view-drawer .ant-descriptions-item-content { overflow-wrap: anywhere; white-space: pre-wrap; }
+.product-specification-view-drawer .ant-descriptions-view table { table-layout: fixed; }
+@media (max-width: 767px) {
+  .product-specification-view-drawer .ant-descriptions-item-label { width: 40%; }
+  .production-ledger-grid { min-width: 0; }
+  .production-ledger-card { min-width: 0; }
+}
 .quality-shipment-trace-summary > *, .quality-shipment-trace-drawer .ant-timeline-item-content {
   min-width: 0;
   overflow-wrap: anywhere;

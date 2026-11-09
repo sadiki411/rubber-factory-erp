@@ -10,6 +10,7 @@ import type { ProductionDailyLog, ProductionRun } from '../types'
 import { ProductionPauseResumeDrawer } from './ProductionPauseResumeDrawer'
 import { ProductionFinalYieldDrawer } from './ProductionFinalYieldDrawer'
 import { ProductionSettlement } from './ProductionSettlement'
+import { ProductionRunParameters } from './ProductionRunParameters'
 
 const STATUS_META = {
   PLANNED: { text: '待上机', color: 'blue' },
@@ -285,6 +286,8 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
             </Descriptions>
             <div className="run-progress-line"><span>订单进度</span><Progress percent={Math.round(progress)} size="small" status={progress >= 100 ? 'success' : 'active'} /></div>
           </div>
+
+          <ProductionRunParameters run={run} />
 
           <div className="section-heading production-log-heading">
             <div><Typography.Title level={4}>每日人员生产记录</Typography.Title><Typography.Text type="secondary">同一天可按不同作业员分别登记；交接班各填本人实际完成模数，月末自动汇总绩效。</Typography.Text></div>

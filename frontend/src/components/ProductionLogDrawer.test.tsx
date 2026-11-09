@@ -119,6 +119,15 @@ describe('ProductionLogDrawer planned start', () => {
     apiMocks.settleRun.mockReset()
   })
 
+  it('shows all saved production parameters without opening the editor or using current product values', () => {
+    renderDrawer({ ...plannedRun, compound_size: '长321mm×厚4mm', large_strip_weight_g: '21.00', large_strip_count: 5, small_strip_weight_g: '11.00', small_strip_count: 2, curing_seconds: 60, operator: '作业员甲', notes: '任务当时备注', product_specification: { id: 1, product_name: '当前参考', is_active: true, large_strip_weight_g: '99', large_strip_count: 10 } })
+    for (const value of ['大条条重', '21 g', '大条数量', '5 条', '小条条重', '11 g', '小条数量', '2 条', '一模排料总重', '127 g', '长321mm×厚4mm', '4 孔', '60 秒', '8 小时', '1,000 件', '3 %', '作业员甲', '任务当时备注']) {
+      expect(screen.getByText(value)).toBeInTheDocument()
+    }
+    expect(screen.queryByText('99 g')).not.toBeInTheDocument()
+    expect(apiMocks.updateRun).not.toHaveBeenCalled()
+  })
+
   it('confirms a planned mold on-machine and refreshes all linked caches', async () => {
     const running = { ...plannedRun, status: 'RUNNING' as const, loaded_at: new Date().toISOString(), mold: { ...plannedRun.mold!, status: 'ON_MACHINE' as const } }
     apiMocks.startRun.mockResolvedValue(running)
