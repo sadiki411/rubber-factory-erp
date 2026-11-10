@@ -13,7 +13,11 @@ interface Props {
   onSendOut: (mold: ProductionMold) => void
 }
 
-export function MountedMoldActionsDrawer({ open, station, onClose, onCreateProduction, onViewPlan, onPutaway, onSendOut }: Props) {
+export function MountedMoldActionsDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><MountedMoldActionsDrawerForm {...props} /></WriteAccess>
+}
+
+function MountedMoldActionsDrawerForm({ open, station, onClose, onCreateProduction, onViewPlan, onPutaway, onSendOut }: Props) {
   const molds = station?.mounted_molds || []
   const plannedRun = station?.run?.status === 'PLANNED' ? station.run : undefined
   return (
@@ -61,3 +65,4 @@ export function MountedMoldActionsDrawer({ open, station, onClose, onCreateProdu
     </Drawer>
   )
 }
+import { WriteAccess } from './WriteAccess'

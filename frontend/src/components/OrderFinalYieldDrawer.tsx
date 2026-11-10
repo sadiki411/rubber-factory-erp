@@ -23,6 +23,7 @@ interface Props { open: boolean; order?: Order; onClose: () => void }
 interface Values { remaining_quantity?: number | null; notes?: string }
 
 export function OrderFinalYieldDrawer({ open, order, onClose }: Props) {
+  const readOnly = useReadOnly()
   const [form] = Form.useForm<Values>()
   const { message } = App.useApp()
   const queryClient = useQueryClient()
@@ -55,7 +56,7 @@ export function OrderFinalYieldDrawer({ open, order, onClose }: Props) {
   const save = async () => {
     // Lock before asynchronous validation, not after the mutation starts:
     // a rapid double click can otherwise validate twice before loading renders.
-    if (submitLock.current || !ready) return
+    if (readOnly || submitLock.current || !ready) return
     submitLock.current = true
     try {
       const values = await form.validateFields()
@@ -67,7 +68,7 @@ export function OrderFinalYieldDrawer({ open, order, onClose }: Props) {
     }
   }
   return <Drawer rootClassName="order-final-yield-drawer" open={open} onClose={onClose} size={560} title={`订单良品率 · ${order?.order_no || ''}`}
-    footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>关闭</Button><Button onClick={() => void query.refetch()} loading={query.isFetching} disabled={mutation.isPending}>重新读取</Button><Button type="primary" disabled={!ready} loading={mutation.isPending} onClick={() => void save()}>保存剩余并重算</Button></Space>}>
+    footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>关闭</Button><Button onClick={() => void query.refetch()} loading={query.isFetching} disabled={mutation.isPending}>重新读取</Button>{!readOnly && <Button type="primary" disabled={!ready} loading={mutation.isPending} onClick={() => void save()}>保存剩余并重算</Button>}</Space>}>
     <Alert type="info" showIcon title="计算口径" description="（净有效出货 + 本次剩余合格成品）÷ 实际生产件数。未填剩余按0；剩余只用于本次良品率，不增加或扣减仓库库存。" />
     {query.isError && <Alert type="error" showIcon title="良品率读取失败" description={(query.error as Error).message} action={<Button onClick={() => void query.refetch()}>重试</Button>} />}
     <Card loading={query.isFetching} size="small" style={{ marginTop: 16 }}>
@@ -90,7 +91,7 @@ export function OrderFinalYieldDrawer({ open, order, onClose }: Props) {
         </Space>
       </>}
     </Card>
-    <Form form={form} layout="vertical" disabled={!ready} style={{ marginTop: 16, display: ready ? undefined : 'none' }}>
+    <Form form={form} layout="vertical" disabled={readOnly || !ready} style={{ marginTop: 16, display: !readOnly && ready ? undefined : 'none' }}>
       <Form.Item name="remaining_quantity" label="本次剩余合格成品数量（选填）" rules={[{ type: 'number', min: 0, max: 2147483647, message: '请输入不小于0的整数' }]}>
         <InputNumber min={0} max={2147483647} precision={0} suffix="件" style={{ width: '100%' }} />
       </Form.Item>
@@ -98,3 +99,4 @@ export function OrderFinalYieldDrawer({ open, order, onClose }: Props) {
     </Form>
   </Drawer>
 }
+import { useReadOnly } from '../access'

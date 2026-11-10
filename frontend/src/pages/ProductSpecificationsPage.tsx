@@ -70,7 +70,7 @@ export function ProductSpecificationsPage() {
     { title: '孔数', key: 'cavities', width: 120, render: (_, row) => `${exactText(row.effective_cavities)} / ${exactText(row.total_cavities)}` },
     { title: '模具型号 / 尺寸', key: 'mold', width: 230, render: (_, row) => <span>{moldModelText(row)}<br /><Typography.Text type="secondary">{moldDetailsText(row)}</Typography.Text></span> },
     { title: '状态', dataIndex: 'is_active', width: 90, render: (value) => <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag> },
-    { title: '操作', key: 'action', fixed: 'right', width: 80, render: (_, row) => <Button type="link" icon={<EditOutlined />} onClick={() => openForm(row)}>编辑</Button> },
+    { title: '操作', key: 'action', fixed: 'right', width: 80, render: (_, row) => readOnly ? <Button type="link" onClick={() => setViewing(row)}>查看</Button> : <Button type="link" icon={<EditOutlined />} onClick={() => openForm(row)}>编辑</Button> },
   ]
 
   return (
@@ -78,7 +78,7 @@ export function ProductSpecificationsPage() {
       <PageTitle
         title="产品规格资料"
         description="集中维护产品名称、规格、上机工艺、二烤参数和模具资料；导入的原始文本不会被强制改写。"
-        extra={<Space wrap><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入产品规格</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增产品规格</Button></Space>}
+        extra={!readOnly && <Space wrap><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入产品规格</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增产品规格</Button></Space>}
       />
       <Card className="filter-card">
         <div className="business-filter-row product-specification-filter-row">
@@ -110,7 +110,7 @@ export function ProductSpecificationsPage() {
                   <span><small>模具资料</small><b>{moldDetailsText(record)}</b></span>
                 </div>
                 <MaterialLayoutSummary record={record} />
-                <Button block icon={<EditOutlined />} onClick={(event) => { event.stopPropagation(); openForm(record) }}>编辑资料</Button>
+                {!readOnly && <Button block icon={<EditOutlined />} onClick={(event) => { event.stopPropagation(); openForm(record) }}>编辑资料</Button>}
               </Card>
             </List.Item>
           )}

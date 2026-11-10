@@ -11,6 +11,7 @@ import { ProductionPauseResumeDrawer } from './ProductionPauseResumeDrawer'
 import { ProductionFinalYieldDrawer } from './ProductionFinalYieldDrawer'
 import { ProductionSettlement } from './ProductionSettlement'
 import { ProductionRunParameters } from './ProductionRunParameters'
+import { useReadOnly } from '../access'
 
 const STATUS_META = {
   PLANNED: { text: '待上机', color: 'blue' },
@@ -36,6 +37,7 @@ interface Props {
 }
 
 export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, onRequestCompleteAndPutaway }: Props) {
+  const readOnly = useReadOnly()
   const [form] = Form.useForm()
   const { message, modal } = App.useApp()
   const queryClient = useQueryClient()
@@ -198,7 +200,7 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
     {
       title: '操作', key: 'action', width: 70, fixed: 'right',
       render: (_, log) => (
-        log.is_cancelled || run?.status === 'PLANNED' || run?.status === 'CANCELLED'
+        readOnly || log.is_cancelled || run?.status === 'PLANNED' || run?.status === 'CANCELLED'
           ? '-'
           : <Button type="link" size="small" onClick={() => { setEditingLog(log); form.setFieldsValue({ ...log, date: dayjs(log.date) }) }}>修改</Button>
       ),
@@ -208,7 +210,7 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
   const status = run ? STATUS_META[run.status] : STATUS_META.PLANNED
   const progress = Math.min(100, Math.max(0, Number(run?.progress_percent || 0)))
   const canCreateDailyLog = !!run && canCreateProductionDailyLog(run.status, !!run.loaded_at)
-  const showDailyLogForm = canCreateDailyLog || !!editingLog
+  const showDailyLogForm = !readOnly && (canCreateDailyLog || !!editingLog)
   const canSettle = !!run && canSettleProductionRun(run.status, !!run.loaded_at)
   const willInvalidateSettlement = !!run?.is_settled && (!editingLog || Number(enteredMoldCount) !== Number(editingLog.produced_mold_count))
   return (
@@ -218,8 +220,8 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
       onClose={closeDrawer}
       size={760}
       title={run ? `${run.station ? `${productionStationGroupLabel(run.station.group)}-${productionStationNumber(run.station)}号机台` : '机台待补录'} · ${run.order_no}` : '生产记录'}
-      extra={run && <Button icon={<EditOutlined />} onClick={() => onEdit(run)}>编辑资料</Button>}
-      footer={run && (
+      extra={run && !readOnly && <Button icon={<EditOutlined />} onClick={() => onEdit(run)}>编辑资料</Button>}
+      footer={readOnly ? <Button onClick={closeDrawer}>关闭</Button> : run && (
         <Space className="drawer-footer-actions">
           <Button onClick={closeDrawer}>关闭</Button>
           {run.status !== 'CANCELLED' && <Button danger icon={<CloseCircleOutlined />} loading={cancelRunMutation.isPending} onClick={askCancelRun}>取消误录任务</Button>}
@@ -330,7 +332,7 @@ export function ProductionLogDrawer({ open, run, onClose, onRunChange, onEdit, o
           {!canSettle && run.status !== 'PLANNED' && (
             <Alert className="production-settlement-pending" type="info" showIcon title="订单完工后再统一登记良品、不良、材料、人工、能耗及其他成本，并由系统计算收入和利润。" />
           )}
-          {canSettle && <ProductionSettlement run={run} onRunChange={onRunChange} />}
+          {canSettle && !readOnly && <ProductionSettlement run={run} onRunChange={onRunChange} />}
         </>
       )}
     </Drawer>

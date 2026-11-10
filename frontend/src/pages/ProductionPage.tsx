@@ -20,6 +20,7 @@ import { StationStartDrawer } from '../components/StationStartDrawer'
 import { formatProductionDate, isKeyboardActivationKey, productionReminderKey, productionStationGroupLabel, productionStationNumber } from '../production'
 import type { ApiList, MoldAsset, ProductionBoardStation, ProductionMold, ProductionRun, ProductionRunStatus, ProductionStation } from '../types'
 import { moldModelOf } from '../types'
+import { useReadOnly } from '../access'
 
 const STATUS_META: Record<ProductionRunStatus, { text: string; color: string }> = {
   PLANNED: { text: '待上机', color: 'blue' },
@@ -49,6 +50,7 @@ function settlementProfit(record: ProductionRun) {
 }
 
 export function ProductionPage() {
+  const readOnly = useReadOnly()
   const { message, notification } = App.useApp()
   const screens = Grid.useBreakpoint()
   const mobile = screens.md === false
@@ -121,6 +123,7 @@ export function ProductionPage() {
 
   const openStation = (station: ProductionBoardStation) => {
     if (station.run?.status === 'RUNNING') void showRun(station.run)
+    else if (readOnly) message.info('只读账号不能登记机台操作；可从记录列表查看生产资料。')
     else if (station.mounted_molds?.length) setMountedStation(station)
     else setStartStation(station)
   }
@@ -161,8 +164,8 @@ export function ProductionPage() {
       title: '操作', key: 'actions', fixed: 'right', width: 70,
       render: (_, record) => (
         <Dropdown trigger={['click']} menu={{ items: [
-          { key: 'detail', label: '日报 / 完工结算' },
-          { key: 'edit', label: '编辑生产资料' },
+          { key: 'detail', label: readOnly ? '查看生产记录' : '日报 / 完工结算' },
+          ...(!readOnly ? [{ key: 'edit', label: '编辑生产资料' }] : []),
         ], onClick: ({ key }) => key === 'edit' ? setFormTarget({ run: record }) : void showRun(record) }}>
           <Button type="text" icon={<MoreOutlined />} aria-label="生产记录操作" />
         </Dropdown>
@@ -177,7 +180,7 @@ export function ProductionPage() {
       <PageTitle
         title="前端生产管理"
         description="按当前启用机台展示实时生产、换模提醒和待上机计划；可跳过订单直接试模，也可原子完成生产并下机归位。"
-        extra={<Space wrap><Button type="primary" icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'PLANNED' })}>网页手工新增生产任务</Button><Button icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'RUNNING' })}>直接登记已上机任务</Button><Button type="text" icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>历史生产 Excel 补录</Button></Space>}
+        extra={!readOnly && <Space wrap><Button type="primary" icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'PLANNED' })}>网页手工新增生产任务</Button><Button icon={<PlusOutlined />} onClick={() => setFormTarget({ initialStatus: 'RUNNING' })}>直接登记已上机任务</Button><Button type="text" icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>历史生产 Excel 补录</Button></Space>}
       />
 
       {boardQuery.isError && <Alert type="error" showIcon title="实时机台看板读取失败" description={(boardQuery.error as Error).message} />}
@@ -193,10 +196,10 @@ export function ProductionPage() {
       )}
 
       <Row gutter={[14, 14]} className="production-kpis">
-        <Col xs={12} md={6}><Card className="production-kpi running"><Statistic title="机台占用" value={boardCounts?.occupied || 0} suffix="台" prefix={<ToolOutlined />} /></Card></Col>
-        <Col xs={12} md={6}><Card className="production-kpi warning"><Statistic title="1小时内换模" value={boardCounts?.due_soon || 0} suffix="台" prefix={<ClockCircleOutlined />} /></Card></Col>
-        <Col xs={12} md={6}><Card className="production-kpi overdue"><Statistic title="已超时" value={boardCounts?.overdue || 0} suffix="台" prefix={<AlertOutlined />} /></Card></Col>
-        <Col xs={12} md={6}><Card className="production-kpi profit"><Statistic title={`${date.format('M月D日')}生产模数`} value={summary?.produced_mold_count || 0} suffix="模" /></Card></Col>
+        <Col xs={12} md={6}><Card className="production-kpi running"><Statistic title="看板登记占用" value={boardCounts?.occupied ?? (boardQuery.isError ? '读取失败' : '读取中')} suffix={boardCounts ? '台' : undefined} prefix={<ToolOutlined />} /></Card></Col>
+        <Col xs={12} md={6}><Card className="production-kpi warning"><Statistic title="1小时内换模" value={boardCounts?.due_soon ?? (boardQuery.isError ? '读取失败' : '读取中')} suffix={boardCounts ? '台' : undefined} prefix={<ClockCircleOutlined />} /></Card></Col>
+        <Col xs={12} md={6}><Card className="production-kpi overdue"><Statistic title="已超时" value={boardCounts?.overdue ?? (boardQuery.isError ? '读取失败' : '读取中')} suffix={boardCounts ? '台' : undefined} prefix={<AlertOutlined />} /></Card></Col>
+        <Col xs={12} md={6}><Card className="production-kpi profit"><Statistic title={`${date.format('M月D日')}已登记生产模数`} value={summaryQuery.isError ? '读取失败' : !summary ? '读取中' : summary.production_record_count ? summary.produced_mold_count : '未登记'} suffix={summary?.production_record_count && !summaryQuery.isError ? '模' : undefined} /></Card></Col>
       </Row>
 
       <ProductionBoard board={boardQuery.data} loading={boardQuery.isLoading} onStationClick={openStation} />

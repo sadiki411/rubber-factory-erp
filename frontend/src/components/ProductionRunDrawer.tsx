@@ -55,7 +55,11 @@ function allocationSignature(allocations: Array<{ order_id: number; planned_quan
     .sort((left, right) => left.order_id - right.order_id)
 }
 
-export function ProductionRunDrawer({ open, run, station, mountedMold, initialStatus = 'RUNNING', onClose, onSuccess }: Props) {
+export function ProductionRunDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><ProductionRunDrawerForm {...props} /></WriteAccess>
+}
+
+function ProductionRunDrawerForm({ open, run, station, mountedMold, initialStatus = 'RUNNING', onClose, onSuccess }: Props) {
   const [form] = Form.useForm()
   const selectedStatus = Form.useWatch('status', form)
   const selectedStationId = Form.useWatch<number>('station_id', form)
@@ -591,3 +595,4 @@ export function ProductionRunDrawer({ open, run, station, mountedMold, initialSt
     </Drawer>
   )
 }
+import { WriteAccess } from './WriteAccess'

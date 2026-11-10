@@ -240,6 +240,7 @@ def _period_datetimes(date_from, date_to):
 def _daily_row(day):
     return {
         "date": day.isoformat(),
+        "production_record_count": 0,
         "automatic_produced_mold_count": 0,
         "manual_produced_mold_count": 0,
         "produced_mold_count": 0,
@@ -279,6 +280,7 @@ def _order_row(
         "product_name": product_name or "",
         "specification": specification or "",
         "material": material or "",
+        "production_record_count": 0,
         "automatic_produced_mold_count": 0,
         "manual_produced_mold_count": 0,
         "produced_mold_count": 0,
@@ -1252,6 +1254,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         run_ids.add(run.pk)
 
         day = daily[log.production_date]
+        day["production_record_count"] += 1
         day["automatic_produced_mold_count"] += molds
         day["produced_mold_count"] += molds
         day["theoretical_output_quantity"] += output
@@ -1298,6 +1301,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
                     **_order_reference(order, run),
                 )
                 row["automatic_produced_mold_count"] += molds_by_order.get(order, 0)
+                row["production_record_count"] += 1
                 row["produced_mold_count"] += molds_by_order.get(order, 0)
                 row["theoretical_output_quantity"] += output_by_order.get(order, 0)
                 row["automatic_record_count"] += 1
@@ -1309,6 +1313,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             )
             if row is not None:
                 row["automatic_produced_mold_count"] += molds
+                row["production_record_count"] += 1
                 row["produced_mold_count"] += molds
                 row["theoretical_output_quantity"] += output
                 row["automatic_record_count"] += 1
@@ -1677,6 +1682,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             manual_production["reported_hours"] += reported_hours
 
             day["manual_produced_mold_count"] += molds
+            day["production_record_count"] += 1
             day["produced_mold_count"] += molds
             day["manual_reported_hours"] += reported_hours
             # A named manual production row is an event even when its saved
@@ -1707,6 +1713,7 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
 
             if order_row is not None:
                 order_row["manual_produced_mold_count"] += molds
+                order_row["production_record_count"] += 1
                 order_row["produced_mold_count"] += molds
                 order_row["manual_record_count"] += 1
         elif entry.entry_type == ManualPerformanceEntry.EntryType.QUALITY:
@@ -2031,7 +2038,22 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
         "zero_denominator_rate": None,
     }
 
+    production_dates = [log.production_date for log in logs] + [
+        entry.entry_date for entry in manual_entries
+        if entry.entry_type == ManualPerformanceEntry.EntryType.PRODUCTION
+    ]
+    business_dates = production_dates + [item.shipment_date for item in shipments + weighted_batches] + [
+        item.opened_on for item in rework_cases
+    ] + [item.rework_date for item in reworks] + [item.entry_date for item in manual_entries] + [
+        item.occurred_on for item in financial_entries
+    ] + [timezone.localtime(item.settled_at).date() for item in settled_runs] + [
+        attempt.attempt_date for item in rework_cases for attempt in item.period_attempts
+    ]
     return {
+        "generated_at": timezone.now(),
+        "latest_recorded_business_date": max((day for day in business_dates if day), default=None),
+        "latest_production_business_date": max(production_dates, default=None),
+        "freshness_scope": "所选范围内已纳入本次汇总的业务日；不是设备采集时间，也不代表现场最后作业时间。",
         "period": {
             "date_from": date_from.isoformat(),
             "date_to": date_to.isoformat(),

@@ -21,7 +21,11 @@ function stationLabel(group?: string, position?: number, code?: string) {
   return code ? `${code}号机台` : '未命名机台'
 }
 
-export function ProductionPauseResumeDrawer({ open, run, onClose, onSuccess }: Props) {
+export function ProductionPauseResumeDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><ProductionPauseResumeDrawerForm {...props} /></WriteAccess>
+}
+
+function ProductionPauseResumeDrawerForm({ open, run, onClose, onSuccess }: Props) {
   const [form] = Form.useForm<Record<string, any>>()
   const { message, modal } = App.useApp()
   const queryClient = useQueryClient()
@@ -188,3 +192,4 @@ export function ProductionPauseResumeDrawer({ open, run, onClose, onSuccess }: P
     </Drawer>
   )
 }
+import { WriteAccess } from './WriteAccess'

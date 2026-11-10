@@ -665,7 +665,7 @@ export function QualityPage() {
     { title: '岗位角色', dataIndex: 'role', width: 190, render: (value: QualityEmployeeRole, row) => <Space size={4} wrap>{row.production_enabled && value !== 'PRODUCTION' && <Tag color="green">前端生产</Tag>}<Tag color={ROLE_META[value]?.color}>{row.role_display || ROLE_META[value]?.text || value}</Tag></Space> },
     { title: '状态', dataIndex: 'is_active', width: 100, render: (value) => <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag> },
     { title: '备注', dataIndex: 'notes', ellipsis: true, render: (value) => value || '-' },
-    { title: '操作', key: 'action', fixed: 'right', width: 76, render: (_, row) => <Button type="link" icon={<EditOutlined />} onClick={() => setEmployeeForm({ employee: row })}>编辑</Button> },
+    { title: '操作', key: 'action', fixed: 'right', width: 76, render: (_, row) => <Button disabled={readOnly} type="link" icon={<EditOutlined />} onClick={() => setEmployeeForm({ employee: row })}>编辑</Button> },
   ]
 
   const tableCard = <T,>(rows: T[], columns: TableColumnsType<T>, loading: boolean, rowKey: string | ((record: T) => string | number), scrollX: number, emptyText: string) => (
@@ -746,7 +746,7 @@ export function QualityPage() {
       key: 'employees',
       label: '员工档案',
       children: <div className="quality-tab-content">
-        <div className="section-heading"><div><Typography.Title level={3}>统一员工档案</Typography.Title><Typography.Text type="secondary">使用唯一工号维护生产、品检和返工岗位；同一员工可以同时拥有多个岗位。</Typography.Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => setEmployeeForm({})}>新增员工</Button></div>
+        <div className="section-heading"><div><Typography.Title level={3}>统一员工档案</Typography.Title><Typography.Text type="secondary">使用唯一工号维护生产、品检和返工岗位；同一员工可以同时拥有多个岗位。</Typography.Text></div><Button disabled={readOnly} type="primary" icon={<PlusOutlined />} onClick={() => setEmployeeForm({})}>新增员工</Button></div>
         {!!pendingIdentityQuery.data?.length && <Card size="small" style={{ marginBottom: 16 }} title={<span><WarningOutlined /> 历史生产姓名待确认</span>}><Typography.Paragraph type="secondary">系统没有猜测同名员工。请按工号确认；如果确实是不同的人，可保留为独立员工。</Typography.Paragraph><Table rowKey="id" size="small" pagination={false} dataSource={pendingIdentityQuery.data} columns={[{ title: '历史姓名', dataIndex: 'source_name' }, { title: '临时档案', render: (_, row) => `${row.temporary_employee.employee_no} · ${row.temporary_employee.name}` }, { title: '可能匹配', render: (_, row) => <Space wrap>{row.candidates.map((candidate) => <Button key={candidate.id} type="link" loading={resolveIdentityMutation.isPending} onClick={() => resolveIdentityMutation.mutate({ matchId: row.id, employeeId: candidate.id })}>{candidate.employee_no} · {candidate.name}</Button>)}<Button type="link" loading={resolveIdentityMutation.isPending} onClick={() => resolveIdentityMutation.mutate({ matchId: row.id, employeeId: row.temporary_employee.id })}>保留为独立员工</Button></Space> }]} /> </Card>}
         {tableCard(filteredEmployees, employeeColumns, employeesQuery.isLoading, 'id', 850, '暂无员工档案')}
       </div>,
@@ -771,7 +771,7 @@ export function QualityPage() {
 
   const anyError = summaryQuery.error || employeesQuery.error || ordersQuery.error || shipmentLedgerQuery.error || reworksQuery.error
   const analysisReturn = new URLSearchParams(window.location.search).get('return_to') || ''
-  const analysisLink = /^\/(?:analytics|operations|order-overview\/\d+)(?:\?|$)/.test(analysisReturn) ? analysisReturn : `/analytics?date_from=${dateFrom}&date_to=${dateTo}&tab=quality`
+  const analysisLink = safeBusinessReturn(analysisReturn, `/analytics?date_from=${dateFrom}&date_to=${dateTo}&tab=quality`)
 
   return (
     <div className="page-container quality-page">
@@ -917,3 +917,4 @@ export function QualityPage() {
     </div>
   )
 }
+import { safeBusinessReturn } from '../navigation'

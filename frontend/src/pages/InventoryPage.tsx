@@ -36,7 +36,7 @@ function qualityTag(value?: InventoryQualityStatus) {
 export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { initialLocationCode?: string; onLocationDetailClose?: () => void } = {}) {
   const readOnly = useReadOnly()
   const { message, modal } = App.useApp()
-  const sourceReturn = new URLSearchParams(window.location.search).get('return_to') || ''
+  const sourceReturn = safeBusinessReturn(new URLSearchParams(window.location.search).get('return_to'), '')
   const queryClient = useQueryClient()
   const [query, setQuery] = useState('')
   const [printOpen, setPrintOpen] = useState(false)
@@ -452,7 +452,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
         extra={<Space wrap className="inventory-actions"><Button icon={<QrcodeOutlined />} onClick={() => setScanPurpose('LOOKUP')}>扫码查库位</Button><Button icon={<PrinterOutlined />} onClick={() => setPrintOpen(true)}>打印库位标签</Button><Button disabled={readOnly} icon={<SwapOutlined />} onClick={() => openOutbound()}>库存出库</Button><Button disabled={readOnly} type="primary" icon={<InboxOutlined />} onClick={() => setReceiptOpen(true)}>直接入库</Button></Space>}
       />
 
-      {/^\/(?:operations|order-overview\/\d+)(?:\?|$)/.test(sourceReturn) && <Button href={sourceReturn}>返回待办筛选</Button>}
+      {sourceReturn && <Button href={sourceReturn}>返回待办筛选</Button>}
       {summaryQuery.isError && <Alert type="error" title="库存汇总读取失败" action={<Button onClick={() => void summaryQuery.refetch()}>重试汇总</Button>} />}
       <Row gutter={[12, 12]} className="inventory-stats">
         <Col xs={12} sm={6}><Card><Statistic title="库存总量" value={summaryQuery.isSuccess ? summaryQuery.data.total_quantity : '读取中/失败'} suffix="件" /></Card></Col>
@@ -656,3 +656,4 @@ export function InventoryLocationPage() {
   const navigate = useNavigate()
   return <InventoryPage initialLocationCode={locationCode} onLocationDetailClose={() => navigate('/inventory', { replace: true })} />
 }
+import { safeBusinessReturn } from '../navigation'

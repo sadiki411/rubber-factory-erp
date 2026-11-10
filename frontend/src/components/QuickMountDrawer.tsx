@@ -16,7 +16,11 @@ interface Props {
   onSuccess?: (mold: MoldAsset) => void
 }
 
-export function QuickMountDrawer({ open, station, continueToProduction = false, onClose, onAfterOpenChange, onSuccess }: Props) {
+export function QuickMountDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><QuickMountDrawerForm {...props} /></WriteAccess>
+}
+
+function QuickMountDrawerForm({ open, station, continueToProduction = false, onClose, onAfterOpenChange, onSuccess }: Props) {
   const [form] = Form.useForm()
   const queryClient = useQueryClient()
   const { message, modal } = App.useApp()
@@ -144,3 +148,4 @@ export function QuickMountDrawer({ open, station, continueToProduction = false, 
     </Drawer>
   )
 }
+import { WriteAccess } from './WriteAccess'

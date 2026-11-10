@@ -7,6 +7,7 @@ import { analyticsApi } from '../api/client'
 import { reworkQuantitiesValid, shipmentQuantitiesMatch, shipmentQuantityAllowed } from '../quality'
 import type { Machine, ManualFinancialEntry, ManualPerformanceEntry, ManualPerformanceEntryType, QualityEmployee } from '../types'
 import { QualityEmployeeSelect } from './QualityEmployeeSelect'
+import { WriteAccess } from './WriteAccess'
 
 interface CommonProps {
   open: boolean
@@ -19,7 +20,11 @@ interface PerformanceProps extends CommonProps {
   employees: QualityEmployee[]
 }
 
-export function ManualPerformanceDrawer({ open, entry, machines, employees, onClose }: PerformanceProps) {
+export function ManualPerformanceDrawer(props: PerformanceProps) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><ManualPerformanceDrawerForm {...props} /></WriteAccess>
+}
+
+function ManualPerformanceDrawerForm({ open, entry, machines, employees, onClose }: PerformanceProps) {
   const [form] = Form.useForm<Record<string, any>>()
   const entryType = Form.useWatch<ManualPerformanceEntryType>('entry_type', form) || 'PRODUCTION'
   const queryClient = useQueryClient()
@@ -150,7 +155,11 @@ interface FinancialProps extends CommonProps {
   entry?: ManualFinancialEntry
 }
 
-export function ManualFinancialDrawer({ open, entry, machines, onClose }: FinancialProps) {
+export function ManualFinancialDrawer(props: FinancialProps) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><ManualFinancialDrawerForm {...props} /></WriteAccess>
+}
+
+function ManualFinancialDrawerForm({ open, entry, machines, onClose }: FinancialProps) {
   const [form] = Form.useForm<Record<string, any>>()
   const direction = Form.useWatch<'INCOME' | 'EXPENSE'>('direction', form) || 'INCOME'
   const queryClient = useQueryClient()

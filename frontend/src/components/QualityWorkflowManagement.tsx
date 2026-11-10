@@ -413,7 +413,7 @@ export function ShipmentBatchReviewDrawer({
       ? <Alert type="info" showIcon message="该出货批次已作废" description="作废记录仅供查询，不能再修改或确认。" />
       : <>
         <Alert type="info" showIcon message={item?.status === 'CONFIRMED' ? '品检员可以在确认出货后补录' : '出货日期必须与实际单据一致'} description={item?.status === 'CONFIRMED' ? '可选择一人或多人；留空保存也不会改变出货数量和重量。' : '如果补录历史日期，请填写补录原因；未填写日期的草稿不能确认入账。'} />
-        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+        <Form form={form} layout="vertical" disabled={readOnly} style={{ marginTop: 16 }}>
           <Form.Item name="inspector_ids" label="品检员（选填，可多选）"><QualityEmployeeSelect employees={employees} multiple placeholder="选择/新增品检员，或暂时留空" /></Form.Item>
           {item?.status !== 'CONFIRMED' && <>
             <Form.Item name="shipment_date" label="实际出货日期" rules={[{ required: true, message: '请选择实际出货日期' }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
@@ -508,7 +508,7 @@ function WeightDrawer({
 
   return <Drawer open={open} onClose={onClose} width={520} title={item ? '编辑成品单重标准' : '新增成品单重标准'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void submit()}>保存</Button></Space>}>
     <Alert type="info" showIcon message="单重单位为 g/件" description="标准单重=样品总净重÷抽样件数。胶料重量不填在这里；流程卡建立时会保存单重快照。" />
-    <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+    <Form form={form} layout="vertical" disabled={readOnly} style={{ marginTop: 16 }}>
       <Form.Item name="product_specification_id" label="产品规格"><Select allowClear showSearch optionFilterProp="label" options={specs.map((spec) => ({ value: spec.id, label: spec.label }))} placeholder="按产品规格关联（推荐）" /></Form.Item>
       <Form.Item name="mold_model_id" label="模具型号（可选）" extra="不同模具型号单重有差异时选择；下拉为空时可填写产品规格"><Select allowClear showSearch optionFilterProp="label" options={moldModels.map((mold) => ({ value: mold.id, label: mold.label }))} placeholder="选择模具型号" /></Form.Item>
       <Row gutter={12}><Col xs={12}><Form.Item name="sample_count" label="抽样件数"><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col><Col xs={12}><Form.Item name="sample_total_weight_g" label="样品总净重(g)"><InputNumber min={0.00001} precision={5} style={{ width: '100%' }} /></Form.Item></Col></Row>
@@ -588,7 +588,7 @@ function ReworkCaseDrawer({
   }
   return <Drawer open={open} onClose={onClose} width={560} title={item ? '编辑退货返工记录' : '新增退货返工记录'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void submit()}>保存</Button></Space>}>
     <Alert type="info" showIcon message="内部返工与客户退回分开记录" description="内部返工不要求出货记录；客户退回必须选择已确认的出货明细，退回重量会返还流程卡可重发额度。" />
-    <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+    <Form form={form} layout="vertical" disabled={readOnly} style={{ marginTop: 16 }}>
       <Form.Item name="origin" label="返工来源" rules={[{ required: true }]}><Select disabled options={[{ value: 'INTERNAL', label: '内部返工（出货前）' }]} /></Form.Item>
       <Form.Item name="process_card_id" label="流程卡" rules={[{ required: true, message: '请选择流程卡' }]}><Select showSearch optionFilterProp="label" options={cards.map((card) => ({ value: card.id, label: `${card.card_no} · ${card.source_order_no || card.order_id}` }))} /></Form.Item>
       {origin === 'CUSTOMER_RETURN' && <Form.Item name="shipment_line_id" label="已确认出货明细" rules={[{ required: true, message: '客户退回必须选择出货明细' }]}><Select showSearch optionFilterProp="label" options={lines.map((line) => ({ value: line.id, label: `${line.batchNo} · ${line.process_card?.card_no || line.process_card_id} · ${line.net_weight_kg}kg` }))} /></Form.Item>}
@@ -652,7 +652,7 @@ function AttemptDrawer({
   }
   return <Drawer open={open} onClose={onClose} width={540} title={item ? `${item.case_no} · 新增下一轮返工` : '新增返工轮次'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void submit()}>保存</Button></Space>}>
     <Alert type="info" showIcon message="系统自动生成 R1、R2、R3…" description="可以按件数、重量或两者记录；同一条退货返工记录累计投入不能超过影响数量。" />
-    <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+    <Form form={form} layout="vertical" disabled={readOnly} style={{ marginTop: 16 }}>
       <Form.Item name="attempt_date" label="处理日期" rules={[{ required: true }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
       <Row gutter={12}><Col xs={12}><Form.Item name="input_quantity" label="投入件数"><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item></Col><Col xs={12}><Form.Item name="reworked_quantity" label="返工件数"><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item></Col></Row>
       <Row gutter={12}><Col xs={12}><Form.Item name="recovered_quantity" label="合格件数"><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item></Col><Col xs={12}><Form.Item name="scrap_quantity" label="报废件数"><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item></Col></Row>

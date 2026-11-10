@@ -14,7 +14,11 @@ interface Props {
   onSuccess?: (run: ProductionRun) => void
 }
 
-export function CompleteAndPutawayDrawer({ open, run, onClose, onSuccess }: Props) {
+export function CompleteAndPutawayDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><CompleteAndPutawayDrawerForm {...props} /></WriteAccess>
+}
+
+function CompleteAndPutawayDrawerForm({ open, run, onClose, onSuccess }: Props) {
   const [form] = Form.useForm()
   const queryClient = useQueryClient()
   const { message, modal } = App.useApp()
@@ -129,3 +133,4 @@ export function CompleteAndPutawayDrawer({ open, run, onClose, onSuccess }: Prop
     </Drawer>
   )
 }
+import { WriteAccess } from './WriteAccess'

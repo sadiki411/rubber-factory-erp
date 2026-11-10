@@ -23,6 +23,7 @@ function logDate(log: ProductionDailyLog) {
 }
 
 export function ProductionLedgerBoard() {
+  const readOnly = useReadOnly()
   const { message, modal } = App.useApp()
   const queryClient = useQueryClient()
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false)
@@ -159,12 +160,12 @@ export function ProductionLedgerBoard() {
   const tasks = tasksQuery.data || []
 
   return (
-    <section className="production-ledger-board">
+    <section className="production-ledger-board" id="production-ledger">
       <div className="section-heading production-ledger-heading">
         <div><Typography.Title level={3}>生产手工账</Typography.Title><Typography.Text type="secondary">按“机台累计读数”交接，系统自动计算每个人本段模数、订单生产量、欠模和超产；人员、机台、日期可后补。</Typography.Text></div>
         <Space wrap>
           <Button icon={<HistoryOutlined />} onClick={() => setShowFinished((value) => !value)}>{showFinished ? '查看进行中' : '查看已结束'}</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditingTask(undefined); setTaskDrawerOpen(true) }}>新增生产任务</Button>
+          {!readOnly && <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditingTask(undefined); setTaskDrawerOpen(true) }}>新增生产任务</Button>}
         </Space>
       </div>
       {tasksQuery.isLoading ? <Card loading /> : tasks.length === 0 ? <Card><Empty description={showFinished ? '暂无已结束的手工账任务' : '暂无进行中的手工账任务'} /></Card> : (
@@ -184,13 +185,13 @@ export function ProductionLedgerBoard() {
                 <Progress percent={Math.round(percent)} status={run.target_reached ? 'success' : 'active'} />
                 <div className="production-ledger-numbers"><span><small>累计</small><b>{run.produced_mold_count || 0} 模</b></span><span><small>目标</small><b>{run.planned_mold_count} 模</b></span><span><small>欠模</small><b>{run.remaining_mold_count || 0} 模</b></span><span><small>模数折算件数</small><b>{run.qualified_production_quantity || 0}</b></span>{Number(run.overproduction_quantity || 0) > 0 && <span className="over"><small>超产</small><b>+{run.overproduction_quantity}</b></span>}</div>
                 <ProductionRunParameters run={run} compact />
-                <Button type="primary" block size="large" disabled={['COMPLETED', 'CANCELLED', 'PAUSED_UNLOADED'].includes(run.status)} onClick={() => setCounterTarget({ run })}>交接录入累计模数</Button>
-                <Space className="production-ledger-secondary-actions" wrap>
+                {!readOnly && <Button type="primary" block size="large" disabled={['COMPLETED', 'CANCELLED', 'PAUSED_UNLOADED'].includes(run.status)} onClick={() => setCounterTarget({ run })}>交接录入累计模数</Button>}
+                {!readOnly && <Space className="production-ledger-secondary-actions" wrap>
                   <Button icon={<EditOutlined />} onClick={() => { setEditingTask(run); setTaskDrawerOpen(true) }}>编辑任务</Button>
                   {run.status === 'COMPLETED' && <Button onClick={() => setFinalYieldTarget(run)}>{run.final_yield ? '修改最终良率' : '确认最终良率'}</Button>}
                   {!['COMPLETED', 'CANCELLED'].includes(run.status) && <><Popconfirm title="确认机台计数已清零？" description="下一次累计读数将从0开始计算，历史记录不会删除。" okText="已清零" cancelText="取消" onConfirm={() => resetMutation.mutate(run)}><Button icon={<ReloadOutlined />}>计数已清零</Button></Popconfirm><Button icon={<CheckCircleOutlined />} onClick={() => completeTask(run)}>结束当前任务</Button></>}
                   {run.status !== 'CANCELLED' && <Button danger icon={<CloseCircleOutlined />} loading={cancelTaskMutation.isPending} onClick={() => askCancelTask(run)}>取消整个任务</Button>}
-                </Space>
+                </Space>}
                 <div className="production-ledger-log-list">
                   <div className="production-ledger-log-heading">
                     <Typography.Text strong>{logsExpanded ? '全部交接' : '最近交接'}</Typography.Text>
@@ -201,7 +202,7 @@ export function ProductionLedgerBoard() {
                       return next
                     })}>{logsExpanded ? '收起' : `查看全部 ${allLogs.length} 条`}</Button>}
                   </div>
-                  {logs.length ? logs.map((log) => <div key={log.id} className="production-ledger-log-row"><button type="button" onClick={() => setCounterTarget({ run, log })}><span>{log.operator || <Tag color="warning">人员待补</Tag>} · {logDate(log)} · {log.shift === 'NIGHT' ? '夜班' : log.shift === 'DAY' ? '白班' : '班次待补'}</span><b>读数 {log.cumulative_mold_count} · 本段 +{log.produced_mold_count}模</b></button><Button danger type="text" onClick={() => askCancelLog(run, log)}>取消</Button></div>) : <Typography.Text type="secondary">尚未录入交接读数</Typography.Text>}
+                  {logs.length ? logs.map((log) => <div key={log.id} className="production-ledger-log-row"><button type="button" disabled={readOnly} onClick={() => setCounterTarget({ run, log })}><span>{log.operator || <Tag color="warning">人员待补</Tag>} · {logDate(log)} · {log.shift === 'NIGHT' ? '夜班' : log.shift === 'DAY' ? '白班' : '班次待补'}</span><b>读数 {log.cumulative_mold_count} · 本段 +{log.produced_mold_count}模</b></button>{!readOnly && <Button danger type="text" onClick={() => askCancelLog(run, log)}>取消</Button>}</div>) : <Typography.Text type="secondary">尚未录入交接读数</Typography.Text>}
                 </div>
               </Card>
             )
@@ -214,3 +215,4 @@ export function ProductionLedgerBoard() {
     </section>
   )
 }
+import { useReadOnly } from '../access'

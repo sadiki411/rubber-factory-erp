@@ -24,6 +24,7 @@ import { QrcodeOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { qualityApi, qualityWorkflowApi, toList } from '../api/client'
+import { WriteAccess } from './WriteAccess'
 import {
   expectedWeightKg,
   orderUnitWeightG,
@@ -473,7 +474,11 @@ function editableLineMetrics(line: EditableLine) {
  * creating a process card.  The payload carries both canonical snapshot names
  * and the short aliases used by older deployments.
  */
-export function QualityWeightShipmentDrawer({
+export function QualityWeightShipmentDrawer(props: QualityWeightShipmentDrawerProps) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><QualityWeightShipmentDrawerForm {...props} /></WriteAccess>
+}
+
+function QualityWeightShipmentDrawerForm({
   open,
   shipment,
   batch,

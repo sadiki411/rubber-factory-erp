@@ -6,7 +6,7 @@ from zipfile import BadZipFile
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import OperationalError, transaction
-from django.db.models import BigIntegerField, Count, F, Prefetch, Q, Sum
+from django.db.models import BigIntegerField, Count, F, OuterRef, Prefetch, Q, Subquery, Sum
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
@@ -365,6 +365,19 @@ class ProductionRunViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    @action(detail=False, methods=["get"], url_path="history-compact")
+    def history_compact(self, request):
+        """Read-only preview list. Details/logs are loaded only by real run ID."""
+        logs = ProductionDailyLog.objects.filter(run_id=OuterRef('pk'), is_cancelled=False).order_by().values('run_id')
+        queryset = self.get_queryset().prefetch_related(None).distinct().annotate(
+            recorded_mold_count=Coalesce(Subquery(logs.annotate(value=Sum('produced_mold_count')).values('value')), 0),
+            production_record_count=Coalesce(Subquery(logs.annotate(value=Count('id')).values('value')), 0),
+        ).values('id', 'order_no', 'order__item_no', 'specification', 'material', 'station__code',
+                 'status', 'segment_no', 'loaded_at', 'unloaded_at', 'created_at', 'is_ledger_only',
+                 'recorded_mold_count', 'production_record_count')
+        page = self.paginate_queryset(queryset)
+        return self.get_paginated_response(list(page))
 
     @extend_schema(request=ProductionDailyLogSerializer, responses=ProductionRunSerializer)
     @action(detail=True, methods=["post"], url_path="daily-logs")
@@ -1331,6 +1344,7 @@ class ProductionSummaryView(APIView):
                 "financial_basis": "settled_at",
                 "planned_quantity": sum(run.order_quantity for run in runs),
                 "produced_mold_count": produced_mold_count,
+                "production_record_count": sum(len(run.summary_logs) for run in runs),
                 "good_quantity": good_quantity,
                 "defective_quantity": defective_quantity,
                 "material_kg": _decimal_text(material_kg),

@@ -3,6 +3,7 @@ import { Alert, Button, Descriptions, Drawer, Empty, Skeleton, Space, Typography
 import type { MoldAsset } from '../types'
 import { moldCode, moldLocation, moldModelOf } from '../types'
 import { StatusTag } from './StatusTag'
+import { useReadOnly } from '../access'
 
 interface Props {
   open: boolean
@@ -20,6 +21,7 @@ interface Props {
 }
 
 export function RackMoldActionsDrawer({ open, mold, loading, error, deleting, onClose, onEdit, onMove, onLoadMachine, onRelease, onDelete, onViewDetails }: Props) {
+  const readOnly = useReadOnly()
   const model = mold ? moldModelOf(mold) : undefined
   return (
     <Drawer
@@ -46,11 +48,11 @@ export function RackMoldActionsDrawer({ open, mold, loading, error, deleting, on
             title="录错位置请选择“移到其他库位”；模具确实离开工厂请选择“客户收回”；整条资料都是误录时才删除。"
           />
           <Space orientation="vertical" size={10} style={{ width: '100%' }} className="rack-mold-action-buttons">
-            <Button size="large" block icon={<EditOutlined />} onClick={onEdit}>编辑编号和模具资料</Button>
-            <Button size="large" block icon={<SwapOutlined />} onClick={onMove}>移到其他库位</Button>
-            <Button size="large" block icon={<ToolOutlined />} onClick={onLoadMachine}>{mold.status === 'ON_MACHINE' ? '更换机台' : '安排上机'}</Button>
-            <Button size="large" block icon={<ExportOutlined />} onClick={onRelease}>客户收回并释放库位</Button>
-            <Button size="large" block danger icon={<DeleteOutlined />} loading={deleting} onClick={onDelete}>删除误录记录并清空库位</Button>
+            <Button disabled={readOnly} size="large" block icon={<EditOutlined />} onClick={onEdit}>编辑编号和模具资料</Button>
+            <Button disabled={readOnly} size="large" block icon={<SwapOutlined />} onClick={onMove}>移到其他库位</Button>
+            <Button disabled={readOnly} size="large" block icon={<ToolOutlined />} onClick={onLoadMachine}>{mold.status === 'ON_MACHINE' ? '更换机台' : '安排上机'}</Button>
+            <Button disabled={readOnly} size="large" block icon={<ExportOutlined />} onClick={onRelease}>客户收回并释放库位</Button>
+            <Button disabled={readOnly} size="large" block danger icon={<DeleteOutlined />} loading={deleting} onClick={onDelete}>删除误录记录并清空库位</Button>
             <Button type="link" block icon={<EyeOutlined />} onClick={onViewDetails}>查看完整资料和操作历史</Button>
           </Space>
           <Typography.Text type="secondary">以上操作完成后，货架总览、模具台账和上机看板会同步更新。</Typography.Text>

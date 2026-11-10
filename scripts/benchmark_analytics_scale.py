@@ -38,10 +38,18 @@ from quality.models import (
 from quality.services import delivered_quantities_by_order
 from quality.views import ProcessCardViewSet, QualityReworkCaseViewSet, QualityShipmentLedgerView, QualitySummaryView
 
-DAY = date(2026, 10, 13)
+DAY = date.fromisoformat(os.environ.get('ERP_BENCH_DAY', '2026-10-13'))
 SAMPLES = max(100, int(os.environ.get('ERP_BENCH_SAMPLES', '100')))
 BASE = {"orders": 167, "batches": 659, "lines": 664,
         "allocations": 702, "employees": 11, "return_cases": 253}
+if os.environ.get('ERP_BENCH_BASE_JSON'):
+    current = json.loads(os.environ['ERP_BENCH_BASE_JSON'])
+    if set(current) != set(BASE) or any(type(value) is not int or value < 1 for value in current.values()):
+        raise ValueError('Base counts must be positive integers with exactly the documented model keys')
+    if not current['lines'] <= current['allocations'] <= 2 * current['lines'] or current['return_cases'] > current['lines']:
+        raise ValueError('These synthetic cohorts require one/two order shares per line and at most one initial return per line')
+    BASE = current
+PERIOD_FROM = DAY.replace(day=1)
 
 
 def emit(name, value):
@@ -259,9 +267,11 @@ def run():
             return response.data
 
         scan_view = ProcessCardViewSet.as_view({"get": "scan"})
-        params = {"date_from": "2026-10-01", "date_to": DAY.isoformat()}
+        params = {"date_from": PERIOD_FROM.isoformat(), "date_to": DAY.isoformat()}
         emit("ENV", {"platform": platform.platform(), "python": platform.python_version(),
-                     "database": "isolated in-memory SQLite", "distribution": "synthetic"})
+                     "database": "isolated in-memory SQLite", "distribution": "synthetic, counts only; not a copy of the real distribution",
+                     "base_counts": BASE, "business_day": DAY.isoformat(),
+                     "cold_scope": "first call only, NOT a genuinely cold OS cache"})
         for stage, append in ((1, 1), (5, 4)):
             populate(append, user)
             models = {"orders": QualityOrder, "batches": QualityShipmentBatch,
@@ -274,7 +284,7 @@ def run():
             def scan(code):
                 return invoke(scan_view, "/api/quality/process-cards/scan/", {"code": code})
             targets = {
-                "analytics_service": lambda: build_dashboard(date_from=date(2026, 10, 1), date_to=DAY),
+                "analytics_service": lambda: build_dashboard(date_from=PERIOD_FROM, date_to=DAY),
                 "quality_summary": lambda: invoke(QualitySummaryView.as_view(), "/api/quality/summary/", params),
                 "single_card_scan": lambda: scan(cards[0]),
                 "shipment_search": lambda: invoke(QualityShipmentLedgerView.as_view(),
@@ -297,7 +307,10 @@ def run():
             assert sum(balances.values()) == (BASE["lines"] - BASE["return_cases"]) * stage * 1000
             emit("QUANTITY", {"stage": stage, "physical": physical, "net_delivery": sum(balances.values())})
             if os.environ.get('ERP_BENCH_SKIP_SAVES') != '1':
-                for size in (1, 2, 20, 50):
+                save_sizes = [int(value) for value in os.environ.get('ERP_BENCH_SAVE_SIZES', '1,2,20,50').split(',')]
+                if any(size not in (1, 2, 20, 50) for size in save_sizes):
+                    raise ValueError('Save sizes must be selected from 1,2,20,50')
+                for size in save_sizes:
                     benchmark_small_batch_save(stage, user, factory, size)
             for size in (1, 20, 50):
                 started = time.perf_counter()

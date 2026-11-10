@@ -1,4 +1,5 @@
 import { useReadOnly } from '../access'
+import { safeBusinessReturn } from '../navigation'
 import { EditOutlined, FileExcelOutlined, HistoryOutlined, PlusOutlined, SearchOutlined, WarningOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Descriptions, Drawer, Empty, Grid, Input, List, Pagination, Select, Space, Table, Tabs, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
@@ -96,7 +97,7 @@ export function OrdersPage() {
   const [showTargetReceipt, setShowTargetReceipt] = useState(true)
   const targetReceiptId = Number(new URLSearchParams(window.location.search).get('receipt_id')) || undefined
   const targetReceiptQuery = useQuery({ queryKey: ['material-receipts', 'detail', targetReceiptId], queryFn: () => materialReceiptApi.detail(targetReceiptId!), enabled: Boolean(targetReceiptId), retry: false })
-  const analysisReturn = new URLSearchParams(window.location.search).get('return_to') || ''
+  const analysisReturn = safeBusinessReturn(new URLSearchParams(window.location.search).get('return_to'), '')
   const screens = Grid.useBreakpoint()
   const mobile = screens.md === false
   const compactTable = screens.xxl === false
@@ -187,10 +188,12 @@ export function OrdersPage() {
   })
 
   const openForm = (record?: Order) => {
+    if (readOnly) return
     setEditing(record)
     setFormOpen(true)
   }
   const openReceiptForm = (record?: MaterialReceipt) => {
+    if (readOnly) return
     setEditingReceipt(record)
     setReceiptFormOpen(true)
   }
@@ -249,7 +252,7 @@ export function OrdersPage() {
     { title: '最后更新', key: 'last_updated', width: 155, render: (_, row) => formattedTimestamp(row.last_data_updated_at || row.updated_at) },
     { title: '胶料状态', dataIndex: 'material_status', width: 100, render: (value) => <MaterialStatusTag status={value} /> },
     { title: '订单状态', dataIndex: 'status', width: 100, render: (value: OrderStatus, row) => <Tag color={ORDER_STATUS_META[value]?.color}>{row.status_display || ORDER_STATUS_META[value]?.text || value}</Tag> },
-    { title: '操作', key: 'action', fixed: mobile ? undefined : 'right', width: 90, render: (_, row) => <Button type="link" className="table-primary-link" icon={<EditOutlined />} onClick={() => openForm(row)}>编辑</Button> },
+    { title: '操作', key: 'action', fixed: mobile ? undefined : 'right', width: 90, render: (_, row) => <Button disabled={readOnly} type="link" className="table-primary-link" icon={<EditOutlined />} onClick={() => openForm(row)}>编辑</Button> },
   ]
   const visibleColumns = allColumns ? columns : columns.filter((column) => ['order', 'specification', 'weighted_shipped_quantity', 'action', 'final_yield'].includes(String(column.key)) || ['material', 'due_date', 'order_quantity', 'status'].includes(String('dataIndex' in column ? column.dataIndex : '')))
   const orderScrollWidth = visibleColumns.reduce((total, column) => total + Number(column.width || 0), 0)
@@ -264,7 +267,7 @@ export function OrdersPage() {
     { title: '制造日期', dataIndex: 'manufactured_on', width: 135, render: (value) => value || '未登记' },
     { title: '来源', key: 'source', width: 165, render: (_, row) => row.source_sheet ? `${row.source_sheet}${row.source_row ? ` · 第${row.source_row}行` : ''}` : '在线录入' },
     { title: '最后更新', dataIndex: 'updated_at', width: 155, render: (value) => formattedTimestamp(value) },
-    { title: '操作', key: 'action', fixed: 'right', width: 85, render: (_, row) => <Button type="link" icon={<EditOutlined />} onClick={() => openReceiptForm(row)}>{row.order_id || row.order ? '编辑' : '关联'}</Button> },
+    { title: '操作', key: 'action', fixed: 'right', width: 85, render: (_, row) => <Button disabled={readOnly} type="link" icon={<EditOutlined />} onClick={() => openReceiptForm(row)}>{row.order_id || row.order ? '编辑' : '关联'}</Button> },
   ]
 
   return (
@@ -275,7 +278,7 @@ export function OrdersPage() {
       <PageTitle
         title="订单管理"
         description="统一管理订单、胶料到料和流程卡状态；空值表示尚未登记，实际为零时会明确显示 0。"
-        extra={<Space wrap>{/^\/(?:analytics|operations|order-overview\/\d+)(?:\?|$)/.test(analysisReturn) && <Button href={analysisReturn}>返回原来源筛选</Button>}<Button icon={<HistoryOutlined />} onClick={() => setImportHistoryOpen(true)}>导入记录</Button><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入订单 / 发料单</Button>{showingOrders ? <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增订单</Button> : <Button type="primary" icon={<PlusOutlined />} onClick={() => openReceiptForm()}>新增发料记录</Button>}</Space>}
+        extra={<Space wrap>{analysisReturn && <Button href={analysisReturn}>返回原来源筛选</Button>}<Button icon={<HistoryOutlined />} onClick={() => setImportHistoryOpen(true)}>导入记录</Button><Button disabled={readOnly} icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入订单 / 发料单</Button>{showingOrders ? <Button disabled={readOnly} type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增订单</Button> : <Button disabled={readOnly} type="primary" icon={<PlusOutlined />} onClick={() => openReceiptForm()}>新增发料记录</Button>}</Space>}
       />
       <Tabs
         className="business-page-tabs"
@@ -366,7 +369,7 @@ export function OrdersPage() {
                       {((record.process_card_count !== null && record.process_card_count !== undefined) || (record.process_card_covered_quantity !== null && record.process_card_covered_quantity !== undefined)) && <span><small>流程卡明细</small><b>{exactOrderValue(record.process_card_count, ' 张')} / 覆盖 {exactOrderValue(record.process_card_covered_quantity)}</b></span>}
                     </div>
                     {record.status === 'COMPLETED' && <div onClick={event => event.stopPropagation()} style={{ marginBottom: 12 }}><OrderYieldCell value={record.final_yield} onOpen={() => setYieldOrder(record)} /></div>}
-                    <Button block icon={<EditOutlined />} onClick={(event) => { event.stopPropagation(); openForm(record) }}>编辑订单</Button>
+                    <Button disabled={readOnly} block icon={<EditOutlined />} onClick={(event) => { event.stopPropagation(); openForm(record) }}>编辑订单</Button>
                   </Card>
                 </List.Item>
               )}
@@ -457,7 +460,7 @@ export function OrdersPage() {
                       <span><small>来源</small><b>{record.source_sheet || '在线录入'}</b></span>
                       <span><small>最后更新</small><b>{formattedTimestamp(record.updated_at)}</b></span>
                     </div>
-                    <Button block type={record.order_id || record.order ? 'default' : 'primary'} icon={<EditOutlined />} onClick={(event) => { event.stopPropagation(); openReceiptForm(record) }}>{record.order_id || record.order ? '编辑发料记录' : '关联到订单'}</Button>
+                    <Button disabled={readOnly} block type={record.order_id || record.order ? 'default' : 'primary'} icon={<EditOutlined />} onClick={(event) => { event.stopPropagation(); openReceiptForm(record) }}>{record.order_id || record.order ? '编辑发料记录' : '关联到订单'}</Button>
                   </Card>
                 </List.Item>
               )}

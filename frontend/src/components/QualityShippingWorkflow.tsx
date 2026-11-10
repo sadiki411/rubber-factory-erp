@@ -273,7 +273,7 @@ function ProcessCardDrawer({ open, card, orders, onClose, onSave }: { open: bool
     try { await onSave(values, card); onClose() } finally { setSaving(false) }
   }
   return <Drawer open={open} onClose={onClose} width={560} title={card ? '编辑流程卡' : '新增流程卡'} footer={<Space className="drawer-footer-actions"><Button onClick={onClose}>取消</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void submit()}>保存</Button></Space>}>
-    <Form form={form} layout="vertical">
+    <Form form={form} layout="vertical" disabled={readOnly}>
       <Form.Item name="card_no" label="流程卡号" rules={[{ required: true, message: '请输入流程卡号' }]}><Input /></Form.Item>
       <Form.Item name="order_id" label="订单" rules={[{ required: true, message: '请选择订单' }]}><Select showSearch optionFilterProp="label" options={orders.map((order) => ({ value: order.id, label: `${order.order_no} · ${order.product_name || order.specification}` }))} /></Form.Item>
       <Row gutter={10}><Col xs={24} sm={12}><Form.Item name="source_item_no" label="订单项次"><Input /></Form.Item></Col><Col xs={24} sm={12}><Form.Item name="quantity" label="卡上数量" rules={[{ required: true, type: 'number', min: 1 }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col></Row>

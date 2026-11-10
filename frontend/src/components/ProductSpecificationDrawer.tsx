@@ -14,7 +14,11 @@ interface Props {
 
 const moldModelApi = masterApi<MoldModel>('mold-models')
 
-export function ProductSpecificationDrawer({ open, specification, onClose }: Props) {
+export function ProductSpecificationDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><ProductSpecificationDrawerForm {...props} /></WriteAccess>
+}
+
+function ProductSpecificationDrawerForm({ open, specification, onClose }: Props) {
   const [form] = Form.useForm<Record<string, unknown>>()
   const [files, setFiles] = useState<UploadFile[]>([])
   const queryClient = useQueryClient()
@@ -177,3 +181,4 @@ export function ProductSpecificationDrawer({ open, specification, onClose }: Pro
     </Drawer>
   )
 }
+import { WriteAccess } from './WriteAccess'

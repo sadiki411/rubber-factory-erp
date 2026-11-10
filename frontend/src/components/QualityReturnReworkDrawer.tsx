@@ -1,4 +1,5 @@
 import { useReadOnly } from '../access'
+import { WriteAccess } from './WriteAccess'
 import {
   Alert,
   App,
@@ -135,7 +136,11 @@ interface ReturnDrawerProps {
   onBackfillShipment: () => void
 }
 
-export function QualityReturnReworkDrawer({ open, employees = [], onClose, onSaved, onBackfillShipment }: ReturnDrawerProps) {
+export function QualityReturnReworkDrawer(props: ReturnDrawerProps) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><QualityReturnReworkDrawerForm {...props} /></WriteAccess>
+}
+
+function QualityReturnReworkDrawerForm({ open, employees = [], onClose, onSaved, onBackfillShipment }: ReturnDrawerProps) {
   const readOnly = useReadOnly()
   const [form] = Form.useForm<Record<string, unknown>>()
   const { message } = App.useApp()
@@ -290,7 +295,11 @@ interface AttemptDrawerProps {
   onSaved: (saved: QualityReworkAttempt, caseId: number | string) => void | Promise<void>
 }
 
-export function QualityReturnReworkAttemptDrawer({ open, item, employees, onClose, onSaved }: AttemptDrawerProps) {
+export function QualityReturnReworkAttemptDrawer(props: AttemptDrawerProps) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><QualityReturnReworkAttemptDrawerForm {...props} /></WriteAccess>
+}
+
+function QualityReturnReworkAttemptDrawerForm({ open, item, employees, onClose, onSaved }: AttemptDrawerProps) {
   const readOnly = useReadOnly()
   const [form] = Form.useForm<Record<string, unknown>>()
   const [saving, setSaving] = useState(false)

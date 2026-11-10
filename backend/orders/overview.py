@@ -33,7 +33,7 @@ KINDS = ("ORDER_SHORTAGE", "RETURN_PENDING", "INVENTORY_QUALITY", "RECEIPT_UNLIN
 class ReadQuery(serializers.Serializer):
     q = serializers.CharField(required=False, default="", max_length=200, allow_blank=True)
     kind = serializers.ChoiceField(choices=("", *KINDS), default="", required=False)
-    due_scope = serializers.ChoiceField(choices=("", "today", "overdue", "upcoming"), default="", required=False)
+    due_scope = serializers.ChoiceField(choices=("", "today", "overdue", "upcoming", "near"), default="", required=False)
     section = serializers.ChoiceField(choices=SECTIONS, default="production", required=False)
     page = serializers.IntegerField(min_value=1, default=1, required=False)
     page_size = serializers.IntegerField(min_value=1, max_value=50, default=20, required=False)
@@ -123,6 +123,7 @@ def build_workbench(*, q="", kind="", due_scope="", page=1, page_size=20, **_):
             (due_scope == "today" and row["due_date"] == today)
             or (due_scope == "overdue" and row["due_date"] < today)
             or (due_scope == "upcoming" and today < row["due_date"] <= today + timedelta(days=7))
+            or (due_scope == "near" and today - timedelta(days=7) <= row["due_date"] <= today + timedelta(days=7))
         )]
     counts = Counter(row["kind"] for row in tasks)
     selected = [row for row in tasks if not kind or row["kind"] == kind]
@@ -153,7 +154,7 @@ def section_query(order, section):
     if section == "shipments":
         return QualityShipmentLine.objects.filter(
             Q(order_allocations__order=order) | Q(order=order) | Q(process_card__order=order)
-        ).distinct().select_related("batch", "process_card").prefetch_related("order_allocations").order_by("-batch__shipment_date", "-id")
+        ).distinct().select_related("batch", "process_card").prefetch_related("order_allocations__order").order_by("-batch__shipment_date", "-id")
     if section == "piece_shipments":
         return QualityShipment.objects.filter(order=order).order_by("-shipment_date", "-id")
     if section == "returns":
@@ -163,7 +164,7 @@ def section_query(order, section):
             | Q(process_card__order=order) | Q(shipment_line__order=order)
             | Q(shipment_batch__order=order)
         ).distinct().select_related("shipment_batch", "reshipment_batch").prefetch_related(
-            "attempts", Prefetch("shipment_allocations", queryset=QualityReturnAllocation.objects.select_related("shipment_order_allocation", "shipment_line")),
+            "attempts", Prefetch("shipment_allocations", queryset=QualityReturnAllocation.objects.select_related("shipment_order_allocation__order", "shipment_line__order")),
         ).order_by("-id")
     if section == "piece_returns":
         return ReturnRework.objects.filter(shipment__order=order).select_related("shipment").order_by("-id")
@@ -173,7 +174,7 @@ def section_query(order, section):
 def trace_row(obj, section, order, binding_cards):
     row = {"id": obj.pk, "source": obj.__class__.__name__, "document_no": str(obj.pk),
            "date": None, "status": "", "physical_quantity": None, "own_quantity": None,
-           "unit": "件", "details": "", "cards": [], "url": None}
+           "unit": "件", "details": "", "cards": [], "url": None, "order_allocations": []}
     if section == "production":
         distribution = obj.order_distribution()
         own = sum(quantity for link, quantity in distribution if link.order_id == order.pk)
@@ -193,7 +194,7 @@ def trace_row(obj, section, order, binding_cards):
             return timezone.localtime(value).strftime("%Y-%m-%d %H:%M") if value else "未登记"
         row.update(document_no=f"生产任务#{obj.pk}", date=obj.loaded_at, status=obj.get_status_display(),
                    physical_quantity=obj.produced_mold_count * obj.cavities, own_quantity=own,
-                   details=f"机台：{obj.station.code if obj.station_id else '未登记'}；参与员工：{'、'.join(sorted(people)) or '未登记'}；上机：{local_time(obj.loaded_at)}；下机：{local_time(obj.unloaded_at)}。物理件数为模数折算；本单为交期分配进度，不是实测良品。孔数按有效日志快照。", url="/production")
+                   details=f"机台：{obj.station.code if obj.station_id else '未登记'}；参与员工：{'、'.join(sorted(people)) or '未登记'}；上机：{local_time(obj.loaded_at)}；下机：{local_time(obj.unloaded_at)}。物理件数为模数折算；本单为交期分配进度，不是实测良品。孔数按有效日志快照。", url=f"/production/records/{obj.pk}")
         row["physical_quantity"] = sum(int(log.produced_mold_count) * int(log.cavities_snapshot or obj.cavities) for log in obj.daily_logs.all() if not log.is_cancelled) if obj.status != "CANCELLED" else 0
     elif section == "receipts":
         row.update(document_no=f"发料#{obj.pk} {obj.batch_no}", date=obj.issued_on, physical_quantity=obj.weight_kg,
@@ -203,6 +204,11 @@ def trace_row(obj, section, order, binding_cards):
                    physical_quantity=obj.quantity, cards=[obj.card_no], details="来源订单的流程卡，不代表全部已交数量。")
     elif section == "shipments":
         shares = list(obj.order_allocations.all())
+        row["order_allocations"] = [{
+            "order_id": share.order_id, "order_no": share.order.order_no,
+            "item_no": share.order.item_no, "piece_quantity": share.piece_quantity,
+            "net_weight_kg": share.net_weight_kg,
+        } for share in shares]
         own = sum(share.piece_quantity for share in shares if share.order_id == order.pk)
         if not shares:
             own = shipment_line_piece_quantity(obj)
@@ -216,6 +222,13 @@ def trace_row(obj, section, order, binding_cards):
                    own_quantity=obj.shipped_quantity, details="件数出货；无流程卡可能为合法采购出货，不补造卡。", url="/quality")
     elif section == "returns":
         shares = list(obj.shipment_allocations.all())
+        for share in shares:
+            target = share.shipment_order_allocation.order if share.shipment_order_allocation_id else share.shipment_line.order
+            row["order_allocations"].append({
+                "order_id": target.pk if target else None, "order_no": target.order_no if target else "未关联",
+                "item_no": target.item_no if target else "", "piece_quantity": share.piece_quantity,
+                "net_weight_kg": share.net_weight_kg,
+            })
         own = sum(share.piece_quantity for share in shares if (
             share.shipment_order_allocation.order_id == order.pk if share.shipment_order_allocation_id else share.shipment_line.order_id == order.pk
         )) if shares else None
@@ -234,7 +247,8 @@ def trace_row(obj, section, order, binding_cards):
 
 def build_order_overview(order_id, *, section="production", page=1, page_size=20, **_):
     order = get_object_or_404(QualityOrder, pk=order_id)
-    delivered = delivered_quantities_by_order([order.pk])[order.pk]
+    balance_breakdown = {}
+    delivered = delivered_quantities_by_order([order.pk], breakdown=balance_breakdown)[order.pk]
     produced = production_totals_by_order([order.pk])[order.pk][0]
     queries = {key: section_query(order, key) for key in SECTIONS}
     counts = {key: queryset.count() for key, queryset in queries.items()}
@@ -251,6 +265,7 @@ def build_order_overview(order_id, *, section="production", page=1, page_size=20
     return {
         "order": identity(order), "generated_at": timezone.now(),
         "summary": {"net_delivered": delivered, "delivery_remaining": max(order.order_quantity - delivered, 0),
+                    "delivery_breakdown": balance_breakdown[order.pk],
                     "production_progress_quantity": produced,
                     "production_status": order_production_requirement_status(
                         status=order.status, production_required=order.production_required,

@@ -1,4 +1,5 @@
 import type { OrderOverviewResult, OrderTraceSection, WorkbenchResult } from '../operations'
+import type { ProductionRunStatus } from '../types'
 import type {
   ApiList,
   AnalyticsDashboard,
@@ -500,6 +501,10 @@ export interface ProductionSummaryFilters {
 }
 
 export const productionApi = {
+  compactHistory: (filters: ProductionRunFilters = {}, init: RequestInit = {}) => apiFetch<ApiList<{
+    id: number; order_no: string; order__item_no: string | null; specification: string; material: string;
+    station__code: string | null; status: ProductionRunStatus; segment_no: number; production_record_count: number; recorded_mold_count: number;
+  }>>(`/api/production/runs/history-compact/${queryString(filters)}`, init),
   stations: () => apiFetch<ApiList<ProductionStation> | ProductionStation[]>('/api/production/stations/'),
   board: (reminderMinutes = 60) => apiFetch<ProductionBoard>(`/api/production/board/${queryString({ reminder_minutes: reminderMinutes })}`),
   summary: (filters: ProductionSummaryFilters = {}) => apiFetch<ProductionSummary>(`/api/production/summary/${queryString(filters)}`),

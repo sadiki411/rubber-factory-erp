@@ -6,6 +6,7 @@ import { orderApi, qualityApi, toList } from '../api/client'
 import { reworkQuantitiesValid, shipmentQuantitiesMatch, shipmentQuantityAllowed } from '../quality'
 import type { QualityEmployee, QualityOrder, QualityProcessCard, QualityShipment, QualityShipmentBatch, ReturnRework } from '../types'
 import { QualityWeightShipmentDrawer } from './QualityWeightShipmentDrawer'
+import { WriteAccess } from './WriteAccess'
 
 // Keep this additive source field local while the import worker owns types.ts.
 function orderSourceSystem(order?: QualityOrder) {
@@ -186,6 +187,10 @@ function LegacyQualityShipmentDrawer({ open, shipment, orders, employees, onClos
  * Keep the existing weighted default and explicitly route piece-only entry.
  */
 export function QualityShipmentDrawer(props: ShipmentDrawerProps) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><QualityShipmentDrawerForm {...props} /></WriteAccess>
+}
+
+function QualityShipmentDrawerForm(props: ShipmentDrawerProps) {
   if (!props.shipment && props.mode !== 'PIECES') {
     return <QualityWeightShipmentDrawer
       open={props.open}
@@ -207,7 +212,11 @@ interface EmployeeDrawerProps extends BaseDrawerProps {
   employee?: QualityEmployee
 }
 
-export function QualityEmployeeDrawer({ open, employee, onClose }: EmployeeDrawerProps) {
+export function QualityEmployeeDrawer(props: EmployeeDrawerProps) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><QualityEmployeeDrawerForm {...props} /></WriteAccess>
+}
+
+function QualityEmployeeDrawerForm({ open, employee, onClose }: EmployeeDrawerProps) {
   const [form] = Form.useForm<Record<string, any>>()
   const queryClient = useQueryClient()
   const { message } = App.useApp()
@@ -255,7 +264,11 @@ interface ReworkDrawerProps extends BaseDrawerProps {
   employees: QualityEmployee[]
 }
 
-export function QualityReworkDrawer({ open, rework, shipments, employees, onClose }: ReworkDrawerProps) {
+export function QualityReworkDrawer(props: ReworkDrawerProps) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><QualityReworkDrawerForm {...props} /></WriteAccess>
+}
+
+function QualityReworkDrawerForm({ open, rework, shipments, employees, onClose }: ReworkDrawerProps) {
   const [form] = Form.useForm<Record<string, any>>()
   const queryClient = useQueryClient()
   const { message } = App.useApp()

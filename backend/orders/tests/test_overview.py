@@ -68,9 +68,15 @@ class ReadOnlyOrderOverviewTests(APITestCase):
         self.assertEqual(data["summary"]["delivery_remaining"], 40)
         self.assertEqual(data["results"][0]["physical_quantity"], 300)
         self.assertEqual(data["results"][0]["own_quantity"], 200)
+        self.assertEqual(data["summary"]["delivery_breakdown"], {
+            "all_effective_shipments": 200, "effective_returns": 40,
+            "recorded_returns": 40, "return_clamp_difference": 0, "physical_shipments": 300,
+        })
+        self.assertEqual([(x["order_no"], x["piece_quantity"]) for x in data["results"][0]["order_allocations"]], [(self.a.order_no, 100), (self.b.order_no, 200)])
         returned = self.overview(section="returns")["results"][0]
         self.assertEqual(returned["physical_quantity"], 60)
         self.assertEqual(returned["own_quantity"], 40)
+        self.assertEqual([(x["order_no"], x["piece_quantity"]) for x in returned["order_allocations"]], [(self.a.order_no, 20), (self.b.order_no, 40)])
         self.assertIn("实际作业0条", returned["details"])
 
     def test_inventory_is_only_explicit_outbound_reference_not_same_product_stock(self):
@@ -135,6 +141,29 @@ class ReadOnlyOrderOverviewTests(APITestCase):
         self.assertEqual(data["summary"]["production_progress_quantity"], 50)
         self.assertEqual(data["results"][0]["physical_quantity"], 150)
         self.assertEqual(data["results"][0]["own_quantity"], 50)
+        self.assertEqual(data["results"][0]["url"], f"/production/records/{run.pk}")
+
+    def test_reconciliation_uses_same_clamping_and_never_adds_reshipment_twice(self):
+        self.case.reshipment_batch = QualityShipmentBatch.objects.create(
+            shipment_no='RESHIP-TRACE', shipment_date=self.day, created_by=self.user,
+            status='CONFIRMED', order=self.b,
+        )
+        self.case.save()
+        QualityShipmentLine.objects.create(batch=self.case.reshipment_batch, order=self.b, piece_quantity=40, net_weight_kg=Decimal('0.040'), unit_weight_g_snapshot=Decimal('1'))
+        data = self.overview(section='shipments', page_size=1)
+        self.assertEqual(data['summary']['net_delivered'], 200)
+        self.assertEqual(data['summary']['delivery_breakdown']['all_effective_shipments'], 240)
+        self.assertEqual(data['summary']['delivery_breakdown']['effective_returns'], 40)
+        self.assertEqual(len(data['results']), 1)
+        share = self.case.shipment_allocations.get(shipment_order_allocation__order=self.b)
+        share.piece_quantity = 250
+        share.save()
+        data = self.overview()
+        balance = data['summary']['delivery_breakdown']
+        self.assertEqual(balance['recorded_returns'], 250)
+        self.assertEqual(balance['effective_returns'], 200)
+        self.assertEqual(balance['return_clamp_difference'], 50)
+        self.assertEqual(data['summary']['net_delivered'], 40)
 
     def test_completed_return_waiting_for_reshipment_is_not_lost_from_workbench(self):
         self.case.status = "COMPLETED"

@@ -27,7 +27,11 @@ function latestCumulative(run?: ProductionRun) {
     .map((item) => Number(item.cumulative_mold_count || 0)))
 }
 
-export function ProductionCounterDrawer({ open, run, log, initialValues, keepOpenAfterSave = false, onClose, onSaved }: Props) {
+export function ProductionCounterDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><ProductionCounterDrawerForm {...props} /></WriteAccess>
+}
+
+function ProductionCounterDrawerForm({ open, run, log, initialValues, keepOpenAfterSave = false, onClose, onSaved }: Props) {
   const [form] = Form.useForm<Record<string, any>>()
   const { message, modal } = App.useApp()
   const queryClient = useQueryClient()
@@ -177,3 +181,4 @@ export function ProductionCounterDrawer({ open, run, log, initialValues, keepOpe
     </Drawer>
   )
 }
+import { WriteAccess } from './WriteAccess'

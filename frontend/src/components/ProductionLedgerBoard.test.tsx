@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ProductionLedgerBoard } from './ProductionLedgerBoard'
+import { ReadOnlyContext } from '../access'
 
 const api = vi.hoisted(() => ({ listRuns: vi.fn() }))
 vi.mock('../api/client', () => ({ productionApi: api, toList: (value: unknown) => value }))
@@ -23,4 +24,14 @@ it('shows all five layout values directly in the hand ledger, with other saved p
   for (const value of ['321×4mm', '16 孔', '60 秒', '不可省略的任务备注']) expect(screen.getByText(value)).toBeVisible()
   expect(screen.queryByText('编辑生产任务表单')).not.toBeInTheDocument()
   expect(api.listRuns).toHaveBeenCalledTimes(1)
+})
+
+it('keeps history visible without exposing production writes to a read-only account', async () => {
+  api.listRuns.mockResolvedValue([{ id: 2, order_no: 'READONLY-P', specification: '240', material: 'N7200', status: 'COMPLETED', cavities: 16, daily_logs: [{ id: 7, operator: '张三', produced_mold_count: 0, cumulative_mold_count: 0 }] }])
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={client}><ReadOnlyContext.Provider value><App><ProductionLedgerBoard /></App></ReadOnlyContext.Provider></QueryClientProvider>)
+  expect(await screen.findByText('READONLY-P')).toBeVisible()
+  for (const label of ['新增生产任务', '编辑任务', '确认最终良率', '取消整个任务', '取消', '交接录入累计模数']) expect(screen.queryByRole('button', { name: new RegExp(label) })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /查看已结束/ })).toBeEnabled()
+  expect(screen.getByText(/读数 0 · 本段 \+0模/)).toBeVisible()
 })

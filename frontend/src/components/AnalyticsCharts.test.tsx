@@ -1,8 +1,24 @@
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import type { AnalyticsDailyTrend } from '../types'
 import { DailyLinkageChart, DailyProfitChart, RankBarChart } from './AnalyticsCharts'
 
 describe('analytics charts', () => {
+  it('keeps calendar gaps, preserves recorded production zero and supports touch-friendly day selection', async () => {
+    const rows = [
+      { date: '2026-11-01', produced_mold_count: 12, production_record_count: 1 },
+      { date: '2026-11-02', produced_mold_count: 0, production_record_count: 0 },
+      { date: '2026-11-03', produced_mold_count: 0, production_record_count: 1 },
+    ] as AnalyticsDailyTrend[]
+    const { container } = render(<DailyLinkageChart rows={rows} />)
+    const titles = [...container.querySelectorAll('title')].map((node) => node.textContent)
+    expect(titles).toContain('11-01 生产模数：12')
+    expect(titles).not.toContain('11-02 生产模数：0')
+    expect(titles).toContain('11-03 生产模数：0')
+    expect(screen.getByText('11-02', { selector: 'text' })).toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByLabelText('查看某日数据'), '2026-11-02')
+    expect(screen.getByLabelText('所选日期实际数值')).toHaveTextContent('生产模数未登记')
+  })
   it('does not plot missing inspection as zero but preserves a recorded zero', () => {
     const missing = { date: '2026-07-14', shipped_quantity: 10, inspection_quantity: 0, inspection_record_count: 0 } as AnalyticsDailyTrend
     const recorded = { ...missing, date: '2026-07-15', inspection_record_count: 1 }
@@ -24,7 +40,7 @@ describe('analytics charts', () => {
     render(<DailyLinkageChart rows={[row]} />)
 
     expect(screen.getByRole('img', { name: '生产、品检、出货和退回每日联动趋势' })).toBeInTheDocument()
-    expect(screen.getByText('各指标按自身峰值归一，仅比较变化趋势；悬停数据点查看实际数值。')).toBeInTheDocument()
+    expect(screen.getByText('各指标按自身峰值归一，仅比较变化趋势；可选择日期查看实际数值。')).toBeInTheDocument()
   })
 
   it('labels mixed automatic and manual ranking sources and explains the top-20 limit', () => {

@@ -957,6 +957,7 @@ export interface ProductionBoardGroup {
 }
 
 export interface ProductionSummary {
+  production_record_count?: number
   period?: { date_from?: string; date_to?: string }
   run_count: number
   completed_run_count: number
@@ -1850,6 +1851,7 @@ export interface AnalyticsQualityMetrics {
 }
 
 export interface AnalyticsDailyTrend extends AnalyticsQualityMetrics, AnalyticsFinanceMetrics {
+  production_record_count?: number
   date: string
   automatic_produced_mold_count: number
   manual_produced_mold_count: number
@@ -1946,6 +1948,7 @@ export interface AnalyticsDefectReason {
 }
 
 export interface AnalyticsOrderPerformance extends AnalyticsQualityMetrics, AnalyticsFinanceMetrics {
+  production_record_count?: number
   finance_record_count?: number
   order_quantity?: number | null
   net_delivered_quantity?: number | null
@@ -2095,6 +2098,10 @@ export interface ManualFinancialEntry {
 }
 
 export interface AnalyticsDashboard {
+  generated_at?: string
+  latest_recorded_business_date?: string | null
+  latest_production_business_date?: string | null
+  freshness_scope?: string
   period: { date_from: string; date_to: string; month?: string | null; group?: string | null; machine_id?: number | null }
   data_basis: {
     production_quantity_date: string

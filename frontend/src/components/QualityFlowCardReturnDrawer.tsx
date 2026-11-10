@@ -20,6 +20,7 @@ import type {
   QualityReworkCase,
 } from '../types'
 import { QualityQrScanner } from './QualityQrScanner'
+import { WriteAccess } from './WriteAccess'
 import { QualityEmployeeSelect } from './QualityEmployeeSelect'
 import { QualityManualProcessCardInput } from './QualityManualProcessCardInput'
 
@@ -114,7 +115,11 @@ function cardSourceInspectors(
   return sources[card.cardNo]?.batch.inspectors || []
 }
 
-export function QualityFlowCardReturnDrawer({
+export function QualityFlowCardReturnDrawer(props: Parameters<typeof QualityFlowCardReturnDrawerForm>[0]) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><QualityFlowCardReturnDrawerForm {...props} /></WriteAccess>
+}
+
+function QualityFlowCardReturnDrawerForm({
   open,
   employees,
   onClose,
@@ -473,7 +478,11 @@ export function QualityFlowCardReturnDrawer({
   </>
 }
 
-export function QualityProcessCardReplacementDrawer({
+export function QualityProcessCardReplacementDrawer(props: Parameters<typeof QualityProcessCardReplacementDrawerForm>[0]) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><QualityProcessCardReplacementDrawerForm {...props} /></WriteAccess>
+}
+
+function QualityProcessCardReplacementDrawerForm({
   open,
   onClose,
   onSaved,

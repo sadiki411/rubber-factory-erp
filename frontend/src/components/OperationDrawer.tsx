@@ -6,6 +6,7 @@ import type { ReactNode } from 'react'
 import { ApiError, moldApi, productionApi, slotApi, toList } from '../api/client'
 import type { MoldAsset } from '../types'
 import { moldCode } from '../types'
+import { WriteAccess } from './WriteAccess'
 
 export type MoldAction = 'putaway' | 'move' | 'load-machine' | 'send-out'
 
@@ -25,7 +26,11 @@ interface Props {
   onSuccess?: (mold: MoldAsset) => void
 }
 
-export function OperationDrawer({ mold, action = 'putaway', initialSlotId, open, onClose, onSuccess }: Props) {
+export function OperationDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><OperationDrawerForm {...props} /></WriteAccess>
+}
+
+function OperationDrawerForm({ mold, action = 'putaway', initialSlotId, open, onClose, onSuccess }: Props) {
   const [form] = Form.useForm()
   const queryClient = useQueryClient()
   const { message } = App.useApp()

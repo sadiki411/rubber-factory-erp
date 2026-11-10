@@ -1,5 +1,6 @@
 import { Empty, Tag, Typography } from 'antd'
 import dayjs from 'dayjs'
+import { useState } from 'react'
 import type { AnalyticsDailyTrend, AnalyticsSource } from '../types'
 import { qualityEventValue } from '../quality'
 
@@ -51,7 +52,15 @@ const SERIES = [
 ]
 
 export function DailyLinkageChart({ rows }: { rows: AnalyticsDailyTrend[] }) {
-  const active = rows.filter((row) => SERIES.some((series) => Number(row[series.key] || 0) > 0) || Boolean(row.inspection_record_count))
+  const [selectedDate, setSelectedDate] = useState('')
+  const active = rows
+  const selectedRow = active.find((row) => row.date === selectedDate) || active.at(-1)
+  const valueFor = (row: AnalyticsDailyTrend, key: typeof SERIES[number]['key']) => {
+    if (key === 'inspection_quantity') return qualityEventValue(row, 'inspection')
+    if (key === 'produced_mold_count' && !row.production_record_count) return null
+    const value = row[key]
+    return value == null || !Number.isFinite(Number(value)) ? null : Number(value)
+  }
   if (!active.length) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="所选期间暂无生产、品检或出货趋势数据" />
   const width = Math.max(760, active.length * 42)
   const height = 270
@@ -61,10 +70,10 @@ export function DailyLinkageChart({ rows }: { rows: AnalyticsDailyTrend[] }) {
   const plotWidth = width - left - 18
   const plotHeight = height - top - bottom
   const pointsFor = (key: typeof SERIES[number]['key']) => {
-    const max = Math.max(1, ...active.map((row) => Number(row[key] || 0)))
+    const max = Math.max(1, ...active.map((row) => valueFor(row, key) ?? 0))
     return active.map((row, index) => {
       const x = left + (active.length === 1 ? plotWidth / 2 : (index / (active.length - 1)) * plotWidth)
-      const value = key === 'inspection_quantity' ? qualityEventValue(row, 'inspection') : Number(row[key] || 0)
+      const value = valueFor(row, key)
       const y = top + plotHeight - (Number(value || 0) / max) * plotHeight
       return { x, y, value, date: row.date }
     })
@@ -74,9 +83,11 @@ export function DailyLinkageChart({ rows }: { rows: AnalyticsDailyTrend[] }) {
     <div>
       <div className="analytics-chart-legend">
         {SERIES.map((series) => <span key={series.key}><i style={{ background: series.color }} />{series.label}</span>)}
-        <Typography.Text type="secondary">各指标按自身峰值归一，仅比较变化趋势；悬停数据点查看实际数值。</Typography.Text>
-        <Typography.Text type="secondary">无检验事件的日期为未登记，不绘制质检零值点。</Typography.Text>
+        <Typography.Text type="secondary">各指标按自身峰值归一，仅比较变化趋势；可选择日期查看实际数值。</Typography.Text>
+        <Typography.Text type="secondary">横轴为连续日历；无生产或检验登记的日期不绘制对应零点，明确登记的0保留。</Typography.Text>
       </div>
+      <label>查看某日数据 <select aria-label="查看某日数据" value={selectedRow?.date || ''} onChange={(event) => setSelectedDate(event.target.value)} style={{ minHeight: 44, maxWidth: '100%' }}>{active.map((row) => <option key={row.date} value={row.date}>{row.date}</option>)}</select></label>
+      {selectedRow && <dl className="production-parameter-grid" aria-label="所选日期实际数值">{SERIES.map((series) => <div key={series.key}><dt>{series.label}</dt><dd>{valueFor(selectedRow, series.key)?.toLocaleString('zh-CN') ?? '未登记'}</dd></div>)}</dl>}
       <div className="analytics-chart-scroll">
         <svg className="analytics-line-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="生产、品检、出货和退回每日联动趋势">
           {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (

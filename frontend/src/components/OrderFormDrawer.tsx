@@ -35,7 +35,11 @@ function formattedTimestamp(value?: string | null) {
   return value ? dayjs(value).utcOffset(8).format('YYYY-MM-DD HH:mm') : '未登记'
 }
 
-export function OrderFormDrawer({ open, order, onClose }: Props) {
+export function OrderFormDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><OrderFormDrawerForm {...props} /></WriteAccess>
+}
+
+function OrderFormDrawerForm({ open, order, onClose }: Props) {
   const [form] = Form.useForm<Record<string, any>>()
   const queryClient = useQueryClient()
   const { message } = App.useApp()
@@ -215,3 +219,4 @@ export function OrderFormDrawer({ open, order, onClose }: Props) {
     </Drawer>
   )
 }
+import { WriteAccess } from './WriteAccess'

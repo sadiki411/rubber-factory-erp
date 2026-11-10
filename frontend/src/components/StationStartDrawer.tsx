@@ -11,7 +11,11 @@ interface Props {
   onCreatePlan: () => void
 }
 
-export function StationStartDrawer({ open, station, onClose, onQuickMount, onCreatePlan }: Props) {
+export function StationStartDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><StationStartDrawerForm {...props} /></WriteAccess>
+}
+
+function StationStartDrawerForm({ open, station, onClose, onQuickMount, onCreatePlan }: Props) {
   const hasPlan = station?.run?.status === 'PLANNED'
   const stationLabel = station
     ? `${productionStationGroupLabel(station.group)}-${productionStationNumber(station)}号机台`
@@ -52,3 +56,4 @@ export function StationStartDrawer({ open, station, onClose, onQuickMount, onCre
     </Drawer>
   )
 }
+import { WriteAccess } from './WriteAccess'

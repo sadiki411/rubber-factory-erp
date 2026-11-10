@@ -336,7 +336,7 @@ export function AnalyticsPage() {
     { title: '产品 / 规格', key: 'product', width: 190, render: (_, row) => <span>{row.product_name || '-'}<br /><Typography.Text type="secondary">{row.specification || '-'} · {row.material || '-'}</Typography.Text></span> },
     { title: '关联方式', dataIndex: 'link_type', width: 120, render: (value) => <Tag color={value === 'ORDER' ? 'blue' : 'default'}>{value === 'ORDER' ? '订单主档关联' : '历史订单号匹配'}</Tag> },
     { title: '来源', dataIndex: 'source', width: 125, render: (value) => <SourceTag source={value} /> },
-    { title: '生产模数', dataIndex: 'produced_mold_count', width: 110, render: (value) => numberText(value) },
+    { title: '已登记生产模数', dataIndex: 'produced_mold_count', width: 130, render: (value, row) => row.production_record_count ? numberText(value) : '未登记' },
     { title: '质检 / 出货', key: 'quality', width: 160, render: (_, row) => `${row.inspection_record_count ? numberText(row.inspection_quantity) : '未登记'} / ${numberText(row.shipped_quantity)}` },
     { title: '全生命周期净交付 / 剩余', key: 'delivery', width: 175, render: (_, row) => `${numberText(row.net_delivered_quantity)} / ${numberText(row.remaining_quantity)}` },
     { title: '退回 / 报废', key: 'returns', width: 130, render: (_, row) => `${numberText(row.returned_quantity)} / ${numberText(row.scrap_quantity)}` },
@@ -416,8 +416,9 @@ export function AnalyticsPage() {
           description="这些订单尚未计入系统自动收入、成本和利润；完成结算后，本页数据会自动更新。"
         />
       )}
+      <Typography.Paragraph type="secondary">查询刷新时间：{data.generated_at ? dayjs(data.generated_at).format('YYYY-MM-DD HH:mm:ss') : '未提供'}；本范围最近业务日：{data.latest_recorded_business_date || '未登记'}；最近生产业务日：{data.latest_production_business_date || '未登记'}。{data.freshness_scope}</Typography.Paragraph>
       <Row gutter={[14, 14]} className="analytics-operation-kpis">
-        <Col xs={12} lg={8} xl={4}><Card><Statistic title="生产模数" value={production?.produced_mold_count || 0} suffix="模" prefix={<BarChartOutlined />} /></Card></Col>
+        <Col xs={12} lg={8} xl={4}><Card><Statistic title="已登记生产模数" value={data.sources.production.total ? production?.produced_mold_count ?? '未知' : '未登记'} suffix={data.sources.production.total ? '模' : undefined} prefix={<BarChartOutlined />} /></Card></Col>
         <Col xs={12} lg={8} xl={4}><Card><Statistic title="自动机台效率" value={data?.production.automatic.efficiency_percent === null || data?.production.automatic.efficiency_percent === undefined ? '—' : numberValue(data.production.automatic.efficiency_percent)} suffix={data?.production.automatic.efficiency_percent === null || data?.production.automatic.efficiency_percent === undefined ? undefined : '%'} precision={2} prefix={<ClockCircleOutlined />} /></Card></Col>
         <Col xs={12} lg={8} xl={4}><Card><Statistic title="质检数量" value={quality?.inspection_record_count ? quality.inspection_quantity : '未登记'} suffix={quality?.inspection_record_count ? '件' : undefined} prefix={<AuditOutlined />} /></Card></Col>
         <Col xs={12} lg={8} xl={4}><Card><Statistic title="出货数量" value={quality?.shipped_quantity || 0} suffix="件" prefix={<SendOutlined />} /></Card></Col>

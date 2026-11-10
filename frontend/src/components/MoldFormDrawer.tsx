@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react'
 import { ApiError, moldApi, productionApi, slotApi, toList } from '../api/client'
 import type { MoldAsset, MoldStatus, RackSlot } from '../types'
 import { moldCode, moldModelOf } from '../types'
+import { WriteAccess } from './WriteAccess'
 
 interface Props {
   open: boolean
@@ -15,7 +16,11 @@ interface Props {
   onSuccess?: (mold: MoldAsset) => void
 }
 
-export function MoldFormDrawer({ open, mold, initialSlot, onClose, onSuccess }: Props) {
+export function MoldFormDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><MoldFormDrawerForm {...props} /></WriteAccess>
+}
+
+function MoldFormDrawerForm({ open, mold, initialSlot, onClose, onSuccess }: Props) {
   const [form] = Form.useForm()
   const [files, setFiles] = useState<UploadFile[]>([])
   const queryClient = useQueryClient()

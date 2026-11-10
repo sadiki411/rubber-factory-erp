@@ -115,7 +115,11 @@ function totalOf(counts: Partial<BusinessImportCounts> | undefined) {
     + countOf(counts, 'inspection_criteria')
 }
 
-export function BusinessImportDrawer({ open, context = 'orders', onClose }: Props) {
+export function BusinessImportDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><BusinessImportDrawerForm {...props} /></WriteAccess>
+}
+
+function BusinessImportDrawerForm({ open, context = 'orders', onClose }: Props) {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
   const [files, setFiles] = useState<UploadFile[]>([])
@@ -303,3 +307,4 @@ export function BusinessImportDrawer({ open, context = 'orders', onClose }: Prop
     </Drawer>
   )
 }
+import { WriteAccess } from './WriteAccess'

@@ -37,11 +37,12 @@ export interface OrderTraceRow {
   unit: string
   details: string
   cards: string[]
+  order_allocations?: { order_id: number | null; order_no: string; item_no: string; piece_quantity: number; net_weight_kg: string | number }[]
   url: string | null
 }
 export interface OrderOverviewResult {
   order: { id: number; order_no: string; item_no: string; specification: string; material: string; product_name: string; status: string; due_date: string | null; order_quantity: number }
-  summary: { net_delivered: number; delivery_remaining: number; production_progress_quantity: number; production_status: string }
+  summary: { net_delivered: number; delivery_remaining: number; production_progress_quantity: number; production_status: string; delivery_breakdown?: { all_effective_shipments: number; effective_returns: number; recorded_returns: number; return_clamp_difference: number; physical_shipments: number } }
   counts: Record<OrderTraceSection, number>
   section: OrderTraceSection
   count: number

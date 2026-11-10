@@ -12,7 +12,11 @@ interface Props {
   onClose: () => void
 }
 
-export function ProductionImportDrawer({ open, onClose }: Props) {
+export function ProductionImportDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><ProductionImportDrawerForm {...props} /></WriteAccess>
+}
+
+function ProductionImportDrawerForm({ open, onClose }: Props) {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
   const [files, setFiles] = useState<UploadFile[]>([])
@@ -158,3 +162,4 @@ export function ProductionImportDrawer({ open, onClose }: Props) {
     </Drawer>
   )
 }
+import { WriteAccess } from './WriteAccess'

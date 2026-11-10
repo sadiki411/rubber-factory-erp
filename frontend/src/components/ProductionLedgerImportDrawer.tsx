@@ -70,7 +70,11 @@ function confidenceTag(value?: number) {
   return <Tag color={value >= 85 ? 'success' : value >= 60 ? 'warning' : 'error'}>{Math.round(value)}%</Tag>
 }
 
-export function ProductionLedgerImportDrawer({ open, onClose }: Props) {
+export function ProductionLedgerImportDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><ProductionLedgerImportDrawerForm {...props} /></WriteAccess>
+}
+
+function ProductionLedgerImportDrawerForm({ open, onClose }: Props) {
   const { message, modal } = App.useApp()
   const queryClient = useQueryClient()
   const [tab, setTab] = useState('excel')
@@ -270,3 +274,4 @@ export function ProductionLedgerImportDrawer({ open, onClose }: Props) {
     </>
   )
 }
+import { WriteAccess } from './WriteAccess'

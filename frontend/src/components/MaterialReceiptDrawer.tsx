@@ -34,7 +34,11 @@ function orderOptionLabel(order: Order) {
   return [identity, product, quantity, `明细 #${order.id}`].filter(Boolean).join(' · ')
 }
 
-export function MaterialReceiptDrawer({ open, receipt, orders, ordersLoading = false, onClose }: Props) {
+export function MaterialReceiptDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><MaterialReceiptDrawerForm {...props} /></WriteAccess>
+}
+
+function MaterialReceiptDrawerForm({ open, receipt, orders, ordersLoading = false, onClose }: Props) {
   const [form] = Form.useForm<MaterialReceiptFormValues>()
   const queryClient = useQueryClient()
   const { message } = App.useApp()
@@ -191,3 +195,4 @@ export function MaterialReceiptDrawer({ open, receipt, orders, ordersLoading = f
     </Drawer>
   )
 }
+import { WriteAccess } from './WriteAccess'

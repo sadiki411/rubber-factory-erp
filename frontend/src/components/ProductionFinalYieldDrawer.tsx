@@ -11,7 +11,11 @@ interface Props {
   onSuccess?: (run: ProductionRun) => void
 }
 
-export function ProductionFinalYieldDrawer({ open, run, onClose, onSuccess }: Props) {
+export function ProductionFinalYieldDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><ProductionFinalYieldDrawerForm {...props} /></WriteAccess>
+}
+
+function ProductionFinalYieldDrawerForm({ open, run, onClose, onSuccess }: Props) {
   const [form] = Form.useForm<Record<string, any>>()
   const { message } = App.useApp()
   const queryClient = useQueryClient()
@@ -88,3 +92,4 @@ export function ProductionFinalYieldDrawer({ open, run, onClose, onSuccess }: Pr
     </Drawer>
   )
 }
+import { WriteAccess } from './WriteAccess'

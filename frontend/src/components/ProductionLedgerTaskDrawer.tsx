@@ -24,7 +24,11 @@ function allocationSignature(allocations: Array<{ order_id: number; planned_quan
     .sort((left, right) => left.order_id - right.order_id)
 }
 
-export function ProductionLedgerTaskDrawer({ open, run, initialDraft, onClose, onSaved }: Props) {
+export function ProductionLedgerTaskDrawer(props: Props) {
+  return <WriteAccess open={props.open} onClose={props.onClose}><ProductionLedgerTaskDrawerForm {...props} /></WriteAccess>
+}
+
+function ProductionLedgerTaskDrawerForm({ open, run, initialDraft, onClose, onSaved }: Props) {
   const [form] = Form.useForm<Record<string, any>>()
   const { message } = App.useApp()
   const queryClient = useQueryClient()
@@ -294,3 +298,4 @@ export function ProductionLedgerTaskDrawer({ open, run, initialDraft, onClose, o
     </Drawer>
   )
 }
+import { WriteAccess } from './WriteAccess'

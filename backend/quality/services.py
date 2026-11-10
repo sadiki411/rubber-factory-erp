@@ -182,7 +182,8 @@ def shipment_line_piece_quantity(line: QualityShipmentLine) -> int:
 
 
 def delivered_quantities_by_order(
-    order_ids: Iterable[int], *, exclude_batch_id: int | None = None
+    order_ids: Iterable[int], *, exclude_batch_id: int | None = None,
+    breakdown: dict | None = None,
 ) -> dict[int, int]:
     """Use one delivery balance for candidates, orders and auto-allocation.
 
@@ -193,6 +194,25 @@ def delivered_quantities_by_order(
 
     ids = {int(value) for value in order_ids if value is not None}
     delivered = {order_id: 0 for order_id in ids}
+    if breakdown is not None:
+        breakdown.update({order_id: {
+            "all_effective_shipments": 0, "effective_returns": 0,
+            "recorded_returns": 0, "return_clamp_difference": 0,
+            "physical_shipments": 0,
+        } for order_id in ids})
+
+    def add_balance(order_id, gross, returned, physical):
+        gross, returned = max(0, int(gross or 0)), max(0, int(returned or 0))
+        net = max(0, gross - returned)
+        delivered[order_id] += net
+        if breakdown is not None:
+            row = breakdown[order_id]
+            row["all_effective_shipments"] += gross
+            row["effective_returns"] += gross - net
+            row["recorded_returns"] += returned
+            row["return_clamp_difference"] += max(returned - gross, 0)
+            row["physical_shipments"] += physical
+
     if not ids:
         return delivered
 
@@ -206,11 +226,7 @@ def delivered_quantities_by_order(
         .annotate(returned=Sum("reworks__returned_quantity"))
     )
     for shipment in legacy_shipments:
-        delivered[shipment["order_id"]] += max(
-            0,
-            int(shipment["shipped_quantity"] or 0)
-            - int(shipment["returned"] or 0),
-        )
+        add_balance(shipment["order_id"], shipment["shipped_quantity"], shipment["returned"], int(shipment["shipped_quantity"] or 0))
 
     weighted_lines = (
         QualityShipmentLine.objects.filter(
@@ -302,6 +318,12 @@ def delivered_quantities_by_order(
         allocations = allocations_by_line.get(line_id, [])
         cases = cases_by_line.get(line_id, [])
         unit = line["unit_weight_g_snapshot"] or line["process_card__unit_weight_g"]
+        quantity = line["piece_quantity"]
+        if quantity is None and unit and line["net_weight_kg"]:
+            quantity = int((
+                Decimal(line["net_weight_kg"]) * Decimal("1000") / Decimal(unit)
+            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        physical_quantity = max(0, int(quantity or 0))
         if allocations:
             # New rows are charged to their immutable fulfilment shares.  Old
             # return rows did not carry a share FK; migration gives their line
@@ -318,15 +340,16 @@ def delivered_quantities_by_order(
                     ):
                         continue
                     legacy_returned += case_quantity(case, unit)
+            physical_seen = set()
             for allocation in allocations:
                 if allocation["order_id"] not in delivered:
                     continue
                 returned = returned_by_share.get(allocation["id"], 0)
                 if len(allocations) == 1:
                     returned += legacy_returned
-                delivered[allocation["order_id"]] += max(
-                    0, int(allocation["piece_quantity"]) - returned
-                )
+                order_id = allocation["order_id"]
+                add_balance(order_id, allocation["piece_quantity"], returned, 0 if order_id in physical_seen else physical_quantity)
+                physical_seen.add(order_id)
             continue
 
         # Rolling-upgrade safety: a confirmed line created before the data
@@ -344,14 +367,7 @@ def delivered_quantities_by_order(
             ):
                 continue
             returned += case_quantity(case, unit)
-        quantity = line["piece_quantity"]
-        if quantity is None and unit and line["net_weight_kg"]:
-            quantity = int((
-                Decimal(line["net_weight_kg"]) * Decimal("1000") / Decimal(unit)
-            ).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-        delivered[order_id] += max(
-            0, max(0, int(quantity or 0)) - returned
-        )
+        add_balance(order_id, physical_quantity, returned, physical_quantity)
     return delivered
 
 

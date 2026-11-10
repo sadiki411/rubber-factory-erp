@@ -13,8 +13,10 @@ const MoldDetailPage = lazy(() => import('./pages/MoldDetailPage').then((module)
 const MoldsPage = lazy(() => import('./pages/MoldsPage').then((module) => ({ default: module.MoldsPage })))
 const OrdersPage = lazy(() => import('./pages/OrdersPage').then((module) => ({ default: module.OrdersPage })))
 const OperationsPage = lazy(() => import('./pages/OperationsPage').then((module) => ({ default: module.OperationsPage })))
+const IntegrationPreviewPage = lazy(() => import('./pages/IntegrationPreviewPage').then((module) => ({ default: module.IntegrationPreviewPage })))
 const OrderOverviewPage = lazy(() => import('./pages/OrderOverviewPage').then((module) => ({ default: module.OrderOverviewPage })))
 const ProductionPage = lazy(() => import('./pages/ProductionPage').then((module) => ({ default: module.ProductionPage })))
+const ProductionRecordPage = lazy(() => import('./pages/ProductionRecordPage').then((module) => ({ default: module.ProductionRecordPage })))
 const ProductSpecificationsPage = lazy(() => import('./pages/ProductSpecificationsPage').then((module) => ({ default: module.ProductSpecificationsPage })))
 const QualityPage = lazy(() => import('./pages/QualityPage').then((module) => ({ default: module.QualityPage })))
 const RackConfigPage = lazy(() => import('./pages/RackConfigPage').then((module) => ({ default: module.RackConfigPage })))
@@ -87,8 +89,10 @@ export function App() {
           <Route path="product-specifications" element={<ProductSpecificationsPage />} />
           <Route path="orders" element={<OrdersPage />} />
           <Route path="operations" element={<OperationsPage />} />
+          <Route path="previews/integration" element={<IntegrationPreviewPage />} />
           <Route path="order-overview/:id" element={<OrderOverviewPage />} />
           <Route path="production" element={<ProductionPage />} />
+          <Route path="production/records/:id" element={<ProductionRecordPage />} />
           <Route path="quality" element={<QualityPage />} />
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="molds" element={<MoldsPage />} />
