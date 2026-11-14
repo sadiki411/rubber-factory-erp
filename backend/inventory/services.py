@@ -419,8 +419,12 @@ def create_inventory_outbound(data, *, created_by):
         except InventoryContainer.DoesNotExist as exc:
             raise ValueError("库存容器不存在，请刷新后重新选择。") from exc
         quantity = int(row["quantity"])
-        if container.status != InventoryContainer.Status.ACTIVE or container.batch.quality_status != InventoryBatch.QualityStatus.PASSED:
-            raise ValueError(f"容器 {container.container_code} 不是可用的已检库存。")
+        if container.status != InventoryContainer.Status.ACTIVE or container.quantity <= 0:
+            raise ValueError(f"容器 {container.container_code} 已空或已关闭，请刷新后重新选择。")
+        # Manual warehouse outbound also covers temporary/WIP stock. It is
+        # not a quality approval or a customer shipment; retain the real grade.
+        if container.batch.quality_status == InventoryBatch.QualityStatus.HOLD:
+            raise ValueError(f"容器 {container.container_code} 已冻结，请先核实并解除冻结后再出库。")
         if quantity > container.quantity:
             raise ValueError(f"容器 {container.container_code} 可用数量只有 {container.quantity}。")
         source_location = container.location
@@ -440,7 +444,7 @@ def create_inventory_outbound(data, *, created_by):
             quantity=quantity,
             from_location=source_location,
             outbound=outbound,
-            reason="库存出库",
+            reason=f"库存出库（出库时状态：{container.batch.get_quality_status_display()}）",
             created_by=created_by,
         )
     return outbound

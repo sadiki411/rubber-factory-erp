@@ -68,6 +68,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
   const receiptMaterial = Form.useWatch<string>('material', receiptForm)
   const receiptQualityStatus = Form.useWatch<InventoryQualityStatus>('quality_status', receiptForm)
   const selectedQualityStatus = Form.useWatch<InventoryQualityStatus>('quality_status', qualityForm)
+  const outboundLines = Form.useWatch<Array<{ container_id?: number; quantity?: number }>>('lines', outboundForm) || []
   const summaryQuery = useQuery({ queryKey: ['inventory', 'summary'], queryFn: inventoryApi.summary })
   const locationsQuery = useQuery({
     queryKey: ['inventory', 'locations'],
@@ -215,8 +216,10 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
     })
     return [...result.entries()]
   }, [visibleLocations])
-  const containerOptions = (containersQuery.data || []).filter((item) => item.batch.quality_status === 'PASSED')
-    .map((item) => ({ value: item.id, label: `${item.container_code} · ${item.batch.product.specification || item.batch.product.product_name} · 可出 ${item.quantity}` }))
+  const outboundContainers = (containersQuery.isError ? [] : containersQuery.data || [])
+    .filter((item) => item.status === 'ACTIVE' && item.quantity > 0 && item.batch.quality_status !== 'HOLD')
+  const containerOptions = outboundContainers.map((item) => ({ value: item.id,
+    label: `${item.container_code} · ${item.batch.product.specification || item.batch.product.product_name} · ${QUALITY_META[item.batch.quality_status].label} · 可出 ${item.quantity}` }))
   const orderOptions = (ordersQuery.data || []).map((order: Order) => ({ value: order.id, label: `${order.order_no}${order.item_no ? ` / ${order.item_no}` : ''} · ${order.specification}` }))
   const moveLocationOptions = moveTarget ? finishedLocations.filter((location) => location.id !== moveTarget.currentLocationId && !location.container && (moveTarget.containerType === 'BASKET' ? location.allows_basket : location.allows_bag)).map((location) => ({ value: location.id, label: `${location.code}${location.allows_basket ? ' · 可放筐/袋' : ' · 袋位'}` })) : []
 
@@ -383,6 +386,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
   }
 
   const submitOutbound = async () => {
+    if (readOnly || outboundMutation.isPending) return
     const values = await outboundForm.validateFields().catch(() => undefined)
     if (!values) return
     outboundMutation.mutate({
@@ -448,7 +452,7 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
     <div className="page-container inventory-page">
       <PageTitle
         title="成品库存"
-        description="库存直接入库、人工选取出库；流程卡只在品检出货页面单独扫描，不会重复扣减库存。"
+        description="成品和暂存库存均可直接入库、人工选取出库；流程卡仍在品检出货页面单独扫描，不会重复扣减库存。"
         extra={<Space wrap className="inventory-actions"><Button icon={<QrcodeOutlined />} onClick={() => setScanPurpose('LOOKUP')}>扫码查库位</Button><Button icon={<PrinterOutlined />} onClick={() => setPrintOpen(true)}>打印库位标签</Button><Button disabled={readOnly} icon={<SwapOutlined />} onClick={() => openOutbound()}>库存出库</Button><Button disabled={readOnly} type="primary" icon={<InboxOutlined />} onClick={() => setReceiptOpen(true)}>直接入库</Button></Space>}
       />
 
@@ -532,12 +536,12 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
             <Descriptions.Item label="首次入库日期">{activeDetailLocation.container.received_on || '-'}</Descriptions.Item>
           </Descriptions> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前为空库位"><Button disabled={readOnly} type="primary" icon={<InboxOutlined />} onClick={() => { receiptForm.setFieldValue('location_id', activeDetailLocation.id); closeLocationDetail(); setReceiptOpen(true) }}>在此库位入库</Button></Empty>}
           {activeDetailLocation.container && <>
-            {activeDetailLocation.container.quality_status !== 'PASSED' && <Alert style={{ marginTop: 16 }} type="warning" showIcon message="当前库存尚不可正常出库" description="可先移库整理；实际检验合格后，请在下方更新质量状态并登记品检员，再办理出库。更正状态不会改变数量或库位。" />}
+            {activeDetailLocation.container.quality_status !== 'PASSED' && <Alert style={{ marginTop: 16 }} type="warning" showIcon message={activeDetailLocation.container.quality_status === 'HOLD' ? '当前库存已冻结' : '暂存库存可按实际需要出库'} description={activeDetailLocation.container.quality_status === 'HOLD' ? '请先核实并解除冻结后再出库；移库不改变质量状态。' : '待检、不合格库存无需改成合格即可人工出库。出库保留原质量状态，不代表检验合格，也不会自动登记客户出货。'} />}
             <Space direction="vertical" className="inventory-detail-actions" style={{ width: '100%', marginTop: 16 }}>
               <Button disabled={readOnly} block icon={<PlusOutlined />} onClick={() => setTopUpTarget(activeDetailLocation)}>追加入库</Button>
               <Button disabled={readOnly} block type="primary" onClick={() => openQuality(activeDetailLocation.container!)}>更新质量状态</Button>
               <Button disabled={readOnly} block icon={<SwapOutlined />} onClick={() => openMove(activeDetailLocation)}>移库</Button>
-              {activeDetailLocation.container.quality_status === 'PASSED' && <Button disabled={readOnly} block onClick={() => openOutbound(activeDetailLocation.container!)}>办理出库</Button>}
+              {activeDetailLocation.container.quality_status !== 'HOLD' && <Button disabled={readOnly} block onClick={() => openOutbound(activeDetailLocation.container!)}>办理出库</Button>}
               <Button disabled={readOnly} block icon={<EditOutlined />} onClick={() => openProductCorrection(activeDetailLocation.container!)}>更正产品资料</Button>
             </Space>
             <InventoryTopUpHistory key={activeDetailLocation.container.id} containerId={activeDetailLocation.container.id} />
@@ -569,15 +573,27 @@ export function InventoryPage({ initialLocationCode, onLocationDetailClose }: { 
       </Modal>
 
       <Modal className="inventory-modal" title="库存出库" open={outboundOpen} onCancel={() => setOutboundOpen(false)} okButtonProps={{ disabled: readOnly }} onOk={() => void submitOutbound()} confirmLoading={outboundMutation.isPending} width={620} okText="确认出库">
-        <Alert type="warning" showIcon message="这里只扣减已检合格库存，不自动登记出货。待检、冻结或不合格库存请从库位详情更新质量状态或移库。" style={{ marginBottom: 16 }} />
+        <Alert type="info" showIcon message="合格、待检、不合格库存均可人工出库，保留原质量状态；冻结库存需先解除冻结。这里只扣库存，不自动登记客户出货或改变订单交付数量。" style={{ marginBottom: 16 }} />
+        {containersQuery.isError && <Alert type="error" showIcon message="库存容器读取失败，请重新读取后再选择出库" action={<Button onClick={() => void containersQuery.refetch()}>重新读取</Button>} style={{ marginBottom: 16 }} />}
         <Form form={outboundForm} layout="vertical" initialValues={{ lines: [{}] }}>
           <Form.List name="lines">
             {(fields, { add, remove }) => <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              {fields.map(({ key, name, ...restField }) => <Row gutter={8} key={key} align="middle" className="inventory-outbound-line">
-                <Col xs={24} sm={14}><Form.Item {...restField} label={name === 0 ? '出库容器' : undefined} name={[name, 'container_id']} rules={[{ required: true, message: '请选择容器' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} options={containerOptions} /></Form.Item></Col>
-                <Col xs={20} sm={8}><Form.Item {...restField} label={name === 0 ? '出库数量（件）' : undefined} name={[name, 'quantity']} rules={[{ required: true, type: 'number', min: 1 }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item></Col>
-                <Col xs={4} sm={2}>{fields.length > 1 ? <Button type="text" danger icon={<MinusCircleOutlined />} aria-label="移除出库行" onClick={() => remove(name)} /> : null}</Col>
-              </Row>)}
+              {fields.map(({ key, name, ...restField }) => {
+                const selected = outboundContainers.find((item) => item.id === outboundLines[name]?.container_id)
+                return <Row gutter={8} key={key} align="middle" role="group" aria-label={`出库第${name + 1}项`} className="inventory-outbound-line">
+                  <Col xs={24} sm={12}><Form.Item {...restField} label="出库容器" name={[name, 'container_id']} rules={[{ required: true, message: '请选择容器' }]}><Select showSearch optionFilterProp="label" classNames={INVENTORY_SELECT_CLASS_NAMES} loading={containersQuery.isFetching} options={containerOptions} onChange={() => outboundForm.setFieldValue(['lines', name, 'quantity'], undefined)} /></Form.Item></Col>
+                  <Col xs={21} sm={10}><Form.Item label="出库数量（件）" required>
+                    <div className="inventory-outbound-quantity">
+                      <Form.Item {...restField} noStyle name={[name, 'quantity']} rules={[
+                        { required: true, type: 'number', min: 1, message: '请填写大于0的出库数量' },
+                        { validator: (_, value) => value && (!selected || value > selected.quantity) ? Promise.reject(new Error(selected ? `当前最多可出 ${selected.quantity} 件` : '请重新选择当前在库容器')) : Promise.resolve() },
+                      ]}><InputNumber aria-label="出库数量（件）" min={1} max={selected?.quantity} precision={0} /></Form.Item>
+                      <Button disabled={readOnly || outboundMutation.isPending || containersQuery.isFetching || !selected} onClick={() => { if (selected) outboundForm.setFieldValue(['lines', name, 'quantity'], selected.quantity) }}>全部出库</Button>
+                    </div>
+                  </Form.Item></Col>
+                  <Col xs={3} sm={2}>{fields.length > 1 ? <Button type="text" danger icon={<MinusCircleOutlined />} aria-label="移除出库行" onClick={() => remove(name)} /> : null}</Col>
+                </Row>
+              })}
               <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()}>添加另一个容器</Button>
             </Space>}
           </Form.List>

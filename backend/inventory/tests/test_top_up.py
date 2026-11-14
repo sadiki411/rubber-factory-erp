@@ -129,14 +129,19 @@ class InventoryTopUpTests(TopUpFixture, APITestCase):
         self.assertEqual(self.post(self.body(quality_status="WAITING", inspector_id=None)).status_code, 409)
         self.assertEqual(InventoryTopUp.objects.count(), 0)
 
-    def test_waiting_can_top_up_but_cannot_be_shipped_as_qualified(self):
+    def test_waiting_top_up_can_be_manually_outbound_without_becoming_qualified(self):
         InventoryBatch.objects.filter(pk=self.container.batch_id).update(quality_status="WAITING", inspector=None)
         response = self.post(self.body(quality_status="WAITING", inspector_id=None))
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.json()["quantity"], 4500)
         result = self.client.post("/api/inventory/outbounds/", {"lines": [{"container_id": self.container.pk, "quantity": 100}]}, format="json")
-        self.assertEqual(result.status_code, 400, result.content)
-        self.assertEqual(self.client.get("/api/inventory/summary/").json()["waiting_inspection_quantity"], 4500)
+        self.assertEqual(result.status_code, 201, result.content)
+        self.container.refresh_from_db()
+        self.assertEqual(self.container.batch.quality_status, "WAITING")
+        self.assertIsNone(self.container.batch.inspector_id)
+        summary = self.client.get("/api/inventory/summary/").json()
+        self.assertEqual(summary["waiting_inspection_quantity"], 4400)
+        self.assertEqual(summary["available_quantity"], 0)
 
     def test_passed_requires_this_time_inspector_and_valid_positive_integer(self):
         for fields in ({"inspector_id": None}, {"inspector_id": 999999}, {"quantity": 0}, {"quantity": -1},
