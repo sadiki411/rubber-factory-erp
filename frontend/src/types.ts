@@ -616,6 +616,32 @@ export interface BusinessImportPreview {
   rows: BusinessImportPreviewRow[]
   issues: ImportIssue[]
   cut_length_check?: CutLengthCheck | null
+  mold_check?: ImportMoldCheck | null
+}
+
+export interface ImportMoldCheck {
+  version: number
+  checked_at: string
+  alert_count: number
+  model_options?: { id: number; code: string; product_name: string; is_active: boolean; in_stock: number; on_machine: number; returned: number }[]
+  rows: {
+    binding_key: string
+    product_id: number | null
+    specification: string
+    material: string
+    customer_mold_no: string
+    can_bind: boolean
+    orders: { order_no: string; item_no: string; sheet: string; row: number | null }[]
+    mold_model_id: number | null
+    mold_model_code: string
+    selection_source: 'MANUAL' | 'REMEMBERED' | 'CUSTOMER_MATCH' | 'UNLINKED'
+    remembered_model_id: number | null
+    status: string
+    message: string
+    needs_attention: boolean
+    notices: string[]
+    assets: { id: number; asset_code: string; status: string; status_display: string; location: string }[]
+  }[]
 }
 
 export interface PurchaseImageRow {
@@ -697,6 +723,8 @@ export interface BusinessImportHistoryDetail extends BusinessImportHistorySummar
   issues: ImportIssue[]
   cut_length_check?: CutLengthCheck | null
   cut_length_confirmation?: CutLengthConfirmation | null
+  mold_check?: ImportMoldCheck | null
+  mold_link_warnings?: string[]
 }
 
 export interface RackConfigInput {

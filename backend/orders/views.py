@@ -28,6 +28,7 @@ from .imports import (
     preview_business_workbook,
 )
 from .cut_length_checks import build_cut_length_check, cut_length_report, CutLengthConfirmationRequired
+from .mold_checks import build_mold_check, update_mold_selection
 from .models import (
     BusinessImportBatch,
     BusinessRecordRevision,
@@ -686,6 +687,39 @@ class BusinessImportCutLengthView(APIView):
         return response
 
 
+class BusinessImportMoldCheckView(APIView):
+    @extend_schema(request=dict, responses=dict)
+    def post(self, request, token):
+        with transaction.atomic():
+            batch = get_object_or_404(BusinessImportBatch.objects.select_for_update(), pk=token, created_by=request.user)
+            if batch.status != BusinessImportBatch.Status.PREVIEWED:
+                raise DRFValidationError({"detail": "仅未提交批次可以核对模具，已导入历史不会重算。"})
+            if batch.source_type not in (BusinessImportBatch.SourceType.FACTORY_WORK_CONTACT, BusinessImportBatch.SourceType.INTERNAL_ORDERS, BusinessImportBatch.SourceType.PURCHASE_ORDER_IMAGES):
+                raise DRFValidationError({"detail": "本入口仅用于订单导入的模具核对。"})
+            records = _batch_rows(batch)
+            selections = batch.payload.get("mold_selections", {})
+            if "binding_key" in request.data:
+                if "mold_model_id" not in request.data:
+                    raise DRFValidationError({"detail": "请选择模具型号，或撤销本次选择。"})
+                try:
+                    selections = update_mold_selection(records, selections, request.data["binding_key"], request.data["mold_model_id"])
+                except ValueError as exc:
+                    raise DRFValidationError({"detail": str(exc)}) from exc
+                key = request.data["binding_key"]
+                baselines = batch.payload.setdefault("mold_selection_baselines", {})
+                if request.data["mold_model_id"] is None:
+                    baselines.pop(key, None)
+                else:
+                    current_check = build_mold_check(records, include_options=False)
+                    selected_row = next(row for row in current_check["rows"] if row["binding_key"] == key)
+                    baselines[key] = {"product_id": selected_row["product_id"], "mold_model_id": selected_row["remembered_model_id"]}
+            check = build_mold_check(records, selections)
+            batch.payload["mold_selections"] = selections
+            batch.payload["mold_check"] = check
+            batch.save(update_fields=["payload"])
+        return Response({"mold_check": check})
+
+
 def _import_issue(level, message, *, stage, **extra):
     return {
         "level": level,
@@ -886,6 +920,8 @@ class BusinessImportHistoryDetailView(APIView):
                 "issues": [*_issue_list(batch.errors), *_issue_list(batch.warnings)],
                 "cut_length_check": batch.payload.get("cut_length_check"),
                 "cut_length_confirmation": batch.payload.get("cut_length_confirmation"),
+                "mold_check": batch.payload.get("mold_check"),
+                "mold_link_warnings": batch.payload.get("mold_link_warnings", []),
                 "rows": [
                     _history_row(row, batch.errors, batch.warnings)
                     for row in _batch_rows(batch)

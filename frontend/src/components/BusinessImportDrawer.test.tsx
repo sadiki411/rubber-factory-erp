@@ -107,6 +107,26 @@ describe('BusinessImportDrawer', () => {
     ]))
   }, 15_000)
 
+  it('keeps missing mold warnings advisory in the actual import drawer', async () => {
+    apiMocks.preview.mockResolvedValue({ token: 'missing-mold', total_rows: 1, source_type: 'FACTORY_WORK_CONTACT', counts: { orders: 1 }, error_count: 0, warning_count: 0,
+      rows: [{ row_key: 'order', record_type: 'ORDER', valid: true }], issues: [],
+      mold_check: { version: 1, checked_at: '2026-11-16T08:00:00+08:00', alert_count: 1, model_options: [],
+        rows: [{ binding_key: 'source:1', product_id: null, specification: '240', material: 'N7200', customer_mold_no: 'RAW-240', can_bind: true,
+          orders: [{ order_no: 'MISSING', item_no: '1', sheet: 'sheet1', row: 2 }], mold_model_id: null, mold_model_code: '', selection_source: 'UNLINKED', remembered_model_id: null,
+          status: 'UNLINKED', message: '台账未找到，可继续导入。', needs_attention: true, notices: [], assets: [] }] } })
+    apiMocks.commit.mockResolvedValue({ created: { orders: 1 } })
+    const user = userEvent.setup()
+    renderDrawer()
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, new File(['excel'], 'missing.xlsx'))
+    await user.click(screen.getByRole('button', { name: /上传并自动识别/ }))
+    expect(await screen.findByText('订单模具在厂核对')).toBeVisible()
+    expect(screen.getByText('台账未找到，可继续导入。')).toBeVisible()
+    const commit = screen.getByRole('button', { name: /确认整批导入/ })
+    expect(commit).toBeEnabled()
+    await user.click(commit)
+    await waitFor(() => expect(apiMocks.commit).toHaveBeenCalledWith('missing-mold'))
+  }, 20_000)
+
   it('sends exact product scope and invalidates preview when the scope changes', async () => {
     apiMocks.preview.mockResolvedValue({
       token: 'scoped', counts: { orders: 1 }, total_rows: 1, error_count: 0, warning_count: 0,

@@ -460,6 +460,8 @@ export const businessImportApi = {
     method: 'POST', body: JSON.stringify({ token, ...confirmation }),
   }),
   refreshCutLength: (token: string) => apiFetch<{ cut_length_check: BusinessImportPreview['cut_length_check'] }>(`/api/orders/imports/${token}/cut-length/`, { method: 'POST' }),
+  checkMolds: (token: string, selection?: { binding_key: string; mold_model_id: number | null }) =>
+    apiFetch<{ mold_check: BusinessImportPreview['mold_check'] }>(`/api/orders/imports/${token}/mold-check/`, { method: 'POST', body: JSON.stringify(selection || {}) }),
   cutLengthReportUrl: (token: string) => `/api/orders/imports/${token}/cut-length/`,
   history: (filters: { q?: string; status?: string; source_type?: string; page?: number; page_size?: number } = {}) =>
     apiFetch<ApiList<BusinessImportHistorySummary> | BusinessImportHistorySummary[]>(`/api/orders/imports/history/${queryString(filters)}`),

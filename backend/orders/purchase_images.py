@@ -327,6 +327,7 @@ def _purchase_records(documents, originals, sha256):
 
 
 def preview_purchase_images(batch, documents, user, *, confirmed=False):
+    from .mold_checks import build_mold_check
     if confirmed is not True:
         raise ValueError("请先确认已核对所有采购单图片识别结果。")
     serializer = PurchaseDocumentSerializer(data=documents, many=True, allow_empty=False, max_length=MAX_FILES)
@@ -342,7 +343,8 @@ def preview_purchase_images(batch, documents, user, *, confirmed=False):
             raise ValueError("采购单图片与识别批次不一致，请重新识别，不允许遗漏或替换原图。")
         records, issues = _purchase_records(validated, originals, current.sha256)
         _prepare_record_actions(records, current.source_type, issues)
-        current.payload.update({"rows": json_safe(records), "confirmed_documents": json_safe(validated), "human_confirmed": True})
+        current.payload.update({"rows": json_safe(records), "confirmed_documents": json_safe(validated), "human_confirmed": True,
+                                "mold_check": build_mold_check(records), "mold_selections": {}, "mold_selection_baselines": {}})
         current.errors = [issue for issue in issues if issue["level"] == "error"]
         current.warnings = [issue for issue in issues if issue["level"] == "warning"]
         current.save(update_fields=["payload", "errors", "warnings"])

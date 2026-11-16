@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { businessImportApi, purchaseImageImportApi } from '../api/client'
 import type { BusinessImportCounts, BusinessImportPreview, PurchaseImageDocument, PurchaseImageRecognition, PurchaseImageRow } from '../types'
+import { ImportMoldCheck } from './ImportMoldCheck'
 
 interface Props {
   disabled?: boolean
@@ -92,12 +93,13 @@ export function PurchaseImageImport({ disabled = false, onBusyChange }: Props) {
   const [recognizing, setRecognizing] = useState(false)
   const [previewing, setPreviewing] = useState(false)
   const [committing, setCommitting] = useState(false)
+  const [moldBusy, setMoldBusy] = useState(false)
   const [error, setError] = useState('')
   const revision = useRef(0)
   const previewQueue = useRef<Promise<unknown>>(Promise.resolve())
   const commitLock = useRef(false)
   const urls = useRef(new Set<string>())
-  const busy = recognizing || previewing || committing
+  const busy = recognizing || previewing || committing || moldBusy
 
   useEffect(() => { onBusyChange?.(busy) }, [busy, onBusyChange])
   useEffect(() => () => { onBusyChange?.(false) }, [onBusyChange])
@@ -223,6 +225,7 @@ export function PurchaseImageImport({ disabled = false, onBusyChange }: Props) {
       await queryClient.invalidateQueries()
       if (current !== revision.current) return
       message.success(`业务数据导入完成：新增 ${result.created_count ?? result.imported_count ?? count(result.created || result.imported || result.counts)} 条，更新 ${result.updated_count ?? count(result.updated)} 条，跳过 ${result.skipped_count ?? count(result.skipped)} 条`)
+      if (Array.isArray(result.mold_link_warnings) && result.mold_link_warnings.length) message.warning(result.mold_link_warnings.join('；'))
       invalidate()
       setDraft(undefined)
       setImages([])
@@ -296,6 +299,8 @@ export function PurchaseImageImport({ disabled = false, onBusyChange }: Props) {
         <Button block disabled={locked || !confirmed || errors.length > 0 || previewing} loading={previewing} onClick={() => void runPreview()}>确认核对并预检</Button>
       </>}
       {preview && <section aria-label="采购单预检结果">
+        <ImportMoldCheck key={preview.token} check={preview.mold_check} token={preview.token} disabled={locked || busy} onBusyChange={setMoldBusy}
+          onChange={(check) => setPreview((current) => current ? { ...current, mold_check: check } : current)} />
         <Space orientation="vertical" style={{ width: '100%' }}>
           <Alert showIcon type={canCommit ? 'success' : 'error'} title={`预检：${preview.total_rows} 条，错误 ${preview.error_count} / 警告 ${preview.warning_count}`} />
           {preview.issues.map((issue, index) => <Alert key={`issue-${index}`} type={issue.level === 'error' ? 'error' : 'warning'} showIcon title={`${issue.sheet || '采购单'}${issue.row == null ? '' : ` / 行 ${issue.row}`}${issue.field ? ` / ${CHANGE_LABELS[issue.field] || issue.field}` : ''}：${issue.message}`} />)}

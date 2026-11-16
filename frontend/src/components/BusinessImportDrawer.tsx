@@ -7,6 +7,7 @@ import { ApiError, businessImportApi } from '../api/client'
 import type { BusinessImportCounts, BusinessImportPreview, BusinessImportPreviewRow, ImportIssue } from '../types'
 import { PurchaseImageImport } from './PurchaseImageImport'
 import { CutLengthReminder } from './CutLengthReminder'
+import { ImportMoldCheck } from './ImportMoldCheck'
 
 interface Props {
   open: boolean
@@ -124,6 +125,7 @@ function BusinessImportDrawerForm({ open, context = 'orders', onClose }: Props) 
   const queryClient = useQueryClient()
   const [files, setFiles] = useState<UploadFile[]>([])
   const [preview, setPreview] = useState<BusinessImportPreview>()
+  const [moldBusy, setMoldBusy] = useState(false)
   const [specification, setSpecification] = useState('')
   const [material, setMaterial] = useState('')
   const [imageBusy, setImageBusy] = useState(false)
@@ -163,6 +165,7 @@ function BusinessImportDrawerForm({ open, context = 'orders', onClose }: Props) 
       const updatedTotal = result.updated_count ?? totalOf(result.updated)
       const skippedTotal = result.skipped_count ?? totalOf(result.skipped)
       message.success(`业务数据导入完成：新增 ${createdTotal} 条，更新 ${updatedTotal} 条，跳过 ${skippedTotal} 条`)
+      if (Array.isArray(result.mold_link_warnings) && result.mold_link_warnings.length) message.warning(result.mold_link_warnings.join('；'))
       setPreview(undefined)
       setFiles([])
       setSpecification('')
@@ -190,7 +193,7 @@ function BusinessImportDrawerForm({ open, context = 'orders', onClose }: Props) 
     onError: (error: Error) => message.error(error.message),
   })
 
-  const busy = previewMutation.isPending || commitMutation.isPending || refreshMutation.isPending || imageBusy
+  const busy = previewMutation.isPending || commitMutation.isPending || refreshMutation.isPending || imageBusy || moldBusy
   const closeDrawer = () => {
     if (busy) return
     setPreview(undefined)
@@ -291,6 +294,8 @@ function BusinessImportDrawerForm({ open, context = 'orders', onClose }: Props) 
           <CutLengthReminder check={preview.cut_length_check} token={preview.token}
             acknowledged={cutLengthAcknowledged} onAcknowledgedChange={setCutLengthAcknowledged}
             disabled={busy} refreshing={refreshMutation.isPending} onRefresh={() => refreshMutation.mutate(preview.token)} />
+          <ImportMoldCheck key={preview.token} check={preview.mold_check} token={preview.token} disabled={busy}
+            onBusyChange={setMoldBusy} onChange={(check) => setPreview((current) => current ? { ...current, mold_check: check } : current)} />
           {preview.issues.length ? (
             <Table rowKey={(row) => `${row.sheet}-${row.row}-${row.field}-${row.message}`} size="small" dataSource={preview.issues} columns={issueColumns} pagination={{ pageSize: 6 }} scroll={{ x: 700 }} />
           ) : <Alert type="success" showIcon icon={<CheckCircleOutlined />} title={preview.cut_length_check?.alert_count ? '格式校验通过，请同时核对上方料长提醒' : '预检通过，可以导入'} />}

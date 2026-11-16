@@ -5,6 +5,7 @@ from .overview_views import OrderOverviewView, WorkbenchView
 from .views import (
     BusinessImportCommitView,
     BusinessImportCutLengthView,
+    BusinessImportMoldCheckView,
     BusinessImportErrorReportView,
     BusinessImportHistoryDetailView,
     BusinessImportHistoryView,
@@ -43,6 +44,7 @@ urlpatterns = [
     path("imports/preview/", BusinessImportPreviewView.as_view(), name="business-import-preview"),
     path("imports/commit/", BusinessImportCommitView.as_view(), name="business-import-commit"),
     path("imports/<uuid:token>/cut-length/", BusinessImportCutLengthView.as_view(), name="business-import-cut-length"),
+    path("imports/<uuid:token>/mold-check/", BusinessImportMoldCheckView.as_view(), name="business-import-mold-check"),
     path("imports/history/", BusinessImportHistoryView.as_view(), name="business-import-history"),
     path(
         "imports/history/<uuid:token>/",

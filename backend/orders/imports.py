@@ -37,6 +37,7 @@ from .models import (
 )
 from .services import json_safe, model_snapshot, record_revision
 from .cut_length_checks import build_cut_length_check, CutLengthConfirmationRequired
+from .mold_checks import build_mold_check, apply_mold_selections
 
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -2138,6 +2139,24 @@ def _product_match(record, *, lock=False):
     match = queryset.filter(source_key=record["source_key"]).first()
     if match:
         return match
+    remembered_match = None
+    if record.get("source_type") == BusinessImportBatch.SourceType.FACTORY_WORK_CONTACT:
+        candidates = queryset.filter(
+            is_active=True,
+            specification__iexact=record.get("specification", ""),
+            material__iexact=record.get("material", ""),
+            customer_product_no__iexact=record.get("customer_product_no", ""),
+        )
+        if not record.get("customer_product_no"):
+            candidates = candidates.filter(mold_no__iexact=record.get("mold_no", ""))
+        if candidates.filter(mold_model__isnull=False).exists():
+            candidates = list(candidates.order_by("id")[:3])
+            if len(candidates) == 1:
+                remembered_match = candidates[0]
+            else:
+                record["ambiguous_product_identity"] = True
+                record["ambiguous_product_ids"] = [item.pk for item in candidates]
+                return None
     normalized_key = record.get("normalized_key", "")
     if normalized_key:
         matches = list(
@@ -2149,7 +2168,10 @@ def _product_match(record, *, lock=False):
         if len(matches) > 1:
             record["ambiguous_product_identity"] = True
             record["ambiguous_product_ids"] = [item.pk for item in matches]
-    return None
+    # A manually linked standard mold code may differ from the customer's raw
+    # mold number used in a new file. Do not create another product merely
+    # because the saved normalized key contains the linked model's code.
+    return remembered_match if not record.get("ambiguous_product_identity") else None
 
 
 def _criterion_match(record, order_id=None, *, lock=False):
@@ -2319,6 +2341,8 @@ def _prepare_record_actions(records, source_type, issues, *, lock=False):
             continue
         match = _product_match(record, lock=lock)
         record["match_id"] = match.pk if match else None
+        if match and match.mold_model_id:
+            record["source_fields"] = [field for field in record.get("source_fields", []) if field != "mold_model_id"]
         if not match:
             record["action"] = (
                 "SKIP" if record.get("ambiguous_product_identity") else "CREATE"
@@ -2470,6 +2494,8 @@ def _prepare_record_actions(records, source_type, issues, *, lock=False):
                         reused_linked_product_ids[source_key] = linked_product.pk
                         product_record["match_id"] = linked_product.pk
                         product_record["ambiguous_product_resolved"] = True
+                        if linked_product.mold_model_id:
+                            product_record["source_fields"] = [field for field in product_record.get("source_fields", []) if field != "mold_model_id"]
                         if not product_record.get(
                             "protected_shared_product_version"
                         ):
@@ -2694,6 +2720,10 @@ def preview_business_workbook(uploaded_file, user, *, specification="", material
             "parser": parser,
             "filters": {"specification": specification, "material": material},
             "cut_length_check": build_cut_length_check(records, source_type),
+            "mold_check": build_mold_check(records) if source_type in (
+                BusinessImportBatch.SourceType.FACTORY_WORK_CONTACT,
+                BusinessImportBatch.SourceType.INTERNAL_ORDERS,
+            ) else None,
         },
         errors=errors,
         warnings=warnings,
@@ -2722,6 +2752,7 @@ def business_preview_result(batch, records, issues):
         "error_count": len(errors),
         "warning_count": len(warnings),
         "cut_length_check": batch.payload.get("cut_length_check"),
+        "mold_check": batch.payload.get("mold_check"),
         "rows": [
             {
                 "row_key": record["row_key"],
@@ -2951,6 +2982,11 @@ def commit_business_batch(batch, user, *, cut_length_acknowledged=False, cut_len
                         source_key=record["source_key"],
                     )
                 for field in record.get("source_fields", []):
+                    if field == "mold_model_id" and (
+                        product.mold_model_id
+                        or current.payload.get("mold_selections", {}).get(f"source:{record['source_key']}")
+                    ):
+                        continue
                     setattr(product, field, record.get(field, ""))
                 product.raw_data = record.get("raw_data", {})
                 product.save()
@@ -3128,9 +3164,20 @@ def commit_business_batch(batch, user, *, cut_length_acknowledged=False, cut_len
                     else:
                         updated["material_receipts"] += 1
 
+            mold_links_changed, mold_warnings = apply_mold_selections(
+                records, current.payload.get("mold_selections", {}), product_specs, user=user, batch=current,
+            )
             committed_at = timezone.now()
             payload = current.payload
             payload["rows"] = json_safe(records)
+            if current.payload.get("mold_check") is not None:
+                payload["mold_check"] = build_mold_check(records, products_by_source=product_specs, include_options=False)
+                payload["mold_link_changes"] = mold_links_changed
+                payload["mold_link_warnings"] = mold_warnings
+                payload["mold_link_confirmation"] = {
+                    "user_id": user.pk, "username": user.get_username(), "confirmed_at": committed_at.isoformat(),
+                    "selections": current.payload.get("mold_selections", {}),
+                }
             if cut_length_check is not None:
                 payload["cut_length_check"] = cut_length_check
                 if cut_length_check["alert_count"]:
@@ -3154,6 +3201,8 @@ def commit_business_batch(batch, user, *, cut_length_acknowledged=False, cut_len
                 "updated": updated,
                 "imported": imported,
                 "skipped": skipped,
+                "mold_links_changed": mold_links_changed,
+                "mold_link_warnings": mold_warnings,
             }
     except ValueError:
         raise

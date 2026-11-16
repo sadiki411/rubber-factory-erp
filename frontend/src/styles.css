@@ -266,6 +266,11 @@ button, input, textarea, select { font: inherit; }
 .inventory-modal .ant-modal-body .ant-row { margin-inline: 0 !important; }
 .inventory-modal .ant-modal-body .ant-col { min-width: 0; }
 .inventory-outbound-quantity { display: flex; gap: 8px; align-items: stretch; min-width: 0; }
+.import-mold-check { margin-block: 16px; min-width: 0; }
+.import-mold-check .ant-select { min-width: 0; min-height: 44px; }
+.import-mold-check .ant-btn { min-height: 44px; }
+.import-mold-select-popup { max-width: calc(100vw - 24px); }
+.import-mold-select-popup .ant-select-item-option-content { white-space: normal; overflow-wrap: anywhere; }
 .inventory-outbound-quantity .ant-input-number { flex: 1; min-width: 0; width: 100%; }
 .inventory-outbound-quantity .ant-btn { flex-shrink: 0; min-height: 44px; }
 .inventory-outbound-quantity .ant-input-number-input { min-height: 42px; }

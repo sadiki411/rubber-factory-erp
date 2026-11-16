@@ -75,6 +75,24 @@ class PurchaseImageTests(APITestCase):
         with self.assertRaisesMessage(ValueError, "核对识别内容"):
             self.commit(draft)
 
+    def test_purchase_order_can_remember_mold_and_repreview_revokes_draft_selection(self):
+        model = MoldModel.objects.create(code="PURCHASE-MOLD", product_name="采购产品模具")
+        draft = self.recognize()
+        preview = self.preview(draft)
+        key = preview["mold_check"]["rows"][0]["binding_key"]
+        url = f'/api/orders/imports/{preview["token"]}/mold-check/'
+        result = self.client.post(url, {"binding_key": key, "mold_model_id": model.pk}, format="json")
+        self.assertEqual(result.status_code, 200, result.data)
+        rechecked = self.preview(draft)
+        self.assertEqual(rechecked["mold_check"]["rows"][0]["status"], "UNLINKED")
+        self.client.post(url, {"binding_key": key, "mold_model_id": model.pk}, format="json")
+        self.commit(rechecked)
+        product = ProductSpecification.objects.get()
+        self.assertEqual(product.mold_model_id, model.pk)
+        next_preview = self.preview(self.recognize([recognized(order_no="CG202610190010")]))
+        self.assertEqual(next_preview["mold_check"]["rows"][0]["mold_model_id"], model.pk)
+        self.assertEqual(next_preview["mold_check"]["rows"][0]["product_id"], product.pk)
+
     def test_five_purchase_images_import_all_lines_without_inventing_history(self):
         data = [
             recognized(),
