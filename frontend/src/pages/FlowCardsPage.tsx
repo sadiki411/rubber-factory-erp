@@ -8,7 +8,8 @@ import { PageTitle } from '../components/PageTitle'
 import { QualityQrScanner } from '../components/QualityQrScanner'
 import { FlowTemplatePanel } from '../components/FlowTemplatePanel'
 import { FlowBakePanel } from '../components/FlowBakePanel'
-import { flowApi, flowRequestKey, finishFlowRequest, isInternalCardCode, type FlowGroup, type PrintJob, type FlowTrace } from '../flowcards'
+import { FlowEventSummary, FlowMeasurementSummary, flowTime, type CouponSample } from '../components/FlowMeasurementSummary'
+import { flowApi, flowLimitText, flowRequestKey, finishFlowRequest, isInternalCardCode, type Criterion, type FlowEvent, type FlowGroup, type PrintJob, type FlowTrace } from '../flowcards'
 import { safeBusinessReturn } from '../navigation'
 import './FlowCardsPage.css'
 
@@ -143,7 +144,7 @@ export function FlowCardsPage() {
         const chosen = data.standards.find((s) => s.id === selectedStandard)
         standardForm.setFieldsValue({ appearance_ids: (chosen?.snapshot.appearance || data.appearance.slice(0, 4)).map((a) => a.id), whole_mold: chosen?.whole_mold || 'UNKNOWN', bake: chosen?.snapshot.bake || { state: 'UNKNOWN' },
           hardness: chosen?.snapshot.hardness, dimension_count: chosen?.snapshot.dimension_count,
-          criteria: chosen?.snapshot.criteria.map((c) => ({ criterion_id: c.id, stage: c.stage, method: c.method, numeric: c.numeric })) })
+          criteria: chosen?.snapshot.criteria.map((c) => ({ criterion_id: c.id, stage: c.stage, method: c.method, numeric: c.numeric, limit_mode: c.limit_mode || (c.numeric ? 'RANGE' : 'PENDING'), upper_inclusive: c.upper_inclusive !== false, lower_inclusive: c.lower_inclusive !== false })) })
         setStandardOpen(true)
       }}>维护产品确认标准</Button>}>
         <Typography.Paragraph>来源：{data.run_id ? `生产任务 #${data.run_id}` : '制卡准备（不会创建生产任务）'} · {data.orders.map((o) => `${o.order_no}/${o.item_no || '-'}`).join('、') || '尚未选择订单项次，只维护产品要求'}</Typography.Paragraph>
@@ -207,15 +208,17 @@ export function FlowCardsPage() {
           <Form.List name="criteria">{(fields, { add, remove }) => <>{fields.map((f) => <Card size="small" key={f.key} extra={<Button onClick={() => remove(f.name)}>移除此项</Button>}>
             <div className="flow-form-grid">
               <Form.Item name={[f.name, 'stage']} label="测量阶段" rules={[{ required: true }]}><Select options={STAGES} /></Form.Item>
-              <Form.Item name={[f.name, 'criterion_id']} label="复用已有检验项目（没有则下方填写新增）"><Select allowClear options={data.criteria.map((c) => ({ value: c.id, label: `#${c.id} ${c.inspection_item} ${c.lower_limit}~${c.upper_limit}${c.unit}` }))} /></Form.Item>
+              <Form.Item name={[f.name, 'criterion_id']} label="复用已有检验项目（没有则下方填写新增）"><Select allowClear options={data.criteria.map((c) => ({ value: c.id, label: `#${c.id} ${c.inspection_item} ${flowLimitText({ ...c, lower: c.lower_limit, upper: c.upper_limit, numeric: Boolean(c.lower_limit && c.upper_limit) })}` }))} onChange={(value) => { const c = data.criteria.find((r) => r.id === value); if (c) standardForm.setFieldValue(['criteria', f.name], { ...standardForm.getFieldValue(['criteria', f.name]), method: c.method || '', limit_mode: c.limit_mode || 'PENDING', upper_inclusive: c.upper_inclusive !== false, lower_inclusive: c.lower_inclusive !== false }) }} /></Form.Item>
               <Form.Item name={[f.name, 'name']} label="新增项目名称"><Input /></Form.Item>
               <Form.Item name={[f.name, 'lower']} label="下限/建议原文"><Input /></Form.Item>
               <Form.Item name={[f.name, 'upper']} label="上限"><Input /></Form.Item>
               <Form.Item name={[f.name, 'unit']} label="单位/硬度量表"><Input /></Form.Item>
-              <Form.Item name={[f.name, 'method']} label="确认的测量方法" rules={[{ required: true }]}><Input /></Form.Item>
-              <Form.Item name={[f.name, 'numeric']} valuePropName="checked"><Checkbox>明确数值上下限，可自动对照</Checkbox></Form.Item>
+              <Form.Item name={[f.name, 'method']} label="确认的测量方法（未确认可空，不硬判）"><Input /></Form.Item>
+              <Form.Item name={[f.name, 'limit_mode']} label="界限控制方式" rules={[{ required: true }]}><Select options={[{ value: 'UPPER', label: '仅上限（下限留空）' }, { value: 'RANGE', label: '上下限（两端都判）' }, { value: 'PENDING', label: '要测，界限待确认' }, { value: 'NONE', label: '不要求测（不占纸面尺寸格）' }]} /></Form.Item>
+              <Form.Item name={[f.name, 'upper_inclusive']} valuePropName="checked" initialValue={true}><Checkbox>包含上限（≤）；客户要求严格小于时取消</Checkbox></Form.Item>
+              <Form.Item name={[f.name, 'lower_inclusive']} valuePropName="checked" initialValue={true}><Checkbox>包含下限（≥，仅双边适用）</Checkbox></Form.Item>
             </div>
-          </Card>)}<Button onClick={() => add()}>增加要求（超过两项尺寸会附续页）</Button></>}</Form.List>
+          </Card>)}<Button onClick={() => add({ limit_mode: 'PENDING', upper_inclusive: true, lower_inclusive: true })}>增加要求（超过两项尺寸会附续页）</Button></>}</Form.List>
         </Form>
         <details><summary>外观问题库维护（不改旧卡名称）</summary><Space wrap><Input placeholder="新增外观问题名称" value={appearanceName} onChange={(e) => setAppearanceName(e.target.value)} /><Button disabled={disabled || !appearanceName.trim()} onClick={() => void act(async () => { await flowApi.appearance({ name: appearanceName }); setAppearanceName(''); void context.refetch() })}>增加问题</Button></Space><Typography.Paragraph>停用只影响后续选项；旧卡快照保留。</Typography.Paragraph>{data.appearance.map((a) => <Space key={a.id} wrap><Input defaultValue={a.name} aria-label={`外观问题${a.id}`} onBlur={(e) => { if (e.target.value.trim() && e.target.value !== a.name) void act(async () => { await flowApi.appearance({ id: a.id, name: e.target.value }); void context.refetch() }) }} disabled={disabled} /><Button disabled={disabled} onClick={() => void act(async () => { await flowApi.appearance({ id: a.id, name: a.name, is_active: false }); void context.refetch() })}>停用</Button></Space>)}</details>
         <details><summary>可选：本次实际模具的已标记定点图（独立确认版本）</summary>
@@ -255,8 +258,29 @@ export function FlowCardDetailPage() {
   const diagram = useQuery({ queryKey: ['flow-diagram', card.data?.snapshot.diagram_id], queryFn: () => flowApi.diagramDetail(card.data!.snapshot.diagram_id!), enabled: tab === 'diagram' && Boolean(card.data?.snapshot.diagram_id) })
   const kind = Form.useWatch('kind', form)
   const measurementObject = Form.useWatch('measurement_object', form)
+  const [bakePage, setBakePage] = useState(1)
+  const bakeSources = useQuery({ queryKey: ['flow-bake-samples', id, bakePage], queryFn: () => flowApi.bakeSamples(id, bakePage), enabled: recordOpen && kind === 'BAKED_HARDNESS' && measurementObject === 'COUPON' })
   const data = card.data
   const disabled = readOnly || data?.write_enabled === false
+  const measure = (c: Criterion, original?: FlowEvent) => {
+    form.resetFields()
+    form.setFieldsValue({ kind: c.stage, state: 'NOT_MEASURED', criterion_id: c.id, unit: c.unit, method: c.method,
+      scope: original?.scope || '本卡本次实测', replaces_id: original?.id,
+      covered_card_ids: original?.card_ids || [id], measurement_object: original?.values.measurement_object || data?.snapshot.standard?.snapshot.hardness?.[c.stage]?.object || 'UNKNOWN',
+      covered_card_labels: original?.card_refs?.map((r) => r.card_no).join('、') || data?.card_no,
+      sample_ref: original?.values.sample_ref, material_ref: original?.values.material_ref, bake_event_id: original?.values.bake_event_id })
+    setRecordOpen(true)
+  }
+  const selectBake = (e: FlowEvent, sample: CouponSample) => {
+    const matches = data?.snapshot.standard?.snapshot.criteria.filter((c) => c.stage === 'BAKED_HARDNESS') || []
+    const c = matches.length === 1 ? matches[0] : undefined
+    form.setFieldsValue({ kind: 'BAKED_HARDNESS', state: 'NOT_MEASURED', actual: undefined, criterion_id: c?.id, unit: c?.unit, method: c?.method,
+      measurement_object: 'COUPON', sample_ref: sample.sample_ref, material_ref: sample.material_ref, bake_event_id: e.id,
+      covered_card_ids: sample.card_ids, shared_cards: undefined, scope: `${e.scope}；胶片${sample.sample_ref}代表${sample.card_ids.length}卡`,
+      covered_card_labels: e.card_refs?.filter((r) => sample.card_ids.includes(r.id)).map((r) => r.card_no).join('、') || `${sample.card_ids.length}张明确关联卡（原记录可核对）`,
+      bake_source_label: `${flowTime(e.business_at)} · 盘${sample.trays.join('、')} · 胶片${sample.sample_ref} · 代表${sample.card_ids.length}卡` })
+  }
+  const bakeMeasure = (e: FlowEvent, sample: CouponSample) => { form.resetFields(); selectBake(e, sample); setRecordOpen(true) }
   const act = async (work: () => Promise<void>) => { setBusy(true); setError(''); try { await work() } catch (e) { setError((e as Error).message) } finally { setBusy(false) } }
   const record = () => act(async () => {
     const v = await form.validateFields()
@@ -266,23 +290,25 @@ export function FlowCardDetailPage() {
     if (v.kind === 'RESOLUTION') Object.assign(values, { anomaly_id: v.anomaly_id, result: v.note, resolved: v.resolved === true })
     if (STAGES.some((s) => s.value === v.kind)) Object.assign(values, { state: v.state, actual: v.actual, criterion_id: v.criterion_id, unit: v.unit, method: v.method })
     if (['MOLDING_HARDNESS', 'BAKED_HARDNESS'].includes(v.kind)) Object.assign(values, { measurement_object: v.measurement_object || 'UNKNOWN', object_change_reason: v.object_change_reason, sample_ref: v.sample_ref, material_ref: v.material_ref, bake_event_id: v.bake_event_id })
-    const cardIds = [id]
+    const cardIds: string[] = v.covered_card_ids || [id]
     for (const code of (v.shared_cards || '').split(/\n/).map((s: string) => s.trim()).filter(Boolean)) cardIds.push((await flowApi.scan(code)).id)
     const body = { card_ids: [...new Set(cardIds)], kind: v.kind, values, evidence: v.evidence, scope: v.scope, employee_id: v.employee_id || null, business_at: v.business_at?.toISOString() || null, replaces_id: v.replaces_id || null }
     await flowApi.record({ ...body, request_key: flowRequestKey(`event:${id}`, body) }); finishFlowRequest(`event:${id}`)
-    setRecordOpen(false); form.resetFields(); void card.refetch(); void events.refetch(); message.success('已保存原记录，不改变数量账')
+    setRecordOpen(false); form.resetFields(); await card.refetch(); void events.refetch(); message.success('已保存原记录，不改变数量账')
+    document.querySelector('[aria-label="实测与复核状态"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   })
   return <div className="page-container flow-cards-page">
     <PageTitle title="工序卡详情" description="实物来源、工序事实与客户交付分别查看。" extra={<Space wrap><Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/production'))}>返回来源</Button><Button onClick={() => void card.refetch()}>刷新</Button></Space>} />
     {card.isError ? <Alert type="error" title="内部卡读取失败，不视为不存在的客户卡" description={card.error.message} /> : !data ? <Skeleton active /> : <>
       <Card title={data.card_no} extra={<Button disabled={disabled} onClick={() => { form.resetFields(); form.setFieldsValue({ kind: 'WHOLE_MOLD', status: 'PARTIAL', state: 'UNKNOWN' }); setRecordOpen(true) }}>登记 / 续记 / 复测</Button>}>
+        <FlowMeasurementSummary card={data} disabled={disabled} measure={measure} />
         <Descriptions column={{ xs: 1, sm: 2 }} items={[
           { key: 'product', label: '产品', children: `${data.snapshot.product.specification} / ${data.snapshot.product.material}` },
           { key: 'plan', label: '原计划', children: `${data.planned_molds}M | ${data.sequence}/${data.denominator}批 · ${data.original_date}` },
           { key: 'source', label: '实物来源', children: data.source_status === 'PLAN_ONLY' ? '仅计划关联，实物未在系统核对' : '已登记实物来源核对（查看原记录依据）' },
           { key: 'whole', label: '整模登记', children: WHOLE[data.whole_mold_status] || data.whole_mold_status },
           { key: 'cavities', label: '有效孔数快照', children: data.snapshot.effective_cavities ?? '未确认；不猜孔数' },
-          { key: 'anomaly', label: '未解决异常', children: data.unresolved_anomalies },
+          { key: 'anomaly', label: '人工异常待处理', children: data.unresolved_anomalies },
         ]} />
         <Space wrap>{data.snapshot.orders.map((o) => <Button key={o.id} href={`/order-overview/${o.id}?return_to=${encodeURIComponent(location.pathname)}`}>{o.order_no}/{o.item_no || '-'}</Button>)}{data.snapshot.run_id && <Button href={`/production/records/${data.snapshot.run_id}?return_to=${encodeURIComponent(location.pathname)}`}>原生产任务</Button>}</Space>
         <Alert type="info" title="定点不自动扣孔；签名/照片/出货不代表其他工序已完成" description={data.paper_status} />
@@ -293,7 +319,7 @@ export function FlowCardDetailPage() {
       {error && <Alert type="error" title="操作失败或结果需核对" description={error} />}
       <Card>
         <Space wrap>{[['events', '工序/异常原记录'], ['photos', '原图归档'], ['trace', '出货/退回追溯'], ['diagram', '当时定点图'], ['prints', '原打印任务']].map(([value, label]) => <Button key={value} type={tab === value ? 'primary' : 'default'} onClick={() => { setTab(value); setPage(1) }}>{label}</Button>)}</Space>
-        {tab === 'events' && (events.isError ? <Alert type="error" title="原记录读取失败，不显示0/正常" /> : events.isPending ? <Skeleton active /> : <><Typography.Paragraph>未登记仅表示系统无数字记录，不认定现场未做。实际0保留；更正/复测不覆盖原值。</Typography.Paragraph>{!events.data.results.length && <Empty description="系统未登记 / 纸面待核对" />}{events.data.results.map((e) => <Card size="small" key={e.id} title={`${e.kind} · ${e.employee_name || '实际人员未登记'}`}><div>业务时间：{e.business_at || '未知'} · 录入：{e.created_at}</div><div>范围：{e.scope}；依据：{e.evidence}</div><pre>{JSON.stringify(e.values, null, 2)}</pre>{e.replaces_id && <Tag>续记/复测原记录 {e.replaces_id}</Tag>}</Card>)}<Pagination current={page} total={events.data.count} pageSize={20} onChange={setPage} /></>)}
+        {tab === 'events' && (events.isError ? <Alert type="error" title="原记录读取失败，不显示0/正常" /> : events.isPending ? <Skeleton active /> : <><Typography.Paragraph>未登记仅表示系统无数字记录，不认定现场未做。实际0保留；更正/复测不覆盖原值。</Typography.Paragraph>{!events.data.results.length && <Empty description="系统未登记 / 纸面待核对" />}{events.data.results.map((e) => <FlowEventSummary key={e.id} event={e} disabled={disabled} bakeMeasure={bakeMeasure} remeasure={measure} />)}<Pagination current={page} total={events.data.count} pageSize={20} onChange={setPage} /></>)}
         {tab === 'photos' && <>
           <Upload accept="image/jpeg,image/png,image/webp" showUploadList={false} disabled={disabled || busy} beforeUpload={(file) => { void act(async () => { const body = new FormData(); body.set('card_id', id); body.set('file', file); await flowApi.upload(body); void photos.refetch() }); return false }}><Button disabled={disabled} loading={busy}>拍照 / 上传原图（不自动判完成）</Button></Upload>
           {photos.isError ? <Alert type="error" title="原图列表读取失败" /> : photos.data?.results.map((p) => <div key={p.id}><Button href={p.url} target="_blank">查看原图 · {p.original_name}</Button><Typography.Text copyable>{p.id}</Typography.Text>{p.replaces_id && <Tag>补拍替换原图 {p.replaces_id}（原件保留）</Tag>}<Upload accept="image/jpeg,image/png,image/webp" showUploadList={false} disabled={disabled || busy} beforeUpload={(file) => { void act(async () => { const body = new FormData(); body.set('card_id', id); body.set('replaces_id', p.id); body.set('file', file); await flowApi.upload(body); void photos.refetch() }); return false }}><Button disabled={disabled}>补拍 / 替换此原图（留旧件）</Button></Upload></div>)}<Pagination current={page} total={photos.data?.count} pageSize={20} onChange={setPage} />
@@ -305,11 +331,13 @@ export function FlowCardDetailPage() {
       {job && <PrintResults job={job} changed={setJob} disabled={disabled} />}
       <Modal title="真实作业 / 异常同号续记" open={recordOpen} onCancel={() => setRecordOpen(false)} onOk={() => void record()} confirmLoading={busy} okButtonProps={{ disabled }}>
         <Form form={form} layout="vertical">
+          <Form.Item name="covered_card_ids" hidden><Input /></Form.Item>
+          <Form.Item name="covered_card_labels" label="本次代表卡（自动关联，不需抄编号）"><Input.TextArea readOnly /></Form.Item>
           <Form.Item name="kind" label="记录类型" rules={[{ required: true }]}><Select options={[{ value: 'WHOLE_MOLD', label: '整模作业' }, { value: 'ANOMALY', label: '异常' }, { value: 'RESOLUTION', label: '原异常处理结果' }, { value: 'SOURCE_CONFIRM', label: '核对实际来源' }, ...STAGES.filter((s) => s.value !== 'SECONDARY_CURE')]} onChange={(stage) => {
             const matches = data.snapshot.standard?.snapshot.criteria.filter((c) => c.stage === stage) || []
             const criterion = matches.length === 1 ? matches[0] : undefined
             const config = data.snapshot.standard?.snapshot.hardness?.[stage]
-            form.setFieldsValue({ criterion_id: criterion?.id, unit: criterion?.unit, method: criterion?.method, measurement_object: config?.object || 'UNKNOWN', actual: undefined, sample_ref: undefined, bake_event_id: undefined })
+            form.setFieldsValue({ criterion_id: criterion?.id, unit: criterion?.unit, method: criterion?.method, measurement_object: config?.object || 'UNKNOWN', state: 'NOT_MEASURED', actual: undefined, sample_ref: undefined, bake_event_id: undefined, replaces_id: undefined, covered_card_ids: [id] })
           }} /></Form.Item>
           <Form.Item name="scope" label="本次实际范围/模段（未知则明确写未知）" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="employee_id" label="实际作业人（不取登录人）"><Select loading={employees.isPending} allowClear options={employees.data?.map((e) => ({ value: e.id, label: e.name }))} /></Form.Item>
@@ -324,10 +352,16 @@ export function FlowCardDetailPage() {
           {kind === 'RESOLUTION' && <><Form.Item name="anomaly_id" label="原异常记录ID" rules={[{ required: true }]}><Input /></Form.Item><Form.Item name="resolved" valuePropName="checked"><Checkbox>实际处理完成并确认原异常已解决</Checkbox></Form.Item></>}
           {STAGES.some((s) => s.value === kind) && <>
             <Form.Item name="shared_cards" label="同一次真实检测覆盖的其他卡号（每行一个，可空，不按材质自动扩展）"><Input.TextArea /></Form.Item>
-            <Form.Item name="state" label="值的状态"><Select options={[{ value: 'UNKNOWN', label: '未知' }, { value: 'NOT_MEASURED', label: '未测' }, { value: 'NOT_APPLICABLE', label: '不适用' }, { value: 'MEASURED', label: '实测（允许0）' }]} /></Form.Item>
-            <Form.Item name="criterion_id" label="当时要求"><Select allowClear options={data.snapshot.standard?.snapshot.criteria.filter((c) => c.stage === kind).map((c) => ({ value: c.id, label: `${c.name} ${c.lower}~${c.upper}${c.unit}` }))} onChange={(v) => { const c = data.snapshot.standard?.snapshot.criteria.find((c) => c.id === v); if (c) form.setFieldsValue({ unit: c.unit, method: c.method }) }} /></Form.Item>
-            <Form.Item name="actual" label="实际值"><InputNumber /></Form.Item><Form.Item name="unit" label="实际单位/量表"><Input /></Form.Item><Form.Item name="method" label="实际测量方法"><Input /></Form.Item>
-            {['MOLDING_HARDNESS', 'BAKED_HARDNESS'].includes(kind) && <><Form.Item name="measurement_object" label="本次实际测量对象"><Select options={[{ value: 'UNKNOWN', label: '待确认（不自动判合格）' }, { value: 'PRODUCT', label: '成品' }, { value: 'COUPON', label: '胶片' }]} /></Form.Item><Form.Item name="object_change_reason" label="与当时默认测量对象不同的原因（变化时必填）"><Input /></Form.Item>{measurementObject === 'COUPON' && <><Form.Item name="sample_ref" label="本厂自制胶片原始标识"><Input /></Form.Item><Form.Item name="material_ref" label="当批胶料原始标识"><Input /></Form.Item>{kind === 'BAKED_HARDNESS' && <Form.Item name="bake_event_id" label="实际随烤记录ID（见工序原记录，不抄建议）"><Input /></Form.Item>}</>}</>}
+            <Form.Item name="state" label="值的状态"><Select options={[{ value: 'UNKNOWN', label: '未知' }, { value: 'NOT_MEASURED', label: '未测' }, { value: 'NOT_APPLICABLE', label: '不适用' }, { value: 'MEASURED', label: '实测（允许0）' }]} onChange={(state) => { if (state !== 'MEASURED' && form.getFieldValue('actual') != null) { form.setFieldValue('actual', undefined); message.info('状态已改为非实测，本次未保存读数已清除；历史原记录不变') } }} /></Form.Item>
+            <Form.Item name="criterion_id" label="当时要求"><Select allowClear options={data.snapshot.standard?.snapshot.criteria.filter((c) => c.stage === kind && c.limit_mode !== 'NONE').map((c) => ({ value: c.id, label: `${c.name} ${flowLimitText(c)}` }))} onChange={(v) => { const c = data.snapshot.standard?.snapshot.criteria.find((c) => c.id === v); if (c) form.setFieldsValue({ unit: c.unit, method: c.method }) }} /></Form.Item>
+            <Form.Item name="actual" label="实际值"><InputNumber onChange={(v) => form.setFieldValue('state', v == null ? 'NOT_MEASURED' : 'MEASURED')} /></Form.Item><Form.Item name="unit" label="实际单位/量表"><Input /></Form.Item><Form.Item name="method" label="实际测量方法"><Input /></Form.Item>
+            {['MOLDING_HARDNESS', 'BAKED_HARDNESS'].includes(kind) && <><Form.Item name="measurement_object" label="本次实际测量对象"><Select options={[{ value: 'UNKNOWN', label: '待确认（不自动判合格）' }, { value: 'PRODUCT', label: '成品' }, { value: 'COUPON', label: '胶片' }]} /></Form.Item><Form.Item name="object_change_reason" label="与当时默认测量对象不同的原因（变化时必填）"><Input /></Form.Item>{measurementObject === 'COUPON' && <><Form.Item name="sample_ref" label="本厂自制胶片原始标识"><Input readOnly={kind === 'BAKED_HARDNESS'} /></Form.Item><Form.Item name="material_ref" label="当批胶料原始标识"><Input readOnly={kind === 'BAKED_HARDNESS'} /></Form.Item>{kind === 'BAKED_HARDNESS' && <>
+              <Alert type="info" title="请选择实际二烤及随烤胶片；不默认最近一次，不需抄系统编号。" />
+              {bakeSources.isError ? <Alert type="error" title="二烤来源读取失败，不当作没有随烤" /> : <Select aria-label="选择实际二烤胶片" style={{ width: '100%' }} loading={bakeSources.isPending} placeholder="按日期、盘号、胶片选择" options={bakeSources.data?.results.flatMap((e) => ((e.values.coupon_samples || []) as CouponSample[]).filter((s) => s.accompanied).map((s, i) => ({ value: `${e.id}:${i}`, label: `${flowTime(e.business_at)} · 盘${s.trays.join('、')} · 胶片${s.sample_ref} · 胶料${s.material_ref} · ${s.card_ids.length}卡` })))} onChange={(value) => { const [eid, index] = value.split(':'); const e = bakeSources.data?.results.find((row) => row.id === eid); if (e) selectBake(e, (e.values.coupon_samples as CouponSample[]).filter((s) => s.accompanied)[Number(index)]) }} />}
+              <Pagination current={bakePage} total={bakeSources.data?.count} pageSize={20} showSizeChanger={false} onChange={setBakePage} />
+              <Form.Item name="bake_source_label" label="本次检测来源"><Input readOnly /></Form.Item>
+              <Form.Item name="bake_event_id" hidden><Input /></Form.Item>
+            </>}</>}</>}
           </>}
           <Form.Item name="note" label="变化位置、处理内容等"><Input.TextArea /></Form.Item>
           <Form.Item name="evidence" label="确认依据 / 异常说明" rules={[{ required: true }]}><Input.TextArea /></Form.Item>

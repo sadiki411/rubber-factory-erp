@@ -20,8 +20,9 @@ from .models import (
     AppearanceIssue, StandardRevision, CardGroup, InternalCard, CardEvent,
     PrintJob, PrintItem, TemplatePublication, ShipmentSource, TraceAudit, PositionDiagram,
 )
+from .limits import validate_limits, evaluate
 
-RENDERER = "flowcard-review-20261118-v2"
+RENDERER = "flowcard-review-20261118-v3"
 TEMPLATE = {"renderer": RENDERER, "version": "草稿", "width_mm": 190, "height_mm": 130}
 MEASURE_STAGES = {"UPPER_TEMP", "LOWER_TEMP", "MOLDING_HARDNESS", "BAKED_HARDNESS", "DIMENSION", "SECONDARY_CURE"}
 KINDS = MEASURE_STAGES | {"APPEARANCE", "WHOLE_MOLD", "DEBURR", "BAKE", "ANOMALY", "RESOLUTION", "SOURCE_CONFIRM", "VOID"}
@@ -115,7 +116,9 @@ def requirement_warnings(product, orders, standard=None):
         Q(order__isnull=True) | Q(order_id__in=[o.pk for o in orders])))
     by_name = {}
     for row in rows:
-        by_name.setdefault(row.inspection_item, set()).add((row.lower_limit, row.upper_limit, row.unit))
+        meta = row.raw_data or {}
+        by_name.setdefault(row.inspection_item, set()).add((row.lower_limit, row.upper_limit, row.unit,
+            meta.get("limit_mode"), meta.get("upper_inclusive", True), meta.get("lower_inclusive", True)))
     warnings = [f"项目“{name}”存在不同范围/单位，须核对来源后确认适用要求。" for name, values in by_name.items() if len(values) > 1]
     chosen = {e["id"] for e in standard.snapshot["criteria"]} if standard else set()
     if any(row.order_id and row.pk not in chosen for row in rows):
@@ -166,7 +169,13 @@ def confirm_standard(data, user):
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("stage") not in MEASURE_STAGES:
             raise ValidationError({"criteria": "检验阶段无效。"})
-        method = required_text(entry, "method", 300)
+        method = entry.get("method") or ""
+        if not isinstance(method, str) or len(method) > 300:
+            raise ValidationError({"method": "测法最多300字；未确认可留空，实测不硬判。"})
+        method = method.strip()
+        unit = entry.get("unit") or ""
+        if not isinstance(unit, str) or len(unit) > 100:
+            raise ValidationError({"unit": "单位须为文字，最多100字；未确认可留空。"})
         if entry.get("criterion_id"):
             row = get_row(ProductInspectionCriterion, entry["criterion_id"], "criterion_id")
             if row.product_specification_id != product.pk:
@@ -176,25 +185,23 @@ def confirm_standard(data, user):
             row = ProductInspectionCriterion.objects.create(
                 product_specification=product, category="工序流转卡确认", inspection_item=required_text(entry, "name", 200),
                 lower_limit=str(entry.get("lower", "")), upper_limit=str(entry.get("upper", "")),
-                unit=str(entry.get("unit", "")).strip()[:100] if entry["stage"] in HARDNESS_STAGES else required_text(entry, "unit", 100), raw_data={"source": source, "method": method, "stage": entry["stage"]},
+                unit=unit.strip(), raw_data={"source": source, "method": method, "stage": entry["stage"],
+                    **{k: entry[k] for k in ("limit_mode", "upper_inclusive", "lower_inclusive") if k in entry}},
             )
         numeric = entry.get("numeric", False)
         if numeric not in (True, False):
             raise ValidationError({"criteria": "numeric必须为布尔值。"})
-        if numeric:
-            try:
-                lower, upper = Decimal(row.lower_limit), Decimal(row.upper_limit)
-                if not lower.is_finite() or not upper.is_finite() or lower > upper:
-                    raise InvalidOperation
-            except (InvalidOperation, ValueError):
-                raise ValidationError({"criteria": "数值判定要求明确的数值上下限；不能自动解析自由文本。"})
+        rules = {k: entry.get(k, (row.raw_data or {}).get(k)) for k in ("limit_mode", "upper_inclusive", "lower_inclusive")
+                 if k in entry or k in (row.raw_data or {})}
+        mode = validate_limits({"lower": row.lower_limit, "upper": row.upper_limit, "numeric": numeric, **rules})
         snapshots.append({"id": row.pk, "order_id": row.order_id, "name": row.inspection_item,
                           "lower": row.lower_limit, "upper": row.upper_limit, "unit": row.unit,
-                          "stage": entry["stage"], "method": method, "numeric": numeric,
+                          "stage": entry["stage"], "method": method, "numeric": mode in ("UPPER", "RANGE"),
+                          "limit_mode": mode, "upper_inclusive": rules.get("upper_inclusive", True), "lower_inclusive": rules.get("lower_inclusive", True), "source": source,
                           "source_sheet": row.source_sheet, "source_row": row.source_row,
                           "source_batch_id": str(row.source_batch_id) if row.source_batch_id else None})
         criteria.append(row)
-    if dimensions is not None and dimensions < sum(e["stage"] == "DIMENSION" for e in snapshots):
+    if dimensions is not None and dimensions < sum(e["stage"] == "DIMENSION" and e["limit_mode"] != "NONE" for e in snapshots):
         raise ValidationError({"dimension_count": "需要的尺寸项目数不能少于本次已确认的尺寸项目。"})
     version = (StandardRevision.objects.filter(product=product).aggregate(v=Max("version"))["v"] or 0) + 1
     result = StandardRevision.objects.create(product=product, mold=mold, version=version, source=source, request_key=key, request_digest=digest(data),
@@ -503,9 +510,14 @@ def record_event(data, user):
             raise ValidationError({"diagram_id": "本卡引用的图版本不一致，请另存变化及实际适用模段。"})
         values = {**values, "coverage": coverage, "fixed_positions": fixed, "unit": "孔/模", "quantity_effect": "NONE"}
     if kind in MEASURE_STAGES:
+        # Derived fields are server facts, never trust stale/client judgments.
+        for name in ("judgment", "standard_snapshot", "limit_side", "difference", "measurement_message", "limit_text"):
+            values.pop(name, None)
         state = values.get("state")
         if state not in ("MEASURED", "NOT_MEASURED", "NOT_APPLICABLE", "UNKNOWN"):
             raise ValidationError({"values": "请区分实测、未测、不适用和未知。"})
+        if state != "MEASURED" and values.get("actual") not in (None, ""):
+            raise ValidationError({"actual": "已有实测数字不能同时标成未知/未测/不适用；请明确清除读数或选择实测。"})
         if state == "MEASURED":
             try:
                 actual = Decimal(str(values["actual"]))
@@ -547,12 +559,11 @@ def record_event(data, user):
             if matching:
                 criterion = matching[0]
                 if values.get("unit") != criterion["unit"] or values.get("method") != criterion["method"]:
-                    if kind not in HARDNESS_STAGES:
-                        raise ValidationError({"values": "实测单位/方法与当时标准不一致，不能直接判定。"})
                     method_matches = False
                 values["standard_snapshot"] = criterion
-                if criterion["numeric"] and method_matches:
-                    values["judgment"] = "WITHIN" if Decimal(criterion["lower"]) <= actual <= Decimal(criterion["upper"]) else "OUTSIDE"
+                values.update(evaluate(criterion, actual, method_matches))
+            else:
+                values["measurement_message"] = "未关联当时要求，未判定"
     if kind == "APPEARANCE":
         if values.get("normal") is True and (values.get("defect_ids") or values.get("other")):
             raise ValidationError({"values": "正常与缺陷不能同时选择。"})
@@ -572,6 +583,13 @@ def record_event(data, user):
     replaces = get_row(CardEvent, data["replaces_id"], "replaces_id") if data.get("replaces_id") else None
     if replaces and (replaces.kind != kind or set(replaces.cards.values_list("pk", flat=True)) != {c.pk for c in cards}):
         raise ValidationError({"replaces_id": "更正/复测须保留原记录类型和覆盖范围。"})
+    if replaces and kind in MEASURE_STAGES:
+        if CardEvent.objects.filter(replaces=replaces).exists():
+            raise ValidationError({"replaces_id": "原测量已有后续复核，请查看最新记录后继续，不能分叉关闭提醒。"})
+        if not employee or not business_at or values.get("state") != "MEASURED" or values.get("criterion_id") != replaces.values.get("criterion_id"):
+            raise ValidationError({"replaces_id": "复测须同一项目、有实际读数、处理人和业务时间；未测不能关闭超限。"})
+        if kind == "BAKED_HARDNESS" and any(values.get(k) != replaces.values.get(k) for k in ("bake_event_id", "sample_ref", "material_ref")):
+            raise ValidationError({"replaces_id": "复测须保留同次二烤和同一胶片来源。"})
     if kind == "RESOLUTION":
         original = get_row(CardEvent, values.get("anomaly_id"), "anomaly_id")
         if original.kind != "ANOMALY" or not {c.pk for c in cards} <= set(original.cards.values_list("pk", flat=True)):

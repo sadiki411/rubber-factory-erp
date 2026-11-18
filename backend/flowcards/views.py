@@ -1,6 +1,7 @@
 import hashlib
 import io
 import uuid
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from orders.models import ProductInspectionCriterion, ProductSpecification
 from production.models import ProductionRun
 from quality.models import QualityOrder, QualityReworkCase, QualityShipmentBatch
 from . import services as s
+from .limits import limit_text, limit_mode
 from .models import (AppearanceIssue, StandardRevision, CardGroup, InternalCard, CardEvent,
                      PrintJob, Attachment, PositionDiagram, TemplatePublication, ShipmentSource)
 
@@ -81,6 +83,11 @@ def event_data(event):
     return {"id": str(event.pk), "kind": event.kind, "business_at": event.business_at,
             "created_at": event.created_at, "recorded_by": event.created_by_id,
             "employee_id": event.employee_id, "employee_name": event.employee_name,
+            "card_ids": [str(c.pk) for c in event.cards.all()],
+            "card_refs": [{"id": str(c.pk), "card_no": c.card_no} for c in event.cards.all()],
+            "followups": [{"id": str(e.pk), "employee_name": e.employee_name, "business_at": e.business_at,
+                "message": e.values.get("measurement_message", "未判定"), "judgment": e.values.get("judgment", "NOT_EVALUATED")}
+                for e in event.cardevent_set.all()] if event.kind in s.MEASURE_STAGES else [],
             "values": event.values, "scope": event.scope, "evidence": event.evidence,
             "replaces_id": str(event.replaces_id) if event.replaces_id else None}
 
@@ -128,7 +135,12 @@ class ContextView(ErrorsMixin, APIView):
             "standards": [s.standard_data(row) for row in standards.order_by("-mold_id", "-version")[:20]],
             "existing_groups": [group_data(g) for g in existing.distinct().order_by("-created_at")[:20]],
             "appearance": list(AppearanceIssue.objects.filter(is_active=True).values("id", "name")),
-            "criteria": list(criteria.values("id", "order_id", "inspection_item", "lower_limit", "upper_limit", "unit", "source_sheet", "source_row")),
+            "criteria": [{"id": c.pk, "order_id": c.order_id, "source_sheet": c.source_sheet, "source_row": c.source_row,
+                "inspection_item": c.inspection_item, "lower_limit": c.lower_limit,
+                "upper_limit": c.upper_limit, "unit": c.unit, "method": (c.raw_data or {}).get("method", ""),
+                "limit_mode": (c.raw_data or {}).get("limit_mode"),
+                "upper_inclusive": (c.raw_data or {}).get("upper_inclusive", True),
+                "lower_inclusive": (c.raw_data or {}).get("lower_inclusive", True)} for c in criteria],
             "requirement_warnings": s.requirement_warnings(product, orders),
             "diagrams": list(PositionDiagram.objects.filter(product=product, mold_id=run.mold_id).values("id", "mold_id", "version", "direction", "scope", "positions")) if run and run.mold_id else [],
             "limitations": ["显示计划关联，不代表已生产或实物来源已核对。", "已制卡计划不进入生产/库存/交付数量。"]})
@@ -206,6 +218,10 @@ class CardViewSet(ErrorsMixin, viewsets.GenericViewSet):
     @action(detail=False, methods=["get"])
     def scan(self, request):
         code = request.query_params.get("code", "").strip().upper()
+        # Only remove a printed line break at an existing separator. Never
+        # infer a missing character or perform tail-number fuzzy matching.
+        if re.fullmatch(r"FC-\d{8}-\s*\n\s*[A-Z0-9]+", code):
+            code = re.sub(r"\s+", "", code)
         try:
             if code.startswith("ERPFC:"):
                 card = self.get_queryset().get(pk=uuid.UUID(code[6:]))
@@ -224,17 +240,72 @@ class CardViewSet(ErrorsMixin, viewsets.GenericViewSet):
         source = card.events.filter(kind="SOURCE_CONFIRM").order_by("-created_at").first()
         unresolved = card.events.filter(kind="ANOMALY").exclude(
             id__in=[e.values.get("anomaly_id") for e in card.events.filter(kind="RESOLUTION") if e.values.get("resolved") is True])
+        measurements = list(card.events.filter(kind__in=s.MEASURE_STAGES).prefetch_related("cards", "cardevent_set").order_by("created_at", "id"))
+        by_id = {e.pk: e for e in measurements}
+        reviewed = set()
+        for e in measurements:
+            if e.values.get("judgment") in ("WITHIN", "OUTSIDE"):
+                parent = e.replaces_id
+                while parent in by_id:
+                    reviewed.add(parent)
+                    parent = by_id[parent].replaces_id
+        following = {e.replaces_id: e for e in measurements if e.replaces_id}
+        alerts = []
+        for e in measurements:
+            if e.values.get("judgment") != "OUTSIDE" or e.pk in reviewed:
+                continue
+            target = e
+            while target.pk in following:
+                target = following[target.pk]
+            alerts.append({**event_data(e), "card_no": card.card_no, "review_target": event_data(target)})
+        latest = {}
+        for e in measurements:
+            latest[(e.kind, e.values.get("criterion_id"))] = e
+        criteria = (card.group.snapshot.get("standard") or {}).get("snapshot", {}).get("criteria", [])
+        status = []
+        for criterion in criteria:
+            if limit_mode(criterion) == "NONE":
+                continue
+            e = latest.get((criterion["stage"], criterion["id"]))
+            status.append({"criterion": criterion, "limit_text": limit_text(criterion),
+                "event": event_data(e) if e else None,
+                "message": e.values.get("measurement_message", "未测" if e.values.get("state") == "NOT_MEASURED" else "未知 / 未判定") if e else "未测 · 系统未登记"})
+        bakes = list(card.events.filter(kind="BAKE").order_by("business_at", "created_at"))
+        superseded_bakes = {e.replaces_id for e in bakes if e.replaces_id}
+        bake_status = []
+        for bake in bakes:
+            if bake.pk in superseded_bakes:
+                continue
+            checks = []
+            for sample in bake.values.get("coupon_samples", []):
+                if str(card.pk) not in sample.get("card_ids", []):
+                    continue
+                readings = [e for e in measurements if e.kind == "BAKED_HARDNESS" and
+                    e.values.get("bake_event_id") == str(bake.pk) and e.values.get("sample_ref") == sample["sample_ref"] and
+                    e.values.get("material_ref") == sample["material_ref"]]
+                checks.append({"sample_ref": sample["sample_ref"], "material_ref": sample["material_ref"], "trays": sample["trays"],
+                    "message": readings[-1].values.get("measurement_message", "未判定") if readings else "本次胶片未测",
+                    "actual": readings[-1].values.get("actual") if readings else None,
+                    "unit": readings[-1].values.get("unit") if readings else None})
+            bake_status.append({"id": str(bake.pk), "business_at": bake.business_at, "scope": bake.scope, "checks": checks,
+                "notice": "本次未登记代表本卡的随烤胶片，胶片烤后硬度未测；不沿用其他次结果" if not checks else "每次二烤按实际胶片分别检测，不沿用其他次结果"})
         return Response({**card_data(card), "snapshot": card.group.snapshot, "write_enabled": settings.FLOW_CARDS_WRITE_ENABLED,
             "whole_mold_status": "NOT_REQUIRED" if card.group.whole_mold == "NOT_REQUIRED" else whole.values.get("status") if whole else "SYSTEM_UNREGISTERED",
             "whole_mold_record": event_data(whole) if whole else None,
             "fixed_positions_notice": "定点只按每条原记录的实际范围解释；不取最后值、最大值或平均值作为整包统一值。",
             "source_status": "PHYSICAL_CONFIRMED" if source else "PLAN_ONLY",
             "source_confirmation": event_data(source) if source else None,
-            "unresolved_anomalies": unresolved.count(), "paper_status": "原图只表示已归档，不代表各工序完成或质量合格。"})
+            "unresolved_anomalies": unresolved.count(), "measurement_alerts": alerts, "measurement_status": status, "bake_measurement_status": bake_status,
+            "paper_status": "原图只表示已归档，不代表各工序完成或质量合格。"})
 
     @action(detail=True, methods=["get"])
     def events(self, request, pk=None):
-        return page(self, request, self.get_object().events.order_by("created_at", "id"), event_data)
+        return page(self, request, self.get_object().events.prefetch_related("cards", "cardevent_set").order_by("created_at", "id"), event_data)
+
+    @action(detail=True, methods=["get"], url_path="bake-samples")
+    def bake_samples(self, request, pk=None):
+        qs = self.get_object().events.filter(kind="BAKE").exclude(pk__in=CardEvent.objects.filter(replaces__isnull=False).values("replaces_id"))
+        return page(self, request, qs.prefetch_related("cards").order_by("-business_at", "-created_at"), event_data)
 
     @action(detail=True, methods=["get"])
     def attachments(self, request, pk=None):

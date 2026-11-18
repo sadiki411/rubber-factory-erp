@@ -5,7 +5,26 @@
 .flow-cards-page .ant-typography, .flow-cards-page .ant-descriptions-item-content { overflow-wrap: anywhere; }
 .flow-cards-page .ant-checkbox-group { display: flex; gap: 12px; flex-wrap: wrap; }
 .flow-cards-page .ant-pagination { margin: 12px 0; }
-@media (max-width: 600px) { .flow-form-grid { grid-template-columns: minmax(0, 1fr); } .flow-cards-page .ant-card-extra { max-width: 48%; } .flow-cards-page .ant-card-extra button { white-space: normal; height: auto; } }
+.flow-cards-page [aria-label="实测与复核状态"] { scroll-margin-top: 72px; }
+.flow-cards-page .ant-alert { margin-block: 8px; }
+.flow-cards-page .ant-alert, .flow-cards-page .ant-alert-content { min-width: 0; overflow-wrap: anywhere; }
+.flow-cards-page details pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .flow-cards-page .page-title-content { flex: 0 1 auto; min-height: 0; }
+  .flow-cards-page .page-title-row { margin-bottom: 0; }
+  .flow-cards-page .ant-card-body { padding: 16px; }
+  .flow-cards-page .ant-alert { display: block; }
+  .flow-cards-page .ant-alert-icon { float: left; margin-inline-end: 8px; }
+  .flow-cards-page .ant-alert-content { display: block; width: 100%; }
+  .flow-cards-page .ant-alert-actions { margin: 8px 0 0; }
+}
+@media (max-width: 600px) {
+  .flow-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .flow-cards-page .ant-card-head-wrapper { flex-wrap: wrap; gap: 8px; padding-block: 12px; }
+  .flow-cards-page .ant-card-head-title { flex-basis: 100%; white-space: normal; overflow-wrap: anywhere; }
+  .flow-cards-page .ant-card-extra { max-width: 100%; margin-inline-start: 0; }
+  .flow-cards-page .ant-card-extra button { white-space: normal; height: auto; }
+}
 @media (max-width: 600px) {
   .flow-datetime-popup { position: fixed !important; left: 8px !important; top: 12px !important; width: calc(100vw - 16px); max-width: calc(100vw - 16px); }
   .flow-datetime-popup .ant-picker-panel-container { width: 100%; max-width: 100%; max-height: calc(100dvh - 24px); overflow-y: auto; }
