@@ -1,0 +1,123 @@
+{
+  "review_date": "2026-11-18",
+  "timezone": "Asia/Shanghai",
+  "branch": "codex/flow-cards-20261118",
+  "runtime_commit": "a6ec357387fab213f1ae4117157da736985cfb4b",
+  "frontend_test_commit": "261d8d79ac2f765cf7d07fb5ec0e3f46dfe3ac98",
+  "frontend_identical_to_runtime_commit": true,
+  "baseline_and_observed_production_revision": "baced3ad26519b934a8c7f3b9d0830d45540df0d",
+  "evidence_commit_location": "Review ZIP manifest.json evidence_commit; not self-referenced inside its own commit",
+  "scope": {
+    "synthetic_writes_only": true,
+    "production_database_written": false,
+    "production_migrated": false,
+    "production_deployed": false,
+    "pushed": false,
+    "production_history_reconstructed": false,
+    "production_account_secrets_exported": false,
+    "runtime_write_default": false,
+    "isolated_write_enabled": true
+  },
+  "inputs": [
+    {"name": "ERP_工序流转卡_交付复核与补修清单_20261118.md", "sha256": "614b530431adc525c8b0d9739d0222fd7b25591ccbadb63b002c21a8bf8e6821"},
+    {"name": "01_ERP_工序流转卡联动实施方案_给Codex_20261117 (1).md", "sha256": "d1f3f5348d90047733a45b971ac92b535864ee822519795f86524489d9e2fab3"},
+    {"name": "ERP_工序流转卡联动_交给电脑Codex_20261117.zip", "sha256": "f28367a020a95cd2f6dc3f166f8105afff18b428fb0ce157a54ef4be416ecccf", "limitation": "Accessible ZIP contains old 01-05; latest 01-07 ZIP mentioned by reviewer not obtained; standalone main document and RV checklist take priority"}
+  ],
+  "tests": {
+    "backend": {
+      "commit": "a6ec357387fab213f1ae4117157da736985cfb4b",
+      "command": "python manage.py test quality inventory flowcards molds.tests.test_management_commands --noinput",
+      "passed": 379,
+      "duration_s": 112.892,
+      "log": "rv-evidence/backend-379.txt",
+      "log_note": "Original captured non-ASCII console output has encoding loss; ASCII counts, statuses and result retained. Synthetic test account placeholder redacted.",
+      "flowcards_tests_included": 54,
+      "not_full_repository_suite": true,
+      "concurrency_statuses": {"groups": [201, 503], "generate": [200, 503], "print": [503, 201]},
+      "concurrency_meaning": "Same-key retry, identity uniqueness and no-orphan assertions passed; not zero-error concurrency or production SQLite certification",
+      "previous_run_log": "rv-evidence/backend-378.txt",
+      "previous_run_print_statuses": [503, 503]
+    },
+    "frontend": {
+      "commit": "261d8d79ac2f765cf7d07fb5ec0e3f46dfe3ac98",
+      "runtime_frontend_diff_empty": true,
+      "command": "node node_modules/vitest/vitest.mjs run src/components/FlowBakePanel.test.tsx src/pages/FlowCardsPage.test.tsx src/flowcards.test.ts src/components/InternalShipmentTrace.test.tsx src/pages/OrdersPage.test.tsx",
+      "files_passed": 5,
+      "tests_passed": 25,
+      "duration_s": 71.63,
+      "log": "rv-evidence/frontend-25.txt",
+      "limitations": ["JSDOM CSS/pseudo-element warnings", "Not a real Android camera or keyboard test", "Not full frontend suite"]
+    },
+    "build": {"typescript": "exit 0", "affected_eslint": "exit 0", "vite": "exit 0", "vite_duration_s": 8.54, "main_chunk_kb": 909.72, "large_chunk_warning_remains": true, "log": "rv-evidence/frontend-build.txt"},
+    "schema": {"django_check": "no issues", "makemigrations_check_dry_run": "no changes", "new_review_migrations": 0},
+    "quantity_and_performance": {
+      "commit": "a6ec357387fab213f1ae4117157da736985cfb4b",
+      "evidence": "rv-evidence/isolated-quantity-performance.json",
+      "migration_legacy_hashes_equal": true,
+      "cards_events_legacy_hashes_equal": true,
+      "source_binding_legacy_hashes_equal": true,
+      "transport": "Django APIClient on synthetic Windows SQLite; no HTTP/TLS/camera/page rendering",
+      "latest_production_clone_verified": false,
+      "limitations": "Some legacy business tables are empty in this synthetic fixture. Raw script not_tested still says Docker font packaging; separate final Linux probe below supersedes only that item, not real production migration or device checks."
+    }
+  },
+  "rv_statuses": {
+    "RV01": {"status": "implemented, isolated browser first publish and API revision test; physical approval unverified", "fc": ["FC03"], "a": ["A11", "A12", "A25", "A31"]},
+    "RV02": {"status": "final-SHA isolated Linux generation, new-container read and backup restore; cold build/full production startup/production clone unverified", "fc": ["FC00", "FC03", "FC06"], "a": ["A21", "A24", "A25", "A27", "A28"]},
+    "RV03": {"status": "implemented, four Windows PDFs nine pages and three Linux PDFs four pages visually reviewed; physical print unverified", "fc": ["FC01", "FC03", "FC09", "FC11"], "a": ["A07", "A08", "A09", "A10", "A11", "A28", "A29", "A30", "A31"]},
+    "RV04": {"status": "partial: actual browser actions and API-seeded shipment/return viewing; not pure browser whole-chain or real camera", "fc": ["FC01", "FC02", "FC03", "FC04", "FC05", "FC06", "FC07", "FC11"], "a": ["A01", "A14", "A25", "A28", "A35"]},
+    "RV05": {"status": "isolated boundary tests passed; real weak network and printer acknowledgement unverified", "fc": ["FC02", "FC03", "FC05"], "a": ["A04", "A12", "A13", "A18", "A26", "A27"]},
+    "RV06": {"status": "implemented with actual two-card browser bake and API sample scope tests; real shopfloor measurement method unverified", "fc": ["FC07"], "a": ["A19", "A20", "A38"]},
+    "RV07": {"status": "replacement UI implemented and API originals/audit tested; real mobile photo/replacement workflow unverified", "fc": ["FC06"], "a": ["A21", "A23"]},
+    "RV08": {"status": "limited detail warnings implemented; full inventory/personnel/todo, experience archive, OCR and child packages deferred", "fc": ["FC08", "FC09", "FC10"], "a": ["A07", "A09", "A23", "A35", "A36"]}
+  },
+  "browser": {
+    "environment": "ordinary non-admin account, disposable local fixture",
+    "ui_saved": ["standard confirmation", "150 molds / two cards", "print job", "simulated template release", "whole mold completed with actual zero", "one actual bake across two cards with different noncontinuous trays"],
+    "ui_read": ["order mobile entry", "complete order", "manual full card lookup", "source set and return trace", "original print job restore and frozen PDF download"],
+    "not_ui_created": ["shipment100", "whole-batch-return100"],
+    "shipment_return_fixture": "rv-evidence/browser-fixture.json",
+    "net_delivery": [100, 0],
+    "print_job_after_download": {"status": "PENDING", "outcomes": ["UNKNOWN", "UNKNOWN"], "reprint_count_changed": false},
+    "responsive_evidence": "rv-evidence/responsive-widths.json",
+    "responsive_viewports": [360, 390, 430, 768],
+    "desktop_detail_width": 1366,
+    "screenshot_cautions": {"09-手机360时间填写.jpg": "before-fix overflow, not final success", "08-手机390二烤表单.jpg": "animation transition; do not claim complete modal layout from this alone"},
+    "final_screenshots": ["rv-evidence/06-出货详情来源集合-PC.jpg", "rv-evidence/10-手机360日期弹窗修正.jpg", "rv-evidence/11-原任务下载后仍待核对.jpg"]
+  },
+  "linux": {
+    "runtime_commit": "a6ec357387fab213f1ae4117157da736985cfb4b",
+    "candidate_tag": "erp-flow-review:a6ec357",
+    "candidate_image_id": "sha256:e5d9313f51304c9d91ddc5da8a9b72e2405a6a7aefdcee7462d607add507686d",
+    "source_tar_sha256": "d14574b74914da11fcbf1d6f89d071323e4dcacb425b4a395d52be688d5d1d72",
+    "cached_base_image_id": "sha256:de0979b16fd26711c48eafc21b05228ad65cca993206df3f1ad375a7b35d09db",
+    "build_route": "offline overlay from inspected cached base; standard cold DockerHub build timed out",
+    "font_deb_sha256": "239163df984eea5c9da3b551aee374936222cdbd67f1a1be3cdcf3d76143ad66",
+    "reportlab_wheel_sha256": "849773d7cd5dde2072fedbac18c8bc909506c8befba8f088ba7b09243c6684cc",
+    "probe_script": "scripts/flowcards_linux_check.py",
+    "entrypoint": "python -B /review.py create|read|restore; not full production entrypoint",
+    "uid": 10001,
+    "readonly_rootfs": true,
+    "network": "none",
+    "production_mounts": false,
+    "public_ports": false,
+    "evidence": ["rv-evidence/linux-create.json", "rv-evidence/linux-read.json", "rv-evidence/linux-restore.json", "rv-evidence/linux-build.txt"],
+    "originals_expected": 4,
+    "required_authenticated_status": 200,
+    "required_anonymous_status": 403,
+    "old_probe_failure_retained_in_report": "First final-SHA alignment probe at 261d8d7 used production entrypoint without /app/data and exited; explicit Python probe then succeeded. No production directory was mounted."
+  },
+  "pdf_samples": {"evidence": "rv-evidence/pdf-samples.json", "synthetic_only": true, "all_draft": true, "windows_files": 4, "windows_pages": 9, "linux_files": 3, "linux_pages": 4, "physical_print_passed": false},
+  "unverified_or_deferred": [
+    "Pure browser-created shipment-return-reship whole-chain",
+    "Real Android camera, soft keyboard, WebView PDF download, WeChat boundary",
+    "Real weak-network/lost-response recovery and production-file SQLite contention",
+    "Physical paper size, handwriting, printer output and barcode scanning",
+    "Actual first and later template print approval",
+    "Latest production clone migration and all-ledger reconciliation",
+    "Full production entrypoint/reverse proxy release",
+    "160g paper/ink/fixture long-duration suitability at actual 150-180C conditions",
+    "Actual hardness instrument scale/model, specimen conditions and customer-accepted method",
+    "FC08 full inventory/personnel/todo linkage, FC09 full experience archive, FC10 OCR and physical child-package split"
+  ]
+}

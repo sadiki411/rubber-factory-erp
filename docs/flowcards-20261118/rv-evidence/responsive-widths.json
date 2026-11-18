@@ -1,0 +1,46 @@
+[
+  {
+    "documentWidth": 360,
+    "popup": [
+      {
+        "left": 8,
+        "right": 352,
+        "width": 344
+      }
+    ],
+    "width": 360
+  },
+  {
+    "documentWidth": 390,
+    "popup": [
+      {
+        "left": 8,
+        "right": 382,
+        "width": 374
+      }
+    ],
+    "width": 390
+  },
+  {
+    "documentWidth": 430,
+    "popup": [
+      {
+        "left": 8,
+        "right": 422,
+        "width": 414
+      }
+    ],
+    "width": 430
+  },
+  {
+    "documentWidth": 768,
+    "popup": [
+      {
+        "left": 228,
+        "right": 720,
+        "width": 492
+      }
+    ],
+    "width": 768
+  }
+]

@@ -1,0 +1,27 @@
+{
+  "synthetic_only": true,
+  "created_by": "API_FIXTURE_NOT_BROWSER",
+  "order_id": 5,
+  "card_ids": [
+    "128fc97f-76e9-4c1c-80a0-c5b01dcff122",
+    "959ab52e-34c1-4227-8755-d500b421c46d"
+  ],
+  "batch_id": 1,
+  "shipment_no": "QS-20261118-AE777200",
+  "return_id": 1,
+  "return_no": "R1",
+  "net_before_return": "100",
+  "net_after_return": "0",
+  "events": [
+    {
+      "id": "a2e976cb-d2fc-4123-a171-f3951c18adbd",
+      "kind": "WHOLE_MOLD",
+      "business_at": "2026-11-18 07:20:00+00:00"
+    },
+    {
+      "id": "c29ad827-ff77-4810-968b-930e72598da0",
+      "kind": "BAKE",
+      "business_at": "2026-11-18 07:30:00+00:00"
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+{
+  "synthetic_only": true,
+  "database": "D:\\workspace\\erp\\.codex_tmp\\flow-review-rv-font-final.sqlite3",
+  "employee_id": 1,
+  "samples": [
+    {
+      "tag": "完整要求_需整模",
+      "product_id": 1,
+      "order_id": 1,
+      "standard_id": 1,
+      "group_id": "13f3f1ce-c7f3-45d6-ba38-00f54f7b27ff",
+      "cards": [
+        {
+          "id": "cb48b0ee-c13f-462d-94a9-6f8a0c0ee1d5",
+          "card_no": "FC-20261118-CB48B0EEC13F462D",
+          "sequence": 1,
+          "molds": 100
+        },
+        {
+          "id": "921102b0-3c62-47b5-a6ed-7fd7f60eacb9",
+          "card_no": "FC-20261118-921102B03C6247B5",
+          "sequence": 3,
+          "molds": 100
+        },
+        {
+          "id": "5b7347a5-67b7-49a9-96b0-cf56804ed902",
+          "card_no": "FC-20261118-5B7347A567B749A9",
+          "sequence": 21,
+          "molds": 50
+        }
+      ],
+      "print_job_id": "318aefa0-722b-4674-b40c-7fb4ff209ab6",
+      "pdf": "D:\\workspace\\erp\\output\\pdf\\工序流转卡_RV_完整要求_需整模.pdf",
+      "sha256": "4a70c9d6a0039932c4cedcafeb5b71682728cd24c48259712da5405ce517888c"
+    },
+    {
+      "tag": "完整要求_不需整模",
+      "product_id": 2,
+      "order_id": 2,
+      "standard_id": 2,
+      "group_id": "91acf091-c035-4010-9b2b-21d5e67dcca4",
+      "cards": [
+        {
+          "id": "04211d50-713b-4c89-a98d-226abcf3bdb1",
+          "card_no": "FC-20261118-04211D50713B4C89",
+          "sequence": 1,
+          "molds": 100
+        },
+        {
+          "id": "bc02e9b6-0f85-4953-ba2e-01306769bf44",
+          "card_no": "FC-20261118-BC02E9B60F854953",
+          "sequence": 3,
+          "molds": 100
+        },
+        {
+          "id": "eac407eb-2970-4854-9991-76d00dd1ee79",
+          "card_no": "FC-20261118-EAC407EB29704854",
+          "sequence": 21,
+          "molds": 50
+        }
+      ],
+      "print_job_id": "f4b372bf-746a-4cca-9fcc-4b234952daa5",
+      "pdf": "D:\\workspace\\erp\\output\\pdf\\工序流转卡_RV_完整要求_不需整模.pdf",
+      "sha256": "35d5ea563192b30f64dbd1d03be587123ccc170aa5d36e8e13368752c3ecf6cd"
+    },
+    {
+      "tag": "缺要求_待确认",
+      "product_id": 3,
+      "order_id": 3,
+      "standard_id": 3,
+      "group_id": "149e0a3e-7989-4838-9e8a-8a13f9716a47",
+      "cards": [
+        {
+          "id": "d10ad4f0-01f9-4732-951c-0fb67034d3d7",
+          "card_no": "FC-20261118-D10AD4F001F94732",
+          "sequence": 1,
+          "molds": 100
+        }
+      ],
+      "print_job_id": "57cf0835-ebbe-44b7-8939-b07e696a705a",
+      "pdf": "D:\\workspace\\erp\\output\\pdf\\工序流转卡_RV_缺要求_待确认.pdf",
+      "sha256": "156044b91cf7e1cf6286b789ffe96d043e42787a9bb8b9edc100ae9df218f199"
+    },
+    {
+      "tag": "长字段_续页",
+      "product_id": 4,
+      "order_id": 4,
+      "standard_id": 4,
+      "group_id": "f624c310-63e8-4d46-8bb5-6eb4d90a3ecd",
+      "cards": [
+        {
+          "id": "5b243b0b-e34a-42b3-aa2d-ccc8bfc8c432",
+          "card_no": "FC-20261118-5B243B0BE34A42B3",
+          "sequence": 1,
+          "molds": 100
+        }
+      ],
+      "print_job_id": "c06a5177-8677-424d-b162-83b5dd1f80f4",
+      "pdf": "D:\\workspace\\erp\\output\\pdf\\工序流转卡_RV_长字段_续页.pdf",
+      "sha256": "7ca7fab13df09b5f1fa11ee77ad497e5685ca76745fc932e00e2138eec79d942"
+    }
+  ],
+  "browser": {
+    "product_id": 5,
+    "order_id": 5
+  }
+}

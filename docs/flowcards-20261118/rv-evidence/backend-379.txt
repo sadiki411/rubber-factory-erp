@@ -1,0 +1,58 @@
+Creating test database for alias 'default'...
+
+...........................................................................................................................................................................................................................................................................................................................................................................................
+----------------------------------------------------------------------
+Ran 379 tests in 112.892s
+
+OK
+Destroying test database for alias 'default'...
+
+Found 379 test(s).
+System check identified no issues (0 silenced).
+CONCURRENCY path=/api/quality/shipment-batches/1/confirm/ status=200 elapsed_ms=55.00 error=-
+CONCURRENCY path=/api/quality/shipment-batches/2/confirm/ status=200 elapsed_ms=142.14 error=-
+CONCURRENCY statuses=[200, 200] lock_errors_checked=1
+CONCURRENCY path=/api/quality/rework-cases/ status=201 elapsed_ms=41.17 error=-
+CONCURRENCY path=/api/quality/rework-cases/ status=201 elapsed_ms=125.74 error=-
+CONCURRENCY statuses=[201, 201] lock_errors_checked=1
+CONCURRENCY path=/api/quality/rework-cases/bulk-scan-return/ status=201 elapsed_ms=131.71 error=-
+CONCURRENCY path=/api/quality/rework-cases/bulk-scan-return/ status=400 elapsed_ms=249.35 error={'detail': ErrorDetail(string='�����̿����д������˻�����1�Σ��������ظ�ɨ�롣', code='invalid')}
+CONCURRENCY statuses=[201, 400] lock_errors_checked=3
+CONCURRENCY path=/api/quality/rework-cases/ status=201 elapsed_ms=255.59 error=-
+CONCURRENCY path=/api/quality/rework-cases/ status=400 elapsed_ms=310.43 error={'detail': ErrorDetail(string='�������Ѿ��Ǽ��˻�����ѡ�������������Ρ�', code='invalid')}
+CONCURRENCY statuses=[201, 400] lock_errors_checked=4
+FLOW_CONCURRENCY path=/api/flow-cards/groups/ statuses=[201, 503]
+FLOW_CONCURRENCY path=/api/flow-cards/groups/d581274e-0a3d-4508-8915-d3c7ebfce8aa/generate/ statuses=[200, 503]
+FLOW_CONCURRENCY path=/api/flow-cards/print-jobs/ statuses=[503, 201]
+������ɣ�C:\Users\su2001\AppData\Local\Temp\tmphhgk927d\backups\mold-erp-backup-20261118-170339-634318.zip
+C:\Users\su2001\AppData\Local\Temp\tmphhgk927d\backups\mold-erp-backup-20261118-170339-634318.zip
+������ɣ�C:\Users\su2001\AppData\Local\Temp\tmp7svtmlcj\backups\mold-erp-backup-20261118-170339-663937.zip
+C:\Users\su2001\AppData\Local\Temp\tmp7svtmlcj\backups\mold-erp-backup-20261118-170339-663937.zip
+������ɣ�C:\Users\su2001\AppData\Local\Temp\tmpuf5o378y\backups\mold-erp-backup-20261118-170339-701904.zip
+C:\Users\su2001\AppData\Local\Temp\tmpuf5o378y\backups\mold-erp-backup-20261118-170339-701904.zip
+�ָ���ɣ�C:\Users\su2001\AppData\Local\Temp\tmpuf5o378y\backups\mold-erp-backup-20261118-170339-701904.zip
+������ɣ�C:\Users\su2001\AppData\Local\Temp\tmpvcq8k5_p\backups\mold-erp-backup-20261118-170339-746262.zip
+C:\Users\su2001\AppData\Local\Temp\tmpvcq8k5_p\backups\mold-erp-backup-20261118-170339-746262.zip
+�ָ���ɣ�C:\Users\su2001\AppData\Local\Temp\tmpvcq8k5_p\backups\mold-erp-backup-20261118-170339-746262.zip
+������ɣ�C:\Users\su2001\AppData\Local\Temp\tmpj7t64_tw\backups\mold-erp-backup-20261118-170339-797534.zip
+C:\Users\su2001\AppData\Local\Temp\tmpj7t64_tw\backups\mold-erp-backup-20261118-170339-797534.zip
+������ɣ�C:\Users\su2001\AppData\Local\Temp\tmpj7t64_tw\backups\mold-erp-backup-20261118-170339-805487.zip
+C:\Users\su2001\AppData\Local\Temp\tmpj7t64_tw\backups\mold-erp-backup-20261118-170339-805487.zip
+������ɣ�C:\Users\su2001\AppData\Local\Temp\tmpj7t64_tw\backups\mold-erp-backup-20261118-170339-813357.zip
+C:\Users\su2001\AppData\Local\Temp\tmpj7t64_tw\backups\mold-erp-backup-20261118-170339-813357.zip
+������ɣ�C:\Users\su2001\AppData\Local\Temp\tmpj7t64_tw\backups\mold-erp-backup-20261118-170339-822323.zip
+C:\Users\su2001\AppData\Local\Temp\tmpj7t64_tw\backups\mold-erp-backup-20261118-170339-822323.zip
+J01-J07���ܳ�ʼ����ɡ�
+Ĭ��1-6��������̨��ʼ����ɣ���չ��̨���ֲ��䡣
+�����˺� erp-shared �Ѵ�����
+J01-J07���ܳ�ʼ����ɡ�
+Ĭ��1-6��������̨��ʼ����ɣ���չ��̨���ֲ��䡣
+�����˺� erp-shared �Ѵ��ڣ�Ȩ��������У׼�����������á�
+J01-J07���ܳ�ʼ����ɡ�
+Ĭ��1-6��������̨��ʼ����ɣ���չ��̨���ֲ��䡣
+�����˺� erp-shared �Ѵ�����
+J01-J07���ܳ�ʼ����ɡ�
+Ĭ��1-6��������̨��ʼ����ɣ���չ��̨���ֲ��䡣
+�����˺� erp-shared �Ѵ��ڣ�Ȩ��������У׼��
+ֻ���˺� gpt-audit �Ѵ�����
+[隔离测试账号占位值已隐去]

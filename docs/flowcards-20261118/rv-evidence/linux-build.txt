@@ -1,0 +1,24 @@
+Sending build context to Docker daemon  10.37MB
+Step 1/7 : FROM erp-flow-review-base:baced3ad
+ ---> de0979b16fd2
+Step 2/7 : USER root
+ ---> Using cache
+ ---> 0aa8686a84ef
+Step 3/7 : COPY review-deps/ /review-deps/
+ ---> Using cache
+ ---> be25f16a6a0e
+Step 4/7 : RUN dpkg -i /review-deps/fonts-wqy-microhei_0.2.0-beta-3.1_all.deb && pip install --no-cache-dir --no-index --no-deps /review-deps/reportlab-4.4.5-py3-none-any.whl && rm -rf /review-deps
+ ---> Using cache
+ ---> 472465a414ac
+Step 5/7 : COPY backend/ /app/backend/
+ ---> 95d187940056
+Step 6/7 : WORKDIR /app/backend
+ ---> Running in eddf3e32ad68
+Removing intermediate container eddf3e32ad68
+ ---> dbe381520fd8
+Step 7/7 : LABEL org.opencontainers.image.revision=a6ec357387fab213f1ae4117157da736985cfb4b
+ ---> Running in f8b3dc602e51
+Removing intermediate container f8b3dc602e51
+ ---> e5d9313f5130
+Successfully built e5d9313f5130
+Successfully tagged erp-flow-review:a6ec357
