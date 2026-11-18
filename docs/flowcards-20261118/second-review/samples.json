@@ -1,0 +1,31 @@
+{
+  "synthetic_only": true,
+  "renderer": "flowcard-review-20261118-v3",
+  "employee_id": 1,
+  "samples": [
+    {
+      "tag": "常规O型圈_仅线径上限",
+      "product_id": 1,
+      "order_id": 1,
+      "standard_id": 1,
+      "card_id": "33f5d504-5ad1-478b-b40f-4a44f163f1a3",
+      "card_no": "FC-20261118-33F5D5045AD1478B",
+      "group_id": "6e0e124d-22f1-4634-aa4b-bd4cd3725a31",
+      "print_job_id": "7549346d-7800-40d7-837b-7dc8a90a7c80",
+      "pdf": "output/pdf/工序流转卡_二轮_常规O型圈_仅线径上限.pdf",
+      "sha256": "d39dc19cbd4415cf514805f900c3ff36b78d799754c5c8eec0ced12fa57a6c95"
+    },
+    {
+      "tag": "客户例外_线径加内径",
+      "product_id": 2,
+      "order_id": 2,
+      "standard_id": 2,
+      "card_id": "ac3259dc-adcc-4734-9d5d-e8907e4c2f21",
+      "card_no": "FC-20261118-AC3259DCADCC4734",
+      "group_id": "9de760ff-329c-4680-aa12-a1ecb84bdbb8",
+      "print_job_id": "3c5a9388-d92c-4543-831a-6455c26c84ad",
+      "pdf": "output/pdf/工序流转卡_二轮_客户例外_线径加内径.pdf",
+      "sha256": "69c3c76420a357b90a8c3afcbaf6f2598679856c0baaba698f8d17aab797abd6"
+    }
+  ]
+}

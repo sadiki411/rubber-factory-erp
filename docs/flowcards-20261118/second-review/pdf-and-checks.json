@@ -1,0 +1,55 @@
+{
+  "runtime_commit": "b093efc84f62437ee4811e42ef780e18561cd8b1",
+  "business_code_commit": "012360c3f84b2d7784dfb25f13e8b23a744327ef",
+  "synthetic_only": true,
+  "pdfs": [
+    {
+      "path": "output/pdf/工序流转卡_二轮_常规O型圈_仅线径上限.pdf",
+      "pages": 1,
+      "width_mm": 190,
+      "height_mm": 130,
+      "bytes": 28440,
+      "sha256": "d39dc19cbd4415cf514805f900c3ff36b78d799754c5c8eec0ced12fa57a6c95",
+      "final_renderer_matches_frozen_bytes": true,
+      "poppler_render_visually_reviewed": true,
+      "contains": ["FC-20261118-", "33F5D5045AD1478B", "线径", "≤ 3.05 mm"],
+      "inner_diameter_required": false
+    },
+    {
+      "path": "output/pdf/工序流转卡_二轮_客户例外_线径加内径.pdf",
+      "pages": 1,
+      "width_mm": 190,
+      "height_mm": 130,
+      "bytes": 28828,
+      "sha256": "69c3c76420a357b90a8c3afcbaf6f2598679856c0baaba698f8d17aab797abd6",
+      "final_renderer_matches_frozen_bytes": true,
+      "poppler_render_visually_reviewed": true,
+      "contains": ["FC-20261118-", "AC3259DCADCC4734", "线径", "≤ 3.05 mm", "内径", "99.8～100.2 mm"],
+      "inner_diameter_required": true
+    }
+  ],
+  "checks": {
+    "related_backend_tests": {"passed": 388, "seconds": 118.758},
+    "flowcards_subset": {"passed": 63, "seconds": 4.322},
+    "targeted_frontend_tests": {"files": 6, "passed": 28, "seconds": 87.75},
+    "latest_measurement_ui_subset": {"passed": 3, "seconds": 8.98},
+    "typescript": "passed",
+    "build": "passed; existing >500kB bundle warning",
+    "targeted_eslint": {"errors": 0, "warnings": 2},
+    "makemigrations_check": "No changes detected",
+    "git_diff_check": "passed",
+    "test_counts_are_not_additive": true
+  },
+  "not_tested": [
+    "continuous ordinary-user recording",
+    "entire shipment-return-reshipment sequence operated only through pages",
+    "Android camera and WebView download",
+    "physical print, paper suitability and furnace safety",
+    "real-device weak network",
+    "new sample PDF image-level QR decode",
+    "v3 Linux production-image and latest production-copy restore rehearsal"
+  ],
+  "deployed": false,
+  "pushed": false,
+  "formal_template_published": false
+}

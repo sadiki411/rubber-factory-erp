@@ -1,0 +1,14 @@
+Creating test database for alias 'default'...
+
+...............................................................
+----------------------------------------------------------------------
+Ran 63 tests in 4.322s
+
+OK
+Destroying test database for alias 'default'...
+
+Found 63 test(s).
+System check identified no issues (0 silenced).
+FLOW_CONCURRENCY path=/api/flow-cards/groups/ statuses=[201, 503]
+FLOW_CONCURRENCY path=/api/flow-cards/groups/a5884b64-590b-451b-8737-2926a3009e1c/generate/ statuses=[503, 200]
+FLOW_CONCURRENCY path=/api/flow-cards/print-jobs/ statuses=[400, 201]

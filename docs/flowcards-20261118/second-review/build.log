@@ -1,0 +1,88 @@
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 4955 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                        0.55 kB │ gzip:   0.38 kB
+dist/assets/IntegrationPreviewPage-SW_uiOQ4.css        1.34 kB │ gzip:   0.52 kB
+dist/assets/FlowCardsPage-D92PWdfl.css                 2.26 kB │ gzip:   0.76 kB
+dist/assets/index-CQrpA-hp.css                        84.76 kB │ gzip:  15.54 kB
+dist/assets/moldRack-DAQSnfSi.js                       0.32 kB │ gzip:   0.25 kB
+dist/assets/WriteAccess-hgsWQbpc.js                    0.35 kB │ gzip:   0.30 kB
+dist/assets/StatusTag-DeREpiq6.js                      0.41 kB │ gzip:   0.29 kB
+dist/assets/types-GaMvYEI0.js                          0.47 kB │ gzip:   0.32 kB
+dist/assets/navigation-Ci_hmFSW.js                     0.54 kB │ gzip:   0.34 kB
+dist/assets/MoreOutlined-BmckUVzt.js                   0.77 kB │ gzip:   0.49 kB
+dist/assets/ArrowLeftOutlined-IETvYT_H.js              0.87 kB │ gzip:   0.61 kB
+dist/assets/FileOutlined-9qBQsJTq.js                   0.88 kB │ gzip:   0.61 kB
+dist/assets/WarningOutlined-BKNCGtwZ.js                0.95 kB │ gzip:   0.65 kB
+dist/assets/UploadOutlined-ddpL66Em.js                 0.95 kB │ gzip:   0.63 kB
+dist/assets/SwapOutlined-DykmnV3-.js                   0.96 kB │ gzip:   0.66 kB
+dist/assets/ClockCircleOutlined-Dnb7eVj9.js            1.02 kB │ gzip:   0.65 kB
+dist/assets/CheckCircleOutlined-CzUKd92c.js            1.04 kB │ gzip:   0.67 kB
+dist/assets/ExportOutlined-DYBQfmDQ.js                 1.05 kB │ gzip:   0.68 kB
+dist/assets/CameraOutlined-DWuOYW_O.js                 1.13 kB │ gzip:   0.72 kB
+dist/assets/index-BJP01f28.js                          1.29 kB │ gzip:   0.71 kB
+dist/assets/ReloadOutlined-CJBH-pGK.js                 1.34 kB │ gzip:   0.83 kB
+dist/assets/LinkOutlined-J0Pkf4d2.js                   1.34 kB │ gzip:   0.72 kB
+dist/assets/HistoryOutlined-DOp8BlYy.js                1.51 kB │ gzip:   0.93 kB
+dist/assets/useMoldDeletion-72uzl6n6.js                1.61 kB │ gzip:   0.95 kB
+dist/assets/QrcodeOutlined-DTqH0SZ1.js                 1.63 kB │ gzip:   0.71 kB
+dist/assets/useMutation-B-omM2XF.js                    2.21 kB │ gzip:   0.91 kB
+dist/assets/PublicInventoryLocationPage-7mGNvJbW.js    2.44 kB │ gzip:   1.26 kB
+dist/assets/MaterialLayoutSummary-BFk5qvAH.js          2.56 kB │ gzip:   0.96 kB
+dist/assets/flowcards-D9mpOvXF.js                      2.57 kB │ gzip:   1.08 kB
+dist/assets/index-xs8DQ4If.js                          3.29 kB │ gzip:   1.47 kB
+dist/assets/ProductionRecordPage-CvJQqfms.js           3.67 kB │ gzip:   2.04 kB
+dist/assets/quality-onAaRa3C.js                        3.86 kB │ gzip:   1.56 kB
+dist/assets/OperationsPage-ChUu4gj_.js                 3.97 kB │ gzip:   2.10 kB
+dist/assets/PublicLocationHistory-D7EQlubS.js          4.14 kB │ gzip:   1.86 kB
+dist/assets/index-DAqSRZMf.js                          4.20 kB │ gzip:   1.93 kB
+dist/assets/OperationDrawer-CH1M4doC.js                4.32 kB │ gzip:   1.98 kB
+dist/assets/MoldDetailPage-Dp7wzgj3.js                 4.81 kB │ gzip:   2.11 kB
+dist/assets/ProductionRunParameters-C7I-p-4F.js        4.86 kB │ gzip:   2.04 kB
+dist/assets/MoldsPage-5L0iKF4-.js                      4.89 kB │ gzip:   2.34 kB
+dist/assets/PageTitle-jQca0-ix.js                      4.93 kB │ gzip:   2.10 kB
+dist/assets/RackDiagram-CtYQ6W1H.js                    5.30 kB │ gzip:   2.43 kB
+dist/assets/QualityEmployeeSelect-DQrPkmHl.js          5.32 kB │ gzip:   2.80 kB
+dist/assets/MoldFormDrawer-Dsbj4brj.js                 5.61 kB │ gzip:   2.68 kB
+dist/assets/ImportPage-TDTyCtSX.js                     6.14 kB │ gzip:   2.88 kB
+dist/assets/DashboardPage-_b2ijTqp.js                  6.37 kB │ gzip:   3.14 kB
+dist/assets/MoldRackLocationPage-BQNIGvjR.js           6.68 kB │ gzip:   2.90 kB
+dist/assets/dayjs.min-Bt2Skei2.js                      7.15 kB │ gzip:   3.12 kB
+dist/assets/index-BxnPsN2J.js                          7.46 kB │ gzip:   2.54 kB
+dist/assets/index-397i4rcT.js                          7.49 kB │ gzip:   3.09 kB
+dist/assets/index-CoKMFdHA.js                          7.78 kB │ gzip:   2.73 kB
+dist/assets/OrderOverviewPage-S6JRp2UV.js              8.25 kB │ gzip:   3.55 kB
+dist/assets/RackConfigPage-Ci_75TV2.js                 8.25 kB │ gzip:   3.73 kB
+dist/assets/QualityQrScanner-CJzbChBx.js               8.39 kB │ gzip:   4.10 kB
+dist/assets/IntegrationPreviewPage-BHvApz3h.js         8.82 kB │ gzip:   3.62 kB
+dist/assets/index-Dqyi8byV.js                          9.59 kB │ gzip:   3.59 kB
+dist/assets/Collapse-OmvhWqQC.js                       9.80 kB │ gzip:   3.67 kB
+dist/assets/RacksPage-lsiVjZpF.js                     10.95 kB │ gzip:   4.86 kB
+dist/assets/progress-BJSLG3xZ.js                      14.96 kB │ gzip:   5.76 kB
+dist/assets/ProductSpecificationsPage-CJH9xmAM.js     17.07 kB │ gzip:   5.92 kB
+dist/assets/index-DPF-8cI1.js                         18.15 kB │ gzip:   5.99 kB
+dist/assets/index-BkgsZSf9.js                         21.68 kB │ gzip:   7.77 kB
+dist/assets/ThermalLocationLabel-BwxvjB4B.js          21.93 kB │ gzip:   8.66 kB
+dist/assets/Pagination-B_ypXO8J.js                    24.17 kB │ gzip:   7.36 kB
+dist/assets/index-DMeamgAx.js                         31.74 kB │ gzip:  11.64 kB
+dist/assets/BusinessImportDrawer-BQNVDcz6.js          31.79 kB │ gzip:  12.01 kB
+dist/assets/index-CvxlFFJT.js                         32.22 kB │ gzip:  11.69 kB
+dist/assets/Timeline-6yR3OzBn.js                      36.35 kB │ gzip:  10.33 kB
+dist/assets/InventoryPage-C1AyRCEs.js                 44.99 kB │ gzip:  13.51 kB
+dist/assets/FlowCardsPage-GojEc2E1.js                 52.86 kB │ gzip:  17.77 kB
+dist/assets/OrdersPage-DpYphtUj.js                    57.97 kB │ gzip:  17.36 kB
+dist/assets/AnalyticsPage-CF8sZEas.js                 64.31 kB │ gzip:  18.36 kB
+dist/assets/index-Bu-SZqcQ.js                         67.59 kB │ gzip:  23.94 kB
+dist/assets/index-DvjV2uV1.js                        100.22 kB │ gzip:  32.65 kB
+dist/assets/ProductionPage-MhUh_x-E.js               124.48 kB │ gzip:  36.85 kB
+dist/assets/Table-DL7rxXo8.js                        143.15 kB │ gzip:  46.51 kB
+dist/assets/QualityPage-luILsPWB.js                  242.72 kB │ gzip:  69.19 kB
+dist/assets/index-DfOiuD8Q.js                        909.72 kB │ gzip: 294.69 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 7.66s
