@@ -6,3 +6,11 @@
 .flow-cards-page .ant-checkbox-group { display: flex; gap: 12px; flex-wrap: wrap; }
 .flow-cards-page .ant-pagination { margin: 12px 0; }
 @media (max-width: 600px) { .flow-form-grid { grid-template-columns: minmax(0, 1fr); } .flow-cards-page .ant-card-extra { max-width: 48%; } .flow-cards-page .ant-card-extra button { white-space: normal; height: auto; } }
+@media (max-width: 600px) {
+  .flow-datetime-popup { position: fixed !important; left: 8px !important; top: 12px !important; width: calc(100vw - 16px); max-width: calc(100vw - 16px); }
+  .flow-datetime-popup .ant-picker-panel-container { width: 100%; max-width: 100%; max-height: calc(100dvh - 24px); overflow-y: auto; }
+  .flow-datetime-popup .ant-picker-datetime-panel { flex-direction: column; }
+  .flow-datetime-popup .ant-picker-datetime-panel, .flow-datetime-popup .ant-picker-date-panel { width: 100%; max-width: 100%; min-width: 0; }
+  .flow-datetime-popup .ant-picker-time-panel { height: auto; border-inline-start: 0; border-top: 1px solid #eee; }
+  .flow-datetime-popup .ant-picker-time-panel-column { height: 100px; }
+}

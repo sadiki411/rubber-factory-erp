@@ -313,7 +313,7 @@ export function FlowCardDetailPage() {
           }} /></Form.Item>
           <Form.Item name="scope" label="本次实际范围/模段（未知则明确写未知）" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="employee_id" label="实际作业人（不取登录人）"><Select loading={employees.isPending} allowClear options={employees.data?.map((e) => ({ value: e.id, label: e.name }))} /></Form.Item>
-          <Form.Item name="business_at" label="实际业务时间（有依据再填）"><DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} /></Form.Item>
+          <Form.Item name="business_at" label="实际业务时间（有依据再填）"><DatePicker showTime format="YYYY-MM-DD HH:mm" classNames={{ popup: { root: 'flow-datetime-popup' } }} style={{ width: '100%' }} /></Form.Item>
           {kind === 'WHOLE_MOLD' && <>
             <Form.Item name="status" label="整模进度"><Select options={['PARTIAL', 'COMPLETED', 'EXCEPTION'].map((v) => ({ value: v, label: WHOLE[v] }))} /></Form.Item>
             <Form.Item name="coverage" label="实际覆盖范围"><Select options={[{ value: 'UNKNOWN', label: '范围未知' }, { value: 'PARTIAL', label: '明确部分模段（在范围栏说明）' }, { value: 'WHOLE', label: '本卡整包' }]} /></Form.Item>
