@@ -36,7 +36,7 @@ export function OrderOverviewPage() {
   return <div className="page-container order-overview-page">
     <PageTitle title="订单完整查看" description="沿明确关联查看原记录；只读，不改数量、状态或历史归属。" extra={<Space wrap><Button onClick={() => navigate(safeReturn)}>返回待办筛选</Button><Button disabled={!validId} onClick={() => { void summaryQuery.refetch(); if (section) void result.refetch() }} loading={result.isFetching || summaryQuery.isFetching}>刷新</Button></Space>} />
     {!validId ? <Alert type="error" showIcon title="订单编号无效" description="请从待办或订单管理打开完整查看。" /> : summaryQuery.isError ? <Alert type="error" showIcon title="订单链路读取失败" description={(summaryQuery.error as Error).message} action={<Button onClick={() => void summaryQuery.refetch()}>重试</Button>} /> : !data ? <Skeleton active /> : <>
-      <Card><Descriptions column={{ xs: 1, sm: 2, lg: 4 }} items={[
+      <Card extra={<Button href={`/flow-cards?order_id=${id}&return_to=${encodeURIComponent(location.pathname + location.search)}`}>工序流转卡</Button>}><Descriptions column={{ xs: 1, sm: 2, lg: 4 }} items={[
         { key: 'order', label: '订单 / 项次', children: `${data.order.order_no} / ${data.order.item_no || '未登记'}` },
         { key: 'product', label: '规格 / 材质', children: `${data.order.specification} / ${data.order.material || '未登记'}` },
         { key: 'due', label: '交期', children: data.order.due_date || '未登记' },

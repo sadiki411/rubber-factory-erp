@@ -757,9 +757,9 @@ export const qualityWorkflowApi = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  confirmShipmentBatch: (id: number | string, processCardBindings: NonNullable<QualityShipmentBatchInput['process_card_bindings']> = []) => apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/confirm/`, {
+  confirmShipmentBatch: (id: number | string, processCardBindings: NonNullable<QualityShipmentBatchInput['process_card_bindings']> = [], internalSources: import('../flowcards').InternalSource[] = []) => apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/confirm/`, {
     method: 'POST',
-    body: JSON.stringify(processCardBindings.length ? { process_card_bindings: processCardBindings } : {}),
+    body: JSON.stringify({ ...(processCardBindings.length ? { process_card_bindings: processCardBindings } : {}), ...(internalSources.length ? { internal_sources: internalSources } : {}) }),
   }),
   assignShipmentBatchInspectors: (id: number | string, inspectorIds: number[]) =>
     apiFetch<QualityShipmentBatch>(`/api/quality/shipment-batches/${id}/assign-inspectors/`, {
@@ -779,10 +779,12 @@ export const qualityWorkflowApi = {
       body: JSON.stringify({ void_reason: voidReason }),
     }),
   createAndConfirmShipmentBatch: async (body: QualityShipmentBatchInput) => {
-    const { process_card_bindings: processCardBindings = [], ...createBody } = body
+    const { process_card_bindings: processCardBindings = [], internal_sources: internalSources = [], ...createBody } = body
     const draft = await qualityWorkflowApi.createShipmentBatch(createBody as QualityShipmentBatchInput)
     if (!draft.id) throw new Error('出货批次创建成功但未返回批次 ID，无法确认')
-    return qualityWorkflowApi.confirmShipmentBatch(draft.id, processCardBindings)
+    return internalSources.length
+      ? qualityWorkflowApi.confirmShipmentBatch(draft.id, processCardBindings, internalSources)
+      : qualityWorkflowApi.confirmShipmentBatch(draft.id, processCardBindings)
   },
   listReworkCases: (filters: QualityListFilters = {}, init: RequestInit = {}) => apiFetch<ApiList<QualityReworkCase> | QualityReworkCase[]>(`/api/quality/rework-cases/${queryString(filters)}`, init),
   getReworkCase: (id: number, init: RequestInit = {}) => apiFetch<QualityReworkCase>(`/api/quality/rework-cases/${id}/`, init),

@@ -34,6 +34,7 @@ import { QualityReworkCaseMobileList } from './QualityReworkCaseMobileList'
 import { QualityEmployeeSelect } from './QualityEmployeeSelect'
 import { QualityWeightShipmentDrawer } from './QualityWeightShipmentDrawer'
 import { ShipmentCardSources } from './QualityShipmentTrace'
+import { InternalShipmentTrace } from './InternalShipmentTrace'
 import type {
   QualityEmployee,
   QualityOrder,
@@ -337,6 +338,7 @@ export function ShipmentBatchReviewDrawer({
       : <Space className="drawer-footer-actions"><Popconfirm disabled={readOnly} title="确定作废这个草稿批次吗？" onConfirm={() => void voidDraft()}><Button disabled={readOnly} danger loading={saving}>作废草稿</Button></Popconfirm><Button onClick={onClose}>取消</Button><Button disabled={readOnly} loading={saving} onClick={() => void submit(false)}>保存草稿</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void submit(true)}>保存并确认</Button></Space>}
   >
     <div className="quality-shipment-trace-summary">
+    {item?.id && <InternalShipmentTrace batchId={item.id} />}
     <Card size="small" title="本次关联流程卡 / 实物来源">
       <ShipmentCardSources sources={item?.card_sources || (item?.process_card_bindings || []).map((binding) => ({
         card_id: binding.process_card_id, card_no: binding.card_no || '', shipment_unit_no: binding.shipment_unit_no,

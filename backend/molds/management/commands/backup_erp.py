@@ -32,6 +32,21 @@ def _integrity_check(database_path):
         raise CommandError(f"SQLite完整性检查失败：{result[0] if result else '无结果'}")
 
 
+def _private_restore_root(database_path, media_root):
+    """Validate all computed private-directory targets BEFORE replacing any data."""
+    root = Path(settings.FLOW_CARDS_PRIVATE_ROOT).resolve()
+    database_path, media_root = database_path.resolve(), media_root.resolve()
+    targets = [root, root.with_name(root.name + ".restore"), root.with_name(root.name + ".before-restore")] if root != root.parent else [root]
+    for target in targets:
+        if target.is_symlink():
+            raise CommandError("私有原图恢复目录不能是符号链接。")
+        target = target.resolve()
+        if (target == target.parent or database_path.is_relative_to(target)
+                or target == media_root or target.is_relative_to(media_root) or media_root.is_relative_to(target)):
+            raise CommandError("私有原图目录及恢复目录不能包含数据库、公开媒体目录或位于其中。")
+    return root
+
+
 class Command(BaseCommand):
     help = "在线一致性备份SQLite和媒体文件；也可显式恢复已生成的备份包。"
 
@@ -89,6 +104,7 @@ class Command(BaseCommand):
         final_path = output_dir / f"{BACKUP_PREFIX}{timestamp}.zip"
         temporary_archive = output_dir / f".{final_path.name}.tmp"
         media_root = Path(settings.MEDIA_ROOT)
+        flowcards_root = Path(settings.FLOW_CARDS_PRIVATE_ROOT)
 
         with tempfile.TemporaryDirectory(prefix="mold-erp-backup-") as temp_dir_name:
             temp_dir = Path(temp_dir_name)
@@ -111,6 +127,7 @@ class Command(BaseCommand):
                 "created_at": timezone.localtime().isoformat(),
                 "database": "data/db.sqlite3",
                 "media": "media/",
+                "private_flowcards": "private-flowcards/",
             }
             try:
                 with zipfile.ZipFile(
@@ -131,6 +148,10 @@ class Command(BaseCommand):
                                     media_file,
                                     (PurePosixPath("media") / media_file.relative_to(media_root).as_posix()).as_posix(),
                                 )
+                    if flowcards_root.exists():
+                        for original in sorted(flowcards_root.rglob("*")):
+                            if original.is_file() and not original.is_symlink():
+                                archive.write(original, (PurePosixPath("private-flowcards") / original.relative_to(flowcards_root).as_posix()).as_posix())
                 os.replace(temporary_archive, final_path)
             finally:
                 temporary_archive.unlink(missing_ok=True)
@@ -174,12 +195,14 @@ class Command(BaseCommand):
                     if "data/db.sqlite3" not in archive.namelist():
                         raise CommandError("备份包缺少data/db.sqlite3。")
                     archive.extractall(temp_dir)
+                    manifest = json.loads(archive.read("manifest.json")) if "manifest.json" in archive.namelist() else {}
             except zipfile.BadZipFile as exc:
                 raise CommandError("备份包不是有效的ZIP文件。") from exc
 
             restored_database = temp_dir / "data" / "db.sqlite3"
             _integrity_check(restored_database)
             restored_media = temp_dir / "media"
+            private_root = _private_restore_root(database_path, media_root) if manifest.get("private_flowcards") == "private-flowcards/" else None
 
             connections.close_all()
             database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -198,6 +221,26 @@ class Command(BaseCommand):
             old_media = media_root.with_name(media_root.name + ".before-restore")
             if old_media.exists():
                 shutil.rmtree(old_media)
+
+            # Older backups have no private originals. Never delete them merely
+            # because restoring an older archive cannot account for those files.
+            if private_root is not None:
+                root = private_root
+                staged = root.with_name(root.name + ".restore")
+                if staged.exists():
+                    shutil.rmtree(staged)
+                staged.mkdir(parents=True, exist_ok=True)
+                restored = temp_dir / "private-flowcards"
+                if restored.exists():
+                    shutil.copytree(restored, staged, dirs_exist_ok=True)
+                old = root.with_name(root.name + ".before-restore")
+                if old.exists():
+                    shutil.rmtree(old)
+                if root.exists():
+                    os.replace(root, old)
+                os.replace(staged, root)
+                if old.exists():
+                    shutil.rmtree(old)
             if media_root.exists():
                 os.replace(media_root, old_media)
             os.replace(staged_media, media_root)

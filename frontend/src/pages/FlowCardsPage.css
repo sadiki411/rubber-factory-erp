@@ -1,0 +1,8 @@
+.flow-cards-page { display: grid; gap: 16px; min-width: 0; }
+.flow-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+.flow-cards-page .ant-input-number, .flow-cards-page .ant-select { width: 100%; }
+.flow-cards-page pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.flow-cards-page .ant-typography, .flow-cards-page .ant-descriptions-item-content { overflow-wrap: anywhere; }
+.flow-cards-page .ant-checkbox-group { display: flex; gap: 12px; flex-wrap: wrap; }
+.flow-cards-page .ant-pagination { margin: 12px 0; }
+@media (max-width: 600px) { .flow-form-grid { grid-template-columns: minmax(0, 1fr); } .flow-cards-page .ant-card-extra { max-width: 48%; } .flow-cards-page .ant-card-extra button { white-space: normal; height: auto; } }

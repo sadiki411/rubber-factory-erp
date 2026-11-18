@@ -1623,6 +1623,8 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             )
             refreshed = QualityShipmentBatch.objects.select_for_update().get(pk=batch.pk)
             after = _shipment_batch_snapshot(refreshed)
+            from flowcards.services import mark_sources_for_review
+            mark_sources_for_review(refreshed, request.user, reason)
             QualityShipmentBatchRevision.objects.create(
                 batch=refreshed,
                 action=QualityShipmentBatchRevision.Action.AMEND,
@@ -1736,6 +1738,9 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                         raise DRFValidationError(
                             {"process_card_bindings": str(exc)}
                         ) from exc
+                if request.data.get("internal_sources"):
+                    from flowcards.services import bind_sources
+                    bind_sources(batch, request.data["internal_sources"], request.user)
                 return Response(self.get_serializer(batch).data)
             # Confirmation is idempotent.  Mobile clients may retry after a
             # network timeout; a previously confirmed batch must not be
@@ -2088,6 +2093,9 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 operator=request.user,
                 reason_prefix=f"确认出货 {batch.shipment_no}。",
             )
+            if request.data.get("internal_sources"):
+                from flowcards.services import bind_sources
+                bind_sources(batch, request.data["internal_sources"], request.user)
         return Response(self.get_serializer(batch).data)
 
     @staticmethod

@@ -70,7 +70,7 @@ export function ProductSpecificationsPage() {
     { title: '孔数', key: 'cavities', width: 120, render: (_, row) => `${exactText(row.effective_cavities)} / ${exactText(row.total_cavities)}` },
     { title: '模具型号 / 尺寸', key: 'mold', width: 230, render: (_, row) => <span>{moldModelText(row)}<br /><Typography.Text type="secondary">{moldDetailsText(row)}</Typography.Text></span> },
     { title: '状态', dataIndex: 'is_active', width: 90, render: (value) => <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag> },
-    { title: '操作', key: 'action', fixed: 'right', width: 80, render: (_, row) => readOnly ? <Button type="link" onClick={() => setViewing(row)}>查看</Button> : <Button type="link" icon={<EditOutlined />} onClick={() => openForm(row)}>编辑</Button> },
+    { title: '操作', key: 'action', fixed: 'right', width: 150, render: (_, row) => <Space wrap>{readOnly ? <Button type="link" onClick={() => setViewing(row)}>查看</Button> : <Button type="link" icon={<EditOutlined />} onClick={() => openForm(row)}>编辑</Button>}<Button type="link" href={`/flow-cards?product_id=${row.id}&return_to=${encodeURIComponent(location.pathname + location.search)}`}>制卡标准</Button></Space> },
   ]
 
   return (

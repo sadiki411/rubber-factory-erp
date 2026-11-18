@@ -20,7 +20,7 @@ export function ProductionRecordPage() {
   return <div className="page-container production-record-page">
     <PageTitle title={`生产原记录${validId ? ` #${id}` : ''}`} description="按真实任务编号读取，不受生产首页日期、状态和分页限制；本页只读。" extra={<Space wrap><Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/production'))}>返回来源页面</Button><Button disabled={!validId} loading={query.isFetching} onClick={() => void query.refetch()}>刷新</Button></Space>} />
     {!validId ? <Alert type="error" title="生产任务编号无效" /> : query.isError ? <Alert type="error" showIcon title={status === 404 ? '原记录不存在或已移除' : status === 403 ? '没有查看此记录的权限' : '原记录读取失败'} description={query.error.message} action={<Button onClick={() => void query.refetch()}>重试</Button>} /> : !run ? <Skeleton active /> : <>
-      <Card><Descriptions column={{ xs: 1, sm: 2, lg: 3 }} items={[
+      <Card extra={<Button href={`/flow-cards?run_id=${id}&return_to=${encodeURIComponent(location.pathname + location.search)}`}>工序流转卡</Button>}><Descriptions column={{ xs: 1, sm: 2, lg: 3 }} items={[
         { key: 'order', label: '订单 / 项次', children: `${run.order_no} / ${run.order_item_no || '未登记'}` },
         { key: 'product', label: '规格 / 材质', children: `${run.specification} / ${run.material || '未登记'}` },
         { key: 'status', label: '状态', children: <Tag>{STATUS[run.status]}</Tag> },

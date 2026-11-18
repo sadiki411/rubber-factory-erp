@@ -165,8 +165,9 @@ export function ProductionPage() {
       render: (_, record) => (
         <Dropdown trigger={['click']} menu={{ items: [
           { key: 'detail', label: readOnly ? '查看生产记录' : '日报 / 完工结算' },
+          { key: 'flow-cards', label: <a href={`/flow-cards?run_id=${record.id}&return_to=${encodeURIComponent(location.pathname + location.search)}`}>工序流转卡</a> },
           ...(!readOnly ? [{ key: 'edit', label: '编辑生产资料' }] : []),
-        ], onClick: ({ key }) => key === 'edit' ? setFormTarget({ run: record }) : void showRun(record) }}>
+        ], onClick: ({ key }) => { if (key === 'flow-cards') return; return key === 'edit' ? setFormTarget({ run: record }) : void showRun(record) } }}>
           <Button type="text" icon={<MoreOutlined />} aria-label="生产记录操作" />
         </Dropdown>
       ),
