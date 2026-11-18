@@ -40,7 +40,7 @@ def prepare():
         raw = (ROOT / "tmp" / log).read_bytes()
         text = raw.decode("utf-8-sig" if not raw.startswith(b"\xff\xfe") else "utf-16", errors="strict")
         # Management-command tests may print their synthetic fixture password.
-        lines = [line for line in text.splitlines() if "账号密码" not in line]
+        lines = [line for line in text.splitlines() if "账号密码" not in line and "password" not in line.lower()]
         (target / name).write_text("\n".join(lines) + "\n", encoding="utf-8")
     sample = json.loads((ROOT / ".codex_tmp/flow-second-review.json").read_text(encoding="utf-8"))
     sample.pop("database", None)
