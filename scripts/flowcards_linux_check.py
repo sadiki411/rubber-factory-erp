@@ -47,7 +47,7 @@ if phase == "create":
     client = APIClient(); client.force_authenticate(user)
     entries = []
     for tag, whole, long in [("required", "REQUIRED", False), ("optional", "NOT_REQUIRED", False), ("long", "REQUIRED", True)]:
-        product = ProductSpecification.objects.create(specification="Linux中文长字段-"*20 if long else "Linux中文样品", material="隔离示例")
+        product = ProductSpecification.objects.create(specification="Linux中文长字段-"*16 if long else "Linux中文样品", material="隔离示例")
         order = QualityOrder.objects.create(order_no="LINUX-"+tag, product_specification=product, specification=product.specification,
             material=product.material, source_system="翔邦", order_quantity=1000, created_by=user)
         st = s.confirm_standard({"request_key": "standard-"+tag, "product_id": product.pk, "source": "隔离Linux要求→快照→PDF链",

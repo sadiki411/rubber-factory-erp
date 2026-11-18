@@ -471,7 +471,11 @@ def record_event(data, user):
             if not isinstance(sample_cards, list) or not sample_cards or any(not isinstance(c, str) or c not in mapped for c in sample_cards):
                 raise ValidationError({"coupon_samples": "胶片只能代表本次明确选择的卡，不能按相同材质自动扩展。"})
             trays = sample.get("trays", [])
-            if not isinstance(trays, list) or not trays or any(t not in mapped[c]["trays"] for c in sample_cards for t in trays):
+            # One shared coupon may represent cards placed on different trays.
+            # Its actual tray(s) must belong to the selected cards' union, not
+            # the intersection (which would wrongly require identical trays).
+            represented_trays = {t for c in sample_cards for t in mapped[c]["trays"]}
+            if not isinstance(trays, list) or not trays or any(isinstance(t, bool) or not isinstance(t, int) or t not in represented_trays for t in trays):
                 raise ValidationError({"coupon_samples": "胶片取样盘须属于其代表卡的本次实际盘号。"})
             if sample.get("accompanied") is not True:
                 raise ValidationError({"coupon_samples": "只有实际随对应产品二烤的胶片才可关联本次烤后检测。"})

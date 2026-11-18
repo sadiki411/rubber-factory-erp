@@ -129,6 +129,20 @@ class FlowReviewTests(QualityTestMixin, TestCase):
         self.assertEqual(CardEvent.objects.filter(kind="BAKE").count(), 2)
         self.assertEqual(delivered_quantities_by_order([self.order.pk])[self.order.pk], 0)
 
+    def test_RV06_shared_coupon_allows_different_trays_but_not_unselected_tray(self):
+        cards = list(self.generated(planned_molds=200).cards.all())
+        body = self.bake_body(cards)
+        body['values']['card_trays'][1]['trays'] = [7]
+        body['values']['coupon_samples'] = [{'sample_ref': 'SHARED', 'material_ref': '同次当批料',
+            'card_ids': [str(c.pk) for c in cards], 'trays': [1, 7], 'accompanied': True}]
+        saved = s.record_event(body, self.user)
+        self.assertEqual(saved.cards.count(), 2)
+        for invalid in [[9], [True], ['1']]:
+            bad = copy.deepcopy(body); bad['request_key'] = s.uuid.uuid4().hex
+            bad['values']['coupon_samples'][0]['trays'] = invalid
+            with self.assertRaises(ValidationError):
+                s.record_event(bad, self.user)
+
     def test_RV06_coupon_baked_read_requires_actual_accompanied_sample_and_scope(self):
         config = {"object": "COUPON", "scale": "隔离量表（非实际仪器确认）"}
         st = self.standard(hardness={"MOLDING_HARDNESS": config, "BAKED_HARDNESS": config})

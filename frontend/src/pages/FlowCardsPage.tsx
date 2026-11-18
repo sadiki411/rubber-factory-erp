@@ -1,4 +1,4 @@
-import { Alert, App, Button, Card, Checkbox, Descriptions, Empty, Form, Input, InputNumber, Modal, Pagination, Select, Skeleton, Space, Table, Tag, Typography, Upload } from 'antd'
+import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Empty, Form, Input, InputNumber, Modal, Pagination, Select, Skeleton, Space, Table, Tag, Typography, Upload } from 'antd'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
@@ -268,7 +268,7 @@ export function FlowCardDetailPage() {
     if (['MOLDING_HARDNESS', 'BAKED_HARDNESS'].includes(v.kind)) Object.assign(values, { measurement_object: v.measurement_object || 'UNKNOWN', object_change_reason: v.object_change_reason, sample_ref: v.sample_ref, material_ref: v.material_ref, bake_event_id: v.bake_event_id })
     const cardIds = [id]
     for (const code of (v.shared_cards || '').split(/\n/).map((s: string) => s.trim()).filter(Boolean)) cardIds.push((await flowApi.scan(code)).id)
-    const body = { card_ids: [...new Set(cardIds)], kind: v.kind, values, evidence: v.evidence, scope: v.scope, employee_id: v.employee_id || null, business_at: v.business_at || null, replaces_id: v.replaces_id || null }
+    const body = { card_ids: [...new Set(cardIds)], kind: v.kind, values, evidence: v.evidence, scope: v.scope, employee_id: v.employee_id || null, business_at: v.business_at?.toISOString() || null, replaces_id: v.replaces_id || null }
     await flowApi.record({ ...body, request_key: flowRequestKey(`event:${id}`, body) }); finishFlowRequest(`event:${id}`)
     setRecordOpen(false); form.resetFields(); void card.refetch(); void events.refetch(); message.success('已保存原记录，不改变数量账')
   })
@@ -313,7 +313,7 @@ export function FlowCardDetailPage() {
           }} /></Form.Item>
           <Form.Item name="scope" label="本次实际范围/模段（未知则明确写未知）" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="employee_id" label="实际作业人（不取登录人）"><Select loading={employees.isPending} allowClear options={employees.data?.map((e) => ({ value: e.id, label: e.name }))} /></Form.Item>
-          <Form.Item name="business_at" label="实际业务时间（有依据再填）"><Input type="datetime-local" /></Form.Item>
+          <Form.Item name="business_at" label="实际业务时间（有依据再填）"><DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} /></Form.Item>
           {kind === 'WHOLE_MOLD' && <>
             <Form.Item name="status" label="整模进度"><Select options={['PARTIAL', 'COMPLETED', 'EXCEPTION'].map((v) => ({ value: v, label: WHOLE[v] }))} /></Form.Item>
             <Form.Item name="coverage" label="实际覆盖范围"><Select options={[{ value: 'UNKNOWN', label: '范围未知' }, { value: 'PARTIAL', label: '明确部分模段（在范围栏说明）' }, { value: 'WHOLE', label: '本卡整包' }]} /></Form.Item>
