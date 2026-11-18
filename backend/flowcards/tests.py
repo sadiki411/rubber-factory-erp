@@ -602,6 +602,17 @@ class FlowCardConcurrencyTests(TransactionTestCase):
         group = s.generate_group(s.create_group(self.body, self.user), self.user)
         card = group.cards.first()
         bodies = [{"card_ids": [str(card.pk)], "request_key": f"CONCURRENT-PRINT-{i}"} for i in [1, 2]]
-        self.parallel("/api/flow-cards/print-jobs/", bodies)
+        statuses = self.parallel("/api/flow-cards/print-jobs/", bodies)
+        # SQLite may reject BOTH simultaneous read-to-write upgrades. A 503
+        # promises a safe same-request retry, not that either write committed.
+        from rest_framework.test import APIClient
+        client = APIClient(); client.force_authenticate(self.user)
+        if not PrintJob.objects.exists():
+            self.assertEqual(statuses, [503, 503])
+            retry = client.post("/api/flow-cards/print-jobs/", bodies[0], format="json")
+            self.assertEqual(retry.status_code, 201, retry.content)
         self.assertEqual(PrintJob.objects.count(), 1)
         self.assertEqual(PrintJob.objects.get().items.count(), 1)
+        winner = PrintJob.objects.get()
+        replay = client.post("/api/flow-cards/print-jobs/", next(b for b in bodies if b['request_key'] == winner.request_key), format="json")
+        self.assertEqual(replay.json()['id'], str(winner.pk))

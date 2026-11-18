@@ -2,6 +2,7 @@ import hashlib
 import json
 import math
 import uuid
+from copy import deepcopy
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
@@ -20,10 +21,29 @@ from .models import (
     PrintJob, PrintItem, TemplatePublication, ShipmentSource, TraceAudit, PositionDiagram,
 )
 
-RENDERER = "flowcard-draft-20261118-v1"
+RENDERER = "flowcard-review-20261118-v2"
 TEMPLATE = {"renderer": RENDERER, "version": "草稿", "width_mm": 190, "height_mm": 130}
 MEASURE_STAGES = {"UPPER_TEMP", "LOWER_TEMP", "MOLDING_HARDNESS", "BAKED_HARDNESS", "DIMENSION", "SECONDARY_CURE"}
 KINDS = MEASURE_STAGES | {"APPEARANCE", "WHOLE_MOLD", "DEBURR", "BAKE", "ANOMALY", "RESOLUTION", "SOURCE_CONFIRM", "VOID"}
+HARDNESS_STAGES = {"MOLDING_HARDNESS", "BAKED_HARDNESS"}
+
+
+def hardness_configuration(data):
+    supplied = data.get("hardness", {})
+    if not isinstance(supplied, dict):
+        raise ValidationError({"hardness": "请分别确认两个阶段的测量对象和方法。"})
+    result = {}
+    for stage in sorted(HARDNESS_STAGES):
+        value = supplied.get(stage, {})
+        if not isinstance(value, dict) or value.get("object", "UNKNOWN") not in ("PRODUCT", "COUPON", "UNKNOWN"):
+            raise ValidationError({"hardness": "测量对象只能是成品、胶片或待确认，不按规格尺寸推断。"})
+        result[stage] = {"object": value.get("object", "UNKNOWN")}
+        for key in ("scale", "instrument", "points", "specimen", "conditioning", "reading_time", "aggregation", "accepted_method"):
+            text = value.get(key, "")
+            if not isinstance(text, str) or len(text) > 500:
+                raise ValidationError({"hardness": "测法资料每项最多500字；未知可留空。"})
+            result[stage][key] = text.strip()
+    return result
 
 
 def write_enabled():
@@ -114,6 +134,8 @@ def confirm_standard(data, user):
     # Lock the stable parent, including the first revision on PostgreSQL.
     ProductSpecification.objects.select_for_update().get(pk=product.pk)
     source = required_text(data, "source")
+    hardness = hardness_configuration(data)
+    dimensions = integer(data.get("dimension_count"), "dimension_count", minimum=0, maximum=30, nullable=True)
     bake = data.get("bake", {"state": "UNKNOWN"})
     if not isinstance(bake, dict) or bake.get("state") not in ("UNKNOWN", "APPLICABLE", "NOT_APPLICABLE"):
         raise ValidationError({"bake": "二烤要求须区分适用、不适用和待确认。"})
@@ -154,7 +176,7 @@ def confirm_standard(data, user):
             row = ProductInspectionCriterion.objects.create(
                 product_specification=product, category="工序流转卡确认", inspection_item=required_text(entry, "name", 200),
                 lower_limit=str(entry.get("lower", "")), upper_limit=str(entry.get("upper", "")),
-                unit=required_text(entry, "unit", 100), raw_data={"source": source, "method": method, "stage": entry["stage"]},
+                unit=str(entry.get("unit", "")).strip()[:100] if entry["stage"] in HARDNESS_STAGES else required_text(entry, "unit", 100), raw_data={"source": source, "method": method, "stage": entry["stage"]},
             )
         numeric = entry.get("numeric", False)
         if numeric not in (True, False):
@@ -172,10 +194,13 @@ def confirm_standard(data, user):
                           "source_sheet": row.source_sheet, "source_row": row.source_row,
                           "source_batch_id": str(row.source_batch_id) if row.source_batch_id else None})
         criteria.append(row)
+    if dimensions is not None and dimensions < sum(e["stage"] == "DIMENSION" for e in snapshots):
+        raise ValidationError({"dimension_count": "需要的尺寸项目数不能少于本次已确认的尺寸项目。"})
     version = (StandardRevision.objects.filter(product=product).aggregate(v=Max("version"))["v"] or 0) + 1
     result = StandardRevision.objects.create(product=product, mold=mold, version=version, source=source, request_key=key, request_digest=digest(data),
         scope=str(data.get("scope", "")), whole_mold=whole, created_by=user,
-        snapshot={"criteria": snapshots, "bake": bake, "appearance": [{"id": e.pk, "name": e.name} for e in selected]})
+        snapshot={"criteria": snapshots, "bake": bake, "hardness": hardness, "dimension_count": dimensions,
+                  "appearance": [{"id": e.pk, "name": e.name} for e in selected]})
     result.criteria.set(criteria)
     result.appearance.set(selected)
     audit(result, "CONFIRM", user, {"source": source})
@@ -245,7 +270,9 @@ def group_plan(data):
         "cavities_basis": data.get("cavities_basis", ""), "standard": standard_data(standard) if standard else None,
         "requirement_warnings": requirement_warnings(product, orders, standard), "requirements_review": str(data.get("requirements_review", "")),
         "whole_mold": whole, "whole_mold_basis": str(data.get("whole_mold_basis", "")),
-        "diagram_id": diagram.pk if diagram else None, "template": TEMPLATE.copy(),
+        "diagram_id": diagram.pk if diagram else None, "template": {**TEMPLATE,
+            "width_mm": integer(data.get("paper_width_mm", 190), "paper_width_mm", minimum=180, maximum=220),
+            "height_mm": integer(data.get("paper_height_mm", 130), "paper_height_mm", minimum=125, maximum=165)},
         "plan_basis": required_text(data, "plan_basis"), "material_evidence": str(data.get("material_evidence", ""))}
     return {"product": product, "run": run, "orders": orders, "standard": standard, "diagram": diagram,
             "mold_id": mold_id, "planned": planned, "per_card": per_card, "count": count, "snapshot": snapshot}
@@ -314,7 +341,7 @@ def generate_group(group, user):
         raise ValidationError({"requirements_review": "检验要求存在差异/订单专用缺项，请核对并填写本组采用要求的依据；准备组保留，不自动选择。"})
     publication = TemplatePublication.objects.filter(renderer=RENDERER).first()
     snapshot = dict(group.snapshot)
-    snapshot["template"] = {**TEMPLATE, "version": publication.version if publication else "草稿"}
+    snapshot["template"] = {**snapshot["template"], "renderer": RENDERER, "version": publication.version if publication else "草稿"}
     snapshot["confirmed_by"] = user.pk
     snapshot["digest"] = digest(snapshot)
     now = timezone.now()
@@ -345,9 +372,12 @@ def create_print(data, user):
     cards = list(InternalCard.objects.select_for_update().filter(pk__in=ids).select_related("group").order_by("group_id", "sequence"))
     if len(cards) != len(set(map(str, ids))) or any(c.status != "ACTIVE" for c in cards):
         raise ValidationError({"card_ids": "卡不存在或已作废。"})
+    templates = {(c.group.snapshot["template"]["renderer"], c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c in cards}
+    if len(templates) > 1:
+        raise ValidationError({"card_ids": "不同模板渲染版本或纸张尺寸请分别打印，旧卡不套新模板。"})
     if PrintItem.objects.filter(card__in=cards, active=True).exists():
         raise ValidationError({"card_ids": "有未核对打印结果的任务，请继续原任务，不能重复补打。"})
-    job = PrintJob.objects.create(request_key=key, request_digest=digest(data), template=TEMPLATE, created_by=user)
+    job = PrintJob.objects.create(request_key=key, request_digest=digest(data), template=deepcopy(cards[0].group.snapshot["template"]), created_by=user)
     PrintItem.objects.bulk_create([PrintItem(job=job, card=c, proposed_reprint=c.reprint_count + (1 if c.printed_at else 0)) for c in cards])
     audit(job, "FILE_PREPARED_NOT_PRINTED", user, {"cards": list(map(str, ids))})
     return job
@@ -392,7 +422,7 @@ def record_event(data, user):
     if existing:
         return existing
     kind = data.get("kind")
-    values = data.get("values", {})
+    values = deepcopy(data.get("values", {}))
     if kind not in KINDS or not isinstance(values, dict):
         raise ValidationError({"kind": "记录阶段或内容无效。"})
     ids = card_ids(data)
@@ -406,6 +436,47 @@ def record_event(data, user):
     business_at = DateTimeField(allow_null=True).run_validation(data.get("business_at"))
     evidence = required_text(data, "evidence")
     scope = required_text(data, "scope")
+    if kind == "BAKE":
+        if not employee or not business_at:
+            raise ValidationError({"employee_id": "实际二烤须登记作业人和实际业务时间。"})
+        for field_name in ("temperature_c", "minutes"):
+            try:
+                value = Decimal(str(values[field_name]))
+                if not value.is_finite() or value <= 0:
+                    raise InvalidOperation
+            except (KeyError, InvalidOperation, ValueError):
+                raise ValidationError({field_name: "请记录实际温度℃及保温分钟，不自动采用建议条件。"})
+            values[field_name] = str(value)
+        coverage = values.get("card_trays")
+        if not isinstance(coverage, list) or len(coverage) != len(cards):
+            raise ValidationError({"card_trays": "请明确每张卡本次实际盘号及部分/整包范围；一张卡可分次烤。"})
+        mapped = {}
+        for item in coverage:
+            if not isinstance(item, dict) or str(item.get("card_id")) not in set(map(str, ids)) or str(item.get("card_id")) in mapped:
+                raise ValidationError({"card_trays": "覆盖卡号重复或不在本次选择中。"})
+            trays = item.get("trays", [])
+            if not isinstance(trays, list) or not 1 <= len(trays) <= 500:
+                raise ValidationError({"trays": "请明确实际盘号，允许非连续盘号，不默认覆盖中间盘。"})
+            trays = sorted(set(integer(v, "trays", maximum=100000) for v in trays))
+            mapped[str(item["card_id"])] = {"card_id": str(item["card_id"]), "trays": trays, "scope": required_text(item, "scope", 500)}
+        samples = values.get("coupon_samples", [])
+        if not isinstance(samples, list) or len(samples) > 30:
+            raise ValidationError({"coupon_samples": "胶片样品最多30项。"})
+        for sample in samples:
+            if not isinstance(sample, dict):
+                raise ValidationError({"coupon_samples": "请明确胶片原始标识与覆盖范围。"})
+            required_text(sample, "sample_ref", 200)
+            required_text(sample, "material_ref", 300)
+            sample_cards = sample.get("card_ids", [])
+            if not isinstance(sample_cards, list) or not sample_cards or any(not isinstance(c, str) or c not in mapped for c in sample_cards):
+                raise ValidationError({"coupon_samples": "胶片只能代表本次明确选择的卡，不能按相同材质自动扩展。"})
+            trays = sample.get("trays", [])
+            if not isinstance(trays, list) or not trays or any(t not in mapped[c]["trays"] for c in sample_cards for t in trays):
+                raise ValidationError({"coupon_samples": "胶片取样盘须属于其代表卡的本次实际盘号。"})
+            if sample.get("accompanied") is not True:
+                raise ValidationError({"coupon_samples": "只有实际随对应产品二烤的胶片才可关联本次烤后检测。"})
+            sample["origin"] = "本厂自制"
+        values = {**values, "card_trays": list(mapped.values()), "coupon_samples": samples, "quantity_effect": "NONE"}
     if kind == "WHOLE_MOLD":
         if len(cards) != 1:
             raise ValidationError({"card_ids": "整模按实际包确认；不能把同一次签名批量代签全部包。"})
@@ -446,12 +517,37 @@ def record_event(data, user):
                 raise ValidationError({"card_ids": "共同测量的要求不同，请分别登记。"})
             criteria = (standards[0] or {}).get("snapshot", {}).get("criteria", [])
             matching = [e for e in criteria if e["id"] == values.get("criterion_id") and e["stage"] == kind]
+            method_matches = True
+            if kind in HARDNESS_STAGES:
+                config = (standards[0] or {}).get("snapshot", {}).get("hardness", {}).get(kind, {})
+                actual_object = values.get("measurement_object", "UNKNOWN")
+                if actual_object not in ("PRODUCT", "COUPON", "UNKNOWN"):
+                    raise ValidationError({"measurement_object": "请保留实际成品/胶片对象；未知不能按规格猜。"})
+                if config.get("object", "UNKNOWN") not in ("UNKNOWN", actual_object):
+                    required_text(values, "object_change_reason", 500)
+                values["measurement_object"] = actual_object
+                values["method_configuration"] = config
+                method_matches = actual_object != "UNKNOWN" and actual_object == config.get("object") and bool(config.get("scale")) and values.get("unit") == config.get("scale")
+                if actual_object == "COUPON":
+                    required_text(values, "sample_ref", 200)
+                    required_text(values, "material_ref", 300)
+                    values["sample_origin"] = "本厂自制"
+                    if kind == "BAKED_HARDNESS":
+                        bake = get_row(CardEvent, values.get("bake_event_id"), "bake_event_id")
+                        if bake.kind != "BAKE" or CardEvent.objects.filter(replaces=bake).exists():
+                            raise ValidationError({"bake_event_id": "请引用当前有效的实际二烤记录，不用建议或被更正旧记录。"})
+                        samples = [s for s in bake.values.get("coupon_samples", []) if s.get("sample_ref") == values["sample_ref"] and s.get("material_ref") == values["material_ref"] and s.get("accompanied") is True]
+                        if not any(set(map(str, ids)) <= set(s["card_ids"]) for s in samples):
+                            raise ValidationError({"sample_ref": "这张胶片未登记随所选卡的产品二烤，不能作为这些卡的烤后实测。"})
+                        values["bake_snapshot"] = {"id": str(bake.pk), "business_at": bake.business_at.isoformat(), "card_trays": bake.values["card_trays"]}
             if matching:
                 criterion = matching[0]
                 if values.get("unit") != criterion["unit"] or values.get("method") != criterion["method"]:
-                    raise ValidationError({"values": "实测单位/方法与当时标准不一致，不能直接判定。"})
+                    if kind not in HARDNESS_STAGES:
+                        raise ValidationError({"values": "实测单位/方法与当时标准不一致，不能直接判定。"})
+                    method_matches = False
                 values["standard_snapshot"] = criterion
-                if criterion["numeric"]:
+                if criterion["numeric"] and method_matches:
                     values["judgment"] = "WITHIN" if Decimal(criterion["lower"]) <= actual <= Decimal(criterion["upper"]) else "OUTSIDE"
     if kind == "APPEARANCE":
         if values.get("normal") is True and (values.get("defect_ids") or values.get("other")):

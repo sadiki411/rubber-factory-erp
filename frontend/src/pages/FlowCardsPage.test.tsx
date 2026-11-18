@@ -9,7 +9,7 @@ import { ReadOnlyContext } from '../access'
 import { mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-vi.mock('../flowcards', async (original) => ({ ...await original<typeof import('../flowcards')>(), flowApi: { context: vi.fn(), preview: vi.fn(), create: vi.fn() } }))
+vi.mock('../flowcards', async (original) => ({ ...await original<typeof import('../flowcards')>(), flowApi: { context: vi.fn(), preview: vi.fn(), create: vi.fn(), groups: vi.fn(), templates: vi.fn() } }))
 Object.defineProperty(window, 'matchMedia', { writable: true, value: vi.fn().mockImplementation((query: string) => ({ matches: false, media: query, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn() })) })
 
 const context: FlowContext = { write_enabled: true, product: { id: 1, name: '隔离示例', specification: '215', material: 'N7200' }, run_id: 10, mold_id: null, order_ids: [1, 2], orders: [{ id: 1, order_no: 'DEMO-ORDER-01', item_no: '3' }, { id: 2, order_no: 'DEMO-ORDER-02', item_no: '4' }], suggested_molds: 2050, standards: [], existing_groups: [], appearance: [{ id: 1, name: '毛刺' }, { id: 2, name: '杂质' }, { id: 3, name: '包风' }, { id: 4, name: '缺料' }], criteria: [], diagrams: [] }
@@ -20,7 +20,11 @@ function mount(readOnly = false) {
 }
 
 describe('Flow-card preparation page', () => {
-  beforeEach(() => { vi.clearAllMocks(); vi.mocked(flowApi.context).mockResolvedValue(context) })
+  beforeEach(() => {
+    vi.clearAllMocks(); vi.mocked(flowApi.context).mockResolvedValue(context)
+    vi.mocked(flowApi.groups).mockResolvedValue({ count: 0, results: [] })
+    vi.mocked(flowApi.templates).mockResolvedValue({ renderer: 'review-v2', version: '草稿', published: false, write_enabled: true, history: [] })
+  })
   it('shows the actual source and preview without creating identities; captures a noninteractive HTML review', async () => {
     vi.mocked(flowApi.preview).mockResolvedValue({ count: 21, tail_molds: 50, planned_molds: 2050 })
     mount()

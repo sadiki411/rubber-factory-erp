@@ -40,6 +40,17 @@ def wrap(text, width, font, size=9):
 
 
 def render_cards(items):
+    items = list(items)
+    renderers = {card.group.snapshot.get("template", {}).get("renderer") for card, _ in items}
+    if renderers == {"flowcard-review-20261118-v2"}:
+        from .pdf_v2 import render_cards_v2
+        return render_cards_v2(items)
+    if renderers != {"flowcard-draft-20261118-v1"}:
+        raise ValueError("不同渲染版本请分开打印；不能替换旧卡模板。")
+    return render_cards_v1(items)
+
+
+def render_cards_v1(items):
     out = io.BytesIO()
     font = font_name()
     c = canvas.Canvas(out, pagesize=(190 * mm, 130 * mm), pageCompression=1, invariant=1)

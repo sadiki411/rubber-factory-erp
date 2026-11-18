@@ -8,7 +8,7 @@ from django.conf import settings
 from django.core.files.storage import FileSystemStorage
 from django.db import IntegrityError, OperationalError, transaction
 from django.db.models import Max, Q
-from django.http import FileResponse, Http404
+from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from PIL import Image, UnidentifiedImageError
 from rest_framework import viewsets
@@ -168,6 +168,9 @@ class GroupViewSet(ErrorsMixin, viewsets.GenericViewSet):
                 qs = qs.filter(**{key: value})
         if request.query_params.get("order_id"):
             qs = qs.filter(orders__id=s.integer(request.query_params["order_id"], "order_id", maximum=2147483647))
+        if request.query_params.get("q"):
+            term = request.query_params["q"].strip()[:150]
+            qs = qs.filter(Q(cards__card_no__icontains=term) | Q(orders__order_no__icontains=term) | Q(plan_basis__icontains=term) | Q(request_key=term))
         return page(self, request, qs.distinct(), group_data)
 
     def retrieve(self, request, pk=None):
@@ -347,9 +350,18 @@ class PrintViewSet(ErrorsMixin, viewsets.GenericViewSet):
 
 
 class TemplateView(ErrorsMixin, APIView):
+    def get(self, request):
+        current = TemplatePublication.objects.filter(renderer=s.RENDERER).first()
+        return Response({"renderer": s.RENDERER, "write_enabled": settings.FLOW_CARDS_WRITE_ENABLED,
+            "version": current.version if current else "草稿",
+            "template": s.TEMPLATE, "published": bool(current),
+            "history": list(TemplatePublication.objects.order_by("-version").values("renderer", "version", "confirmation", "created_at"))})
+
     def post(self, request):
         s.write_enabled()
         confirmation = s.required_text(request.data, "confirmation")
+        if request.data.get("renderer") != s.RENDERER or request.data.get("print_confirmed") is not True:
+            raise ValidationError({"confirmation": "请核对当前渲染版本并明确确认已按此版打印审核；预览和下载不会发布。"})
         with transaction.atomic():
             existing = TemplatePublication.objects.filter(renderer=s.RENDERER).first()
             if not existing:
@@ -358,6 +370,34 @@ class TemplateView(ErrorsMixin, APIView):
                     confirmation=confirmation, created_by=request.user)
                 s.audit(existing, "USER_TEMPLATE_RELEASE", request.user, {"confirmation": confirmation})
         return Response({"version": existing.version, "renderer": existing.renderer})
+
+
+class TemplatePreviewView(ErrorsMixin, APIView):
+    def get(self, request):
+        # In-memory preview only: no issued identity, print counter or publication.
+        from types import SimpleNamespace
+        from django.utils import timezone
+        from .pdf import render_cards
+        standard = s.get_row(StandardRevision, request.query_params["standard_id"], "standard_id") if request.query_params.get("standard_id") else None
+        product = standard.product if standard else None
+        whole = request.query_params.get("whole_mold", "REQUIRED")
+        if whole not in ("REQUIRED", "NOT_REQUIRED"):
+            raise ValidationError({"whole_mold": "预览请选择需整模/不需整模。"})
+        template = {**s.TEMPLATE,
+            "width_mm": s.integer(request.query_params.get("width_mm", 190), "width_mm", minimum=180, maximum=220),
+            "height_mm": s.integer(request.query_params.get("height_mm", 130), "height_mm", minimum=125, maximum=165)}
+        snapshot = {"template": template, "product": {"id": product.pk if product else None,
+            "customer_product_no": product.customer_product_no if product else "隔离样例",
+            "specification": product.specification if product else "预览样品（非真实要求）", "material": product.material if product else "待确认"},
+            "orders": [{"id": None, "order_no": "PREVIEW-NOT-ISSUED", "item_no": "-", "customer": "预览"}],
+            "whole_mold": whole, "standard": s.standard_data(standard) if standard else None,
+            "appearance": standard.snapshot["appearance"] if standard else list(AppearanceIssue.objects.filter(is_active=True).values("id", "name")[:4])}
+        card = SimpleNamespace(pk=uuid.UUID(int=0), card_no="FC-PREVIEW-NOT-ISSUED", group=SimpleNamespace(snapshot=snapshot),
+            original_date=timezone.localdate(), sequence=1, denominator=1, planned_molds=100)
+        result = HttpResponse(render_cards([(card, 0)]), content_type="application/pdf")
+        result["Content-Disposition"] = 'inline; filename="flowcard-draft-preview.pdf"'
+        result["Cache-Control"] = "private, no-store"
+        return result
 
 
 def private_storage():
