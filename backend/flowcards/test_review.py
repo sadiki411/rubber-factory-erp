@@ -69,6 +69,17 @@ class FlowReviewTests(QualityTestMixin, TestCase):
         self.assertEqual(snap["hardness"]["BAKED_HARDNESS"]["object"], "UNKNOWN")
         self.assertEqual(self.generated(paper_width_mm=195, paper_height_mm=135).snapshot["template"]["width_mm"], 195)
 
+    def test_RV03_celsius_display_fallback_does_not_change_snapshot(self):
+        from .pdf_v2 import display_text
+        self.assertEqual(display_text("150~160℃ × 120min"), "150~160°C × 120min")
+        self.assertEqual(display_text("℃ ×"), "°C ×")
+        st = self.standard(criteria=[{"name": "上模温度", "lower": "150", "upper": "160", "unit": "℃", "method": "隔离方法", "stage": "UPPER_TEMP"}])
+        card = self.generated(standard_id=st.pk, planned_molds=100).cards.get()
+        from .pdf import render_cards
+        self.assertTrue(render_cards([(card, 0)]).startswith(b"%PDF"))
+        card.group.refresh_from_db()
+        self.assertEqual(card.group.snapshot["standard"]["snapshot"]["criteria"][0]["unit"], "℃")
+
     def test_RV05_older_than_twenty_groups_paginated_searchable_and_scanable(self):
         first = self.generated(planned_molds=1, plan_basis="最早明确范围")
         for _ in range(21): s.create_group(self.plan(planned_molds=1), self.user)

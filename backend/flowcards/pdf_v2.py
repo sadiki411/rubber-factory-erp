@@ -8,6 +8,12 @@ from reportlab.graphics import renderPDF
 from .pdf import font_name, wrap
 
 
+def display_text(value):
+    # Some CJK TTC fonts expose U+2103 without a drawable glyph. Keep the
+    # business snapshot untouched and print the equivalent degree+C instead.
+    return str(value).replace("℃", "°C")
+
+
 def render_cards_v2(items):
     out, font = io.BytesIO(), font_name()
     sizes = {(c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c, _ in items}
@@ -24,6 +30,7 @@ def render_cards_v2(items):
         signer_x, line_x = width-45, width-27
 
         def text(x, y, value, size=9, bold=False, center=False):
+            value = display_text(value)
             c.setFont(font, size)
             c.setFillColorRGB(0, 0, 0)
             if bold:
@@ -40,6 +47,7 @@ def render_cards_v2(items):
             c.rect(x*mm, (height-y-h)*mm, w*mm, h*mm, fill=1 if shade else 0)
 
         def field(x, y, w, h, value, size=9):
+            value = display_text(value)
             rows = wrap(value, (w-2)*mm, font, size)
             if len(rows)*(size+1) > (h-1)*mm:
                 extra.append(str(value)); rows = ["详见本卡续页"]
@@ -120,7 +128,7 @@ def render_cards_v2(items):
         if extra:
             text(5,10,f"工序流转卡续页 · {card.card_no}",11); yy=18
             for value in extra:
-                for row in wrap(value,(span-2)*mm,font,10):
+                for row in wrap(display_text(value),(span-2)*mm,font,10):
                     if yy>height-10:
                         c.showPage(); text(5,10,f"续页 · {card.card_no}",11); yy=18
                     text(6,yy,row,10); yy+=5
