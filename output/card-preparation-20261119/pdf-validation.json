@@ -1,0 +1,18 @@
+[
+  {
+    "file": "sample-upper-only.pdf",
+    "pages": 1,
+    "width_mm": 190.0,
+    "height_mm": 130.0,
+    "has_inner": false,
+    "has_bake": false
+  },
+  {
+    "file": "sample-customer-inner.pdf",
+    "pages": 1,
+    "width_mm": 190.0,
+    "height_mm": 130.0,
+    "has_inner": true,
+    "has_bake": false
+  }
+]

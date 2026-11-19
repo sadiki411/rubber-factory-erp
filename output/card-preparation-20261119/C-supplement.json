@@ -1,0 +1,16 @@
+{
+  "draft_id": "7213098d-455d-40ac-87cd-d89dc1bd86e6",
+  "revision": 2,
+  "notes": "合成首单：退出后恢复原草稿；补充本次包装规则每包50模，等待标准维护人复核",
+  "molds_per_card": 50,
+  "supplemented_by": "synthetic-standard via fixture (not employee UI)",
+  "run_id": 2,
+  "standard_id": 2,
+  "repeat_order_id": 5,
+  "repeat_run_id": 3,
+  "quantity_baseline_after_fixture": {
+    "runs": 3,
+    "logs": 0,
+    "shipments": 0
+  }
+}

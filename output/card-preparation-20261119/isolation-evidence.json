@@ -1,0 +1,128 @@
+{
+  "synthetic_only": true,
+  "official_writes": false,
+  "template_publications": 0,
+  "groups": [
+    {
+      "id": "7ffffe49-15a0-4f0e-aaf8-52b88a2374a0",
+      "revision": 1,
+      "status": "GENERATED",
+      "run_id": 1,
+      "range": [
+        1,
+        201
+      ],
+      "orders": [
+        3,
+        2,
+        1
+      ],
+      "cards": [
+        {
+          "card_no": "FC-20261119-AEA7EA745AA54AEE",
+          "planned_molds": 100,
+          "reprint_count": 0
+        },
+        {
+          "card_no": "FC-20261119-369E2BDD57254810",
+          "planned_molds": 100,
+          "reprint_count": 0
+        },
+        {
+          "card_no": "FC-20261119-65E7BE186B6149E9",
+          "planned_molds": 1,
+          "reprint_count": 0
+        }
+      ],
+      "snapshot_sha256": "b841ae2609aa777f11df425a8dcf0e0aca780c84adc675a614b5523ba197ebcb",
+      "renderer": "flowcard-review-20261119-v4"
+    },
+    {
+      "id": "7213098d-455d-40ac-87cd-d89dc1bd86e6",
+      "revision": 4,
+      "status": "GENERATED",
+      "run_id": 2,
+      "range": [
+        1,
+        201
+      ],
+      "orders": [
+        4
+      ],
+      "cards": [
+        {
+          "card_no": "FC-20261119-80DB9FD230EB40A6",
+          "planned_molds": 50,
+          "reprint_count": 0
+        },
+        {
+          "card_no": "FC-20261119-80F192A9BB7342DC",
+          "planned_molds": 50,
+          "reprint_count": 0
+        },
+        {
+          "card_no": "FC-20261119-20A1DC29AA3B49F5",
+          "planned_molds": 50,
+          "reprint_count": 0
+        },
+        {
+          "card_no": "FC-20261119-7A9B2FAF14604A14",
+          "planned_molds": 50,
+          "reprint_count": 0
+        },
+        {
+          "card_no": "FC-20261119-C6BF856BF8FE4B8A",
+          "planned_molds": 1,
+          "reprint_count": 0
+        }
+      ],
+      "snapshot_sha256": "b929562b1c62ef873ffd0f7dfe723894e2011cb632b6efa8f5a60afcdb3e8a8c",
+      "renderer": "flowcard-preparation-20261119-v5"
+    },
+    {
+      "id": "ace89d04-cb1e-4497-bd3a-b836fc0a6d2e",
+      "revision": 1,
+      "status": "GENERATED",
+      "run_id": 3,
+      "range": [
+        1,
+        201
+      ],
+      "orders": [
+        5
+      ],
+      "cards": [
+        {
+          "card_no": "FC-20261119-764761AB631C470E",
+          "planned_molds": 100,
+          "reprint_count": 0
+        },
+        {
+          "card_no": "FC-20261119-A386155F46FA427A",
+          "planned_molds": 100,
+          "reprint_count": 0
+        },
+        {
+          "card_no": "FC-20261119-E2F3223A7F2B4D1A",
+          "planned_molds": 1,
+          "reprint_count": 0
+        }
+      ],
+      "snapshot_sha256": "a87c16eceedc97106f10e5e64a2c946e48492b179ab2ac52743a27b0e8ccdc29",
+      "renderer": "flowcard-preparation-20261119-v5"
+    }
+  ],
+  "old_card": {
+    "id": "aea7ea74-5aa5-4aee-b590-f47ea4fac414",
+    "card_no": "FC-20261119-AEA7EA745AA54AEE",
+    "snapshot_sha256": "b841ae2609aa777f11df425a8dcf0e0aca780c84adc675a614b5523ba197ebcb",
+    "pdf_reprint_0_sha256": "d9be6dc192c3cb96ebc757047a10f89d40124e22aa66e3cd9b1c2ed31f81b0e1",
+    "pdf_reprint_1_sha256": "db93f88a12f4b8b187207d33592a5a28fcb0ec5bd18e3b290fd154f71a11688e",
+    "baseline_bytes_identical": true
+  },
+  "quantities_after_ui": {
+    "runs": 3,
+    "logs": 0,
+    "shipments": 0
+  }
+}
