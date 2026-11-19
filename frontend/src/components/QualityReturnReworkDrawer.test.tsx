@@ -38,6 +38,9 @@ const apiMocks = vi.hoisted(() => ({
   createReworkCase: vi.fn(),
   updateReworkCase: vi.fn(),
   createReworkAttempt: vi.fn(),
+  getReturnReshipContext: vi.fn(),
+  reshipReworkCase: vi.fn(),
+  getReworkCase: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -335,5 +338,38 @@ describe('QualityReturnReworkAttemptDrawer', () => {
   it('does not offer metadata editing after a return record is cancelled', () => {
     renderWithQuery(<QualityReworkCaseDetailDrawer open item={{ ...item, status: 'CANCELLED' }} onClose={vi.fn()} onAddAttempt={vi.fn()} onSaved={vi.fn()} />)
     expect(screen.queryByRole('button', { name: /修改退货信息/ })).not.toBeInTheDocument()
+  })
+
+  it('reships from the original return with a fresh inspector and does not create a new first shipment or return', async () => {
+    const user = userEvent.setup()
+    apiMocks.getReturnReshipContext.mockResolvedValue({ eligible: true, state: 'UNIQUE', cards: [{ id: 8, card_no: 'SYNTH-UNIQUE-CARD' }], message: '沿原实物包唯一关联' })
+    apiMocks.reshipReworkCase.mockResolvedValue({ id: 999, shipment_no: 'SYNTH-RESHIP', inspectors: [employee] })
+    apiMocks.getReworkCase.mockImplementation(() => new Promise(() => undefined))
+    const onSaved = vi.fn()
+    renderWithQuery(<QualityReworkCaseDetailDrawer open item={{ ...item, status: 'OPEN', affected_quantity: 100, affected_weight_kg: '.100' }} employees={[{ ...employee, role: 'BOTH' }]} onClose={vi.fn()} onAddAttempt={vi.fn()} onSaved={onSaved} />)
+    await user.click(screen.getByRole('button', { name: '沿本退货单再次出货' }))
+    expect(await screen.findByText('SYNTH-UNIQUE-CARD')).toBeInTheDocument()
+    expect(screen.getByLabelText('本轮出货件数')).toHaveValue('100')
+    await user.click(screen.getByRole('button', { name: '确认沿原退货单再次出货' }))
+    expect(await screen.findByText('请选择本轮品检员，不自动沿用原责任人')).toBeInTheDocument()
+    expect(apiMocks.reshipReworkCase).not.toHaveBeenCalled()
+    await user.click(screen.getByLabelText('本轮重新出货品检员'))
+    await user.click(await screen.findByText(`${employee.employee_no} · ${employee.name}`))
+    await user.click(screen.getByRole('button', { name: '确认沿原退货单再次出货' }))
+    await waitFor(() => expect(apiMocks.reshipReworkCase).toHaveBeenCalledWith(9, expect.objectContaining({ piece_quantity: 100, net_weight_kg: .1, inspector_ids: [3] })))
+    expect(apiMocks.createReworkCase).not.toHaveBeenCalled()
+    expect(apiMocks.createReworkAttempt).not.toHaveBeenCalled()
+    expect(await screen.findByText(/本轮重新出货 · SYNTH-RESHIP/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '沿本退货单再次出货' })).not.toBeInTheDocument()
+    expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ id: 9, status: 'RESHIPPED' }))
+  }, 30000)
+
+  it.each(['MULTIPLE', 'MISSING'])('requires checking %s identity and never guesses or submits', async (state) => {
+    apiMocks.getReturnReshipContext.mockResolvedValue({ eligible: false, state, cards: [], message: '请核对原实物包流程卡' })
+    renderWithQuery(<QualityReworkCaseDetailDrawer open item={item} employees={[employee]} onClose={vi.fn()} onAddAttempt={vi.fn()} onSaved={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: '沿本退货单再次出货' }))
+    expect(await screen.findByText('需要人工核对，暂不出货')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '确认沿原退货单再次出货' })).not.toBeInTheDocument()
+    expect(apiMocks.reshipReworkCase).not.toHaveBeenCalled()
   })
 })

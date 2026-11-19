@@ -796,6 +796,7 @@ export const qualityWorkflowApi = {
   bulkScanReturn: (body: Record<string, unknown>) => apiFetch<QualityReworkCase[] | { results?: QualityReworkCase[]; cases?: QualityReworkCase[] }>('/api/quality/rework-cases/bulk-scan-return/', { method: 'POST', body: JSON.stringify(body) }),
   updateReworkCase: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityReworkCase>(`/api/quality/rework-cases/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
   reshipReworkCase: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityShipmentBatch>(`/api/quality/rework-cases/${id}/reship/`, { method: 'POST', body: JSON.stringify(body) }),
+  getReturnReshipContext: (id: number | string) => apiFetch<{ eligible: boolean; state: string; message: string; cards: Array<{ id: number; card_no: string }> }>(`/api/quality/rework-cases/${id}/reship-context/`),
   listReworkAttempts: (filters: QualityListFilters = {}) => apiFetch<ApiList<QualityReworkAttempt> | QualityReworkAttempt[]>(`/api/quality/rework-attempts/${queryString(filters)}`),
   createReworkAttempt: (body: Record<string, unknown>) => apiFetch<QualityReworkAttempt>('/api/quality/rework-attempts/', { method: 'POST', body: JSON.stringify(body) }),
   updateReworkAttempt: (id: number | string, body: Record<string, unknown>) => apiFetch<QualityReworkAttempt>(`/api/quality/rework-attempts/${id}/`, { method: 'PATCH', body: JSON.stringify(body) }),
