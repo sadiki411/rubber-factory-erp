@@ -9,7 +9,7 @@ import { QualityQrScanner } from '../components/QualityQrScanner'
 import { FlowTemplatePanel } from '../components/FlowTemplatePanel'
 import { FlowBakePanel } from '../components/FlowBakePanel'
 import { FlowEventSummary, FlowMeasurementSummary, flowTime, type CouponSample } from '../components/FlowMeasurementSummary'
-import { flowApi, flowLimitText, flowRequestKey, finishFlowRequest, isInternalCardCode, type Criterion, type FlowEvent, type FlowGroup, type PrintJob, type FlowTrace } from '../flowcards'
+import { flowApi, flowLimitText, applicableFlowCriteria, flowRequestKey, finishFlowRequest, isInternalCardCode, type Criterion, type FlowEvent, type FlowGroup, type PrintJob, type FlowTrace } from '../flowcards'
 import { safeBusinessReturn } from '../navigation'
 import './FlowCardsPage.css'
 
@@ -258,6 +258,8 @@ export function FlowCardDetailPage() {
   const diagram = useQuery({ queryKey: ['flow-diagram', card.data?.snapshot.diagram_id], queryFn: () => flowApi.diagramDetail(card.data!.snapshot.diagram_id!), enabled: tab === 'diagram' && Boolean(card.data?.snapshot.diagram_id) })
   const kind = Form.useWatch('kind', form)
   const measurementObject = Form.useWatch('measurement_object', form)
+  const reviewId = Form.useWatch('replaces_id', form)
+  const reviewMode = Form.useWatch('review_mode', form)
   const [bakePage, setBakePage] = useState(1)
   const bakeSources = useQuery({ queryKey: ['flow-bake-samples', id, bakePage], queryFn: () => flowApi.bakeSamples(id, bakePage), enabled: recordOpen && kind === 'BAKED_HARDNESS' && measurementObject === 'COUPON' })
   const data = card.data
@@ -266,13 +268,15 @@ export function FlowCardDetailPage() {
     form.resetFields()
     form.setFieldsValue({ kind: c.stage, state: 'NOT_MEASURED', criterion_id: c.id, unit: c.unit, method: c.method,
       scope: original?.scope || '本卡本次实测', replaces_id: original?.id,
+      review_mode: original ? 'RETEST' : undefined,
       covered_card_ids: original?.card_ids || [id], measurement_object: original?.values.measurement_object || data?.snapshot.standard?.snapshot.hardness?.[c.stage]?.object || 'UNKNOWN',
       covered_card_labels: original?.card_refs?.map((r) => r.card_no).join('、') || data?.card_no,
       sample_ref: original?.values.sample_ref, material_ref: original?.values.material_ref, bake_event_id: original?.values.bake_event_id })
     setRecordOpen(true)
   }
   const selectBake = (e: FlowEvent, sample: CouponSample) => {
-    const matches = data?.snapshot.standard?.snapshot.criteria.filter((c) => c.stage === 'BAKED_HARDNESS') || []
+    if (!sample.accompanied || !sample.card_ids.includes(id)) { message.error('这张胶片不代表当前包，请到所属卡查看，不能从本包登记'); return }
+    const matches = applicableFlowCriteria(data?.snapshot.standard?.snapshot.criteria, 'BAKED_HARDNESS')
     const c = matches.length === 1 ? matches[0] : undefined
     form.setFieldsValue({ kind: 'BAKED_HARDNESS', state: 'NOT_MEASURED', actual: undefined, criterion_id: c?.id, unit: c?.unit, method: c?.method,
       measurement_object: 'COUPON', sample_ref: sample.sample_ref, material_ref: sample.material_ref, bake_event_id: e.id,
@@ -289,11 +293,13 @@ export function FlowCardDetailPage() {
     if (v.kind === 'SOURCE_CONFIRM') Object.assign(values, { confirmed: v.source_confirmed === true, actual_run_id: v.actual_run_id || null })
     if (v.kind === 'RESOLUTION') Object.assign(values, { anomaly_id: v.anomaly_id, result: v.note, resolved: v.resolved === true })
     if (STAGES.some((s) => s.value === v.kind)) Object.assign(values, { state: v.state, actual: v.actual, criterion_id: v.criterion_id, unit: v.unit, method: v.method })
+    if (v.replaces_id && STAGES.some((s) => s.value === v.kind)) Object.assign(values, { review_mode: v.review_mode, correction_reason: v.correction_reason, same_scope_confirmed: v.same_scope_confirmed === true })
     if (['MOLDING_HARDNESS', 'BAKED_HARDNESS'].includes(v.kind)) Object.assign(values, { measurement_object: v.measurement_object || 'UNKNOWN', object_change_reason: v.object_change_reason, sample_ref: v.sample_ref, material_ref: v.material_ref, bake_event_id: v.bake_event_id })
-    const cardIds: string[] = v.covered_card_ids || [id]
+    const cardIds: string[] = [...(v.covered_card_ids || [id])]
     for (const code of (v.shared_cards || '').split(/\n/).map((s: string) => s.trim()).filter(Boolean)) cardIds.push((await flowApi.scan(code)).id)
     const body = { card_ids: [...new Set(cardIds)], kind: v.kind, values, evidence: v.evidence, scope: v.scope, employee_id: v.employee_id || null, business_at: v.business_at?.toISOString() || null, replaces_id: v.replaces_id || null }
-    await flowApi.record({ ...body, request_key: flowRequestKey(`event:${id}`, body) }); finishFlowRequest(`event:${id}`)
+    if (!cardIds.includes(id)) throw new Error('实际代表范围不含当前包，不能跨包提交')
+    await flowApi.record({ ...body, request_key: flowRequestKey(`event:${id}`, body) }, id); finishFlowRequest(`event:${id}`)
     setRecordOpen(false); form.resetFields(); await card.refetch(); void events.refetch(); message.success('已保存原记录，不改变数量账')
     document.querySelector('[aria-label="实测与复核状态"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   })
@@ -319,7 +325,7 @@ export function FlowCardDetailPage() {
       {error && <Alert type="error" title="操作失败或结果需核对" description={error} />}
       <Card>
         <Space wrap>{[['events', '工序/异常原记录'], ['photos', '原图归档'], ['trace', '出货/退回追溯'], ['diagram', '当时定点图'], ['prints', '原打印任务']].map(([value, label]) => <Button key={value} type={tab === value ? 'primary' : 'default'} onClick={() => { setTab(value); setPage(1) }}>{label}</Button>)}</Space>
-        {tab === 'events' && (events.isError ? <Alert type="error" title="原记录读取失败，不显示0/正常" /> : events.isPending ? <Skeleton active /> : <><Typography.Paragraph>未登记仅表示系统无数字记录，不认定现场未做。实际0保留；更正/复测不覆盖原值。</Typography.Paragraph>{!events.data.results.length && <Empty description="系统未登记 / 纸面待核对" />}{events.data.results.map((e) => <FlowEventSummary key={e.id} event={e} disabled={disabled} bakeMeasure={bakeMeasure} remeasure={measure} />)}<Pagination current={page} total={events.data.count} pageSize={20} onChange={setPage} /></>)}
+        {tab === 'events' && (events.isError ? <Alert type="error" title="原记录读取失败，不显示0/正常" /> : events.isPending ? <Skeleton active /> : <><Typography.Paragraph>未登记仅表示系统无数字记录，不认定现场未做。实际0保留；更正/复测不覆盖原值。</Typography.Paragraph>{!events.data.results.length && <Empty description="系统未登记 / 纸面待核对" />}{events.data.results.map((e) => <FlowEventSummary key={e.id} cardId={id} event={e} disabled={disabled} bakeMeasure={bakeMeasure} remeasure={measure} />)}<Pagination current={page} total={events.data.count} pageSize={20} onChange={setPage} /></>)}
         {tab === 'photos' && <>
           <Upload accept="image/jpeg,image/png,image/webp" showUploadList={false} disabled={disabled || busy} beforeUpload={(file) => { void act(async () => { const body = new FormData(); body.set('card_id', id); body.set('file', file); await flowApi.upload(body); void photos.refetch() }); return false }}><Button disabled={disabled} loading={busy}>拍照 / 上传原图（不自动判完成）</Button></Upload>
           {photos.isError ? <Alert type="error" title="原图列表读取失败" /> : photos.data?.results.map((p) => <div key={p.id}><Button href={p.url} target="_blank">查看原图 · {p.original_name}</Button><Typography.Text copyable>{p.id}</Typography.Text>{p.replaces_id && <Tag>补拍替换原图 {p.replaces_id}（原件保留）</Tag>}<Upload accept="image/jpeg,image/png,image/webp" showUploadList={false} disabled={disabled || busy} beforeUpload={(file) => { void act(async () => { const body = new FormData(); body.set('card_id', id); body.set('replaces_id', p.id); body.set('file', file); await flowApi.upload(body); void photos.refetch() }); return false }}><Button disabled={disabled}>补拍 / 替换此原图（留旧件）</Button></Upload></div>)}<Pagination current={page} total={photos.data?.count} pageSize={20} onChange={setPage} />
@@ -333,13 +339,19 @@ export function FlowCardDetailPage() {
         <Form form={form} layout="vertical">
           <Form.Item name="covered_card_ids" hidden><Input /></Form.Item>
           <Form.Item name="covered_card_labels" label="本次代表卡（自动关联，不需抄编号）"><Input.TextArea readOnly /></Form.Item>
-          <Form.Item name="kind" label="记录类型" rules={[{ required: true }]}><Select options={[{ value: 'WHOLE_MOLD', label: '整模作业' }, { value: 'ANOMALY', label: '异常' }, { value: 'RESOLUTION', label: '原异常处理结果' }, { value: 'SOURCE_CONFIRM', label: '核对实际来源' }, ...STAGES.filter((s) => s.value !== 'SECONDARY_CURE')]} onChange={(stage) => {
-            const matches = data.snapshot.standard?.snapshot.criteria.filter((c) => c.stage === stage) || []
+          <Form.Item name="kind" label="记录类型" rules={[{ required: true }]}><Select disabled={Boolean(reviewId)} options={[{ value: 'WHOLE_MOLD', label: '整模作业' }, { value: 'ANOMALY', label: '异常' }, { value: 'RESOLUTION', label: '原异常处理结果' }, { value: 'SOURCE_CONFIRM', label: '核对实际来源' }, ...STAGES.filter((s) => s.value !== 'SECONDARY_CURE')]} onChange={(stage) => {
+            const matches = applicableFlowCriteria(data.snapshot.standard?.snapshot.criteria, stage)
             const criterion = matches.length === 1 ? matches[0] : undefined
             const config = data.snapshot.standard?.snapshot.hardness?.[stage]
             form.setFieldsValue({ criterion_id: criterion?.id, unit: criterion?.unit, method: criterion?.method, measurement_object: config?.object || 'UNKNOWN', state: 'NOT_MEASURED', actual: undefined, sample_ref: undefined, bake_event_id: undefined, replaces_id: undefined, covered_card_ids: [id] })
           }} /></Form.Item>
-          <Form.Item name="scope" label="本次实际范围/模段（未知则明确写未知）" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="scope" label="本次实际范围/模段（未知则明确写未知）" rules={[{ required: true }]}><Input readOnly={Boolean(reviewId)} /></Form.Item>
+          {Boolean(reviewId) && <>
+            <Form.Item name="review_mode" label="本次操作" rules={[{ required: true }]}><Select options={[{ value: 'RETEST', label: '新做的复测（按实际测量时间）' }, { value: 'CORRECTION', label: '更正原录入（错抄数值或时间）' }]} /></Form.Item>
+            <Alert type="info" title={reviewMode === 'CORRECTION' ? '更正保留旧值、旧人员和时间，请说明错在哪里' : '较早或同一分钟的读数只作历史补录，不能解除较晚超限；有效复测须在原测量之后'} />
+            <Form.Item name="same_scope_confirmed" valuePropName="checked" rules={[{ validator: (_, value) => value ? Promise.resolve() : Promise.reject(new Error('请确认同一实物范围')) }]}><Checkbox>确认是原测量的同一实物范围，不以其他盘/包代替</Checkbox></Form.Item>
+            {reviewMode === 'CORRECTION' && <Form.Item name="correction_reason" label="更正原因（简短说明）" rules={[{ required: true, whitespace: true }]}><Input maxLength={500} /></Form.Item>}
+          </>}
           <Form.Item name="employee_id" label="实际作业人（不取登录人）"><Select loading={employees.isPending} allowClear options={employees.data?.map((e) => ({ value: e.id, label: e.name }))} /></Form.Item>
           <Form.Item name="business_at" label="实际业务时间（有依据再填）"><DatePicker showTime format="YYYY-MM-DD HH:mm" classNames={{ popup: { root: 'flow-datetime-popup' } }} style={{ width: '100%' }} /></Form.Item>
           {kind === 'WHOLE_MOLD' && <>
@@ -351,21 +363,21 @@ export function FlowCardDetailPage() {
           {kind === 'SOURCE_CONFIRM' && <><Form.Item name="source_confirmed" valuePropName="checked"><Checkbox>已按实物及原记录核对来源（不是仅打印/计划）</Checkbox></Form.Item><Form.Item name="actual_run_id" label="实际来源生产任务ID（可空；不按相近日期猜）"><InputNumber min={1} precision={0} /></Form.Item></>}
           {kind === 'RESOLUTION' && <><Form.Item name="anomaly_id" label="原异常记录ID" rules={[{ required: true }]}><Input /></Form.Item><Form.Item name="resolved" valuePropName="checked"><Checkbox>实际处理完成并确认原异常已解决</Checkbox></Form.Item></>}
           {STAGES.some((s) => s.value === kind) && <>
-            <Form.Item name="shared_cards" label="同一次真实检测覆盖的其他卡号（每行一个，可空，不按材质自动扩展）"><Input.TextArea /></Form.Item>
+            <Form.Item name="shared_cards" label="同一次真实检测覆盖的其他卡号（每行一个，可空，不按材质自动扩展）"><Input.TextArea disabled={Boolean(reviewId) || kind === 'BAKED_HARDNESS' && measurementObject === 'COUPON'} /></Form.Item>
             <Form.Item name="state" label="值的状态"><Select options={[{ value: 'UNKNOWN', label: '未知' }, { value: 'NOT_MEASURED', label: '未测' }, { value: 'NOT_APPLICABLE', label: '不适用' }, { value: 'MEASURED', label: '实测（允许0）' }]} onChange={(state) => { if (state !== 'MEASURED' && form.getFieldValue('actual') != null) { form.setFieldValue('actual', undefined); message.info('状态已改为非实测，本次未保存读数已清除；历史原记录不变') } }} /></Form.Item>
-            <Form.Item name="criterion_id" label="当时要求"><Select allowClear options={data.snapshot.standard?.snapshot.criteria.filter((c) => c.stage === kind && c.limit_mode !== 'NONE').map((c) => ({ value: c.id, label: `${c.name} ${flowLimitText(c)}` }))} onChange={(v) => { const c = data.snapshot.standard?.snapshot.criteria.find((c) => c.id === v); if (c) form.setFieldsValue({ unit: c.unit, method: c.method }) }} /></Form.Item>
+            <Form.Item name="criterion_id" label="当时要求"><Select disabled={Boolean(reviewId)} allowClear options={applicableFlowCriteria(data.snapshot.standard?.snapshot.criteria, kind).map((c) => ({ value: c.id, label: `${c.name} ${flowLimitText(c)}` }))} onChange={(v) => { const c = data.snapshot.standard?.snapshot.criteria.find((c) => c.id === v); if (c) form.setFieldsValue({ unit: c.unit, method: c.method }) }} /></Form.Item>
             <Form.Item name="actual" label="实际值"><InputNumber onChange={(v) => form.setFieldValue('state', v == null ? 'NOT_MEASURED' : 'MEASURED')} /></Form.Item><Form.Item name="unit" label="实际单位/量表"><Input /></Form.Item><Form.Item name="method" label="实际测量方法"><Input /></Form.Item>
             {['MOLDING_HARDNESS', 'BAKED_HARDNESS'].includes(kind) && <><Form.Item name="measurement_object" label="本次实际测量对象"><Select options={[{ value: 'UNKNOWN', label: '待确认（不自动判合格）' }, { value: 'PRODUCT', label: '成品' }, { value: 'COUPON', label: '胶片' }]} /></Form.Item><Form.Item name="object_change_reason" label="与当时默认测量对象不同的原因（变化时必填）"><Input /></Form.Item>{measurementObject === 'COUPON' && <><Form.Item name="sample_ref" label="本厂自制胶片原始标识"><Input readOnly={kind === 'BAKED_HARDNESS'} /></Form.Item><Form.Item name="material_ref" label="当批胶料原始标识"><Input readOnly={kind === 'BAKED_HARDNESS'} /></Form.Item>{kind === 'BAKED_HARDNESS' && <>
               <Alert type="info" title="请选择实际二烤及随烤胶片；不默认最近一次，不需抄系统编号。" />
-              {bakeSources.isError ? <Alert type="error" title="二烤来源读取失败，不当作没有随烤" /> : <Select aria-label="选择实际二烤胶片" style={{ width: '100%' }} loading={bakeSources.isPending} placeholder="按日期、盘号、胶片选择" options={bakeSources.data?.results.flatMap((e) => ((e.values.coupon_samples || []) as CouponSample[]).filter((s) => s.accompanied).map((s, i) => ({ value: `${e.id}:${i}`, label: `${flowTime(e.business_at)} · 盘${s.trays.join('、')} · 胶片${s.sample_ref} · 胶料${s.material_ref} · ${s.card_ids.length}卡` })))} onChange={(value) => { const [eid, index] = value.split(':'); const e = bakeSources.data?.results.find((row) => row.id === eid); if (e) selectBake(e, (e.values.coupon_samples as CouponSample[]).filter((s) => s.accompanied)[Number(index)]) }} />}
+              {bakeSources.isError ? <Alert type="error" title="二烤来源读取失败，不当作没有随烤" /> : <Select aria-label="选择实际二烤胶片" disabled={Boolean(reviewId)} style={{ width: '100%' }} loading={bakeSources.isPending} placeholder="按日期、盘号、胶片选择" options={bakeSources.data?.results.flatMap((e) => ((e.values.coupon_samples || []) as CouponSample[]).filter((s) => s.accompanied && s.card_ids.includes(id)).map((s, i) => ({ value: `${e.id}:${i}`, label: `${flowTime(e.business_at)} · 盘${s.trays.join('、')} · 胶片${s.sample_ref} · 胶料${s.material_ref} · ${s.card_ids.length}卡` })))} onChange={(value) => { const [eid, index] = value.split(':'); const e = bakeSources.data?.results.find((row) => row.id === eid); if (e) selectBake(e, (e.values.coupon_samples as CouponSample[]).filter((s) => s.accompanied && s.card_ids.includes(id))[Number(index)]) }} />}
               <Pagination current={bakePage} total={bakeSources.data?.count} pageSize={20} showSizeChanger={false} onChange={setBakePage} />
               <Form.Item name="bake_source_label" label="本次检测来源"><Input readOnly /></Form.Item>
               <Form.Item name="bake_event_id" hidden><Input /></Form.Item>
             </>}</>}</>}
           </>}
           <Form.Item name="note" label="变化位置、处理内容等"><Input.TextArea /></Form.Item>
-          <Form.Item name="evidence" label="确认依据 / 异常说明" rules={[{ required: true }]}><Input.TextArea /></Form.Item>
-          <Form.Item name="replaces_id" label="更正/复测关联原记录ID（可空，原值不会被删）"><Input /></Form.Item>
+          <Form.Item name="evidence" label="确认依据 / 异常说明（正常实测可不另写）" rules={[{ required: !STAGES.some((s) => s.value === kind) }]}><Input.TextArea /></Form.Item>
+          <Form.Item name="replaces_id" hidden><Input /></Form.Item>
         </Form>
       </Modal>
     </>}

@@ -25,6 +25,7 @@ from production.models import ProductionRun
 from quality.models import QualityOrder, QualityReworkCase, QualityShipmentBatch
 from . import services as s
 from .limits import limit_text, limit_mode
+from .measurements import applicable_criteria, reviewed_measurements
 from .models import (AppearanceIssue, StandardRevision, CardGroup, InternalCard, CardEvent,
                      PrintJob, Attachment, PositionDiagram, TemplatePublication, ShipmentSource)
 
@@ -86,7 +87,8 @@ def event_data(event):
             "card_ids": [str(c.pk) for c in event.cards.all()],
             "card_refs": [{"id": str(c.pk), "card_no": c.card_no} for c in event.cards.all()],
             "followups": [{"id": str(e.pk), "employee_name": e.employee_name, "business_at": e.business_at,
-                "message": e.values.get("measurement_message", "未判定"), "judgment": e.values.get("judgment", "NOT_EVALUATED")}
+                "message": e.values.get("measurement_message", "未判定"), "judgment": e.values.get("judgment", "NOT_EVALUATED"),
+                "review_mode": e.values.get("review_mode", "RETEST"), "correction_reason": e.values.get("correction_reason", "")}
                 for e in event.cardevent_set.all()] if event.kind in s.MEASURE_STAGES else [],
             "values": event.values, "scope": event.scope, "evidence": event.evidence,
             "replaces_id": str(event.replaces_id) if event.replaces_id else None}
@@ -241,14 +243,7 @@ class CardViewSet(ErrorsMixin, viewsets.GenericViewSet):
         unresolved = card.events.filter(kind="ANOMALY").exclude(
             id__in=[e.values.get("anomaly_id") for e in card.events.filter(kind="RESOLUTION") if e.values.get("resolved") is True])
         measurements = list(card.events.filter(kind__in=s.MEASURE_STAGES).prefetch_related("cards", "cardevent_set").order_by("created_at", "id"))
-        by_id = {e.pk: e for e in measurements}
-        reviewed = set()
-        for e in measurements:
-            if e.values.get("judgment") in ("WITHIN", "OUTSIDE"):
-                parent = e.replaces_id
-                while parent in by_id:
-                    reviewed.add(parent)
-                    parent = by_id[parent].replaces_id
+        reviewed = reviewed_measurements(measurements)
         following = {e.replaces_id: e for e in measurements if e.replaces_id}
         alerts = []
         for e in measurements:
@@ -259,12 +254,16 @@ class CardViewSet(ErrorsMixin, viewsets.GenericViewSet):
                 target = following[target.pk]
             alerts.append({**event_data(e), "card_no": card.card_no, "review_target": event_data(target)})
         latest = {}
-        for e in measurements:
+        for e in sorted(measurements, key=lambda e: (e.business_at or e.created_at, e.created_at)):
+            if e.pk in reviewed or e.values.get("review_effect") == "HISTORICAL_ONLY":
+                continue
             latest[(e.kind, e.values.get("criterion_id"))] = e
         criteria = (card.group.snapshot.get("standard") or {}).get("snapshot", {}).get("criteria", [])
         status = []
-        for criterion in criteria:
-            if limit_mode(criterion) == "NONE":
+        for criterion in applicable_criteria(criteria):
+            # Coupon readings belong to an actual bake/sample, never an
+            # unqualified all-card "latest normal" result.
+            if criterion["stage"] == "BAKED_HARDNESS":
                 continue
             e = latest.get((criterion["stage"], criterion["id"]))
             status.append({"criterion": criterion, "limit_text": limit_text(criterion),
@@ -280,15 +279,18 @@ class CardViewSet(ErrorsMixin, viewsets.GenericViewSet):
             for sample in bake.values.get("coupon_samples", []):
                 if str(card.pk) not in sample.get("card_ids", []):
                     continue
-                readings = [e for e in measurements if e.kind == "BAKED_HARDNESS" and
+                readings = [e for e in measurements if e.kind == "BAKED_HARDNESS" and e.pk not in reviewed and e.values.get("review_effect") != "HISTORICAL_ONLY" and
                     e.values.get("bake_event_id") == str(bake.pk) and e.values.get("sample_ref") == sample["sample_ref"] and
                     e.values.get("material_ref") == sample["material_ref"]]
+                readings.sort(key=lambda e: (e.business_at or e.created_at, e.created_at))
                 checks.append({"sample_ref": sample["sample_ref"], "material_ref": sample["material_ref"], "trays": sample["trays"],
                     "message": readings[-1].values.get("measurement_message", "未判定") if readings else "本次胶片未测",
                     "actual": readings[-1].values.get("actual") if readings else None,
                     "unit": readings[-1].values.get("unit") if readings else None})
-            bake_status.append({"id": str(bake.pk), "business_at": bake.business_at, "scope": bake.scope, "checks": checks,
+            card_range = next((r for r in bake.values.get("card_trays", []) if r["card_id"] == str(card.pk)), {})
+            bake_status.append({"id": str(bake.pk), "business_at": bake.business_at, "scope": card_range.get("scope", bake.scope), "trays": card_range.get("trays", []), "checks": checks,
                 "notice": "本次未登记代表本卡的随烤胶片，胶片烤后硬度未测；不沿用其他次结果" if not checks else "每次二烤按实际胶片分别检测，不沿用其他次结果"})
+        product_readings = [e for e in measurements if e.kind == "BAKED_HARDNESS" and e.values.get("measurement_object") != "COUPON"]
         return Response({**card_data(card), "snapshot": card.group.snapshot, "write_enabled": settings.FLOW_CARDS_WRITE_ENABLED,
             "whole_mold_status": "NOT_REQUIRED" if card.group.whole_mold == "NOT_REQUIRED" else whole.values.get("status") if whole else "SYSTEM_UNREGISTERED",
             "whole_mold_record": event_data(whole) if whole else None,
@@ -296,6 +298,8 @@ class CardViewSet(ErrorsMixin, viewsets.GenericViewSet):
             "source_status": "PHYSICAL_CONFIRMED" if source else "PLAN_ONLY",
             "source_confirmation": event_data(source) if source else None,
             "unresolved_anomalies": unresolved.count(), "measurement_alerts": alerts, "measurement_status": status, "bake_measurement_status": bake_status,
+            "baked_product_measurements": [event_data(e) for e in product_readings],
+            "baked_measurement_notice": "烤后检测按实际二烤、盘号和范围查看；没有唯一全包结果，胶片未测不代表成品未测。",
             "paper_status": "原图只表示已归档，不代表各工序完成或质量合格。"})
 
     @action(detail=True, methods=["get"])
@@ -304,8 +308,19 @@ class CardViewSet(ErrorsMixin, viewsets.GenericViewSet):
 
     @action(detail=True, methods=["get"], url_path="bake-samples")
     def bake_samples(self, request, pk=None):
-        qs = self.get_object().events.filter(kind="BAKE").exclude(pk__in=CardEvent.objects.filter(replaces__isnull=False).values("replaces_id"))
-        return page(self, request, qs.prefetch_related("cards").order_by("-business_at", "-created_at"), event_data)
+        card = self.get_object()
+        qs = card.events.filter(kind="BAKE").exclude(pk__in=CardEvent.objects.filter(replaces__isnull=False).values("replaces_id"))
+        def eligible(event):
+            data = event_data(event)
+            data["values"] = {**event.values, "coupon_samples": [sample for sample in event.values.get("coupon_samples", [])
+                if sample.get("accompanied") is True and str(card.pk) in sample.get("card_ids", [])]}
+            return data
+        return page(self, request, qs.prefetch_related("cards").order_by("-business_at", "-created_at"), eligible)
+
+    @action(detail=True, methods=["post"], url_path="record")
+    def record(self, request, pk=None):
+        card = self.get_object()
+        return Response(event_data(s.record_event(request.data, request.user, entry_card=card.pk)), status=201)
 
     @action(detail=True, methods=["get"])
     def attachments(self, request, pk=None):

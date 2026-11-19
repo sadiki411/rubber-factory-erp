@@ -22,7 +22,7 @@ from .models import (
 )
 from .limits import validate_limits, evaluate
 
-RENDERER = "flowcard-review-20261118-v3"
+RENDERER = "flowcard-review-20261119-v4"
 TEMPLATE = {"renderer": RENDERER, "version": "草稿", "width_mm": 190, "height_mm": 130}
 MEASURE_STAGES = {"UPPER_TEMP", "LOWER_TEMP", "MOLDING_HARDNESS", "BAKED_HARDNESS", "DIMENSION", "SECONDARY_CURE"}
 KINDS = MEASURE_STAGES | {"APPEARANCE", "WHOLE_MOLD", "DEBURR", "BAKE", "ANOMALY", "RESOLUTION", "SOURCE_CONFIRM", "VOID"}
@@ -422,11 +422,15 @@ def confirm_print(job, data, user):
 
 
 @transaction.atomic
-def record_event(data, user):
+def record_event(data, user, *, entry_card=None):
     write_enabled()
     key = request_key(data)
     existing = replay(CardEvent, key, data)
     if existing:
+        if entry_card and not existing.cards.filter(pk=entry_card).exists():
+            raise ValidationError({"entry_card": "原请求不属于当前入口卡，不能跨包恢复提交。"})
+        if existing.kind == "BAKED_HARDNESS" and existing.values.get("measurement_object") == "COUPON" and not entry_card:
+            raise ValidationError({"entry_card": "胶片检测请从所属工序卡入口登记。"})
         return existing
     kind = data.get("kind")
     values = deepcopy(data.get("values", {}))
@@ -438,10 +442,13 @@ def record_event(data, user):
         raise ValidationError({"card_ids": "卡不存在。"})
     if any(c.status != "ACTIVE" for c in cards):
         raise ValidationError({"card_ids": "作废卡不能新增作业。"})
+    if entry_card and entry_card not in {c.pk for c in cards}:
+        raise ValidationError({"entry_card": "检测代表范围不包含当前入口卡，不能从本包把读数记给其他包。"})
     employee = get_row(QualityEmployee, data["employee_id"], "employee_id") if data.get("employee_id") else None
     from rest_framework.fields import DateTimeField
     business_at = DateTimeField(allow_null=True).run_validation(data.get("business_at"))
-    evidence = required_text(data, "evidence")
+    evidence = (required_text(data, "evidence") if data.get("evidence") or kind not in MEASURE_STAGES
+                else "实测登记；未另填依据说明")
     scope = required_text(data, "scope")
     if kind == "BAKE":
         if not employee or not business_at:
@@ -511,7 +518,7 @@ def record_event(data, user):
         values = {**values, "coverage": coverage, "fixed_positions": fixed, "unit": "孔/模", "quantity_effect": "NONE"}
     if kind in MEASURE_STAGES:
         # Derived fields are server facts, never trust stale/client judgments.
-        for name in ("judgment", "standard_snapshot", "limit_side", "difference", "measurement_message", "limit_text"):
+        for name in ("judgment", "standard_snapshot", "limit_side", "difference", "measurement_message", "limit_text", "review_effect", "entry_card_id", "historical_for"):
             values.pop(name, None)
         state = values.get("state")
         if state not in ("MEASURED", "NOT_MEASURED", "NOT_APPLICABLE", "UNKNOWN"):
@@ -549,12 +556,15 @@ def record_event(data, user):
                     required_text(values, "material_ref", 300)
                     values["sample_origin"] = "本厂自制"
                     if kind == "BAKED_HARDNESS":
+                        if not entry_card:
+                            raise ValidationError({"entry_card": "胶片烤后检测须从所属工序卡入口登记，不能只提交目标卡集合。"})
                         bake = get_row(CardEvent, values.get("bake_event_id"), "bake_event_id")
                         if bake.kind != "BAKE" or CardEvent.objects.filter(replaces=bake).exists():
                             raise ValidationError({"bake_event_id": "请引用当前有效的实际二烤记录，不用建议或被更正旧记录。"})
                         samples = [s for s in bake.values.get("coupon_samples", []) if s.get("sample_ref") == values["sample_ref"] and s.get("material_ref") == values["material_ref"] and s.get("accompanied") is True]
-                        if not any(set(map(str, ids)) <= set(s["card_ids"]) for s in samples):
+                        if not any(set(map(str, ids)) == set(s["card_ids"]) for s in samples):
                             raise ValidationError({"sample_ref": "这张胶片未登记随所选卡的产品二烤，不能作为这些卡的烤后实测。"})
+                        values["entry_card_id"] = str(entry_card)
                         values["bake_snapshot"] = {"id": str(bake.pk), "business_at": bake.business_at.isoformat(), "card_trays": bake.values["card_trays"]}
             if matching:
                 criterion = matching[0]
@@ -590,6 +600,25 @@ def record_event(data, user):
             raise ValidationError({"replaces_id": "复测须同一项目、有实际读数、处理人和业务时间；未测不能关闭超限。"})
         if kind == "BAKED_HARDNESS" and any(values.get(k) != replaces.values.get(k) for k in ("bake_event_id", "sample_ref", "material_ref")):
             raise ValidationError({"replaces_id": "复测须保留同次二烤和同一胶片来源。"})
+        if scope != replaces.scope or values.get("measurement_object") != replaces.values.get("measurement_object"):
+            raise ValidationError({"scope": "关联复核须保留同一实物范围及检测对象；其他范围请另登记，不能解除原提醒。"})
+        mode = values.get("review_mode", "RETEST")
+        if mode not in ("RETEST", "CORRECTION"):
+            raise ValidationError({"review_mode": "请选择新做复测或更正原录入。"})
+        if values.get("same_scope_confirmed") is not True:
+            raise ValidationError({"same_scope_confirmed": "请确认实际检测为原记录的同一实物范围。"})
+        values["review_mode"] = mode
+        if mode == "CORRECTION":
+            values["correction_reason"] = required_text(values, "correction_reason", 500)
+            values["review_effect"] = "CORRECTION"
+        else:
+            values.pop("correction_reason", None)
+            from .measurements import later_minute
+            candidate = CardEvent(kind=kind, scope=scope, values=values, business_at=business_at)
+            values["review_effect"] = "LATER_RETEST" if later_minute(candidate, replaces) else "HISTORICAL_ONLY"
+            if values["review_effect"] == "HISTORICAL_ONLY":
+                values["historical_for"] = str(replaces.pk)
+                replaces = None
     if kind == "RESOLUTION":
         original = get_row(CardEvent, values.get("anomaly_id"), "anomaly_id")
         if original.kind != "ANOMALY" or not {c.pk for c in cards} <= set(original.cards.values_list("pk", flat=True)):

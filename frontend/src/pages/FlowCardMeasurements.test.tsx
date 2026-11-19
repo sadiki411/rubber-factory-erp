@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { FlowCardDetailPage } from './FlowCardsPage'
-import { flowApi, flowLimitText, type Criterion, type FlowCardDetail, type FlowEvent } from '../flowcards'
+import { applicableFlowCriteria, flowApi, flowLimitText, type Criterion, type FlowCardDetail, type FlowEvent } from '../flowcards'
 import { qualityApi } from '../api/client'
 
 vi.mock('../api/client', () => ({ qualityApi: { listEmployees: vi.fn() }, toList: (v: unknown) => v }))
@@ -31,7 +31,8 @@ describe('Measurement review UI', () => {
     mount(); expect(await screen.findByText('线径超上限，待复核')).toBeInTheDocument()
     expect(screen.getByText(/仅为本次检查，不判整批合格/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^复测 \/ 更正$/ }))
-    expect(await screen.findByLabelText('更正/复测关联原记录ID（可空，原值不会被删）')).toHaveValue('reading-1')
+    expect(await screen.findByLabelText('本次操作')).toBeInTheDocument()
+    expect(await screen.findByText(/较早或同一分钟的读数只作历史补录/)).toBeInTheDocument()
     expect(screen.getByLabelText('实际值')).toHaveValue('')
     fireEvent.change(screen.getByLabelText('实际值'), { target: { value: '3.04' } })
     expect(await screen.findByText('实测（允许0）')).toBeInTheDocument()
@@ -49,4 +50,12 @@ describe('Measurement review UI', () => {
     expect((screen.getByLabelText('本次检测来源') as HTMLInputElement).value).toContain('代表2卡')
     expect(screen.queryByLabelText(/实际随烤记录ID/)).not.toBeInTheDocument()
   }, 30000)
+  it('never offers another package coupon from this package and keeps applicable order', async () => {
+    const bake = { ...original, id: 'bake-foreign', kind: 'BAKE', values: { temperature_c: '150', minutes: '120', coupon_samples: [{ sample_ref: '只代表其他包', material_ref: 'M1', card_ids: ['card-2'], trays: [1], accompanied: true }] } }
+    vi.mocked(flowApi.events).mockResolvedValue({ count: 1, results: [bake] })
+    mount()
+    expect(await screen.findByText('与本包无关，仅作历史展示，不能在此登记')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '记烤后硬度' })).not.toBeInTheDocument()
+    expect(applicableFlowCriteria([{ ...criterion, name: '内径不测', limit_mode: 'NONE' }, criterion, { ...criterion, name: '高度' }], 'DIMENSION').map((c) => c.name)).toEqual(['线径', '高度'])
+  })
 })

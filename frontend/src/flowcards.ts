@@ -11,6 +11,7 @@ export type FlowSnapshot = {
   standard?: { id: number; version: number; source: string; snapshot: { criteria: Criterion[]; hardness?: Record<string, { object: string; scale?: string }>; bake?: Record<string, unknown>; dimension_count?: number | null } } | null
 }
 export type Criterion = { id: number; name: string; stage: string; lower: string; upper: string; unit: string; method: string; numeric?: boolean; limit_mode?: 'UPPER' | 'RANGE' | 'PENDING' | 'NONE'; upper_inclusive?: boolean; lower_inclusive?: boolean }
+export const applicableFlowCriteria = (criteria: Criterion[] = [], stage?: string) => criteria.filter((c) => c.limit_mode !== 'NONE' && (!stage || c.stage === stage))
 export function flowLimitText(c: Partial<Criterion>) {
   const mode = c.limit_mode || (c.numeric ? 'RANGE' : 'PENDING')
   if (mode === 'NONE') return '不要求测'
@@ -22,7 +23,7 @@ export function flowLimitText(c: Partial<Criterion>) {
 export type TemplateStatus = { renderer: string; version: string | number; published: boolean; write_enabled: boolean; history: Array<{ renderer: string; version: number; confirmation: string; created_at: string }> }
 export type FlowGroup = { id: string; product_id: number; run_id: number | null; planned_molds: number | null; molds_per_card: number; whole_mold: string; plan_basis: string; status: string; snapshot: FlowSnapshot; request_key: string }
 export type FlowCard = { id: string; card_no: string; group_id: string; code: string; sequence: number; denominator: number; planned_molds: number; original_date: string; reprint_count: number; status: string }
-export type FlowCardDetail = FlowCard & { snapshot: FlowSnapshot; write_enabled?: boolean; whole_mold_status: string; unresolved_anomalies: number; source_status: string; paper_status: string; measurement_alerts?: Array<FlowEvent & { review_target?: FlowEvent }>; measurement_status?: Array<{ criterion: Criterion; limit_text: string; message: string; event: FlowEvent | null }>; bake_measurement_status?: Array<{id: string; business_at: string | null; scope: string; notice: string; checks: Array<{sample_ref: string; material_ref: string; trays: number[]; message: string; actual: string | null; unit: string | null}>}> }
+export type FlowCardDetail = FlowCard & { snapshot: FlowSnapshot; write_enabled?: boolean; whole_mold_status: string; unresolved_anomalies: number; source_status: string; paper_status: string; measurement_alerts?: Array<FlowEvent & { review_target?: FlowEvent }>; measurement_status?: Array<{ criterion: Criterion; limit_text: string; message: string; event: FlowEvent | null }>; bake_measurement_status?: Array<{id: string; business_at: string | null; scope: string; trays?: number[]; notice: string; checks: Array<{sample_ref: string; material_ref: string; trays: number[]; message: string; actual: string | null; unit: string | null}>}>; baked_product_measurements?: FlowEvent[]; baked_measurement_notice?: string }
 export type FlowEvent = { id: string; kind: string; values: Record<string, unknown>; scope: string; card_ids?: string[]; card_refs?: Array<{ id: string; card_no: string }>; followups?: Array<{ id: string; employee_name: string; business_at: string | null; message: string; judgment: string }>; employee_name: string; evidence: string; created_at: string; business_at: string | null; replaces_id: string | null }
 export type FlowPage<T> = { count: number; results: T[] }
 export type FlowReturn = { id: number; case_no: string; status: string; return_round: number | null; reshipment_batch_id: number | null }
@@ -55,7 +56,7 @@ export const flowApi = {
   scan: (code: string) => apiFetch<FlowCard & { url: string; product: FlowSnapshot['product'] }>(`/api/flow-cards/cards/scan/?code=${encodeURIComponent(code)}`),
   events: (id: string, page: number) => apiFetch<FlowPage<FlowEvent>>(`/api/flow-cards/cards/${id}/events/?page=${page}`),
   bakeSamples: (id: string, page = 1) => apiFetch<FlowPage<FlowEvent>>(`/api/flow-cards/cards/${id}/bake-samples/?page=${page}`),
-  record: (body: unknown) => post<FlowEvent>('events/', body),
+  record: (body: unknown, entryCard?: string) => post<FlowEvent>(entryCard ? `cards/${entryCard}/record/` : 'events/', body),
   attachments: (id: string, page = 1) => apiFetch<FlowPage<{ id: string; url: string; original_name: string; replaces_id: string | null }>>(`/api/flow-cards/cards/${id}/attachments/?page=${page}`),
   upload: (body: FormData) => apiFetch<{ id: string }>('/api/flow-cards/attachments/', { method: 'POST', body }),
   diagram: (body: unknown) => post('diagrams/', body),

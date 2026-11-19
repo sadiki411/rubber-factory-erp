@@ -29,7 +29,7 @@ def compact_identity(product, font, width):
         lengths[target] -= 1
 
 
-def render_cards_v3(items):
+def render_cards_v3(items, *, applicable_dimensions=False):
     out, font = io.BytesIO(), font_name()
     sizes = {(c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c, _ in items}
     if len(sizes) != 1:
@@ -124,7 +124,8 @@ def render_cards_v3(items):
         dimension_count = max(len(dimensions), needed or 0)
         columns=[("上模实测温度",limits(criterion("UPPER_TEMP"))), ("下模实测温度",limits(criterion("LOWER_TEMP"))), (f"成型硬度·{object_label('MOLDING_HARDNESS')}",limits(criterion("MOLDING_HARDNESS")))]
         for i in range(min(2,dimension_count)):
-            row=criterion("DIMENSION",i); columns.append((row["name"] if row else f"关键尺寸{i+1}", limits(row)))
+            row=(dimensions[i] if i < len(dimensions) else None) if applicable_dimensions else criterion("DIMENSION",i)
+            columns.append((row["name"] if row else f"关键尺寸{i+1}", limits(row)))
         if not dimension_count and needed is None:
             columns.append(("关键尺寸", "是否需要待确认"))
         col_width=(span-16)/len(columns); x=5

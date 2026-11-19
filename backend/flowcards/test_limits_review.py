@@ -1,6 +1,7 @@
 """Second-round synthetic acceptance. No production DB or customer tolerances."""
 import copy
 import uuid
+from datetime import timedelta
 from unittest.mock import patch
 from decimal import Decimal
 from django.test import TestCase, override_settings
@@ -111,13 +112,15 @@ class FlowLimitsReviewTests(QualityTestMixin, TestCase):
         first = s.record_event(body, self.user)
         self.assertEqual(s.record_event(body, self.user).pk, first.pk)
         self.assertEqual(CardEvent.objects.count(), 1)
-        not_judged = self.reading(card, "3.04", replaces_id=str(first.pk))
-        not_judged["values"]["method"] = "方法待确认"
+        not_judged = self.reading(card, "3.04", replaces_id=str(first.pk), business_at=(first.business_at + timedelta(minutes=10)).isoformat())
+        not_judged["values"].update(method="方法待确认", same_scope_confirmed=True)
         second = s.record_event(not_judged, self.user)
         alerts = self.client.get(f"/api/flow-cards/cards/{card.pk}/").json()["measurement_alerts"]
         self.assertEqual(len(alerts), 1)
         self.assertEqual(alerts[0]["review_target"]["id"], str(second.pk))
-        final = s.record_event(self.reading(card, "3.04", replaces_id=str(second.pk)), self.user)
+        final_body = self.reading(card, "3.04", replaces_id=str(second.pk), business_at=(second.business_at + timedelta(minutes=10)).isoformat())
+        final_body["values"]["same_scope_confirmed"] = True
+        final = s.record_event(final_body, self.user)
         self.assertEqual(len(self.client.get(f"/api/flow-cards/cards/{card.pk}/").json()["measurement_alerts"]), 0)
         first.refresh_from_db()
         self.assertEqual(first.values["actual"], "3.06")
@@ -152,7 +155,7 @@ class FlowLimitsReviewTests(QualityTestMixin, TestCase):
         first = s.record_event(bake, self.user)
         body = self.reading(cards[0], "65", kind="BAKED_HARDNESS", card_ids=sample["card_ids"])
         body["values"].update(measurement_object="COUPON", sample_ref=sample["sample_ref"], material_ref=sample["material_ref"], bake_event_id=str(first.pk))
-        reading = s.record_event(body, self.user)
+        reading = s.record_event(body, self.user, entry_card=cards[0].pk)
         self.assertEqual(reading.cards.count(), 2)
         second_bake = self.bake_body([cards[0]])
         second = s.record_event(second_bake, self.user)

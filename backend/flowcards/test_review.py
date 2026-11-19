@@ -163,12 +163,12 @@ class FlowReviewTests(QualityTestMixin, TestCase):
         bake = s.record_event(body, self.user)
         event = self.event(cards[0], kind="BAKED_HARDNESS", employee_id=self.inspector.pk, business_at=timezone.now().isoformat(),
             values={"state":"MEASURED", "actual":0, "measurement_object":"COUPON", "sample_ref":"S1", "material_ref":"原始料批标识", "bake_event_id":str(bake.pk)})
-        measured = s.record_event(event, self.user)
+        measured = s.record_event(event, self.user, entry_card=cards[0].pk)
         self.assertEqual(measured.values["actual"], "0")
         self.assertEqual(measured.values["judgment"], "NOT_EVALUATED")
         bad = {**event, "request_key":"wrong-coverage", "card_ids":[str(cards[1].pk)]}
         with self.assertRaisesMessage(ValidationError,"未登记随"):
-            s.record_event(bad, self.user)
+            s.record_event(bad, self.user, entry_card=cards[1].pk)
         bad = copy.deepcopy(event); bad["request_key"]="no-bake"; bad["values"]["bake_event_id"]=None
         with self.assertRaises(ValidationError): s.record_event(bad,self.user)
 

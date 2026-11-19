@@ -42,6 +42,9 @@ def wrap(text, width, font, size=9):
 def render_cards(items):
     items = list(items)
     renderers = {card.group.snapshot.get("template", {}).get("renderer") for card, _ in items}
+    if renderers == {"flowcard-review-20261119-v4"}:
+        from .pdf_v4 import render_cards_v4
+        return render_cards_v4(items)
     if renderers == {"flowcard-review-20261118-v3"}:
         from .pdf_v3 import render_cards_v3
         return render_cards_v3(items)
