@@ -1,0 +1,334 @@
+{
+  "environment": {
+    "python": "3.11.9",
+    "database": "isolated SQLite on local Windows",
+    "transport": "Django APIClient, no HTTP/TLS/camera/mobile",
+    "baseline": "baced3ad26519b934a8c7f3b9d0830d45540df0d"
+  },
+  "migration_ms": 1056.952,
+  "migration_legacy_fingerprint_equal": true,
+  "card_operations_legacy_fingerprint_equal": true,
+  "legacy_tables": {
+    "inventory_inventorybatch": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "inventory_inventorycontainer": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "inventory_inventorylocation": {
+      "count": 151,
+      "sha256": "3a1f73d2f7b57ea7fcebca644a31e2288e79ddd1e68d68390beac4a4701b5d67"
+    },
+    "inventory_inventoryoutbound": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "inventory_inventoryoutboundline": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "inventory_inventoryproduct": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "inventory_inventorytopup": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "inventory_inventorytransaction": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "inventory_materialremainder": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "inventory_materialremainderuse": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "molds_importbatch": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "molds_machine": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "molds_moldasset": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "molds_moldmodel": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "molds_moldmovement": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "molds_processor": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "molds_rack": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "molds_racklevel": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "molds_rackslot": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "molds_rackzone": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "orders_businessimportbatch": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "orders_businessrecordrevision": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "orders_materialreceipt": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "orders_orderstatuschange": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "orders_orderyieldremainder": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "orders_productinspectioncriterion": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "orders_productspecification": {
+      "count": 1,
+      "sha256": "34c6f6b0dbecc68796aff16bf32be669881e8b1a4c916a67a6c81e2acd396064"
+    },
+    "production_productiondailylog": {
+      "count": 1,
+      "sha256": "9e135b5e3bf4c941018806f0c07128ba9c745ca6f947a455f130a7caf8f39077"
+    },
+    "production_productiondailylog_assistant_employees": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "production_productiondailylog_assistant_operators": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "production_productionemployee": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "production_productionemployeeidentitymatch": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "production_productionemployeeidentitymatch_candidates": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "production_productionimportbatch": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "production_productionrecordaudit": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "production_productionrun": {
+      "count": 1,
+      "sha256": "ee8cca93ef322a0e8476be6826ccba3a6991ec398a70f413cf446085755528a0"
+    },
+    "production_productionrunorder": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "production_productionsettlementrevision": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "production_productionstation": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "production_productionyieldrecord": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_defectreason": {
+      "count": 15,
+      "sha256": "586d918745ad357048b911866973a08504c10101c95b8c35ba7982ee5f3171b2"
+    },
+    "quality_processcard": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_processcardunitbinding": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_productunitweight": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_qualityemployee": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_qualityorder": {
+      "count": 2,
+      "sha256": "5930f9f984aeacd857e3013566cad0a193cc29369c2288831d98e2ae74319984"
+    },
+    "quality_qualityreturnallocation": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_qualityreworkattempt": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_qualityreworkcase": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_qualityreworkcase_inspectors": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_qualityreworkcase_secondary_reasons": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_qualityshipment": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_qualityshipment_inspectors": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_qualityshipmentbatch": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_qualityshipmentbatch_inspectors": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_qualityshipmentbatchrevision": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_qualityshipmentline": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_qualityshipmentorderallocation": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    "quality_returnrework": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    }
+  },
+  "generated": [
+    {
+      "cards": 20,
+      "elapsed_ms": 60.334,
+      "sql": 20,
+      "molds": 2000
+    },
+    {
+      "cards": 100,
+      "elapsed_ms": 88.169,
+      "sql": 21,
+      "molds": 10000
+    }
+  ],
+  "performance": [
+    {
+      "label": "internal scan, 120 cards, no history",
+      "samples": 20,
+      "p50_ms": 0.911,
+      "p95_ms": 1.403,
+      "max_sql": 1,
+      "max_bytes": 520,
+      "errors": 0
+    },
+    {
+      "label": "internal scan, same card +100 events",
+      "samples": 20,
+      "p50_ms": 1.088,
+      "p95_ms": 1.51,
+      "max_sql": 1,
+      "max_bytes": 520,
+      "errors": 0
+    },
+    {
+      "label": "card detail, +100 events",
+      "samples": 20,
+      "p50_ms": 3.267,
+      "p95_ms": 3.975,
+      "max_sql": 5,
+      "max_bytes": 1964,
+      "errors": 0
+    },
+    {
+      "label": "card events, paginated 20",
+      "samples": 20,
+      "p50_ms": 2.741,
+      "p95_ms": 3.24,
+      "max_sql": 3,
+      "max_bytes": 7491,
+      "errors": 0
+    },
+    {
+      "label": "100 cards, shared snapshot not copied per card",
+      "samples": 20,
+      "p50_ms": 3.389,
+      "p95_ms": 6.289,
+      "max_sql": 3,
+      "max_bytes": 30645,
+      "errors": 0
+    }
+  ],
+  "binding_performance": [
+    {
+      "cards": 1,
+      "elapsed_ms": 35.034,
+      "sql": 8,
+      "sources": 1,
+      "legacy_fingerprint_equal": true
+    },
+    {
+      "cards": 100,
+      "elapsed_ms": 73.682,
+      "sql": 9,
+      "sources": 100,
+      "legacy_fingerprint_equal": true
+    }
+  ],
+  "not_tested": [
+    "production clone migration",
+    "real Android/WebView scan",
+    "weak network",
+    "physical paper printing",
+    "production SQL timings",
+    "Docker font packaging"
+  ]
+}

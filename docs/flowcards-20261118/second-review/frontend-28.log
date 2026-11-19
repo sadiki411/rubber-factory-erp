@@ -1,0 +1,52 @@
+
+ RUN  v4.1.10 D:/workspace/erp/frontend
+
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+
+ Test Files  6 passed (6)
+      Tests  28 passed (28)
+   Start at  19:36:02
+   Duration  87.75s (transform 386ms, setup 925ms, import 10.61s, tests 71.37s, environment 3.85s)

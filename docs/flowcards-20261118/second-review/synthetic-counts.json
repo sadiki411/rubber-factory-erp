@@ -1,0 +1,78 @@
+{
+  "synthetic_only": true,
+  "counts": {
+    "flowcards_internalcard": 2,
+    "flowcards_cardgroup": 2,
+    "flowcards_standardrevision": 2,
+    "flowcards_printjob": 2,
+    "flowcards_cardevent": 5,
+    "flowcards_templatepublication": 0,
+    "quality_qualityshipmentbatch": 0,
+    "production_productionrun": 0,
+    "production_productiondailylog": 0,
+    "inventory_inventorycontainer": 0,
+    "inventory_inventorytransaction": 0
+  },
+  "events": [
+    {
+      "id": "85fd6af4-6c85-40d5-9a69-0b95bfa72f1f",
+      "kind": "DIMENSION",
+      "employee_name": "隔离作业员",
+      "business_at_utc": "2026-11-18 10:50:00",
+      "replaces_id": null,
+      "state": "MEASURED",
+      "actual": "3.06",
+      "judgment": "OUTSIDE",
+      "message": "超上限 0.01 mm",
+      "bake_event_id": null
+    },
+    {
+      "id": "63485d5d-e814-45fa-a0e5-7128f546a6b0",
+      "kind": "DIMENSION",
+      "employee_name": "隔离作业员",
+      "business_at_utc": "2026-11-18 11:20:00",
+      "replaces_id": "85fd6af4-6c85-40d5-9a69-0b95bfa72f1f",
+      "state": "MEASURED",
+      "actual": "3.04",
+      "judgment": "WITHIN",
+      "message": "未超上限",
+      "bake_event_id": null
+    },
+    {
+      "id": "8d73d8d1-3e1d-447d-8837-910c0c5f7cd4",
+      "kind": "BAKE",
+      "employee_name": "隔离作业员",
+      "business_at_utc": "2026-11-18 08:00:00",
+      "replaces_id": null,
+      "state": null,
+      "actual": null,
+      "judgment": null,
+      "message": null,
+      "bake_event_id": null
+    },
+    {
+      "id": "067fbec9-7b6a-4a0c-a26d-a460e063b8bf",
+      "kind": "BAKED_HARDNESS",
+      "employee_name": "隔离作业员",
+      "business_at_utc": "2026-11-18 11:30:00",
+      "replaces_id": null,
+      "state": "MEASURED",
+      "actual": "70",
+      "judgment": "WITHIN",
+      "message": "在确认范围内",
+      "bake_event_id": "8d73d8d1-3e1d-447d-8837-910c0c5f7cd4"
+    },
+    {
+      "id": "e10a6fc9-28b3-4f29-abe4-c770505ae44f",
+      "kind": "DIMENSION",
+      "employee_name": "隔离作业员",
+      "business_at_utc": "2026-11-18 11:35:00",
+      "replaces_id": null,
+      "state": "MEASURED",
+      "actual": "3.06",
+      "judgment": "OUTSIDE",
+      "message": "超上限 0.01 mm",
+      "bake_event_id": null
+    }
+  ]
+}

@@ -1316,6 +1316,7 @@ export interface QualityShipmentBatchLineInput {
 }
 
 export interface QualityShipmentBatchInput {
+  internal_sources?: import('./flowcards').InternalSource[]
   shipment_no?: string
   shipment_date?: string | null
   order_id?: number | null

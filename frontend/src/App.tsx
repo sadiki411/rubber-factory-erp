@@ -17,6 +17,8 @@ const IntegrationPreviewPage = lazy(() => import('./pages/IntegrationPreviewPage
 const OrderOverviewPage = lazy(() => import('./pages/OrderOverviewPage').then((module) => ({ default: module.OrderOverviewPage })))
 const ProductionPage = lazy(() => import('./pages/ProductionPage').then((module) => ({ default: module.ProductionPage })))
 const ProductionRecordPage = lazy(() => import('./pages/ProductionRecordPage').then((module) => ({ default: module.ProductionRecordPage })))
+const FlowCardsPage = lazy(() => import('./pages/FlowCardsPage').then((module) => ({ default: module.FlowCardsPage })))
+const FlowCardDetailPage = lazy(() => import('./pages/FlowCardsPage').then((module) => ({ default: module.FlowCardDetailPage })))
 const ProductSpecificationsPage = lazy(() => import('./pages/ProductSpecificationsPage').then((module) => ({ default: module.ProductSpecificationsPage })))
 const QualityPage = lazy(() => import('./pages/QualityPage').then((module) => ({ default: module.QualityPage })))
 const RackConfigPage = lazy(() => import('./pages/RackConfigPage').then((module) => ({ default: module.RackConfigPage })))
@@ -93,6 +95,8 @@ export function App() {
           <Route path="order-overview/:id" element={<OrderOverviewPage />} />
           <Route path="production" element={<ProductionPage />} />
           <Route path="production/records/:id" element={<ProductionRecordPage />} />
+          <Route path="flow-cards" element={<FlowCardsPage />} />
+          <Route path="flow-cards/cards/:id" element={<FlowCardDetailPage />} />
           <Route path="quality" element={<QualityPage />} />
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="molds" element={<MoldsPage />} />

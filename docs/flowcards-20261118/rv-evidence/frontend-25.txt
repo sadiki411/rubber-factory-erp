@@ -1,0 +1,50 @@
+
+ RUN  v4.1.10 D:/workspace/erp/frontend
+
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Could not parse CSS stylesheet
+Could not parse CSS stylesheet
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+
+ Test Files  5 passed (5)
+      Tests  25 passed (25)
+   Start at  16:46:38
+   Duration  71.63s (transform 385ms, setup 744ms, import 8.01s, tests 59.08s, environment 3.02s)

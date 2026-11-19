@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TZ=Asia/Shanghai
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gosu tzdata tesseract-ocr tesseract-ocr-chi-sim \
+    && apt-get install -y --no-install-recommends gosu tzdata tesseract-ocr tesseract-ocr-chi-sim fonts-wqy-microhei \
     && groupadd --gid 10001 erp \
     && useradd --uid 10001 --gid erp --create-home --shell /usr/sbin/nologin erp \
     && rm -rf /var/lib/apt/lists/*
@@ -34,6 +34,8 @@ COPY backend/inventory/management/*.py /app/backend/inventory/management/
 COPY backend/inventory/management/commands/*.py /app/backend/inventory/management/commands/
 COPY backend/analytics/*.py /app/backend/analytics/
 COPY backend/analytics/migrations/*.py /app/backend/analytics/migrations/
+COPY backend/flowcards/*.py /app/backend/flowcards/
+COPY backend/flowcards/migrations/*.py /app/backend/flowcards/migrations/
 COPY deploy/ /app/deploy/
 
 RUN chmod +x /app/deploy/backend-entrypoint.sh /app/deploy/backup-loop.sh

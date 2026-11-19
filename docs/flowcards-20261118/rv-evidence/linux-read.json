@@ -1,0 +1,46 @@
+{
+  "phase": "read",
+  "sha": "a6ec357387fab213f1ae4117157da736985cfb4b",
+  "font": "FlowCJK",
+  "uid": 10001,
+  "checks": [
+    {
+      "tag": "required",
+      "url": "/api/flow-cards/print-jobs/60b85dc7-8964-45a1-9639-3e5c9e297f46/pdf/",
+      "sha256": "2ecfb5ce0befc12881690646733889073382d0df988060c10cd79b3bb1d4d393",
+      "card_id": "e4483c82-c66a-4c17-9e22-6b44ba2046ad",
+      "authenticated": 200,
+      "anonymous": 403,
+      "bytes": 40030
+    },
+    {
+      "tag": "optional",
+      "url": "/api/flow-cards/print-jobs/816ab280-189a-4a45-8431-ab15e43d9096/pdf/",
+      "sha256": "f2a0eadf68bef46a731c946034f40e5890f9b871f1d44edc026c2c7c98c61da6",
+      "card_id": "cfca035a-3aab-4b0f-bbdd-2dd48237d874",
+      "authenticated": 200,
+      "anonymous": 403,
+      "bytes": 39838
+    },
+    {
+      "tag": "long",
+      "url": "/api/flow-cards/print-jobs/22433aa5-6306-4222-86fd-b9380f6c0c80/pdf/",
+      "sha256": "508ebbbd8633d3fb21767c5f27c7821ff6fff6d5303e2c383dbaf42cf5174e9a",
+      "card_id": "a8e0d33e-199d-4254-88e0-c4d2a31c2397",
+      "authenticated": 200,
+      "anonymous": 403,
+      "bytes": 42019
+    },
+    {
+      "tag": "original",
+      "url": "/api/flow-cards/attachments/695c2df3-17c1-4f9c-9df4-2eef81feaea1/content/",
+      "sha256": "9e2a929ec7ac29f460222868882621cd248997e72304a853f78088b821b98c55",
+      "authenticated": 200,
+      "anonymous": 403,
+      "bytes": 86
+    }
+  ],
+  "synthetic_only": true,
+  "network": "none",
+  "production_mounts": false
+}

@@ -102,6 +102,7 @@ export function reworkCasesForProcessCard(
 export function normalizeProcessCardQrText(rawValue: string | null | undefined) {
   const raw = String(rawValue || '').trim()
   if (!raw) return ''
+  if (/^(ERPFC:|FC-)/i.test(raw) || /\/flow-cards\//i.test(raw)) return raw.toUpperCase()
   try {
     const url = new URL(raw)
     const queryValue = url.searchParams.get('card_no') || url.searchParams.get('code')
@@ -116,6 +117,7 @@ export function normalizeProcessCardQrText(rawValue: string | null | undefined) 
 
 export function isLikelyProcessCardNo(value: string | null | undefined) {
   const normalized = normalizeProcessCardQrText(value)
+  if (/^(ERPFC:|FC-)/i.test(normalized) || normalized.includes('/FLOW-CARDS/')) return false
   return /^[A-Z0-9]+(?:-[A-Z0-9]+){2,}$/.test(normalized) && normalized.length >= 12
 }
 

@@ -369,6 +369,7 @@ export function OrdersPage() {
                       {((record.process_card_count !== null && record.process_card_count !== undefined) || (record.process_card_covered_quantity !== null && record.process_card_covered_quantity !== undefined)) && <span><small>流程卡明细</small><b>{exactOrderValue(record.process_card_count, ' 张')} / 覆盖 {exactOrderValue(record.process_card_covered_quantity)}</b></span>}
                     </div>
                     {record.status === 'COMPLETED' && <div onClick={event => event.stopPropagation()} style={{ marginBottom: 12 }}><OrderYieldCell value={record.final_yield} onOpen={() => setYieldOrder(record)} /></div>}
+                    <Button block href={`/order-overview/${record.id}`} onClick={(event) => event.stopPropagation()} style={{ marginBottom: 8 }}>完整查看 / 工序流转卡</Button>
                     <Button disabled={readOnly} block icon={<EditOutlined />} onClick={(event) => { event.stopPropagation(); openForm(record) }}>编辑订单</Button>
                   </Card>
                 </List.Item>

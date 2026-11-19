@@ -1,0 +1,38 @@
+{
+  "synthetic_only": true,
+  "base": "e6a469acaab33dde3665ecccbbba397f2513524a",
+  "runtime_commit": "7c4b1e33029bb4c63cf4d9516ff47f3945b6c281",
+  "formal_publications": 0,
+  "net_totals": {
+    "SCAN": 100,
+    "MANUAL": 0
+  },
+  "manual_loop_passed": false,
+  "continuous_recording_passed": false,
+  "android_tested": false,
+  "production_tested": false,
+  "deployed": false,
+  "pushed": false,
+  "evidence": [
+    {
+      "path": "output/flow-pilot-20261119/field-metrics-unmeasured.json",
+      "sha256": "7142c32080ec56f32c5a656e9bdb58b2f866f266638ba969a0ea02f0b73d7a35"
+    },
+    {
+      "path": "output/flow-pilot-20261119/old-release-readonly-probe.json",
+      "sha256": "bfca20c3a2a01505456c9541c542d75ab3484715d90e96e22176e070573e04d9"
+    },
+    {
+      "path": "output/flow-pilot-20261119/pdf-structure-verification.json",
+      "sha256": "80076c95cb9444bb83b5b55c99b9d7f169a5909ed4ab7378de18c9b9883ddfe1"
+    },
+    {
+      "path": "output/flow-pilot-20261119/quantity-permission-recovery.json",
+      "sha256": "e4e0122154f2cd62d934e0ad8d4109942b159e74fc4f3014f537277067a8d804"
+    },
+    {
+      "path": "output/flow-pilot-20261119/software-checks.json",
+      "sha256": "ead4bcc9a15e06ba689bf051c812ba055bb0d630fb7a707d7928d09a5aa6f767"
+    }
+  ]
+}

@@ -51,6 +51,39 @@ def read_sqlite_value(path):
 class BackupCommandTests(SimpleTestCase):
     databases = {"default"}
 
+    def test_invalid_private_restore_root_does_not_replace_any_existing_data(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = Path(temp_name)
+            database_path, media = root / "db.sqlite3", root / "media"
+            create_sqlite(database_path, "archived")
+            media.mkdir()
+            (media / "probe.txt").write_text("archived", encoding="utf-8")
+            with backup_database_path(database_path), override_settings(MEDIA_ROOT=media, FLOW_CARDS_PRIVATE_ROOT=root / "private"):
+                archive = call_command("backup_erp", output=str(root / "backups"), retention_count=2, verbosity=0)
+                database_path.unlink(); create_sqlite(database_path, "current")
+                (media / "probe.txt").write_text("current", encoding="utf-8")
+                with override_settings(FLOW_CARDS_PRIVATE_ROOT=root), self.assertRaisesMessage(CommandError, "私有原图"):
+                    call_command("backup_erp", restore=archive, force=True, retention_count=2, verbosity=0)
+                self.assertEqual(read_sqlite_value(database_path), "current")
+                self.assertEqual((media / "probe.txt").read_text(encoding="utf-8"), "current")
+
+    def test_private_flowcard_originals_are_backed_up_and_restored(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = Path(temp_name)
+            database_path = root / "db.sqlite3"
+            create_sqlite(database_path, "private-archive")
+            originals = root / "private"
+            originals.mkdir()
+            (originals / "original.bin").write_bytes(b"immutable-original")
+            with backup_database_path(database_path), override_settings(MEDIA_ROOT=root / "media", FLOW_CARDS_PRIVATE_ROOT=originals):
+                name = call_command("backup_erp", output=str(root / "backups"), retention_count=2, verbosity=0)
+                with zipfile.ZipFile(name) as archive:
+                    self.assertEqual(archive.read("private-flowcards/original.bin"), b"immutable-original")
+                (originals / "original.bin").write_bytes(b"changed")
+                with patch("molds.management.commands.backup_erp.connections.close_all"):
+                    call_command("backup_erp", restore=name, force=True, retention_count=2, verbosity=0)
+                self.assertEqual((originals / "original.bin").read_bytes(), b"immutable-original")
+
     def test_backup_contains_consistent_sqlite_media_and_manifest(self):
         with tempfile.TemporaryDirectory() as temp_name:
             root = Path(temp_name)
@@ -63,7 +96,7 @@ class BackupCommandTests(SimpleTestCase):
             image_path.write_bytes(b"test-image")
             output_dir = root / "backups"
 
-            with backup_database_path(database_path), override_settings(MEDIA_ROOT=media_root):
+            with backup_database_path(database_path), override_settings(MEDIA_ROOT=media_root, FLOW_CARDS_PRIVATE_ROOT=root / "private"):
                 archive_name = call_command(
                     "backup_erp", output=str(output_dir), retention_count=30, verbosity=0
                 )
@@ -88,7 +121,7 @@ class BackupCommandTests(SimpleTestCase):
             output_dir = root / "backups"
             media_root = root / "media"
 
-            with backup_database_path(database_path), override_settings(MEDIA_ROOT=media_root):
+            with backup_database_path(database_path), override_settings(MEDIA_ROOT=media_root, FLOW_CARDS_PRIVATE_ROOT=root / "private"):
                 for _ in range(4):
                     call_command(
                         "backup_erp", output=str(output_dir), retention_count=2, verbosity=0
@@ -105,7 +138,7 @@ class BackupCommandTests(SimpleTestCase):
             (media_root / "kept.txt").write_text("archived-media", encoding="utf-8")
             output_dir = root / "backups"
 
-            with backup_database_path(database_path), override_settings(MEDIA_ROOT=media_root):
+            with backup_database_path(database_path), override_settings(MEDIA_ROOT=media_root, FLOW_CARDS_PRIVATE_ROOT=root / "private"):
                 archive_name = call_command(
                     "backup_erp", output=str(output_dir), retention_count=30, verbosity=0
                 )

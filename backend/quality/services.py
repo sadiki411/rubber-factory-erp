@@ -1584,6 +1584,8 @@ def find_process_card(code: str, *, lock: bool = False) -> tuple[ProcessCard, Pr
     """Return the scanned historical card and its current replacement."""
 
     normalized = normalize_process_card_code(code)
+    if normalized.startswith(("ERPFC:", "FC-")) or "/FLOW-CARDS/" in normalized:
+        raise ValueError("这是内部工序流转卡，请在生产来源卡区域查看，不是客户流程卡。")
     if not normalized:
         raise ValueError("请扫描或输入流程卡单号。")
     queryset = ProcessCard.objects.select_related(

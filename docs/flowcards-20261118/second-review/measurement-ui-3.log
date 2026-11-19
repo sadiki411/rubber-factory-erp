@@ -1,0 +1,10 @@
+
+ RUN  v4.1.10 D:/workspace/erp/frontend
+
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  19:40:30
+   Duration  8.98s (transform 213ms, setup 171ms, import 2.56s, tests 5.48s, environment 609ms)

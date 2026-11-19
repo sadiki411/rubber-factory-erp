@@ -55,6 +55,8 @@ import type {
 import { QualityQrScanner } from './QualityQrScanner'
 import { QualityEmployeeSelect } from './QualityEmployeeSelect'
 import { QualityManualProcessCardInput } from './QualityManualProcessCardInput'
+import { InternalShipmentSources } from './InternalShipmentSources'
+import type { InternalSource } from '../flowcards'
 
 const DRAFT_KEY = 'erp-quality-weight-shipment-drafts-v2'
 const TOLERANCE_PERCENT = 10
@@ -515,6 +517,7 @@ function QualityWeightShipmentDrawerForm({
   const allocationRequestRef = useRef(0)
   const [lines, setLines] = useState<EditableLine[]>([])
   const [scannerOpen, setScannerOpen] = useState(false)
+  const [internalSources, setInternalSources] = useState<Array<InternalSource & { card_no: string }>>([])
   const [scannedCards, setScannedCards] = useState<ScannedCardEntry[]>([])
   const [weightEntryMode, setWeightEntryMode] = useState<WeightEntryMode>('same')
   // In per-card mode the scanned cards become one editable shipment line per
@@ -744,6 +747,7 @@ function QualityWeightShipmentDrawerForm({
     setRemovedShipmentUnitNos([])
     setBindingScannerIndex(undefined)
     setScannedCards([])
+    setInternalSources([])
     setScannedLineOverrides({})
     setWeightEntryMode('same')
     setReshipCase(undefined)
@@ -1667,6 +1671,7 @@ function QualityWeightShipmentDrawerForm({
         }],
     }
     // Re-check after the asynchronous validation/duplicate calls. Two very
+    if (internalSources.length) payload.internal_sources = internalSources
     // fast taps must not create two confirmed shipments with different
     // generated numbers.
     if (submittingRef.current) return
@@ -1691,8 +1696,11 @@ function QualityWeightShipmentDrawerForm({
         // a unique-number conflict and could double count on retry.
         const draftPayload = { ...payload }
         delete draftPayload.process_card_bindings
+        delete draftPayload.internal_sources
         await qualityWorkflowApi.updateShipmentBatch(activeBatch.id, draftPayload as unknown as Record<string, unknown>)
-        result = await qualityWorkflowApi.confirmShipmentBatch(activeBatch.id, payload.process_card_bindings || [])
+        result = internalSources.length
+          ? await qualityWorkflowApi.confirmShipmentBatch(activeBatch.id, payload.process_card_bindings || [], internalSources)
+          : await qualityWorkflowApi.confirmShipmentBatch(activeBatch.id, payload.process_card_bindings || [])
       } else if (onSubmit) {
         result = await onSubmit(payload)
       } else if (shipment) {
@@ -1950,6 +1958,7 @@ function QualityWeightShipmentDrawerForm({
           ? '修改会原地重算出货件数、重量、订单分配和流程卡绑定，并保留纠正审计记录；请填写纠正原因后保存。'
           : '连续扫码时一张流程卡对应一包：重量相同可只填一次，扫码张数自动成为批数；重量不同可切换为逐包填写。每包换算件数超过对应流程卡标准数量 10% 会阻止提交。'}
       />
+      {open && !confirmedAmendment && !reshipCase && !shipment && <InternalShipmentSources key={entrySessionRef.current} value={internalSources} onChange={setInternalSources} />}
       {!basketLineMode && <Card size="small" className="quality-weight-scan-card" title="流程卡扫码（有卡产品请逐包扫描）" extra={<Button type="primary" icon={<QrcodeOutlined />} onClick={() => setScannerOpen(true)}>连续扫码</Button>}>
         <QualityManualProcessCardInput existingValues={scannedCards.map((item) => item.cardNo)} onSubmit={handleShipmentCardScan} />
         {reshipCase ? <Alert

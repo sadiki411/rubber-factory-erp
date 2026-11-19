@@ -1,0 +1,58 @@
+Creating test database for alias 'default'...
+
+..........................................................................................................................................................................................................................................................................................................................................................................................
+----------------------------------------------------------------------
+Ran 378 tests in 114.322s
+
+OK
+Destroying test database for alias 'default'...
+
+Found 378 test(s).
+System check identified no issues (0 silenced).
+CONCURRENCY path=/api/quality/shipment-batches/1/confirm/ status=200 elapsed_ms=51.78 error=-
+CONCURRENCY path=/api/quality/shipment-batches/2/confirm/ status=200 elapsed_ms=131.36 error=-
+CONCURRENCY statuses=[200, 200] lock_errors_checked=1
+CONCURRENCY path=/api/quality/rework-cases/ status=201 elapsed_ms=38.85 error=-
+CONCURRENCY path=/api/quality/rework-cases/ status=201 elapsed_ms=121.07 error=-
+CONCURRENCY statuses=[201, 201] lock_errors_checked=1
+CONCURRENCY path=/api/quality/rework-cases/bulk-scan-return/ status=201 elapsed_ms=120.75 error=-
+CONCURRENCY path=/api/quality/rework-cases/bulk-scan-return/ status=400 elapsed_ms=325.15 error={'detail': ErrorDetail(string='该流程卡已有待处理退货（第1次），不能重复扫码。', code='invalid')}
+CONCURRENCY statuses=[201, 400] lock_errors_checked=2
+CONCURRENCY path=/api/quality/rework-cases/ status=201 elapsed_ms=39.37 error=-
+CONCURRENCY path=/api/quality/rework-cases/ status=400 elapsed_ms=101.53 error={'detail': ErrorDetail(string='该整批已经登记退货，请选择其他可退批次。', code='invalid')}
+CONCURRENCY statuses=[201, 400] lock_errors_checked=1
+FLOW_CONCURRENCY path=/api/flow-cards/groups/ statuses=[201, 503]
+FLOW_CONCURRENCY path=/api/flow-cards/groups/c6a0794c-c1ae-4b68-91c6-85c2410b381e/generate/ statuses=[200, 503]
+FLOW_CONCURRENCY path=/api/flow-cards/print-jobs/ statuses=[503, 503]
+备份完成：C:\Users\su2001\AppData\Local\Temp\tmp4buzv6q5\backups\mold-erp-backup-20261118-161614-403362.zip
+C:\Users\su2001\AppData\Local\Temp\tmp4buzv6q5\backups\mold-erp-backup-20261118-161614-403362.zip
+备份完成：C:\Users\su2001\AppData\Local\Temp\tmpf700owwo\backups\mold-erp-backup-20261118-161614-433105.zip
+C:\Users\su2001\AppData\Local\Temp\tmpf700owwo\backups\mold-erp-backup-20261118-161614-433105.zip
+备份完成：C:\Users\su2001\AppData\Local\Temp\tmptid4cl2d\backups\mold-erp-backup-20261118-161614-476359.zip
+C:\Users\su2001\AppData\Local\Temp\tmptid4cl2d\backups\mold-erp-backup-20261118-161614-476359.zip
+恢复完成：C:\Users\su2001\AppData\Local\Temp\tmptid4cl2d\backups\mold-erp-backup-20261118-161614-476359.zip
+备份完成：C:\Users\su2001\AppData\Local\Temp\tmpfguxuchs\backups\mold-erp-backup-20261118-161614-519949.zip
+C:\Users\su2001\AppData\Local\Temp\tmpfguxuchs\backups\mold-erp-backup-20261118-161614-519949.zip
+恢复完成：C:\Users\su2001\AppData\Local\Temp\tmpfguxuchs\backups\mold-erp-backup-20261118-161614-519949.zip
+备份完成：C:\Users\su2001\AppData\Local\Temp\tmpheb__ukk\backups\mold-erp-backup-20261118-161614-568045.zip
+C:\Users\su2001\AppData\Local\Temp\tmpheb__ukk\backups\mold-erp-backup-20261118-161614-568045.zip
+备份完成：C:\Users\su2001\AppData\Local\Temp\tmpheb__ukk\backups\mold-erp-backup-20261118-161614-575920.zip
+C:\Users\su2001\AppData\Local\Temp\tmpheb__ukk\backups\mold-erp-backup-20261118-161614-575920.zip
+备份完成：C:\Users\su2001\AppData\Local\Temp\tmpheb__ukk\backups\mold-erp-backup-20261118-161614-584508.zip
+C:\Users\su2001\AppData\Local\Temp\tmpheb__ukk\backups\mold-erp-backup-20261118-161614-584508.zip
+备份完成：C:\Users\su2001\AppData\Local\Temp\tmpheb__ukk\backups\mold-erp-backup-20261118-161614-592785.zip
+C:\Users\su2001\AppData\Local\Temp\tmpheb__ukk\backups\mold-erp-backup-20261118-161614-592785.zip
+J01-J07货架初始化完成。
+默认1-6号生产机台初始化完成，扩展机台保持不变。
+共享账号 erp-shared 已创建。
+J01-J07货架初始化完成。
+默认1-6号生产机台初始化完成，扩展机台保持不变。
+共享账号 erp-shared 已存在，权限设置已校准，密码已重置。
+J01-J07货架初始化完成。
+默认1-6号生产机台初始化完成，扩展机台保持不变。
+共享账号 erp-shared 已创建。
+J01-J07货架初始化完成。
+默认1-6号生产机台初始化完成，扩展机台保持不变。
+共享账号 erp-shared 已存在，权限设置已校准。
+只读账号 gpt-audit 已创建。
+账号密码：[隔离测试占位值已隐去]
