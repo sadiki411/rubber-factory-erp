@@ -6,8 +6,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { FlowCardsPage } from './FlowCardsPage'
 import { flowApi, type FlowContext } from '../flowcards'
 import { ReadOnlyContext } from '../access'
-import { mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 
 vi.mock('../flowcards', async (original) => ({ ...await original<typeof import('../flowcards')>(), flowApi: { context: vi.fn(), preview: vi.fn(), create: vi.fn(), groups: vi.fn(), templates: vi.fn() } }))
 Object.defineProperty(window, 'matchMedia', { writable: true, value: vi.fn().mockImplementation((query: string) => ({ matches: false, media: query, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn() })) })
@@ -25,7 +25,7 @@ describe('Flow-card preparation page', () => {
     vi.mocked(flowApi.groups).mockResolvedValue({ count: 0, results: [] })
     vi.mocked(flowApi.templates).mockResolvedValue({ renderer: 'review-v2', version: '草稿', published: false, write_enabled: true, history: [] })
   })
-  it('shows the actual source and preview without creating identities; captures a noninteractive HTML review', async () => {
+  it('shows the actual source and preview without creating identities', async () => {
     vi.mocked(flowApi.preview).mockResolvedValue({ count: 21, tail_molds: 50, planned_molds: 2050 })
     mount()
     expect(await screen.findByText('215 / N7200')).toBeInTheDocument()
@@ -34,11 +34,15 @@ describe('Flow-card preparation page', () => {
     await waitFor(() => expect(screen.getByText(/21张；尾卡 50模/)).toBeInTheDocument())
     expect(flowApi.create).not.toHaveBeenCalled()
     expect(vi.mocked(flowApi.preview).mock.calls[0][0]).toMatchObject({ product_id: 1, run_id: 10, order_ids: [1, 2], planned_molds: 2050 })
-    const root = resolve('..', 'docs', 'flowcards-20261118')
-    mkdirSync(root, { recursive: true })
-    const css = readdirSync(resolve('dist/assets')).filter((name) => name.endsWith('.css')).map((name) => readFileSync(resolve('dist/assets', name), 'utf8')).join('\n')
-    const notice = '<p style="background:#fff5d6;padding:12px">隔离数据 / 实际React组件的静态DOM预览（按钮无效，不代表浏览器或实机验收）。缩窄窗口可查看单列排版。</p>'
-    writeFileSync(resolve(root, '制卡页面_静态预览.html'), `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>工序流转卡隔离界面预览</title><style>${css}</style>${document.head.innerHTML}</head><body>${notice}${document.body.innerHTML}</body></html>`)
+    // Unit tests must work in a clean checkout before the production build.
+    // Review exports are opt-in and must not rewrite tracked evidence on every run.
+    if (process.env.FLOW_CARDS_REVIEW_HTML) {
+      const target = resolve(process.env.FLOW_CARDS_REVIEW_HTML)
+      mkdirSync(dirname(target), { recursive: true })
+      const css = readFileSync(resolve('src/pages/FlowCardsPage.css'), 'utf8')
+      const notice = '<p style="background:#fff5d6;padding:12px">隔离数据 / 实际React组件的静态DOM预览（按钮无效，不代表浏览器或实机验收）。缩窄窗口可查看单列排版。</p>'
+      writeFileSync(target, `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>工序流转卡隔离界面预览</title><style>${css}</style>${document.head.innerHTML}</head><body>${notice}${document.body.innerHTML}</body></html>`)
+    }
   }, 30000)
   it('keeps loading failures distinct from zeros and never displays a successful empty result', async () => {
     vi.mocked(flowApi.context).mockRejectedValue(new Error('隔离读取失败'))
