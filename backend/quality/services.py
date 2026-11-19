@@ -2085,6 +2085,61 @@ def bind_existing_return_to_card(case, card_no, *, created_by, order_id=None):
         return locked
 
 
+def return_reship_context(case, *, lock=False):
+    """Resolve only evidence for THIS original physical unit; never spec-match.
+
+    This is read-only, including for old unlinked returns. Applying a unique
+    association happens in the explicit reship transaction, not on page load.
+    """
+    result = {"eligible": False, "state": "NEEDS_CHECK", "cards": [],
+              "message": "原实物包的客户流程卡关联不明确，请核对原出货及物理批号；不会另开首次出货。"}
+    if (case.origin != QualityReworkCase.Origin.CUSTOMER_RETURN
+            or not case.shipment_batch_id or not case.shipment_unit_no):
+        return result
+    if case.status not in PENDING_RETURN_STATUSES:
+        return {**result, "message": "这条退货当前不能再次出货，请核对是否已经再发、作废或报废。"}
+    batch = case.shipment_batch
+    if batch.status != QualityShipmentBatch.Status.CONFIRMED:
+        return {**result, "message": "原出货不再有效，请先核对；不会生成新的首次出货。"}
+    bindings = ProcessCardUnitBinding.objects.select_related("process_card")
+    if lock:
+        bindings = bindings.select_for_update()
+    original_binding = bindings.filter(shipment_batch=batch, shipment_unit_no=case.shipment_unit_no).first()
+    candidates = [original_binding.process_card] if original_binding else []
+    # Retain direct-card evidence too: a contradictory direct line must not be
+    # ignored merely because one current unit binding happens to exist.
+    try:
+        group = _group_for_unit(batch, case.shipment_unit_no)
+        direct = {row["shipment_line"].process_card_id for row in _unit_allocations(group, case.shipment_unit_no)} - {None}
+        cards = ProcessCard.objects.filter(pk__in=direct)
+        if lock:
+            cards = cards.select_for_update()
+        candidates.extend(cards)
+    except ValueError as exc:
+        return {**result, "message": str(exc)}
+    if case.process_card_id:
+        candidates.append(case.process_card)
+    active = {}
+    for card in candidates:
+        current = active_process_card(card)
+        if current.status not in (ProcessCard.Status.CANCELLED, ProcessCard.Status.REPLACED):
+            active[current.pk] = current
+    result["cards"] = [{"id": c.pk, "card_no": c.card_no} for c in active.values()]
+    if len(active) != 1:
+        return {**result, "state": "MULTIPLE" if active else "MISSING",
+                "message": "原实物包对应多张有效客户流程卡，请核对后补齐唯一实物关联。" if active else "查不到原实物包的有效客户流程卡，请核对原出货绑定；不按规格或日期猜配。"}
+    card = next(iter(active.values()))
+    binding = bindings.filter(process_card=card).first()
+    if binding and (binding.shipment_batch_id, binding.shipment_unit_no) != (case.shipment_batch_id, case.shipment_unit_no):
+        return {**result, "message": "客户流程卡未绑定此原实物包，或已移到其他出货轮次，请核对原绑定后重试。"}
+    pending = QualityReworkCase.objects.filter(process_card__tracking_id=card.tracking_id,
+        origin=QualityReworkCase.Origin.CUSTOMER_RETURN, status__in=PENDING_RETURN_STATUSES).exclude(pk=case.pk)
+    if pending.exists():
+        return {**result, "message": "这张客户流程卡还有另一条待处理退货，请先核对，不能串到另一轮再发。"}
+    return {**result, "eligible": True, "state": "UNIQUE", "card_id": card.pk,
+            "message": "仅沿用原出货该实物包唯一有效的客户流程卡；沿本退货单再发，不新增首次出货、不重复回冲。"}
+
+
 def reship_return_case(
     case: QualityReworkCase,
     *,
@@ -2104,6 +2159,42 @@ def reship_return_case(
             .select_related("process_card__order", "shipment_line")
             .get(pk=case.pk)
         )
+        if locked.status == QualityReworkCase.Status.RESHIPPED and locked.reshipment_batch_id:
+            # A lost response / repeated click for the same original return
+            # must never create a second outbound occurrence.
+            existing = locked.reshipment_batch
+            if ((piece_quantity is not None and int(piece_quantity) != existing.shipped_quantity)
+                    or (net_weight_kg is not None and Decimal(net_weight_kg) != existing.net_weight_kg)
+                    or (shipment_date is not None and shipment_date != existing.shipment_date)
+                    or (inspectors and {i.pk for i in inspectors} != set(existing.inspectors.values_list("pk", flat=True)))):
+                raise ValueError("本退货单已经重新出货；本次数据不同，请查看原再发记录，不会重复生成出货。")
+            return existing
+        if locked.status in PENDING_RETURN_STATUSES and locked.origin == QualityReworkCase.Origin.CUSTOMER_RETURN:
+            context = return_reship_context(locked, lock=True)
+            if not context["eligible"]:
+                raise ValueError(context["message"])
+            card = ProcessCard.objects.select_for_update().get(pk=context["card_id"])
+            if not ProcessCardUnitBinding.objects.filter(process_card=card).exists():
+                # A preserved direct line is also explicit evidence for this
+                # physical unit. Restore only its missing current binding.
+                bind_process_cards_to_batch(locked.shipment_batch,
+                    [{"card_no": card.card_no, "shipment_unit_no": locked.shipment_unit_no}], created_by=created_by)
+            if not locked.process_card_id or not locked.return_round:
+                previous_round = QualityReworkCase.objects.filter(
+                    process_card__tracking_id=card.tracking_id,
+                    origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+                ).exclude(pk=locked.pk).exclude(status=QualityReworkCase.Status.CANCELLED).aggregate(value=Max("return_round"))["value"] or 0
+                if not locked.process_card_id:
+                    locked.process_card = card
+                if not locked.return_round:
+                    locked.return_round = int(previous_round) + 1
+            QualityReworkCase.objects.filter(process_card__tracking_id=card.tracking_id,
+                is_current_return=True).exclude(pk=locked.pk).update(is_current_return=False, updated_at=timezone.now())
+            locked.is_current_return = True
+            locked.status = QualityReworkCase.Status.WAITING_REWORK
+            # Only attach the known identity. Do NOT recreate return allocations
+            # or invoke the return service: the original quantity was reversed.
+            locked.save(update_fields=["process_card", "return_round", "is_current_return", "status", "updated_at"])
         if locked.status != QualityReworkCase.Status.WAITING_REWORK:
             raise ValueError("只有待返工记录可以重新出货。")
         if not locked.process_card_id:

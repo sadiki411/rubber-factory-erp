@@ -12,6 +12,7 @@ import {
   Empty,
   Form,
   Input,
+  InputNumber,
   List,
   Popconfirm,
   Row,
@@ -362,6 +363,9 @@ export function QualityReworkCaseDetailDrawer({ open, item, employees = [], onCl
   const readOnly = useReadOnly()
   const [form] = Form.useForm<Record<string, unknown>>()
   const [reshipInspectorForm] = Form.useForm<Record<string, unknown>>()
+  const [reshipForm] = Form.useForm<Record<string, unknown>>()
+  const [reshipping, setReshipping] = useState(false)
+  const [reshipOpen, setReshipOpen] = useState(false)
   const [localItem, setLocalItem] = useState<QualityReworkCase>()
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -379,12 +383,53 @@ export function QualityReworkCaseDetailDrawer({ open, item, employees = [], onCl
     enabled: open && processCardId != null,
     retry: false,
   })
-  const cardTimeline = cardTimelineQuery.data || []
+  // The save response is already authoritative for the open return. Do not
+  // keep showing its stale pre-reship status while the timeline refreshes.
+  const cardTimeline = (cardTimelineQuery.data || []).map((record) => (
+    localItem?.id === record.id ? { ...record, ...localItem } : record
+  ))
   const openedOn = Form.useWatch('opened_on', form) as Dayjs | undefined
   const historical = Boolean(openedOn?.isValid() && openedOn.startOf('day').isBefore(dayjs().startOf('day')))
   const active = Boolean(currentItem && !['CANCELLED', 'SCRAPPED'].includes(currentItem.status))
   const editable = Boolean(currentItem && currentItem.status !== 'CANCELLED')
   const reshipment = currentItem?.reshipment
+  const reshipContext = useQuery({
+    queryKey: ['quality', 'return-reship-context', currentItem?.id],
+    queryFn: () => qualityWorkflowApi.getReturnReshipContext(currentItem!.id),
+    enabled: open && reshipOpen && currentItem != null,
+    retry: false,
+    staleTime: 0,
+  })
+  const reshipDay = Form.useWatch('shipment_date', reshipForm) as Dayjs | undefined
+  const reshipHistorical = Boolean(reshipDay?.isValid() && reshipDay.startOf('day').isBefore(dayjs().startOf('day')))
+  const startReship = () => {
+    reshipForm.resetFields()
+    reshipForm.setFieldsValue({ shipment_date: dayjs(), net_weight_kg: Number(currentItem?.affected_weight_kg),
+      piece_quantity: currentItem?.affected_quantity, inspector_ids: [] })
+    setReshipOpen(true)
+  }
+  const submitReship = async () => {
+    if (!currentItem || reshipping || !reshipContext.data?.eligible || reshipContext.isFetching) return
+    let values: Record<string, unknown>
+    try { values = await reshipForm.validateFields() } catch { return }
+    setReshipping(true)
+    try {
+      const batch = await qualityWorkflowApi.reshipReworkCase(currentItem.id, {
+        shipment_date: (values.shipment_date as Dayjs).format('YYYY-MM-DD'),
+        net_weight_kg: values.net_weight_kg, piece_quantity: values.piece_quantity,
+        inspector_ids: ((values.inspector_ids as Array<number | string>) || []).map(Number), notes: values.notes || '',
+      })
+      setReshipOpen(false)
+      const updated = { ...currentItem, status: 'RESHIPPED' as const, reshipment: batch }
+      setLocalItem(updated)
+      message.success('已沿原退货单再次出货，未重复登记退货或回冲')
+      void Promise.resolve().then(() => onSaved(updated)).catch(() => message.warning('再出货已保存，列表刷新失败，请刷新查看原退货单，不要另开首次出货。'))
+      void qualityWorkflowApi.getReworkCase(Number(currentItem.id)).then(setLocalItem)
+        .catch(() => message.warning('再出货已保存，详情刷新失败；本轮再发不会重建，请稍后刷新核对。'))
+    } catch (error) {
+      message.error((error as Error).message || '再次出货结果待核对，请重试原退货单，不要另开首次出货。')
+    } finally { setReshipping(false) }
+  }
 
   const fillEditForm = (record?: QualityReworkCase) => {
     form.resetFields()
@@ -476,6 +521,7 @@ export function QualityReworkCaseDetailDrawer({ open, item, employees = [], onCl
   }
 
   const closeDrawer = () => {
+    setReshipOpen(false)
     setEditing(false)
     setEditingReshipInspectors(false)
     setLocalItem(undefined)
@@ -489,11 +535,27 @@ export function QualityReworkCaseDetailDrawer({ open, item, employees = [], onCl
       {currentItem?.origin === 'CUSTOMER_RETURN' && active && <Popconfirm disabled={readOnly} title="确认取消这条误登记吗？" description="记录会保留审计历史，但原物理批号将释放并可重新登记。" okText="确认取消" cancelText="返回" onConfirm={() => void cancelCase()}><Button disabled={readOnly} danger loading={cancelling}>取消误登记</Button></Popconfirm>}
       <Button onClick={closeDrawer}>关闭</Button>
       {currentItem && editable && <Button disabled={readOnly} icon={<EditOutlined />} onClick={startEditing}>修改退货信息</Button>}
+      {currentItem?.origin === 'CUSTOMER_RETURN' && ['OPEN', 'PROCESSING', 'WAITING_REINSPECTION', 'WAITING_REWORK'].includes(currentItem.status) && <Button disabled={readOnly} type="primary" onClick={startReship}>沿本退货单再次出货</Button>}
       {processCardId == null && currentItem?.origin === 'CUSTOMER_RETURN' && active && <Button disabled={readOnly} type="primary" onClick={() => { closeDrawer(); onAddAttempt(currentItem) }}>手工登记下一轮返工</Button>}
     </Space>
 
   return <Drawer open={open} onClose={closeDrawer} width={620} className="quality-return-rework-drawer" afterOpenChange={(visible) => { if (visible) { setLocalItem(undefined); setEditing(false) } }} title={currentItem ? `退货返工记录 · ${currentItem.case_no}` : '退货返工记录'} footer={footer}>
     {currentItem && <>
+      {reshipOpen && <Card size="small" title={`沿 ${currentItem.case_no} 再次出货（不是首次出货）`} style={{ marginBottom: 16 }}>
+        {reshipContext.isFetching ? <Spin tip="核对原实物包流程卡关联…"><div style={{ minHeight: 48 }} /></Spin> : reshipContext.isError ? <Alert type="error" message="原实物关联读取失败，不能当作无流程卡" action={<Button onClick={() => void reshipContext.refetch()}>重试核对</Button>} /> : <>
+          <Alert type={reshipContext.data?.eligible ? 'info' : 'warning'} message={reshipContext.data?.eligible ? '已查到原实物包唯一有效客户流程卡' : '需要人工核对，暂不出货'} description={<>{reshipContext.data?.message}<div>{reshipContext.data?.cards.map((c) => c.card_no).join('、') || '暂无有效客户流程卡关联'}</div></>} />
+          {!reshipContext.data?.eligible && <Button onClick={() => void reshipContext.refetch()}>核对原关联后重新检查</Button>}
+          {reshipContext.data?.eligible && <Form name={`return-reship-${currentItem.id}`} form={reshipForm} layout="vertical" style={{ marginTop: 12 }}>
+            <Form.Item name="shipment_date" label="本轮出货日期" rules={[{ required: true }]}><DatePicker style={{ width: '100%' }} /></Form.Item>
+            <Form.Item name="net_weight_kg" label="本轮出货净重（kg）" rules={[{ required: true }]}><InputNumber min={0.001} precision={3} style={{ width: '100%' }} /></Form.Item>
+            <Form.Item name="piece_quantity" label="本轮出货件数" rules={[{ required: true }]}><InputNumber min={1} precision={0} style={{ width: '100%' }} /></Form.Item>
+            <Form.Item name="inspector_ids" label="本轮重新出货品检员" rules={[{ required: true, type: 'array', min: 1, message: '请选择本轮品检员，不自动沿用原责任人' }]}><QualityEmployeeSelect employees={employees} multiple placeholder="选择本轮品检员" /></Form.Item>
+            <Form.Item name="notes" label={reshipHistorical ? '历史日期补录原因' : '本轮说明（选填）'} rules={[{ required: reshipHistorical, whitespace: true }]}><Input.TextArea rows={2} /></Form.Item>
+            <Button type="primary" disabled={readOnly || reshipContext.isFetching} loading={reshipping} onClick={() => void submitReship()}>确认沿原退货单再次出货</Button>
+          </Form>}
+        </>}
+        <Button onClick={() => setReshipOpen(false)} style={{ marginTop: 8 }}>收起再次出货</Button>
+      </Card>}
       <Card className="quality-return-detail-summary" size="small">
         <div className="quality-return-detail-heading"><div><Tag color="orange">{currentItem.return_label || (currentItem.return_round ? `第 ${currentItem.return_round} 次退货返工` : '退货返工记录')}</Tag><Typography.Text type="secondary">订单 / 项次</Typography.Text><strong>{source ? `${source.order_no || '未关联订单'}${source.item_no ? ` / ${source.item_no}` : ''}` : `内部返工 · 流程卡 #${currentItem.process_card_id || '-'}`}</strong></div><Tag color={currentItem.status === 'RESHIPPED' || currentItem.status === 'COMPLETED' ? 'success' : currentItem.status === 'CANCELLED' || currentItem.status === 'SCRAPPED' ? 'default' : 'warning'}>{reworkStatusText(currentItem.status)}</Tag></div>
         <div className="quality-return-detail-product"><Typography.Text type="secondary">产品</Typography.Text><strong>{source?.product_name || '未填写产品'}</strong></div>

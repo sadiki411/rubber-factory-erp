@@ -61,6 +61,7 @@ from .services import (
     reporting_related_rows,
     return_reporting_allocations,
     reship_return_case,
+    return_reship_context,
     returnable_groups_for_batch,
     serialize_order_allocation_plan,
     shipment_line_piece_quantity,
@@ -2786,6 +2787,7 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
 
     @extend_schema(request=ReturnReshipRequestSerializer, responses=QualityShipmentBatchSerializer)
     @action(detail=True, methods=["post"], url_path="reship")
+    @quality_write_retry
     def reship(self, request, pk=None):
         payload = ReturnReshipRequestSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
@@ -2808,6 +2810,10 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
             QualityShipmentBatchSerializer(batch, context={"request": request}).data,
             status=201,
         )
+
+    @action(detail=True, methods=["get"], url_path="reship-context")
+    def reship_context(self, request, pk=None):
+        return Response(return_reship_context(self.get_object()))
 
     @extend_schema(parameters=[OpenApiParameter("shipment_batch_id", int), OpenApiParameter("shipment_unit_no", int)], responses=dict)
     @action(detail=False, methods=["get"], url_path="return-allocation-preview")
