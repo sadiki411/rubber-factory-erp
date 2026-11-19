@@ -23,7 +23,17 @@ from .models import (
 from .limits import validate_limits, evaluate
 
 RENDERER = "flowcard-review-20261119-v4"
+PREPARATION_RENDERER = "flowcard-preparation-20261119-v5"
 TEMPLATE = {"renderer": RENDERER, "version": "草稿", "width_mm": 190, "height_mm": 130}
+
+
+def current_renderer():
+    return PREPARATION_RENDERER if settings.FLOW_CARDS_PREPARATION_ENABLED else RENDERER
+
+
+def current_template():
+    return {**TEMPLATE, "renderer": current_renderer()}
+
 MEASURE_STAGES = {"UPPER_TEMP", "LOWER_TEMP", "MOLDING_HARDNESS", "BAKED_HARDNESS", "DIMENSION", "SECONDARY_CURE"}
 KINDS = MEASURE_STAGES | {"APPEARANCE", "WHOLE_MOLD", "DEBURR", "BAKE", "ANOMALY", "RESOLUTION", "SOURCE_CONFIRM", "VOID"}
 HARDNESS_STAGES = {"MOLDING_HARDNESS", "BAKED_HARDNESS"}
@@ -107,7 +117,9 @@ def standard_data(standard):
     return {"id": standard.pk, "version": standard.version, "product_id": standard.product_id,
             "mold_id": standard.mold_id, "source": standard.source, "scope": standard.scope,
             "whole_mold": standard.whole_mold, "snapshot": standard.snapshot,
-            "confirmed_at": standard.created_at.isoformat()}
+            "confirmed_at": standard.created_at.isoformat(), "status": standard.status,
+            "customer_key": standard.customer_key, "source_kind": standard.source_kind,
+            "applicable_order_id": standard.applicable_order_id, "created_by": standard.created_by_id}
 
 
 def requirement_warnings(product, orders, standard=None):
@@ -129,6 +141,9 @@ def requirement_warnings(product, orders, standard=None):
 @transaction.atomic
 def confirm_standard(data, user):
     write_enabled()
+    from . import preparation as prep
+    if prep.enabled():
+        prep.require_maintainer(user)
     key = request_key(data)
     existing = replay(StandardRevision, key, data)
     if existing:
@@ -180,10 +195,34 @@ def confirm_standard(data, user):
             row = get_row(ProductInspectionCriterion, entry["criterion_id"], "criterion_id")
             if row.product_specification_id != product.pk:
                 raise ValidationError({"criterion_id": "检验要求不属于此产品。"})
+            if prep.enabled():
+                customer = str(data.get("customer_key", "")).strip().casefold()
+                if row.customer and row.customer.casefold() != customer:
+                    raise ValidationError({"criterion_id": "原行属于其他客户，不能作为当前标准的依据。"})
+                if row.order_id and str(row.order_id) != str(data.get("applicable_order_id")):
+                    raise ValidationError({"criterion_id": "订单特规只能在其明确适用的订单中引用；不可变成通用标准。"})
+                changed = any(k in entry and str(entry[k]) != str(getattr(row, f"{k}_limit" if k in ("lower", "upper") else k)) for k in ("lower", "upper", "unit"))
+                raw = row.raw_data or {}
+                changed = changed or any(k in entry and entry[k] != raw.get(k, True if k.endswith("inclusive") else "PENDING")
+                                         for k in ("limit_mode", "upper_inclusive", "lower_inclusive"))
+                if changed and entry.get("override") is not True:
+                    raise ValidationError({"criterion_id": "引用原行不可静默改值；请选择明确的新版本/本单例外。"})
+                if entry.get("override") is True:
+                    order = get_row(__import__("quality.models", fromlist=["QualityOrder"]).QualityOrder, data["applicable_order_id"], "applicable_order_id") if data.get("applicable_order_id") else None
+                    if order and order.product_specification_id != product.pk:
+                        raise ValidationError({"applicable_order_id": "特规订单必须明确关联同一产品。"})
+                    row = ProductInspectionCriterion.objects.create(product_specification=product, order=order,
+                        customer=row.customer, inspection_item=row.inspection_item,
+                        lower_limit=str(entry.get("lower", row.lower_limit)), upper_limit=str(entry.get("upper", row.upper_limit)), unit=entry.get("unit", row.unit),
+                        source_batch=row.source_batch, source_sheet=row.source_sheet, source_row=row.source_row,
+                        raw_data={**(row.raw_data or {}), "overrides_criterion_id": row.pk, "source": source, "stage": entry["stage"],
+                                  **{k: entry[k] for k in ("limit_mode", "upper_inclusive", "lower_inclusive") if k in entry}})
         else:
             # New manual requirements join the EXISTING product criteria table.
             row = ProductInspectionCriterion.objects.create(
-                product_specification=product, category="工序流转卡确认", inspection_item=required_text(entry, "name", 200),
+                product_specification=product, order_id=data.get("applicable_order_id") if prep.enabled() else None,
+                customer=str(data.get("customer_key", "")).strip() if prep.enabled() else "",
+                category="工序流转卡确认", inspection_item=required_text(entry, "name", 200),
                 lower_limit=str(entry.get("lower", "")), upper_limit=str(entry.get("upper", "")),
                 unit=unit.strip(), raw_data={"source": source, "method": method, "stage": entry["stage"],
                     **{k: entry[k] for k in ("limit_mode", "upper_inclusive", "lower_inclusive") if k in entry}},
@@ -200,14 +239,34 @@ def confirm_standard(data, user):
                           "limit_mode": mode, "upper_inclusive": rules.get("upper_inclusive", True), "lower_inclusive": rules.get("lower_inclusive", True), "source": source,
                           "source_sheet": row.source_sheet, "source_row": row.source_row,
                           "source_batch_id": str(row.source_batch_id) if row.source_batch_id else None})
+        if prep.enabled() and (row.raw_data or {}).get("overrides_criterion_id"):
+            snapshots[-1]["overrides_criterion_id"] = row.raw_data["overrides_criterion_id"]
         criteria.append(row)
     if dimensions is not None and dimensions < sum(e["stage"] == "DIMENSION" and e["limit_mode"] != "NONE" for e in snapshots):
         raise ValidationError({"dimension_count": "需要的尺寸项目数不能少于本次已确认的尺寸项目。"})
     version = (StandardRevision.objects.filter(product=product).aggregate(v=Max("version"))["v"] or 0) + 1
+    metadata = prep.standard_metadata(data) if prep.enabled() else {}
+    extra = {}
+    if prep.enabled():
+        kind = data.get("source_kind", "FACTORY_EXPERIENCE")
+        if kind not in ("CUSTOMER", "FACTORY_PROCESS", "FACTORY_EXPERIENCE"):
+            raise ValidationError({"source_kind": "请区分客户要求、本厂工艺和本厂经验待核。"})
+        applicable_order_id = data.get("applicable_order_id")
+        if applicable_order_id:
+            order = get_row(QualityOrder, applicable_order_id, "applicable_order_id")
+            if order.product_specification_id != product.pk:
+                raise ValidationError({"applicable_order_id": "特规不能属于其他产品。"})
+        extra = {"status": "DRAFT", "customer_key": str(data.get("customer_key", "")).strip(),
+                 "source_kind": kind, "applicable_order_id": applicable_order_id}
+        for snapshot, entry in zip(snapshots, entries):
+            state = entry.get("requirement_state", "CONFIRMED" if snapshot["limit_mode"] in ("UPPER", "RANGE") else "NOT_APPLICABLE" if snapshot["limit_mode"] == "NONE" else "MEASURE_NO_LIMIT")
+            if state not in ("CONFIRMED", "NOT_PROVIDED", "RAW_UNCONFIRMED", "NOT_APPLICABLE", "MEASURE_NO_LIMIT"):
+                raise ValidationError({"requirement_state": "要求状态无效。"})
+            snapshot.update({"requirement_state": state, "critical": entry.get("critical", True)})
     result = StandardRevision.objects.create(product=product, mold=mold, version=version, source=source, request_key=key, request_digest=digest(data),
         scope=str(data.get("scope", "")), whole_mold=whole, created_by=user,
         snapshot={"criteria": snapshots, "bake": bake, "hardness": hardness, "dimension_count": dimensions,
-                  "appearance": [{"id": e.pk, "name": e.name} for e in selected]})
+                  "appearance": [{"id": e.pk, "name": e.name} for e in selected], **metadata}, **extra)
     result.criteria.set(criteria)
     result.appearance.set(selected)
     audit(result, "CONFIRM", user, {"source": source})
@@ -287,6 +346,9 @@ def group_plan(data):
 
 @transaction.atomic
 def create_group(data, user):
+    from . import preparation as prep
+    if prep.enabled():
+        return prep.save_draft(data, user)
     write_enabled()
     key = request_key(data)
     existing = replay(CardGroup, key, data)
@@ -311,6 +373,9 @@ def create_group(data, user):
 
 @transaction.atomic
 def revise_draft(group, data, user):
+    from . import preparation as prep
+    if prep.enabled():
+        return prep.save_draft({**data, "group_id": str(group.pk)}, user)
     write_enabled()
     group = CardGroup.objects.select_for_update().get(pk=group.pk)
     key = request_key(data)
@@ -335,21 +400,34 @@ def revise_draft(group, data, user):
 
 
 @transaction.atomic
-def generate_group(group, user):
+def generate_group(group, user, expected_revision=None):
     write_enabled()
+    from . import preparation as prep
+    if prep.enabled():
+        prep.lock_product(group.product)
     group = CardGroup.objects.select_for_update().get(pk=group.pk)
     if group.status == "GENERATED":
         return group
+    if prep.enabled() and expected_revision is not None and expected_revision != group.revision:
+        raise prep.PreparationConflict("发卡前草稿版本已变化，请重新读取核对。")
+    if prep.enabled():
+        prep.validate_generation(group)
+        occupied = prep.ranges_for(group.run, group.pk)
+        if any(group.range_start <= r["range_end"] and group.range_end >= r["range_start"] for r in occupied):
+            raise prep.PreparationConflict("本段模数与其他准备/卡组重叠，请核对原卡。")
     if not group.planned_molds:
         raise ValidationError({"planned_molds": "未确认模数只能保存准备组，不生成有效包。"})
     if group.whole_mold == "UNKNOWN" or not group.snapshot.get("whole_mold_basis"):
         raise ValidationError({"whole_mold": "正式制卡前请明确需/不需整模及选择依据。"})
-    if group.snapshot.get("requirement_warnings") and not group.snapshot.get("requirements_review", "").strip():
+    if not prep.enabled() and group.snapshot.get("requirement_warnings") and not group.snapshot.get("requirements_review", "").strip():
         raise ValidationError({"requirements_review": "检验要求存在差异/订单专用缺项，请核对并填写本组采用要求的依据；准备组保留，不自动选择。"})
-    publication = TemplatePublication.objects.filter(renderer=RENDERER).first()
+    renderer = current_renderer()
+    publication = TemplatePublication.objects.filter(renderer=renderer).first()
     snapshot = dict(group.snapshot)
-    snapshot["template"] = {**snapshot["template"], "renderer": RENDERER, "version": publication.version if publication else "草稿"}
+    snapshot["template"] = {**snapshot["template"], "renderer": renderer, "version": publication.version if publication else "草稿"}
     snapshot["confirmed_by"] = user.pk
+    if prep.enabled():
+        snapshot["todos"] = prep.package_todos(snapshot)
     snapshot["digest"] = digest(snapshot)
     now = timezone.now()
     day = timezone.localtime(now).date()
@@ -364,6 +442,10 @@ def generate_group(group, user):
     group.status, group.generated_at, group.generated_by = "GENERATED", now, user
     group.snapshot = snapshot
     group.save(update_fields=["status", "generated_at", "generated_by", "snapshot"])
+    if prep.enabled():
+        from .models import OrderCardPreparation
+        remaining = prep.free_ranges(group.run.planned_mold_count, prep.ranges_for(group.run))
+        OrderCardPreparation.objects.filter(order__in=group.orders.all()).update(state="PENDING" if remaining else "GENERATED", updated_at=now)
     audit(group, "GENERATE", user, {"count": count, "molds": group.planned_molds})
     return group
 

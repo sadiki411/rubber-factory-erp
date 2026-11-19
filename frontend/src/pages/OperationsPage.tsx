@@ -8,6 +8,7 @@ import type { WorkbenchKind } from '../operations'
 const kinds: { value: WorkbenchKind; label: string }[] = [
   { value: 'ORDER_SHORTAGE', label: '订单欠交' }, { value: 'RETURN_PENDING', label: '退回/返工待处理' },
   { value: 'INVENTORY_QUALITY', label: '库存质量处理' }, { value: 'RECEIPT_UNLINKED', label: '发料待关联' },
+  { value: 'CARD_PREPARATION', label: '工序卡待准备' },
 ]
 
 export function OperationsPage() {
@@ -41,7 +42,7 @@ export function OperationsPage() {
       <div className="operations-task-list">{result.data.results.map((row) => {
         const target = new URL(row.url, window.location.origin)
         target.searchParams.set('return_to', `/operations?${params}`)
-        const label = { ORDER_SHORTAGE: '看订单', RETURN_PENDING: '看退回单', INVENTORY_QUALITY: '看库位', RECEIPT_UNLINKED: '核对发料' }[row.kind]
+        const label = { ORDER_SHORTAGE: '看订单', RETURN_PENDING: '看退回单', INVENTORY_QUALITY: '看库位', RECEIPT_UNLINKED: '核对发料', CARD_PREPARATION: '继续备卡' }[row.kind]
         return <article key={row.id} className="operations-task-row">
           <div><Tag>{row.title}</Tag><strong>{row.document_no}</strong><div>{row.specification || '规格未登记'} · {row.material || '材质未登记'}</div></div>
           <div><strong>{row.quantity === null ? '未登记' : Number(row.quantity).toLocaleString('zh-CN')} {row.unit}</strong><div>{row.due_date ? `交期 ${row.due_date}` : row.reason}</div></div>

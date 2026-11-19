@@ -7,6 +7,8 @@ import { useReadOnly } from '../access'
 import { PageTitle } from '../components/PageTitle'
 import { QualityQrScanner } from '../components/QualityQrScanner'
 import { FlowTemplatePanel } from '../components/FlowTemplatePanel'
+import { FlowPreparationWorkspace } from '../components/FlowPreparationWorkspace'
+import type { PreparationContext } from '../flowcards'
 import { FlowBakePanel } from '../components/FlowBakePanel'
 import { FlowEventSummary, FlowMeasurementSummary, flowTime, type CouponSample } from '../components/FlowMeasurementSummary'
 import { flowApi, flowLimitText, applicableFlowCriteria, flowRequestKey, finishFlowRequest, isInternalCardCode, type Criterion, type FlowEvent, type FlowGroup, type PrintJob, type FlowTrace } from '../flowcards'
@@ -133,6 +135,10 @@ export function FlowCardsPage() {
     form.setFieldsValue({ paper_width_mm: (group.snapshot.template as { width_mm?: number }).width_mm, paper_height_mm: (group.snapshot.template as { height_mm?: number }).height_mm })
     setPreview(undefined); message.info('已载入上方表单；修改后点击“保存修改到当前准备组”，不会另建组')
   }
+  if (data?.preparation_enabled) return <div className="page-container flow-cards-page">
+    <PageTitle title="订单备卡与工序流转卡" description="订单、生产任务共用同一准备；只补缺项，不重录标准。" extra={<Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回来源页面</Button>} />
+    <FlowPreparationWorkspace data={data as PreparationContext} refresh={() => { void context.refetch() }} lookup={<CardLookup />} settings={<FlowTemplatePanel />} printResults={job && <PrintResults job={job} changed={setJob} disabled={disabled} />} print={async (ids) => { const body={card_ids:ids};const slot=`print:${ids.join(',')}`;const result=await flowApi.print({...body,request_key:flowRequestKey(slot,body)});finishFlowRequest(slot);setJob(result);return result }} />
+  </div>
   return <div className="page-container flow-cards-page">
     <PageTitle title="工序流转卡" description="一包产品的记录与身份；不另记产量、库存和交付。" extra={<Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回来源页面</Button>} />
     <CardLookup />
@@ -307,6 +313,7 @@ export function FlowCardDetailPage() {
     <PageTitle title="工序卡详情" description="实物来源、工序事实与客户交付分别查看。" extra={<Space wrap><Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/production'))}>返回来源</Button><Button onClick={() => void card.refetch()}>刷新</Button></Space>} />
     {card.isError ? <Alert type="error" title="内部卡读取失败，不视为不存在的客户卡" description={card.error.message} /> : !data ? <Skeleton active /> : <>
       <Card title={data.card_no} extra={<Button disabled={disabled} onClick={() => { form.resetFields(); form.setFieldsValue({ kind: 'WHOLE_MOLD', status: 'PARTIAL', state: 'UNKNOWN' }); setRecordOpen(true) }}>登记 / 续记 / 复测</Button>}>
+        {Boolean(data.process_todos?.length) && <Descriptions title="本包适用工序 / 待核对岗位" column={{xs:1,sm:2}} items={data.process_todos?.map((todo)=>({key:todo.stage,label:`${todo.label} · ${todo.role}`,children:`${todo.notice}${todo.employees.length?` · ${todo.employees.join('、')}`:''}`}))} />}
         <FlowMeasurementSummary card={data} disabled={disabled} measure={measure} />
         <Descriptions column={{ xs: 1, sm: 2 }} items={[
           { key: 'product', label: '产品', children: `${data.snapshot.product.specification} / ${data.snapshot.product.material}` },

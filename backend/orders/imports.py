@@ -3196,6 +3196,8 @@ def commit_business_batch(batch, user, *, cut_length_acknowledged=False, cut_len
             if changed != 1:
                 raise ValueError("导入批次状态已变化，请刷新后确认结果。")
             imported = {key: created[key] + updated[key] for key in counter_names}
+            from flowcards.preparation import sync_order_suggestions
+            sync_order_suggestions(imported_orders.values(), user)
             return {
                 "created": created,
                 "updated": updated,

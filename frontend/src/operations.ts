@@ -1,4 +1,4 @@
-export type WorkbenchKind = 'ORDER_SHORTAGE' | 'RETURN_PENDING' | 'INVENTORY_QUALITY' | 'RECEIPT_UNLINKED'
+export type WorkbenchKind = 'ORDER_SHORTAGE' | 'RETURN_PENDING' | 'INVENTORY_QUALITY' | 'RECEIPT_UNLINKED' | 'CARD_PREPARATION'
 export interface WorkbenchTask {
   id: string
   kind: WorkbenchKind
@@ -20,7 +20,7 @@ export interface WorkbenchResult {
   page: number
   page_size: number
   results: WorkbenchTask[]
-  summary: Record<WorkbenchKind, number>
+  summary: Partial<Record<WorkbenchKind, number>>
   summary_scope: string
   generated_at: string
   limitations: string[]

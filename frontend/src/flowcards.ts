@@ -8,6 +8,7 @@ export type FlowSnapshot = {
   diagram_id?: number | null; whole_mold: string
   whole_mold_basis?: string; cavities_basis?: string; material_evidence?: string; requirements_review?: string; appearance?: Array<{ id: number; name: string }>
   template: { version: string | number }
+  process_overrides?: Record<string, Record<string, unknown>>
   standard?: { id: number; version: number; source: string; snapshot: { criteria: Criterion[]; hardness?: Record<string, { object: string; scale?: string }>; bake?: Record<string, unknown>; dimension_count?: number | null } } | null
 }
 export type Criterion = { id: number; name: string; stage: string; lower: string; upper: string; unit: string; method: string; numeric?: boolean; limit_mode?: 'UPPER' | 'RANGE' | 'PENDING' | 'NONE'; upper_inclusive?: boolean; lower_inclusive?: boolean }
@@ -22,7 +23,17 @@ export function flowLimitText(c: Partial<Criterion>) {
 }
 export type TemplateStatus = { renderer: string; version: string | number; published: boolean; write_enabled: boolean; history: Array<{ renderer: string; version: number; confirmation: string; created_at: string }> }
 export type FlowGroup = { id: string; product_id: number; run_id: number | null; planned_molds: number | null; molds_per_card: number; whole_mold: string; plan_basis: string; status: string; snapshot: FlowSnapshot; request_key: string }
-export type FlowCard = { id: string; card_no: string; group_id: string; code: string; sequence: number; denominator: number; planned_molds: number; original_date: string; reprint_count: number; status: string }
+export type PreparationGroup = FlowGroup & { revision: number; range_start: number | null; range_end: number | null; updated_at: string; updated_by: number | null }
+export type PreparationStandard = FlowContext['standards'][number] & { status: string; customer_key: string; source_kind: string; applicable_order_id: number | null; scope: string; snapshot: FlowContext['standards'][number]['snapshot'] & { route?: Record<string, boolean>; packaging?: {molds_per_card?: number; patrol_every_molds?: number}; process_parameters?: Record<string, {state: string; lower?: string; upper?: string; value?: string; unit?: string; source?: string; raw_text?: string}> } }
+export type PreparationSource = FlowContext['criteria'][number] & { order_id: number | null; customer: string; source_file: string; source_url?: string | null; source_batch_id: string | null; source_sheet: string; source_row: number | null; version: string; stage?: string; raw_data?: Record<string, unknown> }
+export type PreparationContext = Omit<FlowContext, 'standards' | 'criteria' | 'existing_groups'> & {
+  preparation_enabled: true; can_maintain_standard: boolean; standards: PreparationStandard[]; criteria: PreparationSource[]; existing_groups: PreparationGroup[]
+  runs: Array<{id: number; segment_no: number; status: string; status_display: string; station_id: number | null; mold_id: number | null; planned_molds: number; historical: boolean}>
+  available_ranges: number[][]; occupied_ranges: Array<{id: string; range_start: number; range_end: number; status: string}>; preferred_group: PreparationGroup | null
+  missing: string[]; auto_standard_id: number | null; conflicts: Array<{key: string; name: string; stage: string; sources: PreparationSource[]; selected_ids: number[]; missing_order_ids: number[]}>; suggestion_id: number | null
+  criteria_count?: number
+}
+export type FlowCard = { id: string; card_no: string; group_id: string; code: string; sequence: number; denominator: number; planned_molds: number; original_date: string; reprint_count: number; status: string; process_todos?: Array<{stage:string;label:string;role:string;state:string;notice:string;employees:string[];fact_ids:string[]}> }
 export type FlowCardDetail = FlowCard & { snapshot: FlowSnapshot; write_enabled?: boolean; whole_mold_status: string; unresolved_anomalies: number; source_status: string; paper_status: string; measurement_alerts?: Array<FlowEvent & { review_target?: FlowEvent }>; measurement_status?: Array<{ criterion: Criterion; limit_text: string; message: string; event: FlowEvent | null }>; bake_measurement_status?: Array<{id: string; business_at: string | null; scope: string; trays?: number[]; notice: string; checks: Array<{sample_ref: string; material_ref: string; trays: number[]; message: string; actual: string | null; unit: string | null}>}>; baked_product_measurements?: FlowEvent[]; baked_measurement_notice?: string }
 export type FlowEvent = { id: string; kind: string; values: Record<string, unknown>; scope: string; card_ids?: string[]; card_refs?: Array<{ id: string; card_no: string }>; followups?: Array<{ id: string; employee_name: string; business_at: string | null; message: string; judgment: string }>; employee_name: string; evidence: string; created_at: string; business_at: string | null; replaces_id: string | null }
 export type FlowPage<T> = { count: number; results: T[] }
@@ -30,6 +41,7 @@ export type FlowReturn = { id: number; case_no: string; status: string; return_r
 export type FlowTrace = { id: number; batch_id: number; shipment_no: string; current_shipment_status: string; state: string; scope: string; related_returns: FlowReturn[]; related_return_count: number }
 export type PrintJob = { id: string; status: string; request_key: string; pdf_url: string; file_prepared: boolean; pdf_sha256: string; items: Array<{ card_id: string; card_no: string; sequence: number; denominator: number; proposed_reprint: number; status: string; active: boolean }> }
 export type FlowContext = {
+  preparation_enabled?: boolean
   write_enabled: boolean; product: FlowSnapshot['product']; run_id: number | null; mold_id: number | null; order_ids: number[]; orders: FlowSnapshot['orders']; suggested_molds: number | null
   standards: Array<{ id: number; version: number; whole_mold: string; source: string; snapshot: { criteria: Criterion[]; appearance?: Array<{ id: number; name: string }>; hardness?: Record<string, { object: string; scale?: string }>; bake?: Record<string, unknown>; dimension_count?: number | null } }>
   requirement_warnings?: string[]
@@ -45,10 +57,13 @@ export const flowApi = {
   context: (params: URLSearchParams) => apiFetch<FlowContext>(`/api/flow-cards/context/?${params}`),
   groups: (params: URLSearchParams, page = 1, q = '') => apiFetch<FlowPage<FlowGroup>>(`/api/flow-cards/groups/?${params}&page=${page}&q=${encodeURIComponent(q)}`),
   standard: (body: unknown) => post('standards/', body),
+  saveStandard: (body: unknown) => post<PreparationStandard>('standards/', body),
+  activateStandard: (id: number) => post<PreparationStandard>(`standards/${id}/activate/`, {}),
+  preparationSources: (params: URLSearchParams, page = 1) => apiFetch<FlowPage<PreparationSource>>(`/api/flow-cards/preparation-sources/?${params}&page=${page}&page_size=50`),
   appearance: (body: unknown) => post('appearance/', body),
   preview: (body: unknown) => post<{ count: number; tail_molds: number | null; planned_molds: number | null }>('groups/preview/', body),
   create: (body: unknown) => post<FlowGroup>('groups/', body),
-  generate: (id: string) => post<FlowGroup>(`groups/${id}/generate/`, {}),
+  generate: (id: string, expectedRevision?: number) => post<FlowGroup>(`groups/${id}/generate/`, expectedRevision == null ? {} : {expected_revision:expectedRevision}),
   revise: (id: string, body: unknown) => post<FlowGroup>(`groups/${id}/revise/`, body),
   group: (id: string) => apiFetch<FlowGroup>(`/api/flow-cards/groups/${id}/`),
   cards: (id: string, page = 1) => apiFetch<FlowPage<FlowCard>>(`/api/flow-cards/groups/${id}/cards/?page=${page}&page_size=100`),

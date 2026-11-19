@@ -33,9 +33,14 @@ class StandardRevision(Recorded):
     snapshot = models.JSONField(default=dict)
     whole_mold = models.CharField(max_length=12, default="UNKNOWN")
     appearance = models.ManyToManyField(AppearanceIssue)
+    status = models.CharField(max_length=16, default="LEGACY", db_index=True)
+    customer_key = models.CharField(max_length=100, blank=True)
+    source_kind = models.CharField(max_length=24, default="UNCONFIRMED")
+    applicable_order = models.ForeignKey("quality.QualityOrder", on_delete=models.PROTECT, null=True, blank=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["product", "version"], name="fc_product_standard_version")]
+        permissions = [("maintain_product_standard", "维护及生效产品工艺检验标准")]
 
 
 class PositionDiagram(Recorded):
@@ -70,6 +75,26 @@ class CardGroup(Recorded):
     generated_at = models.DateTimeField(null=True, blank=True)
     generated_by = models.ForeignKey(settings.AUTH_USER_MODEL, related_name="generated_flow_groups", on_delete=models.PROTECT, null=True)
     material_evidence = models.TextField(blank=True)
+    context_key = models.CharField(max_length=100, blank=True, db_index=True)
+    revision = models.PositiveIntegerField(default=1)
+    range_start = models.PositiveIntegerField(null=True, blank=True)
+    range_end = models.PositiveIntegerField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, related_name="updated_flow_groups")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["context_key"], condition=Q(status="DRAFT") & ~Q(context_key=""), name="fc_one_context_draft"),
+            models.CheckConstraint(condition=(Q(range_start__isnull=True, range_end__isnull=True) | Q(range_start__isnull=False, range_end__isnull=False, range_start__gte=1, range_end__gte=models.F("range_start"))), name="fc_valid_mold_range"),
+        ]
+
+
+class OrderCardPreparation(Recorded):
+    """Suggestion only. Never a production/quantity posting or historical backfill."""
+    order = models.OneToOneField("quality.QualityOrder", on_delete=models.PROTECT, related_name="card_preparation")
+    draft = models.ForeignKey(CardGroup, on_delete=models.PROTECT, null=True, blank=True)
+    state = models.CharField(max_length=24, default="PENDING")
+    updated_at = models.DateTimeField(auto_now=True)
 
 
 class InternalCard(models.Model):

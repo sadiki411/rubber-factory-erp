@@ -21,13 +21,14 @@ from quality.services import (
 from quality.tracing import attach_shipment_card_sources
 from .models import MaterialReceipt
 from .services import production_totals_by_order, order_production_requirement_status
+from django.conf import settings
 
 
 SECTIONS = (
     "production", "receipts", "cards", "shipments", "piece_shipments",
     "returns", "piece_returns", "inventory",
 )
-KINDS = ("ORDER_SHORTAGE", "RETURN_PENDING", "INVENTORY_QUALITY", "RECEIPT_UNLINKED")
+KINDS = ("ORDER_SHORTAGE", "RETURN_PENDING", "INVENTORY_QUALITY", "RECEIPT_UNLINKED", "CARD_PREPARATION")
 
 
 class ReadQuery(serializers.Serializer):
@@ -57,6 +58,15 @@ def identity(order):
 
 def build_workbench(*, q="", kind="", due_scope="", page=1, page_size=20, **_):
     tasks = []
+    if settings.FLOW_CARDS_PREPARATION_ENABLED:
+        from flowcards.models import OrderCardPreparation
+        for suggestion in OrderCardPreparation.objects.filter(state__in=("PENDING", "PREPARING"), order__status="OPEN").select_related("order"):
+            order = suggestion.order
+            tasks.append({"id": f"card-preparation:{suggestion.pk}", "kind": "CARD_PREPARATION", "title": "工序卡待准备",
+                "document_no": f"{order.order_no} / {order.item_no or '未登记项次'}", "specification": order.specification,
+                "material": order.material, "quantity": None, "unit": "", "due_date": order.due_date,
+                "order_id": order.pk, "owner": None, "reason": "仅准备建议；尚未发卡，不代表待生产数量或已开工。",
+                "source": "订单明确本厂生产＋服务器备卡建议", "url": f"/flow-cards?order_id={order.pk}"})
     orders = list(QualityOrder.objects.filter(status="OPEN").only(
         "id", "order_no", "item_no", "specification", "material", "product_name",
         "order_quantity", "due_date", "status",

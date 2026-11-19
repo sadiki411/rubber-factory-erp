@@ -442,13 +442,20 @@ class BusinessOrderSerializer(AuditedModelSerializer):
 
     def create(self, validated_data):
         validated_data.pop("status_change_reason", None)
-        return super().create(validated_data)
+        with transaction.atomic():
+            order = super().create(validated_data)
+            from flowcards.preparation import sync_order_suggestion
+            sync_order_suggestion(order, _request_user(self))
+        return order
 
     def update(self, instance, validated_data):
         reason = str(validated_data.pop("status_change_reason", "") or "").strip()
         previous_status = instance.status
         with transaction.atomic():
             updated = super().update(instance, validated_data)
+            if "production_required" in validated_data:
+                from flowcards.preparation import sync_order_suggestion
+                sync_order_suggestion(updated, _request_user(self))
             if updated.status != previous_status:
                 record_order_status_change(
                     updated,

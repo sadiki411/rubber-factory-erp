@@ -91,6 +91,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # New writes are opt-in during the isolated pilot. Existing identities stay readable.
 FLOW_CARDS_WRITE_ENABLED = os.getenv("FLOW_CARDS_WRITE_ENABLED", "0") == "1"
+FLOW_CARDS_PREPARATION_ENABLED = os.getenv("FLOW_CARDS_PREPARATION_ENABLED", "0") == "1"
 FLOW_CARDS_PRIVATE_ROOT = Path(os.getenv("FLOW_CARDS_PRIVATE_ROOT", str(Path(SQLITE_PATH).parent / "flowcards-private")))
 
 SESSION_COOKIE_HTTPONLY = True

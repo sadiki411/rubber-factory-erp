@@ -19,6 +19,7 @@ from rest_framework.exceptions import ValidationError, APIException
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
 
 from orders.models import ProductInspectionCriterion, ProductSpecification
 from production.models import ProductionRun
@@ -66,10 +67,11 @@ def page(view, request, qs, mapper):
 
 
 def card_data(card):
+    from .preparation import package_progress
     return {"id": str(card.pk), "card_no": card.card_no, "code": f"ERPFC:{card.pk}",
             "group_id": str(card.group_id), "sequence": card.sequence, "denominator": card.denominator,
             "planned_molds": card.planned_molds, "original_date": card.original_date,
-            "status": card.status, "reprint_count": card.reprint_count}
+            "status": card.status, "reprint_count": card.reprint_count, "process_todos": package_progress(card)}
 
 
 def group_data(group):
@@ -77,7 +79,9 @@ def group_data(group):
             "planned_molds": group.planned_molds, "molds_per_card": group.molds_per_card,
             "plan_basis": group.plan_basis, "whole_mold": group.whole_mold, "status": group.status,
             "snapshot": group.snapshot, "generated_at": group.generated_at,
-            "created_at": group.created_at, "request_key": group.request_key}
+            "created_at": group.created_at, "request_key": group.request_key,
+            "revision": group.revision, "range_start": group.range_start, "range_end": group.range_end,
+            "updated_at": group.updated_at, "updated_by": group.updated_by_id}
 
 
 def event_data(event):
@@ -108,6 +112,12 @@ def return_data(row):
 
 class ContextView(ErrorsMixin, APIView):
     def get(self, request):
+        from . import preparation as prep
+        if prep.enabled():
+            result = prep.context(request.query_params, request.user)
+            result["appearance"] = list(AppearanceIssue.objects.filter(is_active=True).values("id", "name"))
+            result["diagrams"] = list(PositionDiagram.objects.filter(product_id=result["product"]["id"], mold_id=result["mold_id"]).values("id", "mold_id", "version", "direction", "scope", "positions")) if result["mold_id"] else []
+            return Response(result)
         run = s.get_row(ProductionRun, request.query_params["run_id"], "run_id") if request.query_params.get("run_id") else None
         order = s.get_row(QualityOrder, request.query_params["order_id"], "order_id") if request.query_params.get("order_id") else None
         pid = request.query_params.get("product_id") or (run.product_specification_id if run else None) or (order.product_specification_id if order else None)
@@ -149,13 +159,49 @@ class ContextView(ErrorsMixin, APIView):
 
 
 class StandardView(ErrorsMixin, APIView):
+    def get(self, request):
+        qs = StandardRevision.objects.all().order_by("-version")
+        if request.query_params.get("product_id"):
+            qs = qs.filter(product_id=s.integer(request.query_params["product_id"], "product_id"))
+        return page(self, request, qs, s.standard_data)
+
     def post(self, request):
         return Response(s.standard_data(s.confirm_standard(request.data, request.user)), status=201)
+
+
+class StandardActivationView(ErrorsMixin, APIView):
+    def post(self, request, pk):
+        from .preparation import activate_standard
+        return Response(s.standard_data(activate_standard(s.get_row(StandardRevision, pk, "standard_id"), request.user)))
+
+
+class PreparationSourcesView(ErrorsMixin, APIView):
+    def get(self, request):
+        from . import preparation as prep
+        product, run, orders, _ = prep.resolve(request.query_params)
+        return page(self, request, prep.source_rows(product, orders), prep.criterion_data)
+
+
+class PreparationSourceFileView(ErrorsMixin, APIView):
+    def get(self, request, pk):
+        from orders.models import BusinessImportBatch
+        batch = get_object_or_404(BusinessImportBatch, pk=pk)
+        try:
+            response = FileResponse(batch.original_file.open("rb"), as_attachment=True, filename=Path(batch.original_name).name)
+        except (FileNotFoundError, ValueError, OSError):
+            return Response({"detail": "原件未保存或文件缺失，不能用识别文本冒充原件。"}, status=503)
+        response["Cache-Control"] = "private, no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        response["Content-Security-Policy"] = "sandbox"
+        return response
 
 
 class AppearanceView(ErrorsMixin, APIView):
     def post(self, request):
         s.write_enabled()
+        from . import preparation as prep
+        if prep.enabled():
+            prep.require_maintainer(request.user)
         name = s.required_text(request.data, "name", 40)
         active = request.data.get("is_active", True)
         if not isinstance(active, bool):
@@ -173,6 +219,12 @@ class AppearanceView(ErrorsMixin, APIView):
 
 class GroupViewSet(ErrorsMixin, viewsets.GenericViewSet):
     queryset = CardGroup.objects.all()
+
+    def get_permissions(self):
+        # Explicit exception for a computational, non-persistent POST only.
+        if self.action == "preview" and settings.FLOW_CARDS_PREPARATION_ENABLED:
+            return [IsAuthenticated()]
+        return super().get_permissions()
 
     def list(self, request):
         qs = self.get_queryset().order_by("-created_at")
@@ -200,18 +252,24 @@ class GroupViewSet(ErrorsMixin, viewsets.GenericViewSet):
     @action(detail=False, methods=["post"])
     def preview(self, request):
         # Preview computes a plan but creates NO identity or quantity records.
-        plan = s.group_plan(request.data)
+        from . import preparation as prep
+        plan = prep.build_plan(request.data, request.data.get("group_id")) if prep.enabled() else s.group_plan(request.data)
         return Response({"count": plan["count"], "planned_molds": plan["planned"],
             "tail_molds": (plan["planned"] - (plan["count"] - 1) * plan["per_card"]) if plan["count"] else None,
             "snapshot": plan["snapshot"]})
 
     @action(detail=True, methods=["post"])
     def generate(self, request, pk=None):
-        return Response(group_data(s.generate_group(self.get_object(), request.user)))
+        group = self.get_object()
+        if settings.FLOW_CARDS_PREPARATION_ENABLED and group.status == "DRAFT":
+            from .preparation import PreparationConflict
+            if request.data.get("expected_revision") != group.revision:
+                raise PreparationConflict("准备资料版本已变化，请重新读取核对后再发卡。")
+        return Response(group_data(s.generate_group(group, request.user, expected_revision=request.data.get("expected_revision"))))
 
     @action(detail=True, methods=["get"])
     def cards(self, request, pk=None):
-        return page(self, request, self.get_object().cards.order_by("sequence"), card_data)
+        return page(self, request, self.get_object().cards.select_related("group").prefetch_related("events").order_by("sequence"), card_data)
 
 
 class CardViewSet(ErrorsMixin, viewsets.GenericViewSet):
@@ -437,21 +495,24 @@ class PrintViewSet(ErrorsMixin, viewsets.GenericViewSet):
 
 class TemplateView(ErrorsMixin, APIView):
     def get(self, request):
-        current = TemplatePublication.objects.filter(renderer=s.RENDERER).first()
-        return Response({"renderer": s.RENDERER, "write_enabled": settings.FLOW_CARDS_WRITE_ENABLED,
+        current = TemplatePublication.objects.filter(renderer=s.current_renderer()).first()
+        return Response({"renderer": s.current_renderer(), "write_enabled": settings.FLOW_CARDS_WRITE_ENABLED,
             "version": current.version if current else "草稿",
-            "template": s.TEMPLATE, "published": bool(current),
+            "template": s.current_template(), "published": bool(current),
             "history": list(TemplatePublication.objects.order_by("-version").values("renderer", "version", "confirmation", "created_at"))})
 
     def post(self, request):
         s.write_enabled()
+        from . import preparation as prep
+        if prep.enabled():
+            prep.require_maintainer(request.user)
         confirmation = s.required_text(request.data, "confirmation")
-        if request.data.get("renderer") != s.RENDERER or request.data.get("print_confirmed") is not True:
+        if request.data.get("renderer") != s.current_renderer() or request.data.get("print_confirmed") is not True:
             raise ValidationError({"confirmation": "请核对当前渲染版本并明确确认已按此版打印审核；预览和下载不会发布。"})
         with transaction.atomic():
-            existing = TemplatePublication.objects.filter(renderer=s.RENDERER).first()
+            existing = TemplatePublication.objects.filter(renderer=s.current_renderer()).first()
             if not existing:
-                existing = TemplatePublication.objects.create(renderer=s.RENDERER,
+                existing = TemplatePublication.objects.create(renderer=s.current_renderer(),
                     version=(TemplatePublication.objects.aggregate(v=Max("version"))["v"] or 0) + 1,
                     confirmation=confirmation, created_by=request.user)
                 s.audit(existing, "USER_TEMPLATE_RELEASE", request.user, {"confirmation": confirmation})
@@ -469,7 +530,7 @@ class TemplatePreviewView(ErrorsMixin, APIView):
         whole = request.query_params.get("whole_mold", "REQUIRED")
         if whole not in ("REQUIRED", "NOT_REQUIRED"):
             raise ValidationError({"whole_mold": "预览请选择需整模/不需整模。"})
-        template = {**s.TEMPLATE,
+        template = {**s.current_template(),
             "width_mm": s.integer(request.query_params.get("width_mm", 190), "width_mm", minimum=180, maximum=220),
             "height_mm": s.integer(request.query_params.get("height_mm", 130), "height_mm", minimum=125, maximum=165)}
         snapshot = {"template": template, "product": {"id": product.pk if product else None,
@@ -478,6 +539,9 @@ class TemplatePreviewView(ErrorsMixin, APIView):
             "orders": [{"id": None, "order_no": "PREVIEW-NOT-ISSUED", "item_no": "-", "customer": "预览"}],
             "whole_mold": whole, "standard": s.standard_data(standard) if standard else None,
             "appearance": standard.snapshot["appearance"] if standard else list(AppearanceIssue.objects.filter(is_active=True).values("id", "name")[:4])}
+        if settings.FLOW_CARDS_PREPARATION_ENABLED and standard:
+            snapshot["route"] = standard.snapshot.get("route", {})
+            snapshot["process_parameters"] = standard.snapshot.get("process_parameters", {})
         card = SimpleNamespace(pk=uuid.UUID(int=0), card_no="FC-PREVIEW-NOT-ISSUED", group=SimpleNamespace(snapshot=snapshot),
             original_date=timezone.localdate(), sequence=1, denominator=1, planned_molds=100)
         result = HttpResponse(render_cards([(card, 0)]), content_type="application/pdf")
