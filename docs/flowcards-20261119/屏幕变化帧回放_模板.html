@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>隔离验收屏幕变化帧回放</title>
+<style>body{margin:0;background:#e9edf2;font:16px system-ui;color:#18293c}header{position:sticky;top:0;background:white;padding:12px 18px;border-bottom:1px solid #bdc7d0}p{margin:6px 0}.warn{color:#9a3b00}button,input{font:inherit}input{width:min(700px,65vw)}main{text-align:center}img{max-width:100%;height:auto;background:white}small{display:block}</style>
+<header><strong>合成数据隔离验收 · 屏幕变化帧回放</strong>
+<p class="warn">这不是连续录像。仅保存页面变化帧；早期同名帧有覆盖，不能据此证明每个操作和等待过程。完整连续录像仍待补验。</p>
+<p><button id="play">播放</button> <button id="prev">上一帧</button> <button id="next">下一帧</button> <input id="seek" type="range" min="0" value="0"> <span id="info"></span></p>
+<small>每0.25秒播放一帧，非真实速度。请完整解压审阅包后打开本页；原始时间显示为北京时间。</small></header>
+<main><img id="frame" alt="隔离页面变化帧"></main>
+<script>
+const frames=__FRAMES__;let n=0,timer=null;
+const frame=document.querySelector('#frame'),seek=document.querySelector('#seek'),info=document.querySelector('#info'),play=document.querySelector('#play');
+seek.max=frames.length-1;
+function show(){const f=frames[n];frame.src=f.name;seek.value=n;info.textContent=`${n+1}/${frames.length} · ${new Date(f.timestamp*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}`;}
+function stop(){clearInterval(timer);timer=null;play.textContent='播放';}
+play.onclick=()=>{if(timer)stop();else{play.textContent='暂停';timer=setInterval(()=>{if(n>=frames.length-1){stop();return;}n++;show();},250);}};
+seek.oninput=()=>{stop();n=Number(seek.value);show();};
+document.querySelector('#prev').onclick=()=>{stop();n=Math.max(0,n-1);show();};document.querySelector('#next').onclick=()=>{stop();n=Math.min(frames.length-1,n+1);show();};show();
+</script></html>
