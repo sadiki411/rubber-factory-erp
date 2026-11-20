@@ -115,6 +115,23 @@ class ImportExtractionTests(SimpleTestCase):
         row["lower"]="4"
         with self.assertRaises(ValidationError):validate_limits(row)
 
+    def test_text_operations_and_fixed_conditions_are_not_tolerance_ranges(self):
+        book=Workbook();sheet=book.active
+        for row in [["客户料号","SYNTH-TEXT"],["工序","项目","原要求","单位"],
+            ["毛边","洒油","少量","—"], ["成型","脱模剂","不使用","—"],
+            ["成型","排气","2次；上停0.3秒","—"], ["成型","上模设定温度","180","℃"],
+            ["成型","一次硫化时间","120 s","s"], ["后工序","二烤","无需二烤","—"]]:sheet.append(row)
+        stream=io.BytesIO();book.save(stream);book.close()
+        candidate=preview_workbook(stream.getvalue())["candidates"][0]
+        for key in ("oil","release_agent","venting"):
+            self.assertNotIn("lower",candidate["process_parameters"][key])
+            self.assertNotIn("upper",candidate["process_parameters"][key])
+        self.assertEqual(candidate["process_parameters"]["oil"]["raw_text"],"少量")
+        self.assertEqual(candidate["process_parameters"]["upper_set_temperature"]["value"],"180")
+        self.assertEqual(candidate["process_parameters"]["primary_curing_time"]["value"],"120")
+        self.assertEqual(candidate["bake"],{"state":"NOT_APPLICABLE"})
+        self.assertFalse(candidate["route"]["bake"])
+
 
 @override_settings(FLOW_CARDS_WRITE_ENABLED=True,FLOW_CARDS_PREPARATION_ENABLED=True)
 class ProductStandardIntegrationTests(QualityTestMixin,TestCase):
@@ -169,3 +186,34 @@ class ProductStandardIntegrationTests(QualityTestMixin,TestCase):
         self.assertEqual(len(standard.snapshot['criteria']),2)
         from .measurements import applicable_criteria
         self.assertEqual(len(applicable_criteria(standard.snapshot['criteria'])),1)
+
+    def test_fixed_bake_and_text_process_can_save_without_any_tolerance_input(self):
+        body=self.body();body.update(bake={"state":"APPLICABLE","temperature_value":"145","minutes_value":"90"},
+            process_parameters={"oil":{"state":"CONFIRMED","raw_text":"少量"},"venting":{"state":"CONFIRMED","raw_text":"2次"},"upper_set_temperature":{"state":"CONFIRMED","value":"180","unit":"℃"}})
+        standard=s.confirm_standard(body,self.user)
+        self.assertEqual(standard.snapshot["bake"]["temperature_value"],"145")
+        self.assertEqual(standard.snapshot["bake"]["temperature_lower"],"145")
+        self.assertEqual(standard.snapshot["process_parameters"]["oil"]["raw_text"],"少量")
+        self.assertNotIn("lower",standard.snapshot["process_parameters"]["oil"])
+        self.assertEqual(standard.snapshot["process_parameters"]["upper_set_temperature"]["value"],"180")
+
+    def test_no_bake_or_unspecified_bake_does_not_require_temperature_or_duration(self):
+        for state in ("UNKNOWN","NOT_APPLICABLE"):
+            body=self.body();body["bake"]={"state":state}
+            standard=s.confirm_standard(body,self.user)
+            self.assertEqual(standard.snapshot["bake"],{"state":state})
+
+    def test_bake_fixed_value_conflicts_and_invalid_numbers_are_rejected_atomically(self):
+        for change in ({"temperature_value":"NaN"},{"temperature_value":"-1"},{"temperature_lower":"140"},{"minutes_value":""}):
+            body=self.body();body["bake"]={"state":"APPLICABLE","temperature_value":"145","minutes_value":"90",**change}
+            with self.assertRaises(ValidationError):s.confirm_standard(body,self.user)
+        self.assertEqual(StandardRevision.objects.count(),0)
+
+    def test_new_fixed_bake_version_does_not_rewrite_existing_range(self):
+        body=self.body();body["bake"]={"state":"APPLICABLE","temperature_lower":"140","temperature_upper":"150","minutes_lower":"80","minutes_upper":"100"}
+        first=s.confirm_standard(body,self.user);frozen=first.snapshot.copy()
+        body=self.body();body["bake"]={"state":"APPLICABLE","temperature_value":"145","minutes_value":"90"}
+        second=s.confirm_standard(body,self.user);first.refresh_from_db()
+        self.assertEqual(first.snapshot,frozen)
+        self.assertNotIn("temperature_value",first.snapshot["bake"])
+        self.assertEqual(second.snapshot["bake"]["temperature_value"],"145")

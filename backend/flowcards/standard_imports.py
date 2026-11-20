@@ -43,6 +43,8 @@ def limits(raw):
 
 IDENTITY = {"客户": "customer_key", "客户名称": "customer_key", "客户料号": "customer_product_no", "客户产品编号": "customer_product_no", "客户产品号": "customer_product_no", "规格": "specification", "材料": "material", "材质": "material", "模具": "mold_no", "模具编号": "mold_no", "模具号": "mold_no", "版次": "version", "文件版号": "version", "版本": "version", "订单号": "order_no", "项次": "item_no", "适用范围": "scope", "依据产品版本": "base_version"}
 PARAMS = {"上模设定温度": "upper_set_temperature", "下模设定温度": "lower_set_temperature", "上模实测目标": "upper_contact_temperature", "下模实测目标": "lower_contact_temperature", "实际温度上模": "upper_contact_temperature", "实际温度下模": "lower_contact_temperature", "一次硫化时间": "primary_curing_time", "一次加硫时间": "primary_curing_time", "压力": "pressure", "脱模剂": "release_agent", "离型剂": "release_agent", "洒油": "oil", "毛边洒油": "oil", "排气": "venting", "机型": "machine_type", "吨位": "machine_type"}
+PARAMS.update({"排气参数": "venting", "排料": "arrangement", "排列": "arrangement", "排料方式": "arrangement", "生产注意事项": "experience", "生产工艺要求": "experience"})
+NUMERIC_PARAMS = {"upper_set_temperature", "lower_set_temperature", "upper_contact_temperature", "lower_contact_temperature", "primary_curing_time", "pressure"}
 LABELS = set(IDENTITY) | set(PARAMS) | {"硬度", "线径", "内径", "二烤", "线径测量", "内径测量", "备注"}
 IDENTITY["依据的产品版本"] = "base_version"
 LABELS.add("依据的产品版本")
@@ -102,11 +104,19 @@ def preview_workbook(content):
                 if name in PARAMS:
                     parsed = limits(raw)
                     found_unit = unit if unit not in ("", "—", "见原要求") else next((u for u in ("min", "秒", "s", "°C", "℃", "kg/cm²", "MPa", "T") if u in raw), "")
-                    item["process_parameters"][PARAMS[name]] = {"state": "RAW_UNCONFIRMED", "lower": parsed["lower"], "upper": parsed["upper"], "unit": found_unit, "raw_text": raw, "source": f"{sheet.title} 第{row_no}行；{method}"}
+                    parameter = {"state": "RAW_UNCONFIRMED", "raw_text": raw, "source": f"{sheet.title} 第{row_no}行；{method}"}
+                    if PARAMS[name] in NUMERIC_PARAMS:
+                        parameter.update(lower=parsed["lower"], upper=parsed["upper"], unit=found_unit)
+                        fixed = re.fullmatch(rf"\s*({NUMBER})\s*(?:{re.escape(found_unit)})?\s*", raw)
+                        if parsed["limit_mode"] == "PENDING" and fixed:
+                            parameter["value"] = fixed[1]
+                    item["process_parameters"][PARAMS[name]] = parameter
                 elif "二烤" in name:
                     match = re.search(rf"({NUMBER})\s*(?:°C|℃)\s*[×xX*]\s*({NUMBER})\s*min", raw)
-                    if match:
-                        item["bake"] = {"state": "APPLICABLE", "temperature_lower": match[1], "temperature_upper": match[1], "minutes_lower": match[2], "minutes_upper": match[2]}
+                    if re.fullmatch(r"(?:无需二烤|不需要二烤|不二烤|免二烤|不需要|不要求|不烤|无)", raw.strip()):
+                        item["bake"] = {"state": "NOT_APPLICABLE"}
+                    elif match:
+                        item["bake"] = {"state": "APPLICABLE", "temperature_value": match[1], "minutes_value": match[2], "temperature_lower": match[1], "temperature_upper": match[1], "minutes_lower": match[2], "minutes_upper": match[2]}
                     else:
                         item["warnings"].append(f"第{row_no}行二烤条件不完整，仍为待确认，不以0补齐。")
                     item["process_parameters"]["bake_reference"] = {"state": "RAW_UNCONFIRMED", "raw_text": raw, "source": f"{sheet.title} 第{row_no}行"}

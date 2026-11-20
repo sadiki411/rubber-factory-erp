@@ -164,17 +164,27 @@ def confirm_standard(data, user):
     source = required_text(data, "source")
     hardness = hardness_configuration(data)
     dimensions = integer(data.get("dimension_count"), "dimension_count", minimum=0, maximum=30, nullable=True)
-    bake = data.get("bake", {"state": "UNKNOWN"})
+    bake = deepcopy(data.get("bake", {"state": "UNKNOWN"}))
     if not isinstance(bake, dict) or bake.get("state") not in ("UNKNOWN", "APPLICABLE", "NOT_APPLICABLE"):
         raise ValidationError({"bake": "二烤要求须区分适用、不适用和待确认。"})
     if bake["state"] == "APPLICABLE":
         for prefix in ("temperature", "minutes"):
             try:
+                # A specified temperature/time is not a tolerance interval.
+                # Keep the fixed value explicit; equal legacy bounds only support
+                # existing frozen-card readers. Never rewrite earlier snapshots.
+                if bake.get(f"{prefix}_value") not in (None, ""):
+                    fixed = Decimal(str(bake[f"{prefix}_value"]))
+                    if not fixed.is_finite() or fixed < 0:
+                        raise InvalidOperation
+                    if any(bake.get(f"{prefix}_{side}") not in (None, "") and Decimal(str(bake[f"{prefix}_{side}"])) != fixed for side in ("lower", "upper")):
+                        raise InvalidOperation
+                    bake[f"{prefix}_lower"] = bake[f"{prefix}_upper"] = str(fixed)
                 lower, upper = Decimal(str(bake[f"{prefix}_lower"])), Decimal(str(bake[f"{prefix}_upper"]))
                 if not lower.is_finite() or not upper.is_finite() or lower < 0 or lower > upper:
                     raise InvalidOperation
             except (KeyError, InvalidOperation, ValueError):
-                raise ValidationError({"bake": "适用二烤时请确认温度℃、时间min的上下限；不自动换算含糊单位。"})
+                raise ValidationError({"bake": "需要二烤时请填写温度℃、时间min的指定值；原表明确给范围时才填范围。数值须有限且非负，不同时填写冲突的指定值和范围。"})
     whole = data.get("whole_mold", "UNKNOWN")
     if whole not in ("REQUIRED", "NOT_REQUIRED", "UNKNOWN"):
         raise ValidationError({"whole_mold": "请选择需整模、不需或待确认。"})
