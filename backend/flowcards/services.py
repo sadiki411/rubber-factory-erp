@@ -307,6 +307,23 @@ def confirm_standard(data, user):
     return result
 
 
+def card_mold_plan(planned, per_card, custom=None):
+    """Explicit per-package plan; never infer actual production from it."""
+    if custom is not None:
+        if not isinstance(custom, list) or not 1 <= len(custom) <= 500:
+            raise ValidationError({"card_molds": "请填写1至500张卡的预计模数。"})
+        values = [integer(v, "card_molds", maximum=100000) for v in custom]
+        if planned is None or sum(values) != planned:
+            raise ValidationError({"card_molds": "逐卡模数合计必须等于本次预计生产模数。"})
+        return values
+    if not planned:
+        return []
+    count = math.ceil(planned / per_card)
+    if count > 500:
+        raise ValidationError({"planned_molds": "一次最多500张，请明确分批范围。"})
+    return [min(per_card, planned - i * per_card) for i in range(count)]
+
+
 def group_plan(data):
     product = get_row(ProductSpecification, data.get("product_id"), "product_id")
     run = get_row(ProductionRun, data["run_id"], "run_id") if data.get("run_id") else None
@@ -340,9 +357,8 @@ def group_plan(data):
         raise ValidationError({"standard_id": "含其他订单专用要求，请核对适用范围后另建确认版本。"})
     planned = integer(data.get("planned_molds"), "planned_molds", nullable=True)
     per_card = integer(data.get("molds_per_card", 100), "molds_per_card", maximum=100000)
-    count = math.ceil(planned / per_card) if planned else 0
-    if count > 500:
-        raise ValidationError({"planned_molds": "一次最多500张，请明确分批范围。"})
+    card_molds = card_mold_plan(planned, per_card, data.get("card_molds"))
+    count = len(card_molds)
     whole = data.get("whole_mold", "UNKNOWN")
     if whole not in ("REQUIRED", "NOT_REQUIRED", "UNKNOWN"):
         raise ValidationError({"whole_mold": "整模选择无效。"})
@@ -362,7 +378,7 @@ def group_plan(data):
         appearance = [selected[pk] for pk in issue_ids if pk in selected]
     if len(appearance) != 4:
         raise ValidationError({"appearance": "请先维护四项适用外观问题。"})
-    snapshot = {"appearance": appearance, "product": {"id": product.pk, "name": product.product_name, "specification": product.specification,
+    snapshot = {"card_molds": card_molds, "appearance": appearance, "product": {"id": product.pk, "name": product.product_name, "specification": product.specification,
                             "material": product.material, "customer_product_no": product.customer_product_no},
         "orders": [{"id": o.pk, "order_no": o.order_no, "item_no": o.item_no, "customer": order_customer_key(o)} for o in orders],
         "run_id": run.pk if run else None, "mold_id": mold_id,
@@ -465,20 +481,21 @@ def generate_group(group, user, expected_revision=None):
     snapshot["digest"] = digest(snapshot)
     now = timezone.now()
     day = timezone.localtime(now).date()
-    count = math.ceil(group.planned_molds / group.molds_per_card)
+    distribution = card_mold_plan(group.planned_molds, group.molds_per_card, group.snapshot.get("card_molds"))
+    count = len(distribution)
     cards = []
     for index in range(count):
         identity = uuid.uuid4()
         cards.append(InternalCard(id=identity, group=group, card_no=f"FC-{day:%Y%m%d}-{identity.hex[:16].upper()}",
             sequence=index + 1, denominator=count, original_date=day,
-            planned_molds=min(group.molds_per_card, group.planned_molds - index * group.molds_per_card)))
+            planned_molds=distribution[index]))
     InternalCard.objects.bulk_create(cards)
     group.status, group.generated_at, group.generated_by = "GENERATED", now, user
     group.snapshot = snapshot
     group.save(update_fields=["status", "generated_at", "generated_by", "snapshot"])
     if prep.enabled():
         from .models import OrderCardPreparation
-        remaining = prep.free_ranges(group.run.planned_mold_count, prep.ranges_for(group.run))
+        remaining = prep.free_ranges(group.run.planned_mold_count, prep.ranges_for(group.run)) if group.run_id else []
         OrderCardPreparation.objects.filter(order__in=group.orders.all()).update(state="PENDING" if remaining else "GENERATED", updated_at=now)
     audit(group, "GENERATE", user, {"count": count, "molds": group.planned_molds})
     return group
@@ -498,7 +515,14 @@ def create_print(data, user):
     templates = {(c.group.snapshot["template"]["renderer"], c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c in cards}
     if len(templates) > 1:
         raise ValidationError({"card_ids": "不同模板渲染版本或纸张尺寸请分别打印，旧卡不套新模板。"})
-    if PrintItem.objects.filter(card__in=cards, active=True).exists():
+    active_items = PrintItem.objects.filter(card__in=cards, active=True)
+    if data.get("resume_active") is True and active_items.exists():
+        job_ids = list(active_items.values_list("job_id", flat=True).distinct())
+        if len(job_ids) == 1:
+            job = PrintJob.objects.get(pk=job_ids[0])
+            if set(job.items.values_list("card_id", flat=True)) == {c.pk for c in cards} and not job.items.filter(active=False).exists():
+                return job
+    if active_items.exists():
         raise ValidationError({"card_ids": "有未核对打印结果的任务，请继续原任务，不能重复补打。"})
     job = PrintJob.objects.create(request_key=key, request_digest=digest(data), template=deepcopy(cards[0].group.snapshot["template"]), created_by=user)
     PrintItem.objects.bulk_create([PrintItem(job=job, card=c, proposed_reprint=c.reprint_count + (1 if c.printed_at else 0)) for c in cards])

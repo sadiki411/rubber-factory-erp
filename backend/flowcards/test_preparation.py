@@ -69,6 +69,73 @@ class PreparationTests(QualityTestMixin, TestCase):
         self.assertEqual(before, (ProductionRun.objects.count(), ProductionDailyLog.objects.count(), QualityShipmentBatch.objects.count()))
         self.assertEqual(p.context({"order_id": self.order.pk}, self.user)["preferred_group"]["id"], str(group.pk))
 
+    def test_order_explicit_360_without_run_and_default_100_100_100_60(self):
+        self.standard()
+        before = (ProductionRun.objects.count(), ProductionDailyLog.objects.count(), QualityShipmentBatch.objects.count())
+        body = self.body(order_plan=True, planned_molds=360)
+        group = p.save_draft(body, self.user)
+        self.assertIsNone(group.run_id)
+        self.assertEqual(group.snapshot["card_molds"], [100, 100, 100, 60])
+        self.assertEqual(group.snapshot["plan_source"], "ORDER_EXPLICIT")
+        self.assertIsNone(group.snapshot["effective_cavities"])
+        self.assertEqual(p.save_draft(body, self.user).pk, group.pk)
+        s.generate_group(group, self.user)
+        s.generate_group(group, self.user)
+        self.assertEqual(list(group.cards.order_by("sequence").values_list("planned_molds", flat=True)), [100, 100, 100, 60])
+        self.assertEqual(before, (ProductionRun.objects.count(), ProductionDailyLog.objects.count(), QualityShipmentBatch.objects.count()))
+        ctx = p.context({"order_id": self.order.pk, "order_plan": "1"}, self.user)
+        self.assertEqual(ctx["preferred_group"]["id"], str(group.pk))
+        with self.assertRaises(p.PreparationConflict):
+            p.save_draft(self.body(order_plan=True, planned_molds=360), self.user)
+        # Later production sees the original order cards, not another auto-issued set.
+        run = self.create_run()
+        self.assertEqual(p.context({"run_id": run.pk}, self.user)["preferred_group"]["id"], str(group.pk))
+        with self.assertRaises(p.PreparationConflict):
+            p.save_draft(self.body(run), self.user)
+
+    def test_order_plan_does_not_guess_existing_run_and_tail_edit_survives_reopen(self):
+        self.standard()
+        self.create_run()
+        self.assertIsNone(p.context({"order_id": self.order.pk, "order_plan": "1"}, self.user)["run_id"])
+        group = p.save_draft(self.body(order_plan=True, planned_molds=360), self.user)
+        changed = p.save_draft(self.body(order_plan=True, group_id=str(group.pk), expected_revision=1,
+            planned_molds=360, card_molds=[100, 100, 90, 70]), self.user)
+        self.assertEqual(changed.pk, group.pk)
+        self.assertEqual(changed.snapshot["card_molds"], [100, 100, 90, 70])
+        s.generate_group(changed, self.user)
+        self.assertEqual(list(changed.cards.order_by("sequence").values_list("planned_molds", flat=True)), [100, 100, 90, 70])
+        with self.assertRaisesMessage(s.ValidationError, "旧卡"):
+            p.save_draft(self.body(order_plan=True, group_id=str(group.pk), expected_revision=2, planned_molds=360), self.user)
+
+    def test_card_distribution_rejects_bad_values_totals_and_excess_cards(self):
+        self.standard()
+        for custom in ([100,100,100,59], [100,100,160,0], [100,100,161,-1], [100,100,99.5,60.5],
+                       [True,359], [], "100/100/100/60", [1]*501):
+            with self.subTest(custom=custom):
+                with self.assertRaises(s.ValidationError):
+                    p.save_draft(self.body(order_plan=True, planned_molds=360, card_molds=custom), self.user)
+        self.assertFalse(CardGroup.objects.exists())
+
+    def test_order_print_resumes_same_pending_job_without_new_numbers(self):
+        self.standard()
+        group = s.generate_group(p.save_draft(self.body(order_plan=True, planned_molds=360), self.user), self.user)
+        ids = list(map(str, group.cards.order_by("sequence").values_list("pk", flat=True)))
+        first = s.create_print({"request_key": uuid.uuid4().hex, "card_ids": ids, "resume_active": True}, self.user)
+        retry = s.create_print({"request_key": uuid.uuid4().hex, "card_ids": ids, "resume_active": True}, self.user)
+        self.assertEqual(first.pk, retry.pk)
+        self.assertEqual(InternalCard.objects.count(), 4)
+        self.assertTrue(all(c.printed_at is None for c in group.cards.all()))
+        with self.assertRaises(s.ValidationError):
+            s.create_print({"request_key": uuid.uuid4().hex, "card_ids": ids[:2], "resume_active": True}, self.user)
+
+    def test_order_preview_returns_custom_tail_without_writing(self):
+        self.standard()
+        response = self.client.post("/api/flow-cards/groups/preview/", self.body(order_plan=True, planned_molds=360, card_molds=[100,100,90,70]), format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["tail_molds"], 70)
+        self.assertEqual(response.json()["count"], 4)
+        self.assertFalse(CardGroup.objects.exists())
+
     def test_B_completed_runs_never_suggest_old_plan_or_create_new_segment(self):
         run = self.create_run(status="COMPLETED")
         data = p.context({"order_id": self.order.pk}, self.user)

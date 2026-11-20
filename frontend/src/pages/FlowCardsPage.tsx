@@ -95,7 +95,7 @@ export function FlowCardsPage() {
   const [groupListPage, setGroupListPage] = useState(1)
   const [groupSearch, setGroupSearch] = useState('')
   const initialized = useRef('')
-  const scope = useMemo(() => new URLSearchParams([...params].filter(([key]) => ['order_id', 'run_id', 'product_id'].includes(key))), [params])
+  const scope = useMemo(() => new URLSearchParams([...params].filter(([key]) => ['order_id', 'run_id', 'product_id', 'order_plan'].includes(key))), [params])
   const context = useQuery({ queryKey: ['flow-context', scope.toString()], queryFn: () => flowApi.context(scope), enabled: Boolean(scope.size) })
   const data = context.data
   const disabled = readOnly || !data?.write_enabled
@@ -137,7 +137,7 @@ export function FlowCardsPage() {
   }
   if (data?.preparation_enabled) return <div className="page-container flow-cards-page">
     <PageTitle title="订单备卡与工序流转卡" description="订单、生产任务共用同一准备；只补缺项，不重录标准。" extra={<Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回来源页面</Button>} />
-    <FlowPreparationWorkspace data={data as PreparationContext} refresh={() => { void context.refetch() }} lookup={<CardLookup />} settings={<FlowTemplatePanel />} printResults={job && <PrintResults job={job} changed={setJob} disabled={disabled} />} print={async (ids) => { const body={card_ids:ids};const slot=`print:${ids.join(',')}`;const result=await flowApi.print({...body,request_key:flowRequestKey(slot,body)});finishFlowRequest(slot);setJob(result);return result }} />
+    <FlowPreparationWorkspace data={data as PreparationContext} refresh={() => { void context.refetch() }} lookup={<CardLookup />} settings={<FlowTemplatePanel />} printResults={job && <PrintResults job={job} changed={setJob} disabled={disabled} />} print={async (ids) => { const body={card_ids:ids,resume_active:true};const slot=`print:${ids.join(',')}`;const result=await flowApi.print({...body,request_key:flowRequestKey(slot,body)});setJob(result);const prepared=result.file_prepared?result:await flowApi.preparePrint(result.id);setJob(prepared);finishFlowRequest(slot);return prepared }} />
   </div>
   return <div className="page-container flow-cards-page">
     <PageTitle title="工序流转卡" description="一包产品的记录与身份；不另记产量、库存和交付。" extra={<Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回来源页面</Button>} />

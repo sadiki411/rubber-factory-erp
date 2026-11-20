@@ -269,7 +269,8 @@ class GroupViewSet(ErrorsMixin, viewsets.GenericViewSet):
         from . import preparation as prep
         plan = prep.build_plan(request.data, request.data.get("group_id")) if prep.enabled() else s.group_plan(request.data)
         return Response({"count": plan["count"], "planned_molds": plan["planned"],
-            "tail_molds": (plan["planned"] - (plan["count"] - 1) * plan["per_card"]) if plan["count"] else None,
+            "tail_molds": plan["snapshot"]["card_molds"][-1] if plan["count"] else None,
+            "card_molds": plan["snapshot"]["card_molds"],
             "snapshot": plan["snapshot"]})
 
     @action(detail=True, methods=["post"])

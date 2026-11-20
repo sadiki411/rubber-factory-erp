@@ -1,5 +1,7 @@
 .flow-cards-page { display: grid; gap: 16px; min-width: 0; }
 .flow-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+.flow-card-allocation { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.flow-card-allocation > div { min-width: 0; }
 .flow-cards-page .ant-input-number, .flow-cards-page .ant-select { width: 100%; }
 .flow-cards-page pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
 .flow-cards-page .ant-typography, .flow-cards-page .ant-descriptions-item-content { overflow-wrap: anywhere; }

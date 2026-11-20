@@ -104,7 +104,7 @@ def resolve(params):
     candidates = list(run_rows(order).select_related("station", "mold")) if order else ([run] if run else [])
     if run and order and order.pk not in run_order_ids(run):
         raise ValidationError({"run_id": "订单不属于指定生产段。"})
-    if order and not run:
+    if order and not run and params.get("order_plan") not in (True, "1", "true"):
         active = [r for r in candidates if is_open_run(r) and r.product_specification_id == order.product_specification_id]
         if len(active) == 1:
             run = active[0]
@@ -201,7 +201,7 @@ def groups_for(run, orders, product):
     qs = CardGroup.objects.filter(product=product)
     if run:
         # An order-only draft is intentionally discoverable after a task is added.
-        qs = qs.filter(Q(run=run) | Q(run__isnull=True, status="DRAFT", orders__in=orders))
+        qs = qs.filter(Q(run=run) | Q(run__isnull=True, orders__in=orders))
     elif orders:
         qs = qs.filter(orders__in=orders)
     return qs.distinct().order_by("-created_at")
@@ -242,11 +242,11 @@ def context(params, user):
     groups = list(groups_for(run, orders, product))
     drafts = [g for g in groups if g.status == "DRAFT"]
     preferred = drafts[0] if len(drafts) == 1 else next((g for g in groups if g.status == "GENERATED" and g.run_id == (run.pk if run else None)), None)
+    if preferred is None:
+        preferred = next((g for g in groups if g.status == "GENERATED" and g.run_id is None), None)
     occupied = ranges_for(run)
     available = free_ranges(run.planned_mold_count, occupied) if run and is_open_run(run) else []
     missing = []
-    if not run or not is_open_run(run):
-        missing.append("本次明确安排的生产段/计划；欠交数量不代替生产计划")
     if not chosen:
         missing.append("唯一适用的生效标准（可先保存待准备）")
     if any(not c["resolved_by_standard"] for c in conflicts):
@@ -259,7 +259,7 @@ def context(params, user):
     return {"preparation_enabled": True, "write_enabled": settings.FLOW_CARDS_WRITE_ENABLED,
             "can_maintain_standard": can_maintain(user),
             "product": {"id": product.pk, "name": product.product_name, "specification": product.specification, "material": product.material, "customer_product_no": product.customer_product_no},
-            "run_id": run.pk if run else None, "mold_id": run.mold_id if run else None,
+            "order_plan": not bool(run), "run_id": run.pk if run else None, "mold_id": run.mold_id if run else None,
             "order_ids": [o.pk for o in orders], "orders": [{"id": o.pk, "order_no": o.order_no, "item_no": o.item_no, "customer": order_customer_key(o)} for o in orders],
             "runs": [{"id": r.pk, "segment_no": r.segment_no, "status": r.status, "status_display": r.get_status_display(), "station_id": r.station_id, "mold_id": r.mold_id, "planned_molds": r.planned_mold_count, "historical": not is_open_run(r), "ranges": ranges_for(r)} for r in runs],
             "suggested_molds": available[0][1] - available[0][0] + 1 if available else None,
@@ -271,7 +271,7 @@ def context(params, user):
             "criteria_count": len(source_rows(product, orders)), "conflicts": conflicts,
             "raw_process_reference": process,
             "suggestion_id": OrderCardPreparation.objects.filter(order__in=orders).values_list("pk", flat=True).first(),
-            "limitations": ["只读打开不创建生产/草稿/卡号。", "制卡不增加产量、库存或交付。", "已完成任务仅作追溯；续做须在生产页明确新增生产段。"]}
+            "limitations": ["只读打开不创建生产/草稿/卡号。", "制卡不增加产量、库存或交付。", "订单可直接填写预计模数制卡；不虚构生产任务和有效孔数。"]}
 
 
 def lock_product(product):
@@ -325,8 +325,7 @@ def build_plan(data, exclude=None):
         planned = planned or (available[0][1] - start + 1 if available else None)
         basis = f"生产任务#{run.pk} · 第{run.segment_no}段 · 已确认计划{run.planned_mold_count}模"
     elif planned is not None:
-        # Order-only drafts cannot create a physical range without a real task.
-        raise ValidationError({"planned_molds": "请先关联真实生产段；订单数量或欠交不作为制卡模数。"})
+        basis = "订单直接安排预计生产模数（人工明确填写，非欠交推算，不计实际产量）"
     elif arranged is not None or output is not None:
         if arranged is not None:
             arranged = s.integer(arranged, "arranged_quantity")
@@ -336,6 +335,9 @@ def build_plan(data, exclude=None):
             planned = (arranged + output - 1) // output
             basis = f"本次明确安排{arranged}件 ÷ 已确认有效产出{output}件/模（向上取整）；{data['output_basis']}"
     planned = s.integer(planned, "planned_molds", nullable=True)
+    prior = groups_for(run, orders, product).exclude(pk=exclude).filter(status="GENERATED", run__isnull=True)
+    if prior.exists() and data.get("append_confirmed") is not True:
+        raise PreparationConflict("订单已有未绑定生产任务的原卡；请先查看/补打。确有另一批计划时明确确认另建，不能重复发卡。")
     end = start + planned - 1 if planned else None
     if end and run and (end > run.planned_mold_count or any(start <= r["range_end"] and end >= r["range_start"] for r in occupied)):
         raise PreparationConflict("本段模数超出确认计划或与已有卡组重叠；请刷新查看尚未覆盖范围。")
@@ -350,6 +352,8 @@ def build_plan(data, exclude=None):
     plan["range_start"], plan["range_end"] = (start, end) if planned and run else (None, None)
     plan["context_key"] = f"run:{run.pk}" if run else f"order:{orders[0].pk}"
     plan["snapshot"].update({"preparation_v2": True, "range_start": plan["range_start"], "range_end": plan["range_end"],
+                            "plan_source": "RUN" if run else "ORDER_EXPLICIT" if data.get("planned_molds") is not None else "ARRANGEMENT_SUGGESTION",
+                            "append_confirmed": data.get("append_confirmed") is True,
                             "arrangement": arrangement, "preparation_notes": str(data.get("preparation_notes", ""))[:2000],
                             "decisions": deepcopy(data.get("decisions", {})),
                             "route": deepcopy(standard.snapshot.get("route", {})) if standard else {},
@@ -420,12 +424,16 @@ def save_draft(data, user):
 
 
 def validate_generation(group):
-    if not group.run or not is_open_run(group.run):
+    if group.run and not is_open_run(group.run):
         raise ValidationError({"run_id": "请先明确新的生产段，不能沿用已结束的旧计划。"})
+    if not group.run and group.snapshot.get("plan_source") != "ORDER_EXPLICIT":
+        raise ValidationError({"planned_molds": "请直接填写本次预计生产模数，不用欠交或建议件数替代确认。"})
     if not group.standard or group.standard.status != "ACTIVE":
         raise ValidationError({"standard_id": "没有适用生效标准，只能保存待准备。"})
     orders = list(group.orders.select_related("source_batch", "last_source_batch"))
-    if {o.pk for o in orders} != set(run_order_ids(group.run)):
+    if groups_for(group.run, orders, group.product).exclude(pk=group.pk).filter(status="GENERATED", run__isnull=True).exists() and not group.snapshot.get("append_confirmed"):
+        raise PreparationConflict("订单已有原卡，请核对是否重复；另批计划需明确确认。")
+    if group.run and {o.pk for o in orders} != set(run_order_ids(group.run)):
         raise ValidationError({"order_ids": "生产段关联订单已变化，请更新原准备后再发卡。"})
     if len({order_customer_key(o) for o in orders}) != 1 or any(o.product_specification_id != group.product_id for o in orders):
         raise ValidationError({"order_ids": "生产段客户或产品身份不一致，不能共用实物卡。"})
@@ -434,7 +442,7 @@ def validate_generation(group):
         raise ValidationError({"standard_id": "标准适用条件已变化，请重新核对。"})
     if group.snapshot.get("standard", {}).get("snapshot") != group.standard.snapshot:
         raise ValidationError({"standard_id": "标准内容已变化，请重开草稿重新核对，不用新内容冒充原快照。"})
-    if not group.range_start or group.range_end > group.run.planned_mold_count:
+    if group.run and (not group.range_start or group.range_end > group.run.planned_mold_count):
         raise ValidationError({"range_end": "未确认本段模数范围或计划已变化。"})
     unresolved = []
     for problem in conflict_items(group.product, orders, group.standard):

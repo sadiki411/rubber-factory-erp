@@ -252,7 +252,7 @@ export function OrdersPage() {
     { title: '最后更新', key: 'last_updated', width: 155, render: (_, row) => formattedTimestamp(row.last_data_updated_at || row.updated_at) },
     { title: '胶料状态', dataIndex: 'material_status', width: 100, render: (value) => <MaterialStatusTag status={value} /> },
     { title: '订单状态', dataIndex: 'status', width: 100, render: (value: OrderStatus, row) => <Tag color={ORDER_STATUS_META[value]?.color}>{row.status_display || ORDER_STATUS_META[value]?.text || value}</Tag> },
-    { title: '操作', key: 'action', fixed: mobile ? undefined : 'right', width: 90, render: (_, row) => <Button disabled={readOnly} type="link" className="table-primary-link" icon={<EditOutlined />} onClick={() => openForm(row)}>编辑</Button> },
+    { title: '操作', key: 'action', fixed: mobile ? undefined : 'right', width: 110, render: (_, row) => <Space orientation="vertical" size={0}><Button type="link" href={`/flow-cards?order_id=${row.id}&order_plan=1&return_to=${encodeURIComponent(location.pathname+location.search)}`}>制卡 / 打印</Button><Button disabled={readOnly} type="link" className="table-primary-link" icon={<EditOutlined />} onClick={() => openForm(row)}>编辑</Button></Space> },
   ]
   const visibleColumns = allColumns ? columns : columns.filter((column) => ['order', 'specification', 'weighted_shipped_quantity', 'action', 'final_yield'].includes(String(column.key)) || ['material', 'due_date', 'order_quantity', 'status'].includes(String('dataIndex' in column ? column.dataIndex : '')))
   const orderScrollWidth = visibleColumns.reduce((total, column) => total + Number(column.width || 0), 0)
@@ -370,6 +370,7 @@ export function OrdersPage() {
                     </div>
                     {record.status === 'COMPLETED' && <div onClick={event => event.stopPropagation()} style={{ marginBottom: 12 }}><OrderYieldCell value={record.final_yield} onOpen={() => setYieldOrder(record)} /></div>}
                     <Button block href={`/order-overview/${record.id}`} onClick={(event) => event.stopPropagation()} style={{ marginBottom: 8 }}>完整查看 / 工序流转卡</Button>
+                    <Button block type="primary" href={`/flow-cards?order_id=${record.id}&order_plan=1&return_to=${encodeURIComponent(location.pathname+location.search)}`} onClick={(event)=>event.stopPropagation()} style={{marginBottom:8}}>制卡 / 打印（填写预计模数）</Button>
                     <Button disabled={readOnly} block icon={<EditOutlined />} onClick={(event) => { event.stopPropagation(); openForm(record) }}>编辑订单</Button>
                   </Card>
                 </List.Item>

@@ -9,6 +9,8 @@ export type FlowSnapshot = {
   whole_mold_basis?: string; cavities_basis?: string; material_evidence?: string; requirements_review?: string; appearance?: Array<{ id: number; name: string }>
   template: { version: string | number }
   process_overrides?: Record<string, Record<string, unknown>>
+  card_molds?: number[]
+  plan_source?: string
   standard?: { id: number; version: number; source: string; snapshot: { criteria: Criterion[]; hardness?: Record<string, { object: string; scale?: string }>; bake?: Record<string, unknown>; dimension_count?: number | null } } | null
 }
 export type Criterion = { id: number; name: string; stage: string; lower: string; upper: string; unit: string; method: string; numeric?: boolean; limit_mode?: 'UPPER' | 'LOWER' | 'RANGE' | 'PENDING' | 'NONE'; upper_inclusive?: boolean; lower_inclusive?: boolean; requirement_state?: string; follow_package?: boolean; critical?: boolean; provenance?: Record<string, unknown> }
@@ -28,11 +30,16 @@ export type PreparationGroup = FlowGroup & { revision: number; range_start: numb
 export type PreparationStandard = FlowContext['standards'][number] & { status: string; customer_key: string; source_kind: string; applicable_order_id: number | null; scope: string; snapshot: FlowContext['standards'][number]['snapshot'] & { import_source?: Record<string, unknown>; applicability?: Record<string, unknown>; route?: Record<string, boolean>; packaging?: {molds_per_card?: number; patrol_every_molds?: number}; process_parameters?: Record<string, {state: string; lower?: string; upper?: string; value?: string; unit?: string; source?: string; raw_text?: string}> } }
 export type PreparationSource = FlowContext['criteria'][number] & { order_id: number | null; customer: string; source_file: string; source_url?: string | null; source_batch_id: string | null; source_sheet: string; source_row: number | null; version: string; stage?: string; raw_data?: Record<string, unknown> }
 export type PreparationContext = Omit<FlowContext, 'standards' | 'criteria' | 'existing_groups'> & {
+  order_plan?: boolean
   preparation_enabled: true; can_maintain_standard: boolean; standards: PreparationStandard[]; criteria: PreparationSource[]; existing_groups: PreparationGroup[]
   runs: Array<{id: number; segment_no: number; status: string; status_display: string; station_id: number | null; mold_id: number | null; planned_molds: number; historical: boolean}>
   available_ranges: number[][]; occupied_ranges: Array<{id: string; range_start: number; range_end: number; status: string}>; preferred_group: PreparationGroup | null
   missing: string[]; auto_standard_id: number | null; conflicts: Array<{key: string; name: string; stage: string; sources: PreparationSource[]; selected_ids: number[]; missing_order_ids: number[]}>; suggestion_id: number | null
   criteria_count?: number
+}
+export function splitPlannedMolds(total: number | null | undefined, per: number) {
+  if (!Number.isInteger(total) || !total || total < 1 || !Number.isInteger(per) || per < 1 || Math.ceil(total / per) > 500) return []
+  return Array.from({length: Math.ceil(total / per)}, (_, i) => Math.min(per, total - i * per))
 }
 export type FlowCard = { id: string; card_no: string; group_id: string; code: string; sequence: number; denominator: number; planned_molds: number; original_date: string; reprint_count: number; status: string; process_todos?: Array<{stage:string;label:string;role:string;state:string;notice:string;employees:string[];fact_ids:string[]}> }
 export type FlowCardDetail = FlowCard & { snapshot: FlowSnapshot; write_enabled?: boolean; whole_mold_status: string; unresolved_anomalies: number; source_status: string; paper_status: string; measurement_alerts?: Array<FlowEvent & { review_target?: FlowEvent }>; measurement_status?: Array<{ criterion: Criterion; limit_text: string; message: string; event: FlowEvent | null }>; bake_measurement_status?: Array<{id: string; business_at: string | null; scope: string; trays?: number[]; notice: string; checks: Array<{sample_ref: string; material_ref: string; trays: number[]; message: string; actual: string | null; unit: string | null}>}>; baked_product_measurements?: FlowEvent[]; baked_measurement_notice?: string }
