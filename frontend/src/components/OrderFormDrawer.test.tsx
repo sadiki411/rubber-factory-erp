@@ -74,8 +74,8 @@ describe('OrderFormDrawer', () => {
     const user = userEvent.setup()
     renderDrawer()
 
-    await user.click(screen.getByRole('combobox', { name: /关联产品规格/ }))
-    await user.click(await screen.findByText('TEST-PRODUCT-001 · 测试产品A · TEST-SPEC-A'))
+    await user.click(screen.getByRole('combobox', { name: /选用已有产品规格资料/ }))
+    await user.click(await screen.findByText(/TEST-PRODUCT-001 · 测试产品A · TEST-SPEC-A/))
 
     expect(screen.getByLabelText(/成型工时/)).toHaveValue('')
     expect(screen.getByText(/模具型号：TEST-MOLD-MODEL-01/)).toBeInTheDocument()

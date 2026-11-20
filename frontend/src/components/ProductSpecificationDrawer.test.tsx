@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ProductSpecificationDrawer } from './ProductSpecificationDrawer'
+vi.mock('./ProductStandardsPanel', () => ({ ProductStandardsPanel: () => <div>硬度与尺寸标准入口</div> }))
 
 Object.defineProperty(window, 'matchMedia', {
   writable: true,

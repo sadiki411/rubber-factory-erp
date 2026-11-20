@@ -149,7 +149,7 @@ def require_compatible_orders(product, orders, standard):
     exceptions = StandardRevision.objects.filter(product=product, status="ACTIVE", applicable_order__in=orders)
     def signature(row):
         snapshot = row.snapshot
-        criteria = sorted(tuple(str(c.get(key, "")) for key in ("name", "stage", "lower", "upper", "unit", "limit_mode", "upper_inclusive", "lower_inclusive", "method", "requirement_state")) for c in snapshot.get("criteria", []))
+        criteria = sorted(tuple(str(c.get(key, "")) for key in ("name", "stage", "lower", "upper", "unit", "limit_mode", "upper_inclusive", "lower_inclusive", "method", "requirement_state", "follow_package")) for c in snapshot.get("criteria", []))
         return (row.whole_mold, criteria, snapshot.get("route", {}), snapshot.get("process_parameters", {}), snapshot.get("hardness", {}), snapshot.get("bake", {}))
     if any(standard is None or signature(row) != signature(standard) for row in exceptions):
         raise ValidationError({"order_ids": "共单包含独立生效的订单特规且技术要求不一致；请先核对技术兼容性并明确拆段，不自动合用通用标准。"})
@@ -446,6 +446,8 @@ def validate_generation(group):
         if not isinstance(decision, int) or decision not in allowed or problem["missing_order_ids"]:
             unresolved.append(problem["name"])
     for c in group.standard.snapshot.get("criteria", []):
+        if c.get("follow_package") is False:
+            continue
         if c.get("requirement_state") in ("RAW_UNCONFIRMED", "NOT_PROVIDED") and c.get("critical", True):
             unresolved.append(c["name"])
         role = "baked_hardness" if c.get("stage") == "BAKED_HARDNESS" else "molding"
@@ -491,6 +493,12 @@ def activate_standard(standard, user):
 def standard_metadata(data):
     """Versioned product fields, not a second product/criterion master."""
     result = {}
+    if data.get("import_source") is not None:
+        import json
+        origin = data["import_source"]
+        if not isinstance(origin, dict) or len(json.dumps(origin, ensure_ascii=False)) > 128000:
+            raise ValidationError({"import_source": "来源原文过大，请拆分为单产品标准表，或手工核对录入。"})
+        result["import_source"] = deepcopy(origin)
     for key in ("applicability", "process_parameters", "route", "packaging"):
         value = data.get(key, {})
         if not isinstance(value, dict):

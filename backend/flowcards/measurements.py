@@ -3,7 +3,7 @@
 
 def applicable_criteria(criteria, stage=None):
     from .limits import limit_mode
-    return [c for c in criteria if (stage is None or c["stage"] == stage) and limit_mode(c) != "NONE"]
+    return [c for c in criteria if (stage is None or c["stage"] == stage) and limit_mode(c) != "NONE" and c.get("follow_package", True)]
 
 
 def same_scope(left, right):

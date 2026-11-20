@@ -1,7 +1,7 @@
 import { apiFetch } from './api/client'
 
 export type FlowSnapshot = {
-  product: { id: number; name?: string; specification: string; material: string }
+  product: { id: number; name?: string; specification: string; material: string; customer_product_no?: string }
   orders: Array<{ id: number; order_no: string; item_no: string; customer?: string }>
   run_id?: number | null; mold_id?: number | null
   effective_cavities?: number | null; confirmed_total_cavities?: number | null
@@ -11,20 +11,21 @@ export type FlowSnapshot = {
   process_overrides?: Record<string, Record<string, unknown>>
   standard?: { id: number; version: number; source: string; snapshot: { criteria: Criterion[]; hardness?: Record<string, { object: string; scale?: string }>; bake?: Record<string, unknown>; dimension_count?: number | null } } | null
 }
-export type Criterion = { id: number; name: string; stage: string; lower: string; upper: string; unit: string; method: string; numeric?: boolean; limit_mode?: 'UPPER' | 'RANGE' | 'PENDING' | 'NONE'; upper_inclusive?: boolean; lower_inclusive?: boolean }
-export const applicableFlowCriteria = (criteria: Criterion[] = [], stage?: string) => criteria.filter((c) => c.limit_mode !== 'NONE' && (!stage || c.stage === stage))
+export type Criterion = { id: number; name: string; stage: string; lower: string; upper: string; unit: string; method: string; numeric?: boolean; limit_mode?: 'UPPER' | 'LOWER' | 'RANGE' | 'PENDING' | 'NONE'; upper_inclusive?: boolean; lower_inclusive?: boolean; requirement_state?: string; follow_package?: boolean; critical?: boolean; provenance?: Record<string, unknown> }
+export const applicableFlowCriteria = (criteria: Criterion[] = [], stage?: string) => criteria.filter((c) => c.limit_mode !== 'NONE' && c.follow_package !== false && (!stage || c.stage === stage))
 export function flowLimitText(c: Partial<Criterion>) {
   const mode = c.limit_mode || (c.numeric ? 'RANGE' : 'PENDING')
   if (mode === 'NONE') return '不要求测'
   if (mode === 'PENDING') return '界限待确认'
   const unit = c.unit || '单位待确认'
   if (mode === 'UPPER') return `${c.upper_inclusive === false ? '<' : '≤'} ${c.upper} ${unit}`
+  if (mode === 'LOWER') return `${c.lower_inclusive === false ? '>' : '≥'} ${c.lower} ${unit}`
   return c.lower_inclusive === false || c.upper_inclusive === false ? `${c.lower_inclusive === false ? '(' : '['}${c.lower}, ${c.upper}${c.upper_inclusive === false ? ')' : ']'} ${unit}` : `${c.lower}～${c.upper} ${unit}`
 }
 export type TemplateStatus = { renderer: string; version: string | number; published: boolean; write_enabled: boolean; history: Array<{ renderer: string; version: number; confirmation: string; created_at: string }> }
 export type FlowGroup = { id: string; product_id: number; run_id: number | null; planned_molds: number | null; molds_per_card: number; whole_mold: string; plan_basis: string; status: string; snapshot: FlowSnapshot; request_key: string }
 export type PreparationGroup = FlowGroup & { revision: number; range_start: number | null; range_end: number | null; updated_at: string; updated_by: number | null }
-export type PreparationStandard = FlowContext['standards'][number] & { status: string; customer_key: string; source_kind: string; applicable_order_id: number | null; scope: string; snapshot: FlowContext['standards'][number]['snapshot'] & { route?: Record<string, boolean>; packaging?: {molds_per_card?: number; patrol_every_molds?: number}; process_parameters?: Record<string, {state: string; lower?: string; upper?: string; value?: string; unit?: string; source?: string; raw_text?: string}> } }
+export type PreparationStandard = FlowContext['standards'][number] & { status: string; customer_key: string; source_kind: string; applicable_order_id: number | null; scope: string; snapshot: FlowContext['standards'][number]['snapshot'] & { import_source?: Record<string, unknown>; applicability?: Record<string, unknown>; route?: Record<string, boolean>; packaging?: {molds_per_card?: number; patrol_every_molds?: number}; process_parameters?: Record<string, {state: string; lower?: string; upper?: string; value?: string; unit?: string; source?: string; raw_text?: string}> } }
 export type PreparationSource = FlowContext['criteria'][number] & { order_id: number | null; customer: string; source_file: string; source_url?: string | null; source_batch_id: string | null; source_sheet: string; source_row: number | null; version: string; stage?: string; raw_data?: Record<string, unknown> }
 export type PreparationContext = Omit<FlowContext, 'standards' | 'criteria' | 'existing_groups'> & {
   preparation_enabled: true; can_maintain_standard: boolean; standards: PreparationStandard[]; criteria: PreparationSource[]; existing_groups: PreparationGroup[]
@@ -54,6 +55,7 @@ export type InternalSource = { card_id: string; request_key: string; scope: 'SET
 export function isInternalCardCode(code: string) { return /^(ERPFC:|FC-)/i.test(code.trim()) }
 const post = <T,>(path: string, body: unknown) => apiFetch<T>(`/api/flow-cards/${path}`, { method: 'POST', body: JSON.stringify(body) })
 export const flowApi = {
+  importStandards: (file: File) => { const body = new FormData(); body.append('file', file); return apiFetch<StandardImportPreview>('/api/flow-cards/standards/import-preview/', { method: 'POST', body }) },
   context: (params: URLSearchParams) => apiFetch<FlowContext>(`/api/flow-cards/context/?${params}`),
   groups: (params: URLSearchParams, page = 1, q = '') => apiFetch<FlowPage<FlowGroup>>(`/api/flow-cards/groups/?${params}&page=${page}&q=${encodeURIComponent(q)}`),
   standard: (body: unknown) => post('standards/', body),
@@ -87,6 +89,9 @@ export const flowApi = {
   sources: (batchId: number | string, page = 1) => apiFetch<FlowPage<{ id: number; card_id: string; card_no: string; state: string; scope: string }>>(`/api/flow-cards/shipments/${batchId}/sources/?page=${page}`),
   reviewSource: (id: number, body: unknown) => post(`shipment-sources/${id}/review/`, body),
 }
+
+export type StandardImportCandidate = {sheet: string; source: string; customer_key?: string; customer_product_no: string; specification?: string; material?: string; mold_no?: string; version?: string; base_version?: string; order_no?: string; item_no?: string; scope: string; criteria: Array<Partial<Criterion> & {name: string; stage: string}>; warnings: string[]; hardness?: Record<string, Record<string, string>>; bake?: Record<string, unknown>; process_parameters?: Record<string, Record<string, unknown>>; route?: Record<string, boolean>; raw_rows?: string[][]; import_source?: Record<string, unknown>}
+export type StandardImportPreview = {candidates: StandardImportCandidate[]; notice: string; filename: string}
 
 /** Survives a reload/timeout; clear only after the server returns a known result. */
 export function flowRequestKey(slot: string, body: unknown) {

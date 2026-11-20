@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({ list: vi.fn() }))
 vi.mock('../api/client', () => ({ productSpecificationApi: api, toList: (value: unknown) => value }))
 vi.mock('../components/ProductSpecificationDrawer', () => ({ ProductSpecificationDrawer: ({ open }: { open: boolean }) => open ? <div>产品编辑表单</div> : null }))
 vi.mock('../components/BusinessImportDrawer', () => ({ BusinessImportDrawer: () => null }))
+vi.mock('../components/ProductStandardsPanel', () => ({ ProductStandardsPanel: () => <div>硬度与尺寸标准入口</div> }))
 Object.defineProperty(window, 'matchMedia', { writable: true, value: vi.fn().mockImplementation((media: string) => ({ matches: false, media, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn() })) })
 class ResizeObserverMock { observe() {} unobserve() {} disconnect() {} }
 globalThis.ResizeObserver = ResizeObserverMock

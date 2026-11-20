@@ -1,7 +1,7 @@
 """2026-11-19 P0 regression, synthetic only; no live data or inferred tolerances."""
 import copy
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from django.test import TestCase, TransactionTestCase, override_settings
@@ -182,7 +182,8 @@ class FlowPilotReviewTests(QualityTestMixin, TestCase):
         self.assertEqual(event.cards.count(), 2)
         second_body = self.bake_body([cards[0]])
         second_body["values"]["card_trays"][0].update(trays=[7], scope="第二次仅盘7")
-        second_body["business_at"] = "2026-11-20T10:00:00+08:00"
+        # Keep this second bake later even after the original calendar date passes.
+        second_body["business_at"] = (bake.business_at + timedelta(hours=1)).isoformat()
         s.record_event(second_body, self.user)
         detail = self.client.get(f"/api/flow-cards/cards/{cards[0].pk}/").json()
         self.assertFalse(any(m["criterion"]["stage"] == "BAKED_HARDNESS" for m in detail["measurement_status"]))

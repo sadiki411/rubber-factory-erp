@@ -2,7 +2,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 from .views import (ContextView, StandardView, GroupViewSet, CardViewSet, EventView,
                     PrintViewSet, TemplateView, AttachmentView, AttachmentContentView,
-                    DiagramView, ShipmentSourcesView, AppearanceView, ShipmentSourceReviewView, TemplatePreviewView, StandardActivationView, PreparationSourcesView, PreparationSourceFileView)
+                    DiagramView, ShipmentSourcesView, AppearanceView, ShipmentSourceReviewView, TemplatePreviewView, StandardActivationView, PreparationSourcesView, PreparationSourceFileView, StandardImportPreviewView)
 
 router = DefaultRouter()
 router.register("groups", GroupViewSet, basename="flow-group")
@@ -11,6 +11,7 @@ router.register("print-jobs", PrintViewSet, basename="flow-print")
 urlpatterns = [
     path("context/", ContextView.as_view()), path("standards/", StandardView.as_view()),
     path("standards/<int:pk>/activate/", StandardActivationView.as_view()),
+    path("standards/import-preview/", StandardImportPreviewView.as_view()),
     path("preparation-sources/", PreparationSourcesView.as_view()),
     path("source-files/<uuid:pk>/", PreparationSourceFileView.as_view()),
     path("appearance/", AppearanceView.as_view()),

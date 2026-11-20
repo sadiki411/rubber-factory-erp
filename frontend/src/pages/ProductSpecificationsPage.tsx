@@ -1,5 +1,5 @@
 import { EditOutlined, FileExcelOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Descriptions, Drawer, Empty, Grid, Image, Input, List, Select, Space, Table, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Descriptions, Drawer, Empty, Grid, Image, Input, List, Modal, Select, Space, Table, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
@@ -8,6 +8,7 @@ import { BusinessImportDrawer } from '../components/BusinessImportDrawer'
 import { PageTitle } from '../components/PageTitle'
 import { ProductSpecificationDrawer } from '../components/ProductSpecificationDrawer'
 import { MaterialLayoutSummary } from '../components/MaterialLayoutSummary'
+import { ProductStandardsPanel } from '../components/ProductStandardsPanel'
 import type { ProductSpecification } from '../types'
 import { useReadOnly } from '../access'
 
@@ -41,6 +42,8 @@ export function ProductSpecificationsPage() {
   const [editing, setEditing] = useState<ProductSpecification>()
   const [formOpen, setFormOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
+  const [standardImportOpen,setStandardImportOpen]=useState(false)
+  const [standardProductId,setStandardProductId]=useState<number>()
   const specificationsQuery = useQuery({
     queryKey: ['product-specifications', { query, active }],
     queryFn: async () => toList(await productSpecificationApi.list({
@@ -70,15 +73,15 @@ export function ProductSpecificationsPage() {
     { title: '孔数', key: 'cavities', width: 120, render: (_, row) => `${exactText(row.effective_cavities)} / ${exactText(row.total_cavities)}` },
     { title: '模具型号 / 尺寸', key: 'mold', width: 230, render: (_, row) => <span>{moldModelText(row)}<br /><Typography.Text type="secondary">{moldDetailsText(row)}</Typography.Text></span> },
     { title: '状态', dataIndex: 'is_active', width: 90, render: (value) => <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '停用'}</Tag> },
-    { title: '操作', key: 'action', fixed: 'right', width: 150, render: (_, row) => <Space wrap>{readOnly ? <Button type="link" onClick={() => setViewing(row)}>查看</Button> : <Button type="link" icon={<EditOutlined />} onClick={() => openForm(row)}>编辑</Button>}<Button type="link" href={`/flow-cards?product_id=${row.id}&return_to=${encodeURIComponent(location.pathname + location.search)}`}>制卡标准</Button></Space> },
+    { title: '操作', key: 'action', fixed: 'right', width: 170, render: (_, row) => <Space wrap>{readOnly ? <Button type="link" onClick={() => setViewing(row)}>查看</Button> : <Button type="link" icon={<EditOutlined />} onClick={() => openForm(row)}>编辑</Button>}<Button type="link" onClick={()=>setViewing(row)}>硬度 / 尺寸标准</Button></Space> },
   ]
 
   return (
     <div className="page-container product-specifications-page">
       <PageTitle
         title="产品规格资料"
-        description="集中维护产品名称、规格、上机工艺、二烤参数和模具资料；导入的原始文本不会被强制改写。"
-        extra={!readOnly && <Space wrap><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入产品规格</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增产品规格</Button></Space>}
+        description="产品、工艺、硬度和线径上下限统一在原产品资料下维护；订单选用已有产品，工序卡保存当时标准快照。"
+        extra={!readOnly && <Space wrap><Button icon={<FileExcelOutlined />} onClick={() => setImportOpen(true)}>导入产品规格</Button><Button icon={<FileExcelOutlined />} onClick={() => setStandardImportOpen(true)}>导入工艺 / 检验标准</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增产品规格</Button></Space>}
       />
       <Card className="filter-card">
         <div className="business-filter-row product-specification-filter-row">
@@ -124,6 +127,7 @@ export function ProductSpecificationsPage() {
       <Drawer className="product-specification-view-drawer" open={!!viewing} onClose={() => setViewing(undefined)} size={600} title={viewing ? `${productSpecificationTitle(viewing)} · 产品资料` : '产品资料'} extra={<Button disabled={readOnly} icon={<EditOutlined />} onClick={() => { openForm(viewing); setViewing(undefined) }}>编辑资料</Button>}>
         {viewing && <>
           {viewing.image && <Image src={viewing.image} alt="产品照片" width={160} />}
+          <ProductStandardsPanel productId={viewing.id} />
           <MaterialLayoutSummary record={viewing} />
           <Descriptions column={1} bordered size="small" items={[
             { key: 'identity', label: '客户产品编号 / 规格 / 材质', children: `${exactText(viewing.customer_product_no)} / ${exactText(viewing.specification)} / ${exactText(viewing.material)}` },
@@ -143,6 +147,12 @@ export function ProductSpecificationsPage() {
       </Drawer>
       <ProductSpecificationDrawer open={formOpen} specification={editing} onClose={() => setFormOpen(false)} />
       <BusinessImportDrawer open={importOpen} context="product-specifications" onClose={() => setImportOpen(false)} />
+      <Modal open={standardImportOpen} onCancel={()=>{setStandardImportOpen(false);setStandardProductId(undefined)}} title="导入标准到已有产品" footer={null} width={620}>
+        <Typography.Paragraph>先选已有产品，再识别客户标准表；不会另建产品档案。找不到时请先新增产品基本资料。</Typography.Paragraph>
+        <Input allowClear placeholder="查找要维护标准的产品" value={query} onChange={e=>setQuery(e.target.value)} />
+        <Select showSearch optionFilterProp="label" placeholder="选择已有产品（料号 / 规格 / 材质）" style={{width:'100%',marginBlock:12}} value={standardProductId} onChange={setStandardProductId} options={(specificationsQuery.data||[]).map(p=>({value:p.id,label:`${p.customer_product_no||p.product_name||'-'} / ${p.specification} / ${p.material}`}))} />
+        {standardProductId&&<ProductStandardsPanel key={standardProductId} productId={standardProductId} importFirst />}
+      </Modal>
     </div>
   )
 }

@@ -91,7 +91,7 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False):
         text(width-44, 15, f"{card.planned_molds}M | {card.sequence}/{card.denominator}批", 11)
         p = snap["product"]
         ss = (snap.get("standard") or {}).get("snapshot", {})
-        criteria = ss.get("criteria", [])
+        criteria = [e for e in ss.get("criteria", []) if e.get("follow_package", True)]
         pending = (not snap.get("standard") or ss.get("dimension_count") is None or
                    ss.get("bake", {}).get("state", "UNKNOWN") == "UNKNOWN" or
                    any(limit_mode(e) != "NONE" and (limit_mode(e) == "PENDING" or not e.get("unit") or not e.get("method")) for e in criteria) or
@@ -116,7 +116,7 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False):
         if applies("molding"):
             box(5,y,span,5,True); text(7,y+3.8,"生产实测",10,True); text(75,y+3.8,"时间"); line(85,y+4.2,28); signer(y+3.8,"测量人"); y+=5
         ss = (snap.get("standard") or {}).get("snapshot", {})
-        criteria = ss.get("criteria", [])
+        criteria = [e for e in ss.get("criteria", []) if e.get("follow_package", True)]
         def criterion(stage, n=0):
             rows=[e for e in criteria if e["stage"] == stage]
             return rows[n] if n < len(rows) else None

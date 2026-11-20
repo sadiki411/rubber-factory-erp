@@ -175,6 +175,20 @@ class StandardActivationView(ErrorsMixin, APIView):
         return Response(s.standard_data(activate_standard(s.get_row(StandardRevision, pk, "standard_id"), request.user)))
 
 
+class StandardImportPreviewView(ErrorsMixin, APIView):
+    """No persistence: the user selects the existing product before saving a revision."""
+    def post(self, request):
+        from . import preparation as prep
+        from .standard_imports import preview_workbook
+        prep.require_maintainer(request.user)
+        upload = request.FILES.get("file")
+        if not upload or not upload.name.lower().endswith(".xlsx") or upload.size > 8 * 1024 * 1024:
+            raise ValidationError({"file": "请上传8MB以内的xlsx标准表；图片仅作人工参考。"})
+        result = preview_workbook(upload.read())
+        result["filename"] = Path(upload.name).name
+        return Response(result)
+
+
 class PreparationSourcesView(ErrorsMixin, APIView):
     def get(self, request):
         from . import preparation as prep

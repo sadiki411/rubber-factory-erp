@@ -33,3 +33,15 @@
   .flow-datetime-popup .ant-picker-time-panel { height: auto; border-inline-start: 0; border-top: 1px solid #eee; }
   .flow-datetime-popup .ant-picker-time-panel-column { height: 100px; }
 }
+.product-standard-field-card { margin-block: 14px; }
+.product-standard-panel { margin-block: 16px; }
+.product-standard-editor .ant-modal-body { max-height: 76vh; overflow-y: auto; overflow-x: hidden; }
+.product-standard-editor .ant-select { max-width: 100%; }
+.product-standard-editor .ant-input-number { width: 100%; }
+.product-standard-editor .ant-card-head-title, .product-standard-panel .ant-card-head-title { white-space: normal; }
+@media (max-width: 600px) {
+  .product-standard-editor { max-width: calc(100vw - 16px); margin: 8px; top: 8px; padding-bottom: 0; }
+  .product-standard-editor .ant-modal-body { max-height: 72dvh; }
+  .product-standard-editor .flow-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .product-standard-editor .ant-tabs-nav { max-width: 100%; }
+}

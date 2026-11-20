@@ -1,12 +1,12 @@
-import { Alert, App, Button, Card, Checkbox, Descriptions, Form, Input, InputNumber, Modal, Pagination, Select, Space, Table, Typography } from 'antd'
+import { Alert, Button, Card, Checkbox, Descriptions, Form, Input, InputNumber, Select, Space, Table, Typography } from 'antd'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useReadOnly } from '../access'
-import { flowApi, flowLimitText, flowRequestKey, finishFlowRequest, type PreparationContext, type PreparationGroup, type PreparationStandard, type PreparationSource, type FlowGroup, type PrintJob } from '../flowcards'
+import { flowApi, flowLimitText, flowRequestKey, finishFlowRequest, type PreparationContext, type PreparationGroup, type PreparationSource, type FlowGroup, type PrintJob } from '../flowcards'
+import { ProductStandardEditor as StandardEditor } from './ProductStandardEditor'
 
 const STATE = { LEGACY: '旧记录·待复核适用性', DRAFT: '草稿', ACTIVE: '生效', SUPERSEDED: '已被替代' }
-const STAGES = [{value: 'UPPER_TEMP', label: '上模接触实测'}, {value: 'LOWER_TEMP', label: '下模接触实测'}, {value: 'MOLDING_HARDNESS', label: '成型硬度'}, {value: 'BAKED_HARDNESS', label: '烤后硬度'}, {value: 'DIMENSION', label: '关键尺寸'}]
 const PARAMETERS = [
   ['upper_set_temperature', '上模设定温度'], ['lower_set_temperature', '下模设定温度'],
   ['upper_contact_temperature', '上模接触温度目标'], ['lower_contact_temperature', '下模接触温度目标'],
@@ -15,106 +15,7 @@ const PARAMETERS = [
 ]
 const sourceText = (c: PreparationSource) => `${c.order_id ? `订单项#${c.order_id}` : '产品通用'} · ${c.source_file || '人工资料'} · ${c.source_sheet || '未登记表'} ${c.source_row == null ? '' : `第${c.source_row}行`} · ${c.version || '原版号未登记'}`
 const sourceLink = (c: PreparationSource) => c.source_url ? <a href={c.source_url} target="_blank" rel="noopener noreferrer">{sourceText(c)} · 查看原件</a> : sourceText(c)
-const parameterValues = (values: Record<string, Record<string, unknown>> = {}) => Object.fromEntries(Object.entries(values).filter(([,v])=>Object.values(v).some((item)=>item!==undefined&&item!==''&&item!==null)))
-const groupedSources = (sources:PreparationSource[]) => {
-  const groups=new Map<string,PreparationSource&{evidence:PreparationSource[]}>()
-  for(const row of sources){
-    const key=JSON.stringify([row.inspection_item,row.stage,row.method,row.lower_limit,row.upper_limit,row.unit,row.limit_mode,row.lower_inclusive,row.upper_inclusive])
-    const found=groups.get(key)
-    if(found) found.evidence.push(row)
-    else groups.set(key,{...row,evidence:[row]})
-  }
-  return [...groups.values()]
-}
 
-function StandardEditor({ data, open, close, changed }: { data: PreparationContext; open: boolean; close: () => void; changed: () => void }) {
-  const [form] = Form.useForm()
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const { message } = App.useApp()
-  const [saved, setSaved] = useState<PreparationStandard>()
-  const [sourcePage, setSourcePage] = useState(1)
-  const sourceParams = new URLSearchParams({product_id:String(data.product.id),...(data.run_id?{run_id:String(data.run_id)}:data.order_ids[0]?{order_id:String(data.order_ids[0])}:{})})
-  const sourceQuery = useQuery({queryKey:['preparation-sources',sourceParams.toString(),sourcePage],queryFn:()=>flowApi.preparationSources(sourceParams,sourcePage),enabled:(data.criteria_count||0)>50})
-  const sources = sourceQuery.data?.results || data.criteria
-  const write = data.can_maintain_standard && data.write_enabled
-  const reference = Form.useWatch('reference_id', form)
-  const fill = (standard?: PreparationStandard) => {
-    setSaved(undefined)
-    form.resetFields()
-    form.setFieldsValue({ customer_key: standard?.customer_key || data.orders[0]?.customer || '', source_kind: standard?.source_kind || 'FACTORY_EXPERIENCE', whole_mold: standard?.whole_mold || 'UNKNOWN',
-      source: standard?.source, scope: standard?.scope, applicable_order_id: standard?.applicable_order_id,
-      appearance_ids: (standard?.snapshot.appearance || data.appearance.slice(0, 4)).map((a) => a.id), route: standard?.snapshot.route || { confirmed: false, molding: true, patrol: true, deburr: true, inspection: true },
-      applicability: (standard?.snapshot as PreparationStandard['snapshot'] & {applicability?: unknown})?.applicability,
-      packaging: standard?.snapshot.packaging || { molds_per_card: 100 }, process_parameters: standard?.snapshot.process_parameters,
-      bake: standard?.snapshot.bake || { state: 'UNKNOWN' }, hardness: standard?.snapshot.hardness,
-      criteria: standard?.snapshot.criteria.map((c) => ({ ...c, criterion_id: c.id, mode: 'REFERENCE' })) || [] })
-  }
-  const initial = data.standards.find((s) => s.id === data.auto_standard_id)
-  const save = async () => {
-    setBusy(true); setError('')
-    try {
-      const values = await form.validateFields()
-      const criteria = (values.criteria || []).map((c: Record<string, unknown>) => {
-        if (c.mode === 'REFERENCE') return { criterion_id: c.criterion_id, stage: c.stage, method: c.method, numeric: c.limit_mode === 'RANGE' || c.limit_mode === 'UPPER', requirement_state: c.requirement_state }
-        return { ...c, override: Boolean(c.criterion_id), numeric: c.limit_mode === 'RANGE' || c.limit_mode === 'UPPER' }
-      })
-      const body = { ...values, process_parameters: parameterValues(values.process_parameters), criteria, product_id: data.product.id, mold_id: data.mold_id }
-      const slot = `standard-draft:${data.product.id}`
-      const result = await flowApi.saveStandard({ ...body, request_key: flowRequestKey(slot, body) })
-      setSaved(result); finishFlowRequest(slot); changed(); message.success('已另存产品标准草稿，尚未生效；旧卡不变')
-    } catch (e) { setError((e as Error).message) } finally { setBusy(false) }
-  }
-  return <Modal title="产品工艺与检验标准 · 原始资料不等于生效版" open={open} onCancel={close} width={1050} footer={<Space wrap><Button onClick={close}>关闭</Button><Button disabled={!write} loading={busy} onClick={() => void save()}>另存产品标准草稿</Button>{saved && <Button disabled={!write} loading={busy} onClick={() => {
-    setBusy(true); flowApi.activateStandard(saved.id).then(() => { changed(); close(); message.success('已复核生效，仅供以后适用任务采用') }).catch((e: Error) => setError(e.message)).finally(() => setBusy(false))
-  }}>复核并生效 v{saved.version}</Button>}</Space>}>
-    {!write && <Alert type="info" title="只读查看依据；操作员不能维护全厂标准，可回到工作页保存本次准备。" />}
-    <Select style={{width: '100%', marginBlock: 12}} placeholder="查看现有版本（不会落库）" options={data.standards.map((s) => ({value: s.id, label: `v${s.version} · ${STATE[s.status as keyof typeof STATE] || s.status} · ${s.source}`}))} onChange={(id) => fill(data.standards.find((s) => s.id === id))} />
-    {error && <Alert type="error" title="尚未完成" description={error} />}
-    <Form form={form} layout="vertical" disabled={!write} initialValues={{customer_key:initial?.customer_key||data.orders[0]?.customer||'',source_kind:initial?.source_kind||'FACTORY_EXPERIENCE',source:initial?.source,whole_mold:initial?.whole_mold||'UNKNOWN',appearance_ids:(initial?.snapshot.appearance||data.appearance.slice(0,4)).map((a)=>a.id),route:initial?.snapshot.route||{confirmed:false,molding:true,patrol:true,deburr:true,inspection:true},packaging:initial?.snapshot.packaging||{molds_per_card:100},bake:initial?.snapshot.bake||{state:'UNKNOWN'},hardness:initial?.snapshot.hardness,process_parameters:initial?.snapshot.process_parameters,criteria:initial?.snapshot.criteria.map((c)=>({...c,criterion_id:c.id,mode:'REFERENCE'}))||[]}}>
-      <div className="flow-form-grid">
-        <Form.Item name="source" label="来源、文件/版号及复核依据" rules={[{required: true}]}><Input /></Form.Item>
-        <Form.Item name="source_kind" label="资料性质"><Select options={[{value: 'CUSTOMER', label: '客户要求'}, {value: 'FACTORY_PROCESS', label: '本厂工艺'}, {value: 'FACTORY_EXPERIENCE', label: '本厂经验待核'}]} /></Form.Item>
-        <Form.Item name="customer_key" label="适用客户（空=确认通用）"><Input /></Form.Item>
-        <Form.Item name="applicable_order_id" label="仅此订单特规（不污染下一单）"><Select allowClear options={data.orders.map((o) => ({value: o.id, label: `${o.order_no}/${o.item_no || '-'}`}))} /></Form.Item>
-        <Form.Item name="scope" label="适用条件/版本/模具说明"><Input /></Form.Item>
-        <Form.Item name="whole_mold" label="整模工序"><Select options={[{value: 'UNKNOWN', label: '待确认'}, {value: 'REQUIRED', label: '需要整模'}, {value: 'NOT_REQUIRED', label: '确认不需整模'}]} /></Form.Item>
-        <Form.Item name={['applicability', 'customer_product_no']} label="适用客户料号"><Input /></Form.Item>
-        <Form.Item name={['applicability', 'drawing_no']} label="客户图号"><Input /></Form.Item>
-        <Form.Item name={['applicability', 'drawing_revision']} label="客户图纸版次"><Input /></Form.Item>
-        <Form.Item name={['applicability', 'station_id']} label="适用机台ID（可空）"><InputNumber min={1} precision={0} /></Form.Item>
-        <Form.Item name={['packaging', 'molds_per_card']} label="每包模数M"><InputNumber min={1} precision={0} /></Form.Item>
-        <Form.Item name={['packaging', 'patrol_every_molds']} label="巡检频率（模，独立于包装）"><InputNumber min={1} precision={0} /></Form.Item>
-      </div>
-      <Card size="small" title="本产品适用路线（不预填实测、签名和时间）"><Space wrap>{[['molding', '成型实测'], ['patrol', '巡检'], ['deburr', '毛边'], ['bake', '二烤'], ['baked_hardness', '烤后测硬度'], ['inspection', '品检员']].map(([key,label]) => <Form.Item key={key} name={['route',key]} valuePropName="checked"><Checkbox>{label}</Checkbox></Form.Item>)}</Space><Form.Item name={['route','confirmed']} valuePropName="checked"><Checkbox>已核对本产品路线</Checkbox></Form.Item></Card>
-      <details><summary>产品工艺参数（设定与接触温度分开、原单位不转换）</summary>{PARAMETERS.map(([key,label]) => <Card key={key} size="small" title={label}><div className="flow-form-grid"><Form.Item name={['process_parameters',key,'state']} label="状态"><Select allowClear options={[{value: 'NOT_PROVIDED',label: '未提供'}, {value: 'RAW_UNCONFIRMED', label: '原文待核'}, {value: 'NOT_APPLICABLE', label: '确认不适用'}, {value: 'CONFIRMED', label: '已确认'}]} /></Form.Item>{[['lower','下限'],['upper','上限'],['unit','单位'],['raw_text','原文'],['source','出处/类别/方法']].map(([field,name]) => <Form.Item key={field} name={['process_parameters',key,field]} label={name}><Input /></Form.Item>)}</div></Card>)}</details>
-      <details><summary>二烤建议与硬度方法（与实际执行记录分开）</summary><Form.Item name={['bake','state']} label="二烤建议状态"><Select options={[{value: 'UNKNOWN',label: '待确认'}, {value:'APPLICABLE',label:'需要'}, {value:'NOT_APPLICABLE',label:'不适用'}]} /></Form.Item><div className="flow-form-grid">{[['temperature_lower','温度下限℃'],['temperature_upper','温度上限℃'],['minutes_lower','时间下限min'],['minutes_upper','时间上限min']].map(([key,label]) => <Form.Item key={key} name={['bake',key]} label={label}><InputNumber min={0} /></Form.Item>)}</div>{[['MOLDING_HARDNESS','成型硬度'],['BAKED_HARDNESS','烤后硬度']].map(([stage,label]) => <Card key={stage} size="small" title={label}><Form.Item name={['hardness',stage,'object']} label="对象"><Select options={[{value:'UNKNOWN',label:'待核'}, {value:'PRODUCT',label:'成品'}, {value:'COUPON',label:'当批胶料自制胶片'}]} /></Form.Item><div className="flow-form-grid">{[['scale','量表'],['instrument','仪器'],['accepted_method','客户认可测法'],['points','测点'],['conditioning','冷却/调节'],['reading_time','读数时间']].map(([key,name]) => <Form.Item key={key} name={['hardness',stage,key]} label={name}><Input /></Form.Item>)}</div></Card>)}</details>
-      <Form.Item name="appearance_ids" label="产品四项外观问题" rules={[{required: true},{type:'array',len:4}]}><Select mode="multiple" options={data.appearance.map((a) => ({value:a.id,label:a.name}))} /></Form.Item>
-      <Typography.Title level={5}>候选原值与出处（没有生效版也可查看）</Typography.Title>
-      {sourceQuery.isError && <Alert type="error" title="候选来源读取失败，不视为没有要求" />}
-      <Table size="small" rowKey="id" dataSource={groupedSources(sources)} pagination={false} scroll={{x:700}} columns={[{title:'原项目',dataIndex:'inspection_item'}, {title:'范围/单位',render:(_,c) => `${c.lower_limit || '无下限'}～${c.upper_limit || '无上限'} ${c.unit || '单位待核'}`}, {title:'全部出处（仅合并完全相同项）',render:(_,c) => c.evidence.map((row)=><div key={row.id}>{sourceLink(row)}</div>)}]} />
-      {(data.criteria_count||0)>50 && <Pagination current={sourcePage} total={data.criteria_count} pageSize={50} showSizeChanger={false} onChange={(page)=>{setSourcePage(page);form.setFieldValue('reference_id',undefined)}} />}
-      <Form.Item name="reference_id" label="从原表候选带入草稿（不会确认或发卡）"><Select allowClear options={sources.map((c) => ({value:c.id,label:`${c.inspection_item} · ${c.lower_limit}～${c.upper_limit} ${c.unit} · ${sourceText(c)}`}))} /></Form.Item>
-      <Button disabled={!write || !reference} onClick={() => { const c = sources.find((c) => c.id === reference); if (c) form.setFieldValue('criteria', [...(form.getFieldValue('criteria') || []), {criterion_id:c.id,name:c.inspection_item,lower:c.lower_limit,upper:c.upper_limit,unit:c.unit,stage:c.stage,method:c.method,mode:'REFERENCE',limit_mode:c.limit_mode || 'PENDING',requirement_state:'RAW_UNCONFIRMED',upper_inclusive:c.upper_inclusive!==false,lower_inclusive:c.lower_inclusive!==false}]) }}>带入引用（待核）</Button>
-      <Form.List name="criteria">{(fields, {add,remove}) => <>{fields.map((field) => <Card key={field.key} size="small" title={`项目${field.name+1}`} extra={<Button onClick={() => remove(field.name)}>移除此项</Button>}>
-        <Form.Item name={[field.name,'criterion_id']} hidden><InputNumber /></Form.Item>
-        <Form.Item name={[field.name,'mode']} label="保存方式"><Select options={[{value:'REFERENCE',label:'引用原行（限值不可改）'}, {value:'OVERRIDE',label:'明确新版本/本单例外（另存，不覆盖原行）'}]} /></Form.Item>
-        <div className="flow-form-grid">
-          <Form.Item name={[field.name,'name']} label="中文项目/原代号"><Input /></Form.Item>
-          <Form.Item name={[field.name,'stage']} label="检测阶段" rules={[{required:true}]}><Select options={STAGES} /></Form.Item>
-          <Form.Item name={[field.name,'method']} label="测法"><Input /></Form.Item>
-          <Form.Item name={[field.name,'requirement_state']} label="要求状态"><Select options={[{value:'RAW_UNCONFIRMED',label:'有原文待核'}, {value:'NOT_PROVIDED',label:'未提供'}, {value:'NOT_APPLICABLE',label:'确认不适用'}, {value:'MEASURE_NO_LIMIT',label:'要测但无界限，不判合格'}, {value:'CONFIRMED',label:'已确认'}]} /></Form.Item>
-          <Form.Item noStyle shouldUpdate>{() => { const locked = form.getFieldValue(['criteria',field.name,'mode']) === 'REFERENCE' || !write; return <>
-            <Form.Item name={[field.name,'limit_mode']} label="界限模式"><Select disabled={locked} options={[{value:'UPPER',label:'只测上限'}, {value:'RANGE',label:'区间'}, {value:'PENDING',label:'无确认界限'}, {value:'NONE',label:'不适用'}]} /></Form.Item>
-            <Form.Item name={[field.name,'upper_inclusive']} valuePropName="checked"><Checkbox disabled={locked}>上限含等号≤（不勾为&lt;）</Checkbox></Form.Item>
-            <Form.Item name={[field.name,'lower_inclusive']} valuePropName="checked"><Checkbox disabled={locked}>下限含等号（不勾为&gt;）</Checkbox></Form.Item>
-            {([['lower','下限'],['upper','上限'],['unit','单位/量表']] as const).map(([key,label]) => <Form.Item key={key} name={[field.name,key]} label={label}><Input disabled={locked} /></Form.Item>)}
-          </> }}</Form.Item>
-        </div>
-      </Card>)}<Button disabled={!write} onClick={() => add({mode:'OVERRIDE',limit_mode:'PENDING',requirement_state:'RAW_UNCONFIRMED',upper_inclusive:true})}>新增待核项目</Button></>}</Form.List>
-    </Form>
-  </Modal>
-}
 
 export function FlowPreparationWorkspace({ data, refresh, lookup, settings, printResults, print }: { data: PreparationContext; refresh: () => void; lookup: ReactNode; settings: ReactNode; printResults: ReactNode; print: (ids: string[]) => Promise<PrintJob | void> }) {
   const [params] = useSearchParams()
@@ -211,7 +112,7 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
       {currentContext.conflicts.map((problem)=><Card key={problem.key} size="small" title={`${problem.name} · ${problem.stage||'原阶段待核'}`}><Table rowKey="id" size="small" dataSource={problem.sources} pagination={false} scroll={{x:600}} columns={[{title:'原值与单位',render:(_,c)=>`${c.lower_limit||'无下限'}～${c.upper_limit||'无上限'} ${c.unit||'单位待核'}`},{title:'出处',render:(_,c)=>sourceLink(c)}]} /><Form.Item name={['decisions',problem.key]} label="本次明确采用（未含订单特规须维护新版本，不能写说明绕过）"><Select allowClear options={(standard?.snapshot.criteria||[]).filter((c)=>problem.sources.some((v)=>v.id===c.id)).map((c)=>({value:c.id,label:`${c.name} · ${flowLimitText(c)} · 已选v${standard?.version}`}))} /></Form.Item></Card>)}
       </Form>
       <Typography.Title level={4}>{count?`${molds}模 → ${count}张 · 尾包${molds-(count-1)*per}模`:'范围待确认，不编造模数'}</Typography.Title>
-      {standard && <><Typography.Paragraph>本次要测：{standard.snapshot.criteria.map((c)=>`${c.name} ${flowLimitText(c)}`).join('；')||'该版没有已确认测项'}</Typography.Paragraph><Typography.Paragraph>适用工序：{Object.entries(standard.snapshot.route||{}).filter(([k,v])=>k!=='confirmed'&&v).map(([k])=>({molding:'成型实测',patrol:'巡检',deburr:'毛边',bake:'二烤',baked_hardness:'烤后硬度',inspection:'品检员'} as Record<string,string>)[k]||k).join(' → ')}；巡检每{standard.snapshot.packaging?.patrol_every_molds||'待确认'}模，与每包模数分开。</Typography.Paragraph></>}
+      {standard && <><Typography.Paragraph>本次要测：{standard.snapshot.criteria.filter(c=>c.follow_package!==false&&c.limit_mode!=='NONE').map((c)=>`${c.name} ${flowLimitText(c)}`).join('；')||'该版没有已确认测项'}</Typography.Paragraph><Typography.Paragraph>适用工序：{Object.entries(standard.snapshot.route||{}).filter(([k,v])=>k!=='confirmed'&&v).map(([k])=>({molding:'成型实测',patrol:'巡检',deburr:'毛边',bake:'二烤',baked_hardness:'烤后硬度',inspection:'品检员'} as Record<string,string>)[k]||k).join(' → ')}；巡检每{standard.snapshot.packaging?.patrol_every_molds||'待确认'}模，与每包模数分开。</Typography.Paragraph></>}
       {preview && <Alert type="info" title={`不落库预览：${preview.count}张，尾包${preview.tail_molds??'待确认'}模`} />}
       <Space wrap><Button loading={busy} onClick={()=>void perform(async()=>{setPreview(await flowApi.preview(await payload()))})}>预览（不保存，只读可用）</Button><Button disabled={disabled} loading={busy} onClick={()=>void save(false)}>保存本次准备</Button><Button type="primary" disabled={disabled||!data.run_id||!molds||!standard||standard.status!=='ACTIVE'} loading={busy} onClick={()=>void save(true)}>确认生成{count?` ${count} 张`:''}</Button></Space>
       {group && <Typography.Paragraph copyable>同一草稿ID：{group.id} · 版本{group.revision}；保存只更新本组。</Typography.Paragraph>}

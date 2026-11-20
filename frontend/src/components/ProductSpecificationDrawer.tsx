@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { masterApi, productSpecificationApi, toList } from '../api/client'
 import type { MoldModel, ProductSpecification } from '../types'
+import { ProductStandardsPanel } from './ProductStandardsPanel'
 
 interface Props {
   open: boolean
@@ -110,6 +111,8 @@ function ProductSpecificationDrawerForm({ open, specification, onClose }: Props)
           description={specification.latest_unit_weight_measured_on ? `最后确认日期：${specification.latest_unit_weight_measured_on}；历史记录 ${specification.unit_weight_history_count || 0} 条。出货确认时会继续保留历史版本。` : '该单重来自已确认出货记录。'}
         />
       )}
+      {specification && <ProductStandardsPanel productId={specification.id} />}
+      {!specification && <Alert type="info" title="先保存产品基本资料，再在本条产品中填写或导入硬度、线径上下限和详细工艺标准。" />}
       <Form form={form} layout="vertical" requiredMark="optional">
         <div className="business-form-section">基本资料</div>
         <Row gutter={14}>
