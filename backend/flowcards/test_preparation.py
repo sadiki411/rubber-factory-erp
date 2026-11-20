@@ -136,6 +136,19 @@ class PreparationTests(QualityTestMixin, TestCase):
         self.assertEqual(response.json()["count"], 4)
         self.assertFalse(CardGroup.objects.exists())
 
+    def test_order_direct_reuses_previously_run_bound_cards_instead_of_reissuing(self):
+        self.standard()
+        run = self.create_run()
+        original = s.generate_group(p.save_draft(self.body(run), self.user), self.user)
+        self.assertEqual(p.context({"order_id": self.order.pk, "order_plan": "1"}, self.user)["preferred_group"]["id"], str(original.pk))
+        with self.assertRaises(p.PreparationConflict):
+            p.save_draft(self.body(order_plan=True, planned_molds=360), self.user)
+        extra = p.save_draft(self.body(order_plan=True, planned_molds=360, append_confirmed=True), self.user)
+        self.assertIsNone(extra.run_id)
+        s.generate_group(extra, self.user)
+        self.assertEqual(extra.cards.count(), 4)
+        self.assertEqual(list(original.cards.order_by("sequence").values_list("planned_molds", flat=True)), [100,100,1])
+
     def test_B_completed_runs_never_suggest_old_plan_or_create_new_segment(self):
         run = self.create_run(status="COMPLETED")
         data = p.context({"order_id": self.order.pk}, self.user)

@@ -243,7 +243,7 @@ def context(params, user):
     drafts = [g for g in groups if g.status == "DRAFT"]
     preferred = drafts[0] if len(drafts) == 1 else next((g for g in groups if g.status == "GENERATED" and g.run_id == (run.pk if run else None)), None)
     if preferred is None:
-        preferred = next((g for g in groups if g.status == "GENERATED" and g.run_id is None), None)
+        preferred = next((g for g in groups if g.status == "GENERATED" and (not run or g.run_id is None)), None)
     occupied = ranges_for(run)
     available = free_ranges(run.planned_mold_count, occupied) if run and is_open_run(run) else []
     missing = []
@@ -335,9 +335,11 @@ def build_plan(data, exclude=None):
             planned = (arranged + output - 1) // output
             basis = f"本次明确安排{arranged}件 ÷ 已确认有效产出{output}件/模（向上取整）；{data['output_basis']}"
     planned = s.integer(planned, "planned_molds", nullable=True)
-    prior = groups_for(run, orders, product).exclude(pk=exclude).filter(status="GENERATED", run__isnull=True)
+    prior = groups_for(run, orders, product).exclude(pk=exclude).filter(status="GENERATED")
+    if run:
+        prior = prior.filter(run__isnull=True)
     if prior.exists() and data.get("append_confirmed") is not True:
-        raise PreparationConflict("订单已有未绑定生产任务的原卡；请先查看/补打。确有另一批计划时明确确认另建，不能重复发卡。")
+        raise PreparationConflict("订单已有原卡；请先查看/补打。确有另一批计划时明确确认另建，不能重复发卡。")
     end = start + planned - 1 if planned else None
     if end and run and (end > run.planned_mold_count or any(start <= r["range_end"] and end >= r["range_start"] for r in occupied)):
         raise PreparationConflict("本段模数超出确认计划或与已有卡组重叠；请刷新查看尚未覆盖范围。")
@@ -431,7 +433,10 @@ def validate_generation(group):
     if not group.standard or group.standard.status != "ACTIVE":
         raise ValidationError({"standard_id": "没有适用生效标准，只能保存待准备。"})
     orders = list(group.orders.select_related("source_batch", "last_source_batch"))
-    if groups_for(group.run, orders, group.product).exclude(pk=group.pk).filter(status="GENERATED", run__isnull=True).exists() and not group.snapshot.get("append_confirmed"):
+    prior = groups_for(group.run, orders, group.product).exclude(pk=group.pk).filter(status="GENERATED")
+    if group.run_id:
+        prior = prior.filter(run__isnull=True)
+    if prior.exists() and not group.snapshot.get("append_confirmed"):
         raise PreparationConflict("订单已有原卡，请核对是否重复；另批计划需明确确认。")
     if group.run and {o.pk for o in orders} != set(run_order_ids(group.run)):
         raise ValidationError({"order_ids": "生产段关联订单已变化，请更新原准备后再发卡。"})
