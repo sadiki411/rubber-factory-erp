@@ -236,7 +236,7 @@ class GroupViewSet(ErrorsMixin, viewsets.GenericViewSet):
 
     def get_permissions(self):
         # Explicit exception for a computational, non-persistent POST only.
-        if self.action == "preview" and settings.FLOW_CARDS_PREPARATION_ENABLED:
+        if self.action in ("preview", "sample") and settings.FLOW_CARDS_PREPARATION_ENABLED:
             return [IsAuthenticated()]
         return super().get_permissions()
 
@@ -272,6 +272,32 @@ class GroupViewSet(ErrorsMixin, viewsets.GenericViewSet):
             "tail_molds": plan["snapshot"]["card_molds"][-1] if plan["count"] else None,
             "card_molds": plan["snapshot"]["card_molds"],
             "snapshot": plan["snapshot"]})
+
+    @action(detail=False, methods=["post"])
+    def sample(self, request):
+        """Same renderer as issuance, but no identity, QR or database writes."""
+        from . import preparation as prep
+        from .pdf import render_cards
+        from types import SimpleNamespace
+        from django.utils import timezone
+        if not prep.enabled():
+            raise Http404("订单纸卡样张未启用。")
+        plan = prep.build_plan(request.data, request.data.get("group_id"))
+        if not plan["count"]:
+            raise ValidationError({"planned_molds": "请先填写预计模数，或核对本次安排件数与有效产出后试算。"})
+        which = request.data.get("sample_position", "FIRST")
+        if which not in ("FIRST", "LAST"):
+            raise ValidationError({"sample_position": "请选择首卡或尾卡样张。"})
+        index = 0 if which == "FIRST" else plan["count"] - 1
+        publication = TemplatePublication.objects.filter(renderer=s.current_renderer()).first()
+        snapshot = {**plan["snapshot"], "sample_only": True, "template": {**plan["snapshot"]["template"], "version": publication.version if publication else "草稿"}}
+        card = SimpleNamespace(pk=None, card_no="样张 - 未发号", original_date=timezone.localdate(),
+            sequence=index+1, denominator=plan["count"], planned_molds=snapshot["card_molds"][index], group=SimpleNamespace(snapshot=snapshot))
+        raw = render_cards([(card, 0)], print_options={"second_inspection": request.data.get("second_inspection") is True})
+        response = HttpResponse(raw, content_type="application/pdf")
+        response["Content-Disposition"] = 'inline; filename="flowcard-sample-not-issued.pdf"'
+        response["Cache-Control"] = "private, no-store"
+        return response
 
     @action(detail=True, methods=["post"])
     def generate(self, request, pk=None):
@@ -311,6 +337,7 @@ class CardViewSet(ErrorsMixin, viewsets.GenericViewSet):
 
     def retrieve(self, request, pk=None):
         card = self.get_object()
+        from .preparation import can_maintain
         whole = card.events.filter(kind="WHOLE_MOLD").order_by("-created_at").first()
         source = card.events.filter(kind="SOURCE_CONFIRM").order_by("-created_at").first()
         unresolved = card.events.filter(kind="ANOMALY").exclude(
@@ -365,6 +392,7 @@ class CardViewSet(ErrorsMixin, viewsets.GenericViewSet):
                 "notice": "本次未登记代表本卡的随烤胶片，胶片烤后硬度未测；不沿用其他次结果" if not checks else "每次二烤按实际胶片分别检测，不沿用其他次结果"})
         product_readings = [e for e in measurements if e.kind == "BAKED_HARDNESS" and e.values.get("measurement_object") != "COUPON"]
         return Response({**card_data(card), "snapshot": card.group.snapshot, "write_enabled": settings.FLOW_CARDS_WRITE_ENABLED,
+            "can_add_work_guidance": can_maintain(request.user),
             "whole_mold_status": "NOT_REQUIRED" if card.group.whole_mold == "NOT_REQUIRED" else whole.values.get("status") if whole else "SYSTEM_UNREGISTERED",
             "whole_mold_record": event_data(whole) if whole else None,
             "fixed_positions_notice": "定点只按每条原记录的实际范围解释；不取最后值、最大值或平均值作为整包统一值。",
@@ -435,7 +463,7 @@ class PrintViewSet(ErrorsMixin, viewsets.GenericViewSet):
                            "denominator": i.card.denominator, "proposed_reprint": i.proposed_reprint,
                            "status": i.status, "active": i.active} for i in job.items.select_related("card").order_by("card__group_id", "card__sequence")],
                 "pdf_url": f"/api/flow-cards/print-jobs/{job.pk}/pdf/", "pdf_sha256": job.pdf_sha256,
-                "file_prepared": bool(job.pdf_storage_name)}
+                "file_prepared": bool(job.pdf_storage_name), "second_inspection": bool(job.template.get("second_inspection"))}
 
     def prepare_file(self, job):
         if job.pdf_storage_name:
@@ -445,7 +473,7 @@ class PrintViewSet(ErrorsMixin, viewsets.GenericViewSet):
         items = list(job.items.select_related("card__group").order_by("card__group_id", "card__sequence"))
         # Rendering is deliberately OUTSIDE the quantity / print-reservation transaction.
         try:
-            raw = render_cards([(i.card, i.proposed_reprint) for i in items])
+            raw = render_cards([(i.card, i.proposed_reprint) for i in items], print_options={"second_inspection": bool(job.template.get("second_inspection"))})
         except (RuntimeError, ValueError) as exc:
             error = APIException({"detail": "PDF生成失败，打印任务仍保留；请使用原请求号重试。", "print_job_id": str(job.pk), "reason": str(exc)})
             error.status_code = 503

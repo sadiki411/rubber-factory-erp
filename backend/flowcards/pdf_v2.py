@@ -14,7 +14,7 @@ def display_text(value):
     return str(value).replace("℃", "°C")
 
 
-def render_cards_v2(items):
+def render_cards_v2(items, *, second_inspection=False):
     out, font = io.BytesIO(), font_name()
     sizes = {(c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c, _ in items}
     if len(sizes) != 1:
@@ -121,7 +121,12 @@ def render_cards_v2(items):
         box(5,y,span,6); text(7,y+4.2,"日期"); line(18,y+4.8,37); text(59,y+4.2,"盘号"); line(70,y+4.8,span-119); signer(y+4.2,"二烤员"); y+=6
         box(5,y,span,6); field(6,y,span/2-2,6,f"烤后硬度 · {object_label('BAKED_HARDNESS')}  标准 {limits(criterion('BAKED_HARDNESS'))}",8.9); text(7+span/2,y+4.2,"实际"); line(19+span/2,y+4.8,span/2-24); y+=6
         box(5,y,span,6); text(7,y+4.2,"取样盘"); line(23,y+4.8,28); text(55,y+4.2,"测量时间"); line(76,y+4.8,span-125); signer(y+4.2,"测量人"); y+=6
-        text(5,height-6,f"随货流转 · 异常同号续记 · 表单版次：{snap['template'].get('version','草稿')}",7.8); signer(height-5,"品检员")
+        text(5,height-6,f"随货流转 · 异常同号续记 · 表单版次：{snap['template'].get('version','草稿')}",7.8)
+        if second_inspection:
+            from .pdf import inspection_signatures
+            inspection_signatures(text, line, width, height)
+        else:
+            signer(height-5,"品检员")
         if reprint: text(5,height-2,f"补打{reprint}次",7)
         if extra: text(80,height-2,"含身份/标准续页，须随本卡保存",7)
         c.showPage()

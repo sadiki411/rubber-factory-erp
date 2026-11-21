@@ -39,27 +39,38 @@ def wrap(text, width, font, size=9):
     return lines + ([line] if line else [])
 
 
-def render_cards(items):
+def render_cards(items, *, print_options=None):
     items = list(items)
     renderers = {card.group.snapshot.get("template", {}).get("renderer") for card, _ in items}
+    second = bool((print_options or {}).get("second_inspection"))
+    if renderers == {"flowcard-guidance-20261121-v6"}:
+        from .pdf_v3 import render_cards_v3
+        return render_cards_v3(items, applicable_dimensions=True, route_aware=True, operational_guidance=True, second_inspection=second)
     if renderers == {"flowcard-preparation-20261119-v5"}:
         from .pdf_v3 import render_cards_v3
-        return render_cards_v3(items, applicable_dimensions=True, route_aware=True)
+        return render_cards_v3(items, applicable_dimensions=True, route_aware=True, second_inspection=second)
     if renderers == {"flowcard-review-20261119-v4"}:
-        from .pdf_v4 import render_cards_v4
-        return render_cards_v4(items)
+        from .pdf_v3 import render_cards_v3
+        return render_cards_v3(items, applicable_dimensions=True, second_inspection=second)
     if renderers == {"flowcard-review-20261118-v3"}:
         from .pdf_v3 import render_cards_v3
-        return render_cards_v3(items)
+        return render_cards_v3(items, second_inspection=second)
     if renderers == {"flowcard-review-20261118-v2"}:
         from .pdf_v2 import render_cards_v2
-        return render_cards_v2(items)
+        return render_cards_v2(items, second_inspection=second)
     if renderers != {"flowcard-draft-20261118-v1"}:
         raise ValueError("不同渲染版本请分开打印；不能替换旧卡模板。")
-    return render_cards_v1(items)
+    return render_cards_v1(items, second_inspection=second)
 
 
-def render_cards_v1(items):
+def inspection_signatures(text, line, width, height):
+    x = width-96
+    y = height-5
+    text(x,y,"品检员",9); text(x+16,y,"一检：",9); line(x+27,y+.7,22)
+    text(x+53,y,"二检：",9); line(x+65,y+.7,25)
+
+
+def render_cards_v1(items, *, second_inspection=False):
     out = io.BytesIO()
     font = font_name()
     c = canvas.Canvas(out, pagesize=(190 * mm, 130 * mm), pageCompression=1, invariant=1)
@@ -177,7 +188,13 @@ def render_cards_v1(items):
                 text(145, y+4.2, "测量人 _________")
             y += h
         text(5, 124, f"异常同号续记 · 纸卡不入炉 · 表单版次：{template.get('version', '草稿')}", 7.8)
-        text(145, 125, "品 检 员 ________", 10)
+        if second_inspection:
+            def sign_line(x, y, length):
+                c.setLineWidth(.45)
+                c.line(x*mm, (130-y)*mm, (x+length)*mm, (130-y)*mm)
+            inspection_signatures(text, sign_line, 190, 130)
+        else:
+            text(145, 125, "品 检 员 ________", 10)
         if reprint:
             text(5, 128, f"补打{reprint}次（原卡同一身份）", 7)
         if extra:

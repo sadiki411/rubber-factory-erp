@@ -227,6 +227,7 @@ def free_ranges(total, occupied):
 
 
 def context(params, user):
+    from .guidance import summary
     from .services import standard_data
     from .views import group_data
     product, run, orders, runs = resolve(params)
@@ -256,6 +257,13 @@ def context(params, user):
     if run and is_open_run(run) and not available and not drafts:
         missing.append("本段已全部备卡，请查看原卡，不重发整套")
     process = {k: getattr(product, k) for k in ("primary_curing", "secondary_curing", "total_cavities", "effective_cavities", "actual_material_length", "actual_cut_weight", "large_strip_weight_g", "large_strip_count", "small_strip_weight_g", "small_strip_count", "forming_material_weight_g") if hasattr(product, k)}
+    visible_groups = groups[:20]
+    review_groups = {g.pk:g for g in [*visible_groups, *([preferred] if preferred else [])] if g.status == "GENERATED"}
+    original_reviews = {}
+    for identity, g in review_groups.items():
+        frozen = (g.snapshot.get("standard") or {}).get("snapshot", {})
+        comparison = summary(product, snapshot={**frozen, "process_parameters": g.snapshot.get("process_parameters", frozen.get("process_parameters", {}))})
+        original_reviews[str(identity)] = [r for r in comparison if r["key"] in ("primary_curing_time", "pressure") and r["warning"] and (r.get("raw_reference") or r["value"] != "未提供")]
     return {"preparation_enabled": True, "write_enabled": settings.FLOW_CARDS_WRITE_ENABLED,
             "can_maintain_standard": can_maintain(user),
             "product": {"id": product.pk, "name": product.product_name, "specification": product.specification, "material": product.material, "customer_product_no": product.customer_product_no},
@@ -265,7 +273,11 @@ def context(params, user):
             "suggested_molds": available[0][1] - available[0][0] + 1 if available else None,
             "available_ranges": available, "occupied_ranges": occupied,
             "preferred_group": group_data(preferred) if preferred else None,
-            "existing_groups": [group_data(g) for g in groups[:20]], "missing": missing,
+            "existing_groups": [group_data(g) for g in visible_groups], "missing": missing,
+            "original_reference_reviews": original_reviews,
+            "guidance": summary(product, chosen),
+            "standard_candidates": [{"id": v.pk, "version": v.version, "customer_key": v.customer_key,
+                "source": v.source, "source_kind": v.source_kind, "guidance": summary(product, v)} for v in active],
             "standards": [standard_data(s) for s in standards], "auto_standard_id": chosen.pk if chosen and chosen.status == "ACTIVE" and all(c["resolved_by_standard"] for c in conflicts) else None,
             "criteria": [criterion_data(c) for c in source_rows(product, orders)[:50]],
             "criteria_count": len(source_rows(product, orders)), "conflicts": conflicts,
@@ -333,7 +345,9 @@ def build_plan(data, exclude=None):
             output = s.integer(output, "confirmed_effective_output")
         if arranged and output and data.get("output_unit") == "件/模" and data.get("effective_output_confirmed") is True and str(data.get("output_basis", "")).strip():
             planned = (arranged + output - 1) // output
-            basis = f"本次明确安排{arranged}件 ÷ 已确认有效产出{output}件/模（向上取整）；{data['output_basis']}"
+            basis = f"本次安排 {arranged:,} 件 ÷ {output:,} 件/模，向上取整＝{planned:,} 模；有效产出依据：{s.required_text(data, 'output_basis', 500)}"
+        elif arranged:
+            basis = "暂不能试算：请填写并核对每模有效产出、件/模单位及依据；不使用档案孔数代填。"
     planned = s.integer(planned, "planned_molds", nullable=True)
     prior = groups_for(run, orders, product).exclude(pk=exclude).filter(status="GENERATED")
     if run:
@@ -372,6 +386,10 @@ def build_plan(data, exclude=None):
         merged = {**plan["snapshot"]["process_parameters"], **overrides}
         plan["snapshot"]["process_parameters"] = standard_metadata({"process_parameters": merged})["process_parameters"]
     plan["snapshot"]["process_overrides"] = deepcopy(overrides)
+    from .guidance import summary, temperature_plan
+    plan["snapshot"]["temperature_plan"] = temperature_plan(data.get("temperature_plan", standard.snapshot.get("packaging", {}).get("temperature_plan") if standard else None))
+    plan["snapshot"]["raw_process_reference"] = {"primary_curing": product.primary_curing, "secondary_curing": product.secondary_curing}
+    plan["snapshot"]["guidance"] = summary(product, snapshot={**(standard.snapshot if standard else {}), "process_parameters": plan["snapshot"]["process_parameters"]})
     if not run and planned:
         plan["snapshot"]["effective_cavities"] = output
     return plan
@@ -546,6 +564,11 @@ def standard_metadata(data):
             raise ValidationError({"route": f"{key}必须是布尔值。"})
     from .services import integer
     packaging = result["packaging"]
+    if "temperature_plan" in packaging:
+        from .guidance import temperature_plan
+        packaging["temperature_plan"] = temperature_plan(packaging["temperature_plan"])
+        if packaging["temperature_plan"]["mode"] == "REFERENCE":
+            raise ValidationError({"temperature_plan": "原卡或实测记录仅能在本次制卡引用，不作为产品标准默认引用。"})
     if "molds_per_card" in packaging:
         packaging["molds_per_card"] = integer(packaging["molds_per_card"], "molds_per_card", maximum=100000)
     if packaging.get("patrol_every_molds") is not None:

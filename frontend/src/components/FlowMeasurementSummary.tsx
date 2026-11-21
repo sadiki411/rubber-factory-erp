@@ -2,7 +2,7 @@ import { Alert, Button, Card, Space, Typography } from 'antd'
 import dayjs from 'dayjs'
 import { flowLimitText, type Criterion, type FlowCardDetail, type FlowEvent } from '../flowcards'
 
-export const FLOW_KIND: Record<string, string> = { WHOLE_MOLD: '整模作业', UPPER_TEMP: '上模实测温度', LOWER_TEMP: '下模实测温度', MOLDING_HARDNESS: '成型硬度', BAKED_HARDNESS: '烤后硬度', DIMENSION: '尺寸测量', BAKE: '二烤作业', DEBURR: '去毛边', APPEARANCE: '外观检查', ANOMALY: '异常', RESOLUTION: '异常处理', SOURCE_CONFIRM: '实物来源核对', VOID: '作废' }
+export const FLOW_KIND: Record<string, string> = { WHOLE_MOLD: '整模作业', UPPER_TEMP: '上模实测温度', LOWER_TEMP: '下模实测温度', MOLDING_HARDNESS: '成型硬度', BAKED_HARDNESS: '烤后硬度', DIMENSION: '尺寸测量', BAKE: '二烤作业', DEBURR: '去毛边', APPEARANCE: '外观检查', ANOMALY: '异常', RESOLUTION: '异常处理', SOURCE_CONFIRM: '实物来源核对', VOID: '作废',WORK_GUIDANCE:'补充作业指示（不改原卡）' }
 export const flowTime = (v: string | null) => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '未知'
 export type CouponSample = { sample_ref: string; material_ref: string; card_ids: string[]; trays: number[]; accompanied: boolean }
 export function FlowMeasurementSummary({ card, disabled, measure }: { card: FlowCardDetail; disabled: boolean; measure: (c: Criterion, original?: FlowEvent) => void }) {
@@ -27,6 +27,8 @@ export function FlowEventSummary({ event: e, cardId, disabled, bakeMeasure, reme
   return <Card size="small" title={`${FLOW_KIND[e.kind] || e.kind} · ${e.employee_name || '实际人员未登记'}`}>
     <div>业务时间：{flowTime(e.business_at)} · 录入：{flowTime(e.created_at)}</div>
     <div>范围：{e.scope}；依据：{e.evidence}</div>
+    {e.kind==='WORK_GUIDANCE'&&<Typography.Paragraph>{String(e.values.note||'')} · 经手账号 #{e.recorded_by??'未登记'}。另记指示，不算实测或工序完成。</Typography.Paragraph>}
+    {typeof e.values.oil_warning==='string'&&<Alert type="error" title={e.values.oil_warning} description="实际作业已保留，同时登记了关联异常；不自动更改实际洒油选择。" />}
     {e.values.actual != null && <Typography.Paragraph>实测 {String(e.values.actual)} {String(e.values.unit || '')} · {String(e.values.measurement_message || '未判定')}{c && `；标准 ${flowLimitText(c)}`}</Typography.Paragraph>}
     {e.kind === 'BAKE' && <><div>实际 {String(e.values.temperature_c)}°C × {String(e.values.minutes)}min</div>{!samples.some((s) => s.accompanied && s.card_ids.includes(cardId)) && <div>本次无代表本包的实际随烤胶片，胶片烤后硬度未测（不沿用上次）。</div>}{samples.filter((s) => s.accompanied).map((s, i) => <Space wrap key={i}><span>胶片 {s.sample_ref} · 胶料 {s.material_ref} · 盘{s.trays.join('、')} · 代表{s.card_ids.length}卡</span>{s.card_ids.includes(cardId) ? <Button disabled={disabled} onClick={() => bakeMeasure(e, s)}>记烤后硬度</Button> : <Typography.Text type="secondary">与本包无关，仅作历史展示，不能在此登记</Typography.Text>}</Space>)}</>}
     {e.followups?.map((f) => <div key={f.id}>已有后续复核：{f.message} · {f.employee_name || '处理人未登记'} · {flowTime(f.business_at)}。原事实保留，继续复核请选择最新记录。</div>)}

@@ -5,7 +5,7 @@ from reportlab.pdfgen import canvas
 from reportlab.graphics.barcode.qr import QrCodeWidget
 from reportlab.graphics.shapes import Drawing
 from reportlab.graphics import renderPDF
-from .pdf import font_name, wrap
+from .pdf import font_name, wrap, inspection_signatures
 from .limits import limit_text, limit_mode
 
 
@@ -29,7 +29,7 @@ def compact_identity(product, font, width):
         lengths[target] -= 1
 
 
-def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False):
+def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, operational_guidance=False, second_inspection=False):
     out, font = io.BytesIO(), font_name()
     sizes = {(c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c, _ in items}
     if len(sizes) != 1:
@@ -44,7 +44,7 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False):
         route = snap.get("route", {}) if route_aware else {}
         def applies(name):
             return not route_aware or route.get(name) is True
-        right, span = width-5, width-10
+        span = width-10
         signer_x, line_x = width-45, width-27
 
         def text(x, y, value, size=9, bold=False, center=False):
@@ -78,14 +78,19 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False):
         def signer(y, label):
             text(signer_x, y, label); line(line_x, y+.7, 20)
 
-        qr = QrCodeWidget(f"ERPFC:{card.pk}")
-        b = qr.getBounds(); size = 17*mm
-        drawing = Drawing(size, size, transform=[size/(b[2]-b[0]), 0, 0, size/(b[3]-b[1]), 0, 0]); drawing.add(qr)
-        renderPDF.draw(drawing, c, 5*mm, (height-19)*mm)
+        sample = snap.get("sample_only") or not card.pk or str(card.pk) == "00000000-0000-0000-0000-000000000000"
+        if not sample:
+            qr = QrCodeWidget(f"ERPFC:{card.pk}")
+            b = qr.getBounds(); size = 17*mm
+            drawing = Drawing(size, size, transform=[size/(b[2]-b[0]), 0, 0, size/(b[3]-b[1]), 0, 0]); drawing.add(qr)
+            renderPDF.draw(drawing, c, 5*mm, (height-19)*mm)
+        else:
+            text(6,10,"样张",14,True); text(5,16,"未发号·不可扫码",7)
         # Keep the entire date segment together. Never slice the assigned ID.
-        parts = card.card_no.rsplit("-", 1)
-        text(24, 8, parts[0] + ("-" if len(parts) > 1 else ""), 8.9)
-        text(24, 13, parts[1] if len(parts) > 1 else "", 8.9)
+        if not sample:
+            parts = card.card_no.rsplit("-", 1)
+            text(24, 8, parts[0] + ("-" if len(parts) > 1 else ""), 8.9)
+            text(24, 13, parts[1] if len(parts) > 1 else "", 8.9)
         text(width/2+8, 13, "工序流转卡", 17.5, center=True)
         text(width-44, 8, f"日期 {card.original_date}", 8.9)
         text(width-44, 15, f"{card.planned_molds}M | {card.sequence}/{card.denominator}批", 11)
@@ -113,6 +118,14 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False):
         box(5,y,span,6)
         field(6,y,span-49,6,f"检验依据 {'v'+str(snap['standard']['version']) if snap.get('standard') else '待确认'}{' · 有项目待确认' if pending else ''}")
         signer(y+4.2,"机台员"); y+=6
+        if sample and operational_guidance and not snap.get("standard"):
+            notes = ["仅供排版/分卡核对：尚无已确认产品标准，不用于生产。"]
+            for row in snap.get("guidance", []):
+                if row["key"] in ("MOLDING_HARDNESS", "DIMENSION", "bake", "primary_curing_time"):
+                    notes.append(f"{row['label']}：{row['value']}" + (f"；产品原文：{row['raw_reference']}（待核）" if row.get("raw_reference") else ""))
+            for note in notes:
+                h = max(6, len(wrap(display_text(note),(span-4)*mm,font,9))*4+1)
+                box(5,y,span,h); field(6,y,span-2,h,note,9); y+=h
         if applies("molding"):
             box(5,y,span,5,True); text(7,y+3.8,"生产实测",10,True); text(75,y+3.8,"时间"); line(85,y+4.2,28); signer(y+3.8,"测量人"); y+=5
         ss = (snap.get("standard") or {}).get("snapshot", {})
@@ -122,6 +135,8 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False):
             return rows[n] if n < len(rows) else None
         def limits(row):
             if not row: return "待确认"
+            if operational_guidance and row.get("requirement_state") in ("RAW_UNCONFIRMED", "NOT_PROVIDED"):
+                return "界限待确认，不判定"
             return limit_text(row)
         objects={"PRODUCT":"成品", "COUPON":"胶片", "UNKNOWN":"对象待定"}
         def object_label(stage): return objects.get(ss.get("hardness",{}).get(stage,{}).get("object","UNKNOWN"),"对象待确认")
@@ -135,6 +150,17 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False):
                 row = criterion(stage)
                 if row and limit_mode(row) != "NONE":
                     columns.append((label, limits(row)))
+        if operational_guidance:
+            from .guidance import parameter_text, usable
+            mode = snap.get("temperature_plan", {}).get("mode", "PENDING")
+            if mode == "REFERENCE" or (mode == "FIRST" and card.sequence != 1):
+                columns = [v for v in columns if not v[0].startswith(("上模", "下模"))]
+            temp_required = mode == "EVERY" or (mode == "FIRST" and card.sequence == 1)
+            if temp_required:
+                for stage, key, label in (("UPPER_TEMP", "upper_contact_temperature", "接触实测·上模℃"), ("LOWER_TEMP", "lower_contact_temperature", "接触实测·下模℃")):
+                    param = snap.get("process_parameters", {}).get(key, {})
+                    if not criterion(stage) or limit_mode(criterion(stage)) == "NONE":
+                        columns.insert(0 if stage == "UPPER_TEMP" else 1, (label, ("目标 " if usable(key, param) else "目标待核 ") + parameter_text(param)))
         for i in range(min(2,dimension_count)):
             row=(dimensions[i] if i < len(dimensions) else None) if applicable_dimensions else criterion("DIMENSION",i)
             columns.append((row["name"] if row else f"关键尺寸{i+1}", limits(row)))
@@ -146,33 +172,75 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False):
             col_width=(span-16)/len(columns); x=5
             for i,(heading,value) in enumerate([("项目","标准"),*columns]):
                 w=16 if i == 0 else col_width
-                for dy,h,content in [(0,6,heading),(6,6,value),(12,9,"实测" if i == 0 else "")]:
+                for dy,h,content in [(0,6,heading),(6,6,value),(12,8 if operational_guidance else 9,"实测" if i == 0 else "")]:
                     box(x,y+dy,w,h,dy==0); field(x,y+dy,w,h,content,8.9)
                 x+=w
             for row in dimensions[2:]: extra.append(f"关键尺寸 {row['name']} · 标准 {limits(row)} · 方法 {row['method']} · 实测 ____________________")
             if needed and needed > max(2,len(dimensions)): extra.append(f"需测尺寸共{needed}项，尚缺{needed-len(dimensions)}项确认要求；不自动当不适用。")
-            y+=21
+            y+=20 if operational_guidance else 21
+        def ensure_space(h):
+            nonlocal y
+            if operational_guidance and y+h > height-8:
+                text(5,height-7,f"本卡续下页 · {card.card_no}",7)
+                c.showPage(); text(5,10,f"工序流转卡续页 · {card.card_no} · {card.sequence}/{card.denominator}批",10)
+                y=17
+        if operational_guidance:
+            mode = snap.get("temperature_plan", {}).get("mode", "PENDING")
+            ref = snap.get("temperature_plan", {}).get("reference", "")
+            temp_note = {"PENDING":"模温时机待负责人确认；设定温度不代替接触实测",
+                         "FIRST":"首件/换模调机/异常复测接触温度；其他包引用首卡记录（未登记不代表已测）",
+                         "EVERY":"负责人确认本批每包记录接触实测温度，不用设定值代替",
+                         "REFERENCE":f"本包不重复抄测温，核对实际记录/原卡：{ref}（引用不等于已实测）"}[mode]
+            if mode == "FIRST" and card.sequence > 1 and snap.get("temperature_first_card_no"):
+                temp_note = f"接触测温引用首卡记录 {snap['temperature_first_card_no']}；换模/调机、异常按实际复测"
+            warnings = [f"{note['label']}{'单位冲突' if '单位冲突' in note['warning'] else '数值/单位待核'}，找负责人核原单"
+                        for note in snap.get("guidance", []) if note.get("key") in ("primary_curing_time", "pressure") and note.get("warning") and (note.get("raw_reference") or note.get("value") != "未提供")]
+            content = temp_note + ("；"+"；".join(warnings) if warnings else "")
+            h=max(6,len(wrap(display_text(content),(span-4)*mm,font,8))*9/mm+1.5)
+            ensure_space(h); box(5,y,span,h); field(6,y,span-2,h,content,8); y+=h
         if applies("patrol"):
+            ensure_space(8)
             box(5,y,span,8); field(6,y,span-48,8,"外观 □正常  "+"  ".join("□"+e["name"] for e in snap.get("appearance",[]))+" □其他____",8.9); signer(y+5.2,"巡检"); y+=8
         if snap["whole_mold"] == "REQUIRED":
+            ensure_space(7)
             box(5,y,span,7,True); text(7,y+4.8,"整模检验",10,True); text(40,y+4.8,"定点"); line(49,y+5.4,20); text(71,y+4.8,"孔/模"); signer(y+4.8,"整模员"); y+=7
         elif not route_aware:
             text(7,y+3.6,"整模：不需",8.9); y+=5
         if applies("deburr"):
-            box(5,y,span,8); text(7,y+5.2,"毛边 □完成 □待处理"); box(64,y+1,span-112,6,True); text(66,y+5.2,"洒油 □正常 □少量 □否",10,True); signer(y+5.2,"毛边员"); y+=8
+            if operational_guidance:
+                from .guidance import oil_instruction
+                oil = snap.get("process_parameters", {}).get("oil", {})
+                instruction = oil_instruction(oil)
+                h = max(5, len(wrap(display_text(instruction),(span-4)*mm,font,9))*4+1)
+                if h > 17:
+                    extra.append(instruction)
+                    instruction = ("执行前核对本卡续页的洒油要求" if oil.get("state") == "CONFIRMED"
+                                   else "洒油要求待核，作业前找负责人确认；候选原文见续页（非指令）")
+                    h = 6
+                ensure_space(h+8); box(5,y,span,h,True); field(6,y,span-2,h,instruction,9); y+=h
+            ensure_space(8)
+            box(5,y,span,8); text(7,y+5.2,"毛边 □完成 □待处理"); box(64,y+1,span-112,6,True); text(66,y+5.2,"实际洒油 □正常 □少量 □否" if operational_guidance else "洒油 □正常 □少量 □否",10,True); signer(y+5.2,"毛边员"); y+=8
         bake=ss.get("bake",{})
         advice="不适用" if bake.get("state")=="NOT_APPLICABLE" else "待确认"
         if bake.get("state")=="APPLICABLE": advice=f"{bake['temperature_lower']}~{bake['temperature_upper']}℃ × {bake['minutes_lower']}~{bake['minutes_upper']}min"
+        if operational_guidance:
+            from .guidance import bake_text
+            advice=bake_text(bake)
         if applies("bake"):
+            ensure_space(16)
             box(5,y,span,4,True); text(7,y+3,"二次加硫（二烤）",9,True); y+=4
             box(5,y,span,6); box(5,y,span/2,6); field(6,y,span/2-2,6,f"建议 {advice}"); text(7+span/2,y+4.2,"实际"); line(18+span/2,y+4.8,17); text(36+span/2,y+4.2,"℃ ×"); line(48+span/2,y+4.8,16); text(65+span/2,y+4.2,"min"); y+=6
             box(5,y,span,6); text(7,y+4.2,"日期"); line(18,y+4.8,37); text(59,y+4.2,"盘号"); line(70,y+4.8,span-119); signer(y+4.2,"二烤员"); y+=6
         if applies("baked_hardness"):
+            ensure_space(12)
             box(5,y,span,6); field(6,y,span/2-2,6,f"烤后硬度 · {object_label('BAKED_HARDNESS')}  标准 {limits(criterion('BAKED_HARDNESS'))}",8.9); text(7+span/2,y+4.2,"实际"); line(19+span/2,y+4.8,span/2-24); y+=6
             box(5,y,span,6); text(7,y+4.2,"取样盘"); line(23,y+4.8,28); text(55,y+4.2,"测量时间"); line(76,y+4.8,span-125); signer(y+4.2,"测量人"); y+=6
         text(5,height-6,f"随货流转 · 异常同号续记 · 表单版次：{snap['template'].get('version','草稿')}",7.8)
         if applies("inspection"):
-            signer(height-5,"品检员")
+            if second_inspection:
+                inspection_signatures(text, line, width, height)
+            else:
+                signer(height-5,"品检员")
         if reprint: text(5,height-2,f"补打{reprint}次",7)
         if extra: text(80,height-2,"含身份/标准续页，须随本卡保存",7)
         c.showPage()

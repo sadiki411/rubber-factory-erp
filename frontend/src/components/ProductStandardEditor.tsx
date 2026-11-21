@@ -106,6 +106,11 @@ export function ProductStandardEditor({data,open,close,changed,initialTab='quali
         {key:'route',label:'随包记录与包装',children:<>
           <Form.Item name="whole_mold" label="整模工序"><Select options={[{value:'UNKNOWN',label:'待确认'},{value:'REQUIRED',label:'需要整模'},{value:'NOT_REQUIRED',label:'确认不需整模'}]} /></Form.Item>
           <Space wrap>{[['molding','成型实测'],['patrol','巡检'],['deburr','毛边'],['bake','二烤'],['baked_hardness','烤后硬度'],['inspection','品检']].map(([k,l])=><Form.Item key={k} name={['route',k]} valuePropName="checked"><Checkbox>{l}</Checkbox></Form.Item>)}</Space><Form.Item name={['route','confirmed']} valuePropName="checked"><Checkbox>已核对本产品适用工序（不代表已执行）</Checkbox></Form.Item><div className="flow-form-grid"><Form.Item name={['packaging','molds_per_card']} label="每包模数"><InputNumber min={1} precision={0} /></Form.Item><Form.Item name={['packaging','patrol_every_molds']} label="每隔多少模巡检"><InputNumber min={1} precision={0} /></Form.Item></div><Form.Item name="appearance_ids" label="四项外观检查" rules={[{required:true},{type:'array',len:4}]}><Select mode="multiple" options={data.appearance.map(a=>({value:a.id,label:a.name}))} /></Form.Item>
+          <div className="flow-form-grid">
+            <Form.Item name={['packaging','temperature_plan','mode']} label="产品标准默认测温时机" initialValue="PENDING"><Select options={[{value:'PENDING',label:'待确认，按本批安排'},{value:'FIRST',label:'首件、换模/调机、异常复测'},{value:'EVERY',label:'每包记录接触实测'}]} /></Form.Item>
+            <Form.Item noStyle shouldUpdate>{()=>{const mode=form.getFieldValue(['packaging','temperature_plan','mode']);return mode&&mode!=='PENDING'?<Form.Item name={['packaging','temperature_plan','basis']} label="测温时机确认依据" rules={[{required:true,whitespace:true}]}><Input maxLength={500} /></Form.Item>:null}}</Form.Item>
+          </div>
+          <Typography.Paragraph type="secondary">只复用已核对的时机；具体实测值和原卡引用按本批记录。不要把机台设定温度写成接触实测。</Typography.Paragraph>
         </>},
         {key:'import',label:'导入客户标准',children:<>
           <Alert type="info" title="先识别预览，再带入本产品核对；不会自动新增产品或改订单" description="支持有项目/要求列或横排字段的xlsx。图片和未识别排版请按原件手填。客户、料号、模具和版次要明确匹配，不能只靠同规格猜配。" />

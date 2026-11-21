@@ -23,7 +23,7 @@ from .models import (
 from .limits import validate_limits, evaluate
 
 RENDERER = "flowcard-review-20261119-v4"
-PREPARATION_RENDERER = "flowcard-preparation-20261119-v5"
+PREPARATION_RENDERER = "flowcard-guidance-20261121-v6"
 TEMPLATE = {"renderer": RENDERER, "version": "草稿", "width_mm": 190, "height_mm": 130}
 
 
@@ -35,7 +35,7 @@ def current_template():
     return {**TEMPLATE, "renderer": current_renderer()}
 
 MEASURE_STAGES = {"UPPER_TEMP", "LOWER_TEMP", "MOLDING_HARDNESS", "BAKED_HARDNESS", "DIMENSION", "SECONDARY_CURE"}
-KINDS = MEASURE_STAGES | {"APPEARANCE", "WHOLE_MOLD", "DEBURR", "BAKE", "ANOMALY", "RESOLUTION", "SOURCE_CONFIRM", "VOID"}
+KINDS = MEASURE_STAGES | {"APPEARANCE", "WHOLE_MOLD", "DEBURR", "BAKE", "ANOMALY", "RESOLUTION", "SOURCE_CONFIRM", "VOID", "WORK_GUIDANCE"}
 HARDNESS_STAGES = {"MOLDING_HARDNESS", "BAKED_HARDNESS"}
 
 
@@ -478,7 +478,6 @@ def generate_group(group, user, expected_revision=None):
     snapshot["confirmed_by"] = user.pk
     if prep.enabled():
         snapshot["todos"] = prep.package_todos(snapshot)
-    snapshot["digest"] = digest(snapshot)
     now = timezone.now()
     day = timezone.localtime(now).date()
     distribution = card_mold_plan(group.planned_molds, group.molds_per_card, group.snapshot.get("card_molds"))
@@ -489,6 +488,9 @@ def generate_group(group, user, expected_revision=None):
         cards.append(InternalCard(id=identity, group=group, card_no=f"FC-{day:%Y%m%d}-{identity.hex[:16].upper()}",
             sequence=index + 1, denominator=count, original_date=day,
             planned_molds=distribution[index]))
+    if snapshot.get("temperature_plan", {}).get("mode") == "FIRST":
+        snapshot["temperature_first_card_no"] = cards[0].card_no
+    snapshot["digest"] = digest(snapshot)
     InternalCard.objects.bulk_create(cards)
     group.status, group.generated_at, group.generated_by = "GENERATED", now, user
     group.snapshot = snapshot
@@ -508,6 +510,9 @@ def create_print(data, user):
     existing = replay(PrintJob, key, data)
     if existing:
         return existing
+    second = data.get("second_inspection", False)
+    if not isinstance(second, bool):
+        raise ValidationError({"second_inspection": "是否二检必须明确选择。"})
     ids = card_ids(data)
     cards = list(InternalCard.objects.select_for_update().filter(pk__in=ids).select_related("group").order_by("group_id", "sequence"))
     if len(cards) != len(set(map(str, ids))) or any(c.status != "ACTIVE" for c in cards):
@@ -515,16 +520,21 @@ def create_print(data, user):
     templates = {(c.group.snapshot["template"]["renderer"], c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c in cards}
     if len(templates) > 1:
         raise ValidationError({"card_ids": "不同模板渲染版本或纸张尺寸请分别打印，旧卡不套新模板。"})
+    if second and any(c.group.snapshot["template"]["renderer"] in (PREPARATION_RENDERER, "flowcard-preparation-20261119-v5") and not c.group.snapshot.get("route", {}).get("inspection") for c in cards):
+        raise ValidationError({"second_inspection": "所选原卡有不适用品检工序的卡，不能添加二检签名；请核对适用范围。"})
     active_items = PrintItem.objects.filter(card__in=cards, active=True)
     if data.get("resume_active") is True and active_items.exists():
         job_ids = list(active_items.values_list("job_id", flat=True).distinct())
         if len(job_ids) == 1:
             job = PrintJob.objects.get(pk=job_ids[0])
             if set(job.items.values_list("card_id", flat=True)) == {c.pk for c in cards} and not job.items.filter(active=False).exists():
+                if bool(job.template.get("second_inspection")) != second:
+                    raise ValidationError({"second_inspection": "原打印任务的格式已经冻结；请先继续/核对原任务，不覆盖原PDF。"})
                 return job
     if active_items.exists():
         raise ValidationError({"card_ids": "有未核对打印结果的任务，请继续原任务，不能重复补打。"})
-    job = PrintJob.objects.create(request_key=key, request_digest=digest(data), template=deepcopy(cards[0].group.snapshot["template"]), created_by=user)
+    template = {**deepcopy(cards[0].group.snapshot["template"]), "second_inspection": second}
+    job = PrintJob.objects.create(request_key=key, request_digest=digest(data), template=template, created_by=user)
     PrintItem.objects.bulk_create([PrintItem(job=job, card=c, proposed_reprint=c.reprint_count + (1 if c.printed_at else 0)) for c in cards])
     audit(job, "FILE_PREPARED_NOT_PRINTED", user, {"cards": list(map(str, ids))})
     return job
@@ -590,6 +600,12 @@ def record_event(data, user, *, entry_card=None):
     evidence = (required_text(data, "evidence") if data.get("evidence") or kind not in MEASURE_STAGES
                 else "实测登记；未另填依据说明")
     scope = required_text(data, "scope")
+    if kind == "WORK_GUIDANCE":
+        from .preparation import require_maintainer
+        require_maintainer(user)
+        if not business_at:
+            raise ValidationError({"business_at": "补充作业指示需填写通知时间，保存时保留经手账号和依据。"})
+        values = {"note": required_text(values, "note"), "quantity_effect": "NONE", "instruction_only": True}
     if kind == "BAKE":
         if not employee or not business_at:
             raise ValidationError({"employee_id": "实际二烤须登记作业人和实际业务时间。"})
@@ -730,6 +746,13 @@ def record_event(data, user, *, entry_card=None):
             values = {**values, "actual_run_id": actual_run.pk}
     if kind == "DEBURR" and values.get("oil") not in (None, "NORMAL", "SMALL", "NO"):
         raise ValidationError({"oil": "洒油只能单选，未勾不是否。"})
+    if kind == "DEBURR":
+        from .guidance import oil_instruction
+        values.pop("oil_warning", None)
+        values.pop("oil_judgment", None)
+        barred_cards = [c for c in cards if oil_instruction(c.group.snapshot.get("process_parameters", {}).get("oil", {})) == "要求：禁止洒油"]
+        if values.get("oil") in ("NORMAL", "SMALL") and barred_cards:
+            values.update(oil_warning="已确认禁止洒油，但实际登记洒油；保留实际，需负责人处理异常", oil_judgment="EXCEPTION")
     replaces = get_row(CardEvent, data["replaces_id"], "replaces_id") if data.get("replaces_id") else None
     if replaces and (replaces.kind != kind or set(replaces.cards.values_list("pk", flat=True)) != {c.pk for c in cards}):
         raise ValidationError({"replaces_id": "更正/复测须保留原记录类型和覆盖范围。"})
@@ -770,6 +793,12 @@ def record_event(data, user, *, entry_card=None):
         employee=employee, employee_name=employee.name if employee else "", business_at=business_at,
         evidence=evidence, scope=scope, replaces=replaces, created_by=user)
     event.cards.set(cards)
+    if kind == "DEBURR" and values.get("oil_judgment") == "EXCEPTION":
+        anomaly = CardEvent.objects.create(request_key="oil-anomaly:" + str(event.pk), request_digest=digest({"event": str(event.pk)}),
+            kind="ANOMALY", values={"note": values["oil_warning"], "deburr_event_id": str(event.pk), "quantity_effect": "NONE"},
+            employee=employee, employee_name=employee.name if employee else "", business_at=business_at, evidence=evidence, scope=scope, created_by=user)
+        anomaly.cards.set(barred_cards)
+        audit(anomaly, "OIL_EXCEPTION", user, {"deburr_event_id": str(event.pk)})
     if kind == "VOID":
         if any(c.events.exclude(kind="VOID").exists() or c.shipment_sources.exists() for c in cards):
             raise ValidationError({"card_ids": "已有使用事实的卡不能作废后换身份；保留原卡并更正。"})
