@@ -2,7 +2,7 @@ import hashlib
 import io
 import math
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -1057,6 +1057,7 @@ def _factory_product_signature(record):
 
 def _deduplicate_factory_products(records, issues):
     canonical_by_key = {}
+    canonical_by_drawing = {}
     duplicate_to_canonical = {}
     duplicate_source_keys = set()
     for record in records:
@@ -1066,8 +1067,21 @@ def _deduplicate_factory_products(records, issues):
         canonical = canonical_by_key.get(normalized_key)
         if canonical is None:
             canonical_by_key[normalized_key] = record
-            continue
-        if _factory_product_signature(canonical) != _factory_product_signature(record):
+            physical = tuple(_stable_component(record.get(field)) for field in ("specification", "material", "mold_no"))
+            if not all(physical) or not record.get("customer_product_no"):
+                continue
+            # Different customer projects can share a confirmed physical
+            # identity. Same-file reuse needs exact mold and process reference.
+            drawing = (physical, tuple(_stable_component(record.get(field)) for field in FACTORY_PRODUCT_COMPARE_FIELDS
+                                      if field != "customer_product_no"))
+            canonical = canonical_by_drawing.setdefault(drawing, record)
+            if canonical is record:
+                continue
+            canonical_by_key[normalized_key] = canonical
+        elif _factory_product_signature(canonical) != _factory_product_signature(record) and not (
+            all(_stable_component(canonical.get(field)) == _stable_component(record.get(field))
+                for field in FACTORY_PRODUCT_COMPARE_FIELDS if field != "customer_product_no")
+        ):
             issues.append(
                 _issue(
                     "error",
@@ -1302,6 +1316,8 @@ def _parse_factory_work_contact(sheets, sha256, issues, original_name=""):
                 "notes": "",
                 "product_spec_source_key": product_record["source_key"],
                 "source_system": source_system,
+                "customer_code": _mapped_cell(cells, main_mapping, "客户代号", "客户").display_text,
+                "inspection_project_no": _mapped_cell(cells, main_mapping, "项目号").display_text,
                 "source_document_at": source_document_at,
                 "external_key": _external_key(
                     "factory-order", source_system, order_no, item_no
@@ -1429,6 +1445,19 @@ def _parse_factory_work_contact(sheets, sha256, issues, original_name=""):
                 "unit",
             ]
             records.append(record)
+    criterion_codes = defaultdict(set)
+    for record in records:
+        if record["record_type"] == RECORD_CRITERION and record.get("order_source_key") and record.get("customer"):
+            criterion_codes[record["order_source_key"]].add(str(record["customer"]).strip().upper())
+    for order_record in (r for r in records if r["record_type"] == RECORD_ORDER):
+        codes = criterion_codes.get(order_record["source_key"], set())
+        if len(codes) == 1:
+            if not order_record.get("customer_code"):
+                order_record["customer_code"] = next(iter(codes))
+            elif _stable_component(order_record["customer_code"]) not in {_stable_component(value) for value in codes}:
+                issues.append(_issue("warning", "订单表与检验表客户代号不一致，确认前不采用客户标准。", sheet=order_record["sheet"], row=order_record["row"], field="customer_code"))
+        elif len(codes) > 1:
+            issues.append(_issue("warning", "同一订单项次存在多个客户代号，客户标准待核，不能自动选择。", sheet=order_record["sheet"], row=order_record["row"], field="customer_code"))
     for product_record in products_by_source_key.values():
         if (
             not product_record.get("customer_product_no")
@@ -2106,6 +2135,7 @@ def _product_match(record, *, lock=False):
         "ambiguous_product_resolved",
         "ambiguous_product_error_added",
         "unsafe_missing_identity",
+        "shared_customer_project",
     ):
         record.pop(key, None)
     queryset = ProductSpecification.objects.all()
@@ -2168,6 +2198,27 @@ def _product_match(record, *, lock=False):
         if len(matches) > 1:
             record["ambiguous_product_identity"] = True
             record["ambiguous_product_ids"] = [item.pk for item in matches]
+    if remembered_match:
+        return remembered_match
+    if (record.get("source_type") == BusinessImportBatch.SourceType.FACTORY_WORK_CONTACT
+            and not record.get("ambiguous_product_identity")):
+        scope = queryset.filter(is_active=True, specification__iexact=record["specification"], material__iexact=record["material"])
+        linked_ids = ProductInspectionCriterion.objects.filter(
+            order__isnull=False, source_batch__source_type=BusinessImportBatch.SourceType.FACTORY_WORK_CONTACT,
+            project_no__iexact=record["customer_product_no"],
+        ).values("product_specification_id")
+        linked, ambiguous = _unique_match(scope.filter(pk__in=linked_ids)) if record.get("customer_product_no") else (None, False)
+        if not linked and not ambiguous and record.get("mold_no"):
+            # A different project code need not mean a second physical product,
+            # but exact specification, material and mold must corroborate it.
+            linked, ambiguous = _unique_match(scope.filter(mold_no__iexact=record["mold_no"]))
+        if ambiguous:
+            record["ambiguous_product_identity"] = True
+            record["ambiguous_product_ids"] = list(scope.values_list("pk", flat=True)[:20])
+            return None
+        if linked:
+            record["shared_customer_project"] = bool(record.get("customer_product_no"))
+            return linked
     # A manually linked standard mold code may differ from the customer's raw
     # mold number used in a new file. Do not create another product merely
     # because the saved normalized key contains the linked model's code.
@@ -2341,6 +2392,9 @@ def _prepare_record_actions(records, source_type, issues, *, lock=False):
             continue
         match = _product_match(record, lock=lock)
         record["match_id"] = match.pk if match else None
+        if match and record.get("shared_customer_project"):
+            record["source_fields"] = [field for field in record.get("source_fields", [])
+                                       if field not in ("customer_product_no", "primary_curing", "secondary_curing", "mold_no", "mold_size", "material_length", "cut_weight")]
         if match and match.mold_model_id:
             record["source_fields"] = [field for field in record.get("source_fields", []) if field != "mold_model_id"]
         if not match:
@@ -2744,6 +2798,14 @@ def business_preview_result(batch, records, issues):
         "inspection_criteria": sum(r["record_type"] == RECORD_CRITERION for r in records),
     }
     error_rows = {(item.get("sheet"), item.get("row")) for item in errors}
+    inspection_by_order = {}
+    if batch.source_type == BusinessImportBatch.SourceType.FACTORY_WORK_CONTACT:
+        from .customer_inspection import build_snapshot
+        grouped = {}
+        for row in records:
+            if row["record_type"] == RECORD_CRITERION:
+                grouped.setdefault(row.get("order_source_key"), []).append(row)
+        inspection_by_order = {key: build_snapshot(rows, {}) for key, rows in grouped.items()}
     return {
         "token": str(batch.pk),
         "source_type": batch.source_type,
@@ -2769,6 +2831,13 @@ def business_preview_result(batch, records, issues):
                 "changes": record.get("changes", {}),
                 "order_no": record.get("order_no", ""),
                 "item_no": record.get("item_no", ""),
+                "customer_code": inspection_by_order.get(record["source_key"], {}).get("customer_code", "") if record["record_type"] == RECORD_ORDER else record.get("customer", ""),
+                "inspection_category": record.get("category", ""),
+                "inspection_version": record.get("version", ""),
+                "inspection_item": record.get("inspection_item", ""),
+                "inspection_lower": record.get("lower_limit", ""),
+                "inspection_upper": record.get("upper_limit", ""),
+                "inspection_unit": record.get("unit", ""),
                 "order_date": record.get("order_date"),
                 "order_quantity": record.get("order_quantity"),
                 "due_date": record.get("due_date"),
@@ -3167,6 +3236,9 @@ def commit_business_batch(batch, user, *, cut_length_acknowledged=False, cut_len
             mold_links_changed, mold_warnings = apply_mold_selections(
                 records, current.payload.get("mold_selections", {}), product_specs, user=user, batch=current,
             )
+            if current.source_type == BusinessImportBatch.SourceType.FACTORY_WORK_CONTACT:
+                from .customer_inspection import record_import
+                record_import(records, imported_orders, current, user)
             committed_at = timezone.now()
             payload = current.payload
             payload["rows"] = json_safe(records)

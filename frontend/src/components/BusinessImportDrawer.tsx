@@ -224,7 +224,8 @@ function BusinessImportDrawerForm({ open, context = 'orders', onClose }: Props) 
     { title: '项次', dataIndex: 'item_no', width: 85, render: (value) => value || '-' },
     { title: '规格', dataIndex: 'specification', width: 180, render: (value) => value || '-' },
     { title: '材质', dataIndex: 'material', width: 130, render: (value) => value || '-' },
-    { title: '识别摘要', dataIndex: 'summary', width: 280, ellipsis: true, render: (value) => value || '-' },
+    { title: '客户代号 / 检验', width: 180, render: (_, row) => row.record_type === 'ORDER' ? (row.customer_code || '—') : row.record_type === 'INSPECTION_CRITERION' ? `${row.customer_code || '待核'} · ${row.inspection_category || '类别待核'} / ${row.inspection_version || '版本待核'}` : '—' },
+    { title: '识别摘要', dataIndex: 'summary', width: 280, render: (value, row) => row.record_type === 'INSPECTION_CRITERION' ? `${row.inspection_item || '项目待核'}：${row.inspection_lower ?? '—'} ～ ${row.inspection_upper ?? '—'} ${row.inspection_unit || ''}` : value || '-' },
     { title: '拟变更字段（原值 → 新值）', dataIndex: 'changes', width: 360, render: renderChanges },
     { title: '校验', dataIndex: 'valid', fixed: 'right', width: 80, render: (value) => <Tag color={value === false ? 'error' : 'success'}>{value === false ? '失败' : '通过'}</Tag> },
   ]
@@ -299,7 +300,7 @@ function BusinessImportDrawerForm({ open, context = 'orders', onClose }: Props) 
           {preview.issues.length ? (
             <Table rowKey={(row) => `${row.sheet}-${row.row}-${row.field}-${row.message}`} size="small" dataSource={preview.issues} columns={issueColumns} pagination={{ pageSize: 6 }} scroll={{ x: 700 }} />
           ) : <Alert type="success" showIcon icon={<CheckCircleOutlined />} title={preview.cut_length_check?.alert_count ? '格式校验通过，请同时核对上方料长提醒' : '预检通过，可以导入'} />}
-          <Table className="business-import-table" rowKey="row_key" size="small" dataSource={preview.rows} columns={rowColumns} pagination={{ pageSize: 10 }} scroll={{ x: 1655 }} />
+          <Table className="business-import-table" rowKey="row_key" size="small" dataSource={preview.rows} columns={rowColumns} pagination={{ pageSize: 10 }} scroll={{ x: 1835 }} />
           <div className="import-commit-bar">
             <span>确认后将一次性处理 {validRows} 条业务记录。</span>
             <Space wrap>

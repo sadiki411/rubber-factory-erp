@@ -15,6 +15,7 @@ import { FlowEventSummary, FlowMeasurementSummary, flowTime, type CouponSample }
 import { flowApi, flowLimitText, applicableFlowCriteria, flowRequestKey, finishFlowRequest, isInternalCardCode, DEFAULT_PAPER_LAYOUT, PAPER_LAYOUT_LABEL, type PaperLayout, type Criterion, type FlowEvent, type FlowGroup, type PrintJob, type FlowTrace } from '../flowcards'
 import { safeBusinessReturn } from '../navigation'
 import './FlowCardsPage.css'
+import { CustomerInspectionGroups } from '../components/CustomerInspectionPanel'
 
 const WHOLE: Record<string, string> = { UNKNOWN: '待确认', REQUIRED: '需要整模', NOT_REQUIRED: '不需整模', SYSTEM_UNREGISTERED: '需整模·系统未登记', PARTIAL: '部分处理', COMPLETED: '整包作业完成', EXCEPTION: '异常待处理' }
 const SOURCE_STATE: Record<string, string> = { NEEDS_REVIEW: '更正后/身份缺项待核对', CONFIRMED: '有明确关联', REVOKED: '原错误关联已撤销（留史）', SUPERSEDED: '已由重新核对版本替代' }
@@ -325,6 +326,7 @@ export function FlowCardDetailPage() {
         <FlowMeasurementSummary card={data} disabled={disabled} measure={measure} />
         <Descriptions column={{ xs: 1, sm: 2 }} items={[
           { key: 'product', label: '产品', children: `${data.snapshot.product.specification} / ${data.snapshot.product.material}` },
+          ...(data.snapshot.orders.some(o=>o.customer_code !== undefined) ? [{key:'customer', label:'发卡时客户代号', children: [...new Set(data.snapshot.orders.map(o=>o.customer_code || '待确认'))].join('、')}] : []),
           { key: 'plan', label: '原计划', children: `${data.planned_molds}M | ${data.sequence}/${data.denominator}批 · ${data.original_date}` },
           { key: 'source', label: '实物来源', children: data.source_status === 'PLAN_ONLY' ? '仅计划关联，实物未在系统核对' : '已登记实物来源核对（查看原记录依据）' },
           { key: 'whole', label: '整模登记', children: WHOLE[data.whole_mold_status] || data.whole_mold_status },
@@ -332,6 +334,10 @@ export function FlowCardDetailPage() {
           { key: 'anomaly', label: '人工异常待处理', children: data.unresolved_anomalies },
         ]} />
         <Space wrap>{data.snapshot.orders.map((o) => <Button key={o.id} href={`/order-overview/${o.id}?return_to=${encodeURIComponent(location.pathname)}`}>{o.order_no}/{o.item_no || '-'}</Button>)}{data.snapshot.run_id && <Button href={`/production/records/${data.snapshot.run_id}?return_to=${encodeURIComponent(location.pathname)}`}>原生产任务</Button>}</Space>
+        {!!data.snapshot.customer_inspections?.length && <details><summary>发卡时的翔邦检验标准</summary>
+          <Button href={`/api/flow-cards/cards/${id}/customer-inspection/`}>打印发卡标准附件</Button>
+          {data.snapshot.customer_inspections.map(item=><Card key={item.order_id} size="small" title={`${item.order_no} / ${item.item_no}${item.status==='INHERITED'?' · 沿用版':''}`}><CustomerInspectionGroups groups={item.groups} /></Card>)}
+        </details>}
         <Alert type="info" title="定点不自动扣孔；签名/照片/出货不代表其他工序已完成" description={data.paper_status} />
         {data.whole_mold_status === 'SYSTEM_UNREGISTERED' && <Alert type="warning" title="需整模 · 系统未登记；请核对纸卡，不认定现场未做" />}
         {data.unresolved_anomalies > 0 && <Alert type="warning" title={`异常待处理 ${data.unresolved_anomalies} 条；出货不会自动关闭异常`} />}

@@ -7,6 +7,7 @@ import { flowApi, flowLimitText, flowRequestKey, finishFlowRequest, splitPlanned
 import { ProductStandardEditor as StandardEditor } from './ProductStandardEditor'
 import { PreparationGuidancePanel } from './PreparationGuidancePanel'
 import { FlowPrintLayout, FlowPrintPreview } from './FlowPrintLayout'
+import { OrderCustomerInspectionPanel } from './CustomerInspectionPanel'
 
 const STATE = { LEGACY: '旧记录·待复核适用性', DRAFT: '草稿', ACTIVE: '生效', SUPERSEDED: '已被替代' }
 const PARAMETERS = [
@@ -98,7 +99,7 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
   const active = data.runs.filter((r)=>!r.historical)
   return <>
     <Card title={`${data.product.specification} / ${data.product.material} · 制卡准备`} extra={<Button onClick={refresh}>刷新服务器资料</Button>}>
-      <Typography.Paragraph>{data.orders.map((o)=>`${o.order_no}/${o.item_no||'-'}`).join('、')} · M=模；制卡不报产量、不动库存或交付</Typography.Paragraph>
+      <Typography.Paragraph>{data.orders.map((o)=>`${o.order_no}/${o.item_no||'-'}${o.customer_code ? `（客户 ${o.customer_code}）` : ''}`).join('、')} · M=模；制卡不报产量、不动库存或交付</Typography.Paragraph>
       <PreparationGuidancePanel data={currentContext} group={group} standardId={standardId} />
       <Descriptions title="已带入" column={{xs:1,sm:2}} items={[{key:'run',label:'计划来源',children:data.run_id?`任务#${data.run_id} · 已确认计划${data.runs.find((r)=>r.id===data.run_id)?.planned_molds ?? '见原任务'}模`:'订单直接安排：下方填写预计生产模数即可，不必先建生产任务'}, {key:'standard',label:'采用依据',children:group?.status==='GENERATED'?`原卡 v${group.snapshot.standard?.version||'未登记'} · ${group.snapshot.standard?.source||'依据见原卡'}`:standard?`v${standard.version} · ${standard.source}`:'由负责人核对上方逐项待确认资料'}, {key:'saved',label:'本次准备记录',children:group?`${group.id} · 版本${group.revision} · ${group.updated_at} · 经手人#${group.updated_by||'未记录'}`:'尚未保存（查看不会自动创建）'}]} />
       {group?.status!=='GENERATED'&&currentContext.missing.length>0 && <Alert type="warning" title="新计划还需处理（产品标准负责人 / 管理员）" description={currentContext.missing.join('；')} />}
@@ -108,6 +109,7 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
       <Space wrap style={{marginBlock:12}}><Button onClick={()=>setEditor(true)}>查看标准、候选与来源 / 维护</Button>{data.existing_groups.map((g)=><Button key={g.id} onClick={()=>applyGroup(g)}>{g.status==='GENERATED'?'查看/补打原卡':'继续上次准备'} {g.id.slice(0,8)} · {g.range_start?`${g.range_start}–${g.range_end}模`:'范围待核'}</Button>)}</Space>
       {Object.keys(data.raw_process_reference||{}).length>0 && <details><summary>完整产品参数（只读，条重单位g，不进入库存）</summary><Descriptions column={{xs:1,sm:2}} items={Object.entries(data.raw_process_reference||{}).map(([key,value])=>({key,label:({primary_curing:'一次加硫原文',secondary_curing:'二烤原文',total_cavities:'总孔',effective_cavities:'有效孔',actual_material_length:'实际料长',actual_cut_weight:'实际料重',large_strip_weight_g:'大条条重g',large_strip_count:'大条数量',small_strip_weight_g:'小条条重g',small_strip_count:'小条数量',forming_material_weight_g:'一模排料总重g'} as Record<string,string>)[key]||key,children:value==null||value===''?'未登记':String(value)}))} /></details>}
     </Card>
+    {data.orders.length === 1 && data.orders[0].customer_code !== undefined && <OrderCustomerInspectionPanel key={data.orders[0].id} orderId={data.orders[0].id} compact />}
     {group?.status==='GENERATED'?<Card title={`原卡组 ${group.id.slice(0,8)} · ${group.planned_molds}模${group.range_start?`（${group.range_start}–${group.range_end}）`:''}`}>
       <Alert type="success" title="本组已发号；重复打开查看原卡，不另开首次生产" />
       {cards.isError?<Alert type="error" title="卡列表读取失败，不视为没有卡" />:cards.isPending?<Typography.Paragraph>正在读取原卡与岗位记录…</Typography.Paragraph>:<Space wrap>{cards.data?.results.map((c)=><div key={c.id} style={{maxWidth:'100%'}}><Button href={`/flow-cards/cards/${c.id}`}>{c.card_no} · {c.planned_molds}模</Button><Typography.Paragraph type="secondary" style={{maxWidth:360}}>{c.process_todos?.map((t)=>`${t.label}·${t.role}：${t.state==='SYSTEM_UNREGISTERED'?'系统未登记':`有记录（${t.employees.join('、')||'看原单'}），核对范围`}`).join('；')}</Typography.Paragraph></div>)}</Space>}

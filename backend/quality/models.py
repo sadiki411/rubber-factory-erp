@@ -231,6 +231,7 @@ class QualityOrder(TimeStampedModel):
     source_row = models.PositiveIntegerField(null=True, blank=True)
     source_key = models.CharField(max_length=255, blank=True, default="", db_index=True)
     source_system = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    customer_code = models.CharField("客户代号", max_length=150, blank=True, default="", db_index=True)
     external_key = models.CharField(max_length=500, blank=True, default="", db_index=True)
     source_document_at = models.DateTimeField(null=True, blank=True)
     last_imported_at = models.DateTimeField(null=True, blank=True)

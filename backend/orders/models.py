@@ -334,6 +334,34 @@ class ProductInspectionCriterion(TimeStampedModel):
         return super().save(*args, **kwargs)
 
 
+class OrderInspectionSource(models.Model):
+    """Order-scoped customer requirements, separate from the manufacturing route."""
+    order = models.OneToOneField("quality.QualityOrder", on_delete=models.PROTECT, related_name="inspection_source")
+    document = models.ForeignKey(BusinessImportBatch, on_delete=models.PROTECT, null=True)
+    snapshot = models.JSONField(default=dict)
+    recorded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True)
+    recorded_at = models.DateTimeField(auto_now=True)
+
+
+class CustomerInspectionReview(models.Model):
+    product = models.ForeignKey(ProductSpecification, on_delete=models.PROTECT)
+    order = models.ForeignKey("quality.QualityOrder", on_delete=models.PROTECT)
+    customer_code = models.CharField(max_length=150)
+    project_no = models.CharField(max_length=150)
+    digest = models.CharField(max_length=64)
+    snapshot = models.JSONField(default=dict)
+    is_current = models.BooleanField(default=True)
+    confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    confirmed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["product", "digest"], name="customer_inspection_review_digest"),
+            models.UniqueConstraint(fields=["product", "customer_code", "project_no"], condition=Q(is_current=True),
+                                    name="customer_inspection_review_current"),
+        ]
+
+
 class MaterialReceipt(TimeStampedModel):
     order = models.ForeignKey(
         "quality.QualityOrder",

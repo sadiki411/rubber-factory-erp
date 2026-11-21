@@ -216,7 +216,7 @@ export function OrdersPage() {
   }
 
   const columns: TableColumnsType<Order> = [
-    { title: '订单号 / 项次', key: 'order', fixed: mobile ? undefined : 'left', width: compactTable ? 150 : 205, render: (_, row) => <span><Button disabled={readOnly} type="link" className="table-primary-link" onClick={() => openForm(row)}>{row.order_no}{row.item_no ? ` / ${row.item_no}` : ''}</Button><br /><Button type="link" href={`/order-overview/${row.id}`}>完整查看</Button></span> },
+    { title: '订单号 / 项次', key: 'order', fixed: mobile ? undefined : 'left', width: compactTable ? 150 : 205, render: (_, row) => <span><Button disabled={readOnly} type="link" className="table-primary-link" onClick={() => openForm(row)}>{row.order_no}{row.item_no ? ` / ${row.item_no}` : ''}</Button><br /><Button type="link" href={`/order-overview/${row.id}`}>完整查看</Button>{row.customer_code && <Tag>客户 {row.customer_code}</Tag>}</span> },
     { title: '流程卡', key: 'process_card', fixed: mobile ? undefined : 'left', width: compactTable ? 130 : 190, render: (_, row) => <span>{exactOrderValue(row.process_card_text)}{(row.process_card_count !== null && row.process_card_count !== undefined) || (row.process_card_covered_quantity !== null && row.process_card_covered_quantity !== undefined) ? <><br /><Typography.Text type="secondary">{exactOrderValue(row.process_card_count, ' 张')} · 覆盖 {exactOrderValue(row.process_card_covered_quantity)}</Typography.Text></> : null}<br /><ProcessCardStatusTag status={row.process_card_status} /></span> },
     { title: '规格 / 产品', key: 'specification', fixed: mobile ? undefined : 'left', width: compactTable ? 135 : 220, render: (_, row) => <span>{row.specification || '-'}<br /><Typography.Text type="secondary">{row.product_name || row.product_code || '-'}</Typography.Text></span> },
     { title: '材质', dataIndex: 'material', fixed: mobile ? undefined : 'left', width: compactTable ? 85 : 125, render: (value) => value || '-' },
@@ -368,6 +368,7 @@ export function OrdersPage() {
                       <span><small>最后更新</small><b>{formattedTimestamp(record.last_data_updated_at || record.updated_at)}</b></span>
                       {((record.process_card_count !== null && record.process_card_count !== undefined) || (record.process_card_covered_quantity !== null && record.process_card_covered_quantity !== undefined)) && <span><small>流程卡明细</small><b>{exactOrderValue(record.process_card_count, ' 张')} / 覆盖 {exactOrderValue(record.process_card_covered_quantity)}</b></span>}
                     </div>
+                    {record.customer_code && <Tag>客户 {record.customer_code}</Tag>}
                     {record.status === 'COMPLETED' && <div onClick={event => event.stopPropagation()} style={{ marginBottom: 12 }}><OrderYieldCell value={record.final_yield} onOpen={() => setYieldOrder(record)} /></div>}
                     <Button block href={`/order-overview/${record.id}`} onClick={(event) => event.stopPropagation()} style={{ marginBottom: 8 }}>完整查看 / 工序流转卡</Button>
                     <Button block type="primary" href={`/flow-cards?order_id=${record.id}&order_plan=1&return_to=${encodeURIComponent(location.pathname+location.search)}`} onClick={(event)=>event.stopPropagation()} style={{marginBottom:8}}>制卡 / 打印（填写预计模数）</Button>

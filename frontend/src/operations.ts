@@ -41,7 +41,7 @@ export interface OrderTraceRow {
   url: string | null
 }
 export interface OrderOverviewResult {
-  order: { id: number; order_no: string; item_no: string; specification: string; material: string; product_name: string; status: string; due_date: string | null; order_quantity: number }
+  order: { id: number; order_no: string; item_no: string; specification: string; material: string; product_name: string; customer_code?: string; status: string; due_date: string | null; order_quantity: number }
   summary: { net_delivered: number; delivery_remaining: number; production_progress_quantity: number; production_status: string; delivery_breakdown?: { all_effective_shipments: number; effective_returns: number; recorded_returns: number; return_clamp_difference: number; physical_shipments: number } }
   counts: Record<OrderTraceSection, number>
   section: OrderTraceSection

@@ -123,10 +123,14 @@ def standard_data(standard):
             "applicable_order_id": standard.applicable_order_id, "created_by": standard.created_by_id}
 
 
-def requirement_warnings(product, orders, standard=None):
+def requirement_warnings(product, orders, standard=None, *, separate_customer_reference=False):
     """Expose differing source requirements; never resolve them by newest timestamp."""
-    rows = list(ProductInspectionCriterion.objects.filter(product_specification=product).filter(
-        Q(order__isnull=True) | Q(order_id__in=[o.pk for o in orders])))
+    rows = ProductInspectionCriterion.objects.filter(product_specification=product).filter(
+        Q(order__isnull=True) | Q(order_id__in=[o.pk for o in orders]))
+    if separate_customer_reference:
+        from orders.customer_inspection import FACTORY
+        rows = rows.exclude(order__isnull=False, source_batch__source_type=FACTORY)
+    rows = list(rows)
     by_name = {}
     for row in rows:
         meta = row.raw_data or {}
@@ -325,7 +329,7 @@ def card_mold_plan(planned, per_card, custom=None):
     return [min(per_card, planned - i * per_card) for i in range(count)]
 
 
-def group_plan(data):
+def group_plan(data, *, separate_customer_reference=False):
     product = get_row(ProductSpecification, data.get("product_id"), "product_id")
     run = get_row(ProductionRun, data["run_id"], "run_id") if data.get("run_id") else None
     ids = data.get("order_ids", [])
@@ -385,7 +389,8 @@ def group_plan(data):
         "run_id": run.pk if run else None, "mold_id": mold_id,
         "effective_cavities": run.cavities if run else None, "confirmed_total_cavities": total,
         "cavities_basis": data.get("cavities_basis", ""), "standard": standard_data(standard) if standard else None,
-        "requirement_warnings": requirement_warnings(product, orders, standard), "requirements_review": str(data.get("requirements_review", "")),
+        "requirement_warnings": requirement_warnings(product, orders, standard, separate_customer_reference=separate_customer_reference),
+        "requirements_review": str(data.get("requirements_review", "")),
         "whole_mold": whole, "whole_mold_basis": str(data.get("whole_mold_basis", "")),
         "diagram_id": diagram.pk if diagram else None, "template": {**TEMPLATE,
             "width_mm": integer(data.get("paper_width_mm", 190), "paper_width_mm", minimum=180, maximum=220),

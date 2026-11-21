@@ -114,9 +114,16 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, op
             extra.append(identity)
             identity = compact_identity(p, font, (span-4)*mm)
 
+        customer = "客户 " + "、".join(sorted({
+            (o.get("customer_code") or "待确认") if "customer_code" in o else (o.get("customer") or "未确认")
+            for o in snap["orders"]
+        }))
+        order_line = "订单/项次 " + "、".join(f"{o['order_no']}/{o['item_no'] or '-'}" for o in snap["orders"]) + "    " + customer
+        if any(o.get("customer_code") for o in snap["orders"]) and len(wrap(display_text(order_line), (span-4)*mm, font, 9)) > 1:
+            extra.append(order_line)
+            order_line = "订单/项次见本卡续页    " + customer
         y = 21
-        for value in [identity,
-                      "订单/项次 " + "、".join(f"{o['order_no']}/{o['item_no'] or '-'}" for o in snap["orders"]) + "    客户 " + "、".join(sorted({o.get('customer') or '未确认' for o in snap["orders"]}))]:
+        for value in [identity, order_line]:
             box(5,y,span,6); field(6,y,span-2,6,value); y+=6
         box(5,y,span,6)
         field(6,y,span-49,6,f"检验依据 {'v'+str(snap['standard']['version']) if snap.get('standard') else '待确认'}{' · 有项目待确认' if pending else ''}")
@@ -197,7 +204,7 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, op
             if mode == "FIRST" and card.sequence > 1 and snap.get("temperature_first_card_no"):
                 temp_note = f"接触测温引用首卡记录 {snap['temperature_first_card_no']}；换模/调机、异常按实际复测"
             warnings = [f"{note['label']}{'单位冲突' if '单位冲突' in note['warning'] else '数值/单位待核'}，找负责人核原单"
-                        for note in snap.get("guidance", []) if note.get("key") in ("primary_curing_time", "pressure") and note.get("warning") and (note.get("raw_reference") or note.get("value") != "未提供")]
+                        for note in snap.get("guidance", []) if note.get("key") in ("primary_curing_time", "pressure") and note.get("warning") and not note["warning"].startswith("翔邦") and (note.get("raw_reference") or note.get("value") != "未提供")]
             content = temp_note + ("；"+"；".join(warnings) if warnings else "")
             h=max(6,len(wrap(display_text(content),(span-4)*mm,font,8))*9/mm+1.5)
             ensure_space(h); box(5,y,span,h); field(6,y,span-2,h,content,8); y+=h

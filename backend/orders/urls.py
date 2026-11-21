@@ -1,6 +1,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 from .overview_views import OrderOverviewView, WorkbenchView
+from .customer_inspection_views import OrderCustomerInspectionView, OrderCustomerInspectionPrintView, ProductCustomerInspectionView
 
 from .views import (
     BusinessImportCommitView,
@@ -36,6 +37,9 @@ router.register(
 
 
 urlpatterns = [
+    path("orders/<int:pk>/customer-inspection/", OrderCustomerInspectionView.as_view(), name="order-customer-inspection"),
+    path("orders/<int:pk>/customer-inspection/print/", OrderCustomerInspectionPrintView.as_view(), name="order-customer-inspection-print"),
+    path("product-specifications/<int:pk>/customer-inspection/", ProductCustomerInspectionView.as_view(), name="product-customer-inspection"),
     path("workbench/", WorkbenchView.as_view(), name="orders-workbench"),
     path("orders/<int:pk>/overview/", OrderOverviewView.as_view(), name="order-overview"),
     path("imports/purchase-images/recognize/", PurchaseImageRecognizeView.as_view(), name="purchase-image-recognize"),

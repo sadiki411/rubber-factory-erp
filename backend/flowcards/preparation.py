@@ -15,6 +15,7 @@ from rest_framework.exceptions import APIException, PermissionDenied, Validation
 
 from erp.permissions import is_read_only_user
 from orders.identities import order_customer_key
+from orders import customer_inspection as ci
 from orders.models import ProductInspectionCriterion, ProductSpecification
 from production.models import ProductionRun
 from quality.models import QualityOrder
@@ -117,21 +118,30 @@ def resolve(params):
     return product, run, orders, candidates
 
 
-def applicable_standards(product, run, orders):
+def applicable_standards(product, run, orders, inspections=None):
     if not run and not orders:
         # Product-profile inspection is not an applicability decision for a job.
         return list(StandardRevision.objects.filter(product=product).order_by("-version"))
     customers = {order_customer_key(o) for o in orders}
     customer = next(iter(customers)) if len(customers) == 1 else None
+    if inspections is None:
+        inspections = ci.get_order_snapshots(orders)
+    codes = {s["customer_code"] for s in inspections.values()}
+    customer_code = next(iter(codes)) if len(codes) == 1 and len(inspections) == len(orders) else ""
     qs = StandardRevision.objects.filter(product=product).filter(Q(mold__isnull=True) | Q(mold_id=run.mold_id if run else None))
     # Unknown customer never grants applicability to a different known customer.
-    qs = qs.filter(Q(customer_key="") | Q(customer_key=customer or ""))
+    scope = Q(customer_key="") | Q(customer_key=customer or "")
+    if customer_code:
+        scope = (Q(customer_key="") | Q(customer_key__iexact=customer_code) |
+                 Q(customer_key=customer or "", source_kind__in=("FACTORY_PROCESS", "FACTORY_EXPERIENCE")))
+    qs = qs.filter(scope)
     ids = [o.pk for o in orders]
     qs = qs.filter(Q(applicable_order__isnull=True) | Q(applicable_order_id__in=ids))
     result = []
     for row in qs.order_by("-version"):
         applicability = row.snapshot.get("applicability", {})
-        if applicability.get("customer_product_no") and applicability["customer_product_no"] != product.customer_product_no:
+        project_nos = {v["project_no"] for v in inspections.values() if v["project_no"]} or {product.customer_product_no}
+        if applicability.get("customer_product_no") and any(ci.code(v) != ci.code(applicability["customer_product_no"]) for v in project_nos):
             continue
         if applicability.get("station_id") and (not run or applicability["station_id"] != run.station_id):
             continue
@@ -159,7 +169,8 @@ def source_rows(product, orders):
     ids = [o.pk for o in orders]
     customers = {order_customer_key(o) for o in orders}
     qs = ProductInspectionCriterion.objects.filter(product_specification=product).filter(Q(order__isnull=True) | Q(order_id__in=ids)).select_related("source_batch")
-    return [c for c in qs.order_by("id") if not customers or not c.customer or c.customer.casefold() in customers]
+    return [c for c in qs.order_by("id") if not customers or not c.customer or c.customer.casefold() in customers
+            or (c.order_id in ids and c.source_batch and c.source_batch.source_type == ci.FACTORY)]
 
 
 def criterion_data(c):
@@ -169,7 +180,7 @@ def criterion_data(c):
             "source_batch_id": str(c.source_batch_id) if c.source_batch_id else None,
             "source_file": c.source_batch.original_name if c.source_batch_id else "",
             "source_url": f"/api/flow-cards/source-files/{c.source_batch_id}/" if c.source_batch_id else None,
-            "source_sheet": c.source_sheet, "source_row": c.source_row, "version": c.version,
+            "source_sheet": c.source_sheet, "source_row": c.source_row, "version": c.version, "category": c.category, "project_no": c.project_no,
             "raw_data": raw, "stage": raw.get("stage"), "method": raw.get("method", ""),
             "limit_mode": raw.get("limit_mode"), "upper_inclusive": raw.get("upper_inclusive", True),
             "lower_inclusive": raw.get("lower_inclusive", True)}
@@ -180,6 +191,10 @@ def conflict_items(product, orders, standard):
     rows = source_rows(product, orders)
     by_name = defaultdict(list)
     for row in rows:
+        # Unclassified Xiangbang source groups are printable references. Neither
+        # 2001 nor 6001 is assigned to an actual shop-floor inspection stage.
+        if row.order_id and row.source_batch and row.source_batch.source_type == ci.FACTORY:
+            continue
         by_name[(row.inspection_item, (row.raw_data or {}).get("stage", ""))].append(row)
     chosen = standard.snapshot.get("criteria", []) if standard else []
     problems = []
@@ -231,7 +246,8 @@ def context(params, user):
     from .services import standard_data
     from .views import group_data
     product, run, orders, runs = resolve(params)
-    standards = applicable_standards(product, run, orders)
+    inspections = ci.get_order_snapshots(orders)
+    standards = applicable_standards(product, run, orders, inspections)
     active = [s for s in standards if s.status == "ACTIVE"]
     # Order exceptions must be explicitly selected if they coexist with a base.
     chosen = active[0] if orders and len(active) == 1 else None
@@ -268,16 +284,16 @@ def context(params, user):
             "can_maintain_standard": can_maintain(user),
             "product": {"id": product.pk, "name": product.product_name, "specification": product.specification, "material": product.material, "customer_product_no": product.customer_product_no},
             "order_plan": not bool(run), "run_id": run.pk if run else None, "mold_id": run.mold_id if run else None,
-            "order_ids": [o.pk for o in orders], "orders": [{"id": o.pk, "order_no": o.order_no, "item_no": o.item_no, "customer": order_customer_key(o)} for o in orders],
+            "order_ids": [o.pk for o in orders], "orders": [card_order(o, inspections) for o in orders],
             "runs": [{"id": r.pk, "segment_no": r.segment_no, "status": r.status, "status_display": r.get_status_display(), "station_id": r.station_id, "mold_id": r.mold_id, "planned_molds": r.planned_mold_count, "historical": not is_open_run(r), "ranges": ranges_for(r)} for r in runs],
             "suggested_molds": available[0][1] - available[0][0] + 1 if available else None,
             "available_ranges": available, "occupied_ranges": occupied,
             "preferred_group": group_data(preferred) if preferred else None,
             "existing_groups": [group_data(g) for g in visible_groups], "missing": missing,
             "original_reference_reviews": original_reviews,
-            "guidance": summary(product, chosen),
+            "guidance": summary(product, chosen, order_reference=common_order_reference(inspections)),
             "standard_candidates": [{"id": v.pk, "version": v.version, "customer_key": v.customer_key,
-                "source": v.source, "source_kind": v.source_kind, "guidance": summary(product, v)} for v in active],
+                "source": v.source, "source_kind": v.source_kind, "guidance": summary(product, v, order_reference=common_order_reference(inspections))} for v in active],
             "standards": [standard_data(s) for s in standards], "auto_standard_id": chosen.pk if chosen and chosen.status == "ACTIVE" and all(c["resolved_by_standard"] for c in conflicts) else None,
             "criteria": [criterion_data(c) for c in source_rows(product, orders)[:50]],
             "criteria_count": len(source_rows(product, orders)), "conflicts": conflicts,
@@ -292,6 +308,27 @@ def lock_product(product):
     ProductSpecification.objects.filter(pk=product.pk).update(product_name=F("product_name"))
 
 
+def card_order(order, inspections):
+    result = {"id": order.pk, "order_no": order.order_no, "item_no": order.item_no, "customer": order_customer_key(order)}
+    if order.pk in inspections:
+        source = inspections[order.pk]
+        result.update(customer_code=source["customer_code"], customer_project_no=source["project_no"])
+    return result
+
+
+def common_order_reference(inspections):
+    values = [s["reference"] for s in inspections.values()]
+    return values[0] if values and all(v == values[0] for v in values) else None
+
+
+def check_customer_inspections(orders, inspections):
+    if len(orders) < 2 or not inspections or not any(v["groups"] for v in inspections.values()):
+        return
+    signatures = {v["digest"] for v in inspections.values()}
+    if len(inspections) != len(orders) or len(signatures) != 1 or "" in signatures:
+        raise ValidationError({"order_ids": "翔邦订单客户代号、项目或类别限值不同／未确认，请分别备卡；不影响原生产任务。"})
+
+
 def build_plan(data, exclude=None):
     from . import services as s
     product, run, orders, _ = resolve(data)
@@ -303,8 +340,9 @@ def build_plan(data, exclude=None):
         raise ValidationError({"product_id": "本生产段已存在其他产品的卡，不可换身份后重新发卡。"})
     if run and not is_open_run(run):
         raise ValidationError({"run_id": "已完成/已取消任务只作历史；请先明确安排新的生产段。"})
+    inspections = ci.get_order_snapshots(orders)
     standard_id = data.get("standard_id")
-    candidates = applicable_standards(product, run, orders)
+    candidates = applicable_standards(product, run, orders, inspections)
     if not standard_id:
         active = [v for v in candidates if v.status == "ACTIVE"]
         if len(active) == 1 and all(c["resolved_by_standard"] for c in conflict_items(product, orders, active[0])):
@@ -319,6 +357,7 @@ def build_plan(data, exclude=None):
         raise ValidationError({"order_ids": "跨客户/身份不明的订单不能合并制卡。"})
     if any(o.product_specification_id != product.pk for o in orders):
         raise ValidationError({"product_id": "共单必须是明确的同一产品档案。"})
+    check_customer_inspections(orders, inspections)
     require_compatible_orders(product, orders, standard)
     occupied = ranges_for(run, exclude)
     # Old groups have no structured range; never guess their historical coverage.
@@ -363,7 +402,9 @@ def build_plan(data, exclude=None):
             "whole_mold": (data.get("whole_mold") if data.get("whole_mold") in ("REQUIRED", "NOT_REQUIRED") else standard.whole_mold if standard else "UNKNOWN"),
             "whole_mold_basis": data.get("whole_mold_basis") or (f"采用已确认标准v{standard.version}：{standard.source}" if standard else ""),
             "molds_per_card": data.get("molds_per_card") or (standard.snapshot.get("packaging", {}).get("molds_per_card", 100) if standard else 100)}
-    plan = s.group_plan(body)
+    plan = s.group_plan(body, separate_customer_reference=True)
+    plan["snapshot"]["orders"] = [card_order(o, inspections) for o in orders]
+    plan["snapshot"]["customer_inspections"] = ci.card_payloads(orders, inspections)
     plan["snapshot"]["template"] = s.current_template()
     plan["range_start"], plan["range_end"] = (start, end) if planned and run else (None, None)
     plan["context_key"] = f"run:{run.pk}" if run else f"order:{orders[0].pk}"
@@ -389,7 +430,8 @@ def build_plan(data, exclude=None):
     from .guidance import summary, temperature_plan
     plan["snapshot"]["temperature_plan"] = temperature_plan(data.get("temperature_plan", standard.snapshot.get("packaging", {}).get("temperature_plan") if standard else None))
     plan["snapshot"]["raw_process_reference"] = {"primary_curing": product.primary_curing, "secondary_curing": product.secondary_curing}
-    plan["snapshot"]["guidance"] = summary(product, snapshot={**(standard.snapshot if standard else {}), "process_parameters": plan["snapshot"]["process_parameters"]})
+    plan["snapshot"]["guidance"] = summary(product, snapshot={**(standard.snapshot if standard else {}), "process_parameters": plan["snapshot"]["process_parameters"]},
+                                           order_reference=common_order_reference(inspections))
     if not run and planned:
         plan["snapshot"]["effective_cavities"] = output
     return plan
@@ -460,8 +502,16 @@ def validate_generation(group):
         raise ValidationError({"order_ids": "生产段关联订单已变化，请更新原准备后再发卡。"})
     if len({order_customer_key(o) for o in orders}) != 1 or any(o.product_specification_id != group.product_id for o in orders):
         raise ValidationError({"order_ids": "生产段客户或产品身份不一致，不能共用实物卡。"})
+    inspections = ci.get_order_snapshots(orders)
+    check_customer_inspections(orders, inspections)
+    current_source = ci.card_payloads(orders, inspections)
+    before_source = group.snapshot.get("customer_inspections", [])
+    def source_key(refs):
+        return {i["order_id"]: (i["digest"], i["groups"], i["reference"], i["status"]) for i in refs}
+    if source_key(before_source) != source_key(current_source):
+        raise PreparationConflict("订单客户要求已变化，请刷新并重新保存备卡资料后再发号。")
     require_compatible_orders(group.product, orders, group.standard)
-    if group.standard not in applicable_standards(group.product, group.run, orders):
+    if group.standard not in applicable_standards(group.product, group.run, orders, inspections):
         raise ValidationError({"standard_id": "标准适用条件已变化，请重新核对。"})
     if group.snapshot.get("standard", {}).get("snapshot") != group.standard.snapshot:
         raise ValidationError({"standard_id": "标准内容已变化，请重开草稿重新核对，不用新内容冒充原快照。"})
@@ -492,6 +542,8 @@ def validate_generation(group):
     if not group.snapshot.get("route", {}).get("confirmed"):
         raise ValidationError({"route": "产品路线尚未确认，先保存待准备。"})
     route = group.snapshot["route"]
+    if route.get("bake") and any(value["reference"]["secondary"]["state"] == "NOT_REQUIRED" for value in inspections.values()):
+        raise ValidationError({"bake": "本单翔邦原表 0min / 0°C 表示无需二烤；所选工艺路线要求二烤，请核对标准。"})
     bake = group.standard.snapshot.get("bake", {})
     if route.get("bake") and bake.get("state") != "APPLICABLE":
         raise ValidationError({"bake": "路线需要二烤，但建议条件未确认。"})

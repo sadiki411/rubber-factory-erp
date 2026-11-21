@@ -448,6 +448,15 @@ class CardViewSet(ErrorsMixin, viewsets.GenericViewSet):
                 "notice": "来源涉及集合，不等于每张卡承担全部退回数量或责任；实际分摊以原出货明细为准。"}
         return page(self, request, sources, mapped)
 
+    @action(detail=True, methods=["get"], url_path="customer-inspection")
+    def customer_inspection(self, request, pk=None):
+        from orders.customer_inspection_views import printable_response
+        card = self.get_object()
+        sources = card.group.snapshot.get("customer_inspections", [])
+        if not sources:
+            raise Http404("发卡时未保存客户检验附件；请查看订单原表，不用现行资料冒充旧卡。")
+        return printable_response(sources, f"flowcard-{card.pk}-customer-inspection.pdf")
+
     @action(detail=True, methods=["get"], url_path="trace-returns")
     def trace_returns(self, request, pk=None):
         source = get_object_or_404(self.get_object().shipment_sources, pk=s.integer(request.query_params.get("source_id"), "source_id", maximum=2147483647))

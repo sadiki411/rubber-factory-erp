@@ -1,8 +1,10 @@
 import { apiFetch, ApiError } from './api/client'
+import type { CustomerInspection } from './customerInspection'
 
 export type FlowSnapshot = {
   product: { id: number; name?: string; specification: string; material: string; customer_product_no?: string }
-  orders: Array<{ id: number; order_no: string; item_no: string; customer?: string }>
+  orders: Array<{ id: number; order_no: string; item_no: string; customer?: string; customer_code?: string; customer_project_no?: string }>
+  customer_inspections?: CustomerInspection[]
   run_id?: number | null; mold_id?: number | null
   effective_cavities?: number | null; confirmed_total_cavities?: number | null
   diagram_id?: number | null; whole_mold: string

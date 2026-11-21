@@ -267,6 +267,7 @@ class BusinessOrderViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
                 | Q(batch_no__icontains=q)
                 | Q(product_code__icontains=q)
                 | Q(product_name__icontains=q)
+                | Q(customer_code__iexact=q)
                 | Q(specification__icontains=q)
                 | Q(material__icontains=q)
                 | Q(product_specification__customer_product_no__icontains=q)

@@ -5,6 +5,7 @@ import { orderApi } from '../api/client'
 import { PageTitle } from '../components/PageTitle'
 import { TRACE_SECTIONS } from '../operations'
 import { safeBusinessReturn } from '../navigation'
+import { OrderCustomerInspectionPanel } from '../components/CustomerInspectionPanel'
 
 const quantity = (value: number | string | null, unit: string) => value === null ? '未登记/不适用' : `${value} ${unit}`
 
@@ -40,6 +41,7 @@ export function OrderOverviewPage() {
         { key: 'order', label: '订单 / 项次', children: `${data.order.order_no} / ${data.order.item_no || '未登记'}` },
         { key: 'product', label: '规格 / 材质', children: `${data.order.specification} / ${data.order.material || '未登记'}` },
         { key: 'due', label: '交期', children: data.order.due_date || '未登记' },
+        ...(data.order.customer_code ? [{ key: 'customer', label: '客户代号', children: data.order.customer_code }] : []),
         { key: 'status', label: '订单状态', children: ({ OPEN: '进行中', COMPLETED: '已完成', CANCELLED: '已取消' } as Record<string, string>)[data.order.status] || data.order.status },
       ]} /><Row gutter={[12, 12]}>
         <Col xs={12} lg={6}><Statistic title="需求件数" value={data.order.order_quantity} /></Col>
@@ -47,6 +49,7 @@ export function OrderOverviewPage() {
         <Col xs={12} lg={6}><Statistic title="欠交件数" value={data.summary.delivery_remaining} /></Col>
         <Col xs={12} lg={6}><Statistic title="分配生产进度（非实测良品）" value={data.counts.production ? data.summary.production_progress_quantity : '未关联生产记录'} /></Col>
       </Row></Card>
+      <OrderCustomerInspectionPanel orderId={Number(id)} />
       {data.summary.delivery_breakdown && <details className="business-basis"><summary>展开净交付对账（全部有效出货已含再发）</summary>
         <Typography.Paragraph>{data.summary.delivery_breakdown.all_effective_shipments.toLocaleString('zh-CN')} 件全部有效出货 − {data.summary.delivery_breakdown.effective_returns.toLocaleString('zh-CN')} 件有效回冲 = {data.summary.net_delivered.toLocaleString('zh-CN')} 件净交付。再出货已包含在第一项，不能再加一次。此处总计不受下方分页影响。</Typography.Paragraph>
         <Typography.Paragraph>相关原出货物理量 {data.summary.delivery_breakdown.physical_shipments.toLocaleString('zh-CN')} 件，本项次归属出货 {data.summary.delivery_breakdown.all_effective_shipments.toLocaleString('zh-CN')} 件；差额 {(data.summary.delivery_breakdown.physical_shipments - data.summary.delivery_breakdown.all_effective_shipments).toLocaleString('zh-CN')} 件属于关联物理单与本项次分摊的口径差，不再次计入本订单。</Typography.Paragraph>

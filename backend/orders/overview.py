@@ -52,6 +52,7 @@ def page_rows(rows, page, page_size, *, count=None):
 def identity(order):
     return {"id": order.pk, "order_no": order.order_no, "item_no": order.item_no,
             "specification": order.specification, "material": order.material,
+            "customer_code": order.customer_code,
             "product_name": order.product_name, "status": order.status,
             "due_date": order.due_date, "order_quantity": order.order_quantity}
 

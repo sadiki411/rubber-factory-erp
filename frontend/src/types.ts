@@ -424,6 +424,7 @@ export interface Order {
   id: number
   order_no: string
   item_no?: string
+  customer_code?: string
   batch_no: string
   product_code: string
   product_name: string
@@ -564,6 +565,7 @@ export interface BusinessImportPreviewRow {
   item_no?: string
   specification?: string
   material?: string
+  customer_code?: string
   summary?: string
   changes?: Record<string, { from?: unknown; to?: unknown }>
   product_candidates?: BusinessImportProductCandidate[]

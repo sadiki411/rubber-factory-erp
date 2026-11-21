@@ -61,7 +61,7 @@ def oil_instruction(param):
     return f"洒油要求待核，作业前找负责人确认；候选原文：{text}（非指令）"
 
 
-def summary(product, standard=None, snapshot=None):
+def summary(product, standard=None, snapshot=None, order_reference=None):
     ss = snapshot or (standard.snapshot if standard else {})
     params = ss.get("process_parameters", {})
     rows = []
@@ -76,11 +76,20 @@ def summary(product, standard=None, snapshot=None):
         elif state not in ("CONFIRMED", "NOT_APPLICABLE"):
             warning = "未提供" if state == "NOT_PROVIDED" else "原文待核，不作为生产指令"
         raw = product.primary_curing if key == "primary_curing_time" else ""
-        if raw and re.search(r"(?<![a-z])min(?![a-z])|分钟", raw, re.I):
+        xiangbang = (order_reference or {}).get("primary", {}) if key == "primary_curing_time" else {}
+        value = parameter_text(param)
+        if xiangbang.get("state") == "REFERENCE":
+            raw = xiangbang["raw"]
+            target = parameter_text({"lower": xiangbang["time_lower"], "upper": xiangbang["time_upper"], "unit": "s"})
+            if not usable(key, param):
+                value = target
+                state = "RAW_UNCONFIRMED"
+            warning = f"翔邦原表时间按 {target} 读取，未乘60；已确认的现场设置另列。" if xiangbang.get("corrected_unit") else "翔邦订单原表参考；已确认的现场设置另列。"
+        elif raw and re.search(r"(?<![a-z])min(?![a-z])|分钟", raw, re.I):
             warning = "原始资料含min/分钟，请核原单单位，不自动换算为秒"
             if param.get("unit", "").lower() in ("s", "sec", "秒"):
                 warning = "单位冲突：原文min/分钟，所选版为秒；找产品标准负责人核原单，不自动换算"
-        rows.append({"key": key, "label": label, "value": parameter_text(param), "state": state,
+        rows.append({"key": key, "label": label, "value": value, "state": state,
                      "instruction": oil_instruction(param) if key == "oil" else "", "raw_reference": raw,
                      "warning": warning, "owner": "产品标准负责人 / 管理员"})
     criteria = ss.get("criteria", [])
@@ -97,8 +106,15 @@ def summary(product, standard=None, snapshot=None):
                 rows.append({"key": f"{stage}:{c['id']}", "label": label if stage == "BAKED_HARDNESS" else c.get("name") or label, "value": limit_text(c), "state": c.get("requirement_state", "RAW_UNCONFIRMED"),
                              "warning": "原文待核，不作为操作界限" if c.get("requirement_state") in ("RAW_UNCONFIRMED", "NOT_PROVIDED") else "", "owner": "产品标准负责人 / 管理员"})
     bake = ss.get("bake", {})
-    rows.append({"key": "bake", "label": "二次加硫", "value": bake_text(bake), "state": "CONFIRMED" if bake.get("state") in ("APPLICABLE", "NOT_APPLICABLE") else "RAW_UNCONFIRMED",
-                 "raw_reference": params.get("bake_reference", {}).get("raw_text") or product.secondary_curing, "warning": "参考原文待确认，不等于本批已二烤" if bake.get("state") not in ("APPLICABLE", "NOT_APPLICABLE") else "", "owner": "产品标准负责人 / 管理员"})
+    secondary = (order_reference or {}).get("secondary", {})
+    no_bake = secondary.get("state") == "NOT_REQUIRED"
+    warning = "所选工艺要求二烤，与本单翔邦原表不一致，请核对" if no_bake and bake.get("state") == "APPLICABLE" else ""
+    if not no_bake and bake.get("state") not in ("APPLICABLE", "NOT_APPLICABLE"):
+        warning = "参考原文待确认，不等于本批已二烤"
+    rows.append({"key": "bake", "label": "二次加硫", "value": "本单不需要二烤" if no_bake else bake_text(bake),
+                 "state": "CONFIRMED" if no_bake or bake.get("state") in ("APPLICABLE", "NOT_APPLICABLE") else "RAW_UNCONFIRMED",
+                 "raw_reference": secondary.get("raw") or params.get("bake_reference", {}).get("raw_text") or product.secondary_curing,
+                 "warning": warning, "owner": "产品标准负责人 / 管理员"})
     return rows
 
 
