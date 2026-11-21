@@ -6,7 +6,7 @@ import { inspectionItemLabel } from '../inspectionItemLabel'
 import type { CustomerInspection } from '../customerInspection'
 import { useReadOnly } from '../access'
 import { adoptedConditions, factoryItemLabel, mergeStandardEntries, standardItemKey } from './standardEntry'
-import { bakeForForm, bakeForSave, bakeText, NUMERIC_PROCESS_FIELDS, processForForm, processForSave, processParameterText, TEXT_PROCESS_FIELDS } from './productStandardFields'
+import { bakeForForm, bakeForSave, bakeText, NUMERIC_PROCESS_FIELDS, processForForm, processForSave, processParameterText, TEXT_PROCESS_FIELDS, VISIBLE_NUMERIC_PROCESS_FIELDS } from './productStandardFields'
 
 const STAGES = [{value:'MOLDING_HARDNESS',label:'成型后硬度'}, {value:'BAKED_HARDNESS',label:'二烤后硬度'}, {value:'DIMENSION',label:'尺寸'}, {value:'UPPER_TEMP',label:'上模实测模温'}, {value:'LOWER_TEMP',label:'下模实测模温'}, {value:'SECONDARY_CURE',label:'二烤建议'}]
 const STANDARD_TABS = [{key:'quality',label:'硬度与尺寸'}, {key:'process',label:'工艺与二烤'}, {key:'source',label:'来源与适用范围'}, {key:'route',label:'打印项目'}, {key:'import',label:'导入客户标准'}]
@@ -72,8 +72,10 @@ export function ProductStandardEditor({data,open,close,changed,initialTab='quali
       const parameters = processForSave(values.process_parameters)
       if(activate) {
         for(const [key,p] of Object.entries(parameters)) {
-          if(NUMERIC_PROCESS_FIELDS.some(([k])=>k===key)&&!p.unit&&key==='primary_curing_time'&&[p.value,p.lower,p.upper].some(v=>v!=null&&v!=='')) p.unit='s'
-          if([p.value,p.lower,p.upper].some(v=>v!=null&&v!=='')&&p.unit) p.state='CONFIRMED'
+          if(VISIBLE_NUMERIC_PROCESS_FIELDS.some(([k])=>k===key)&&[p.value,p.lower,p.upper].some(v=>v!=null&&v!=='')) {
+            if(!p.unit&&key==='primary_curing_time') p.unit='s'
+            if(p.unit) p.state='CONFIRMED'
+          }
           if(TEXT_PROCESS_FIELDS.some(([k])=>k===key)&&p.raw_text&&!p.state) p.state='CONFIRMED'
         }
       }

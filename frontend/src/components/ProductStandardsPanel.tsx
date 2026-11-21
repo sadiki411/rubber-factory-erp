@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { flowApi, flowLimitText, type PreparationContext } from '../flowcards'
 import { useReadOnly } from '../access'
 import { ProductStandardEditor } from './ProductStandardEditor'
-import { bakeText, NUMERIC_PROCESS_FIELDS, processParameterText, TEXT_PROCESS_FIELDS } from './productStandardFields'
+import { bakeText, VISIBLE_NUMERIC_PROCESS_FIELDS, processParameterText, TEXT_PROCESS_FIELDS } from './productStandardFields'
 import '../pages/FlowCardsPage.css'
 import { ProductCustomerInspectionPanel } from './CustomerInspectionPanel'
 import { inspectionItemLabel } from '../inspectionItemLabel'
@@ -27,7 +27,7 @@ export function ProductStandardsPanel({productId,importFirst=false}: {productId:
       {data.standards.slice(0,5).map(s=><Card key={s.id} size="small" className="product-standard-field-card" title={<Space wrap><span>v{s.version}</span><Tag color={s.status==='ACTIVE'?'green':'default'}>{{ACTIVE:'生效',DRAFT:'草稿',SUPERSEDED:'已替代',LEGACY:'旧记录待核'}[s.status]||s.status}</Tag><span>{s.customer_key||'通用'}{s.applicable_order_id?` · 仅订单项#${s.applicable_order_id}`:''}</span></Space>}>
         <Typography.Paragraph type="secondary">依据：{s.source} · {s.scope||'范围未另注明'}</Typography.Paragraph>
         <Descriptions column={1} size="small" items={s.snapshot.criteria.map(c=>({key:c.id,label:`${c.stage==='BAKED_HARDNESS'?'烤后':c.stage==='MOLDING_HARDNESS'?'成型后':''}${inspectionItemLabel(c.name)}`,children:<>{flowLimitText(c)} · {c.follow_package===false?'仅留标准资料':'印到流转卡'}{c.requirement_state!=='CONFIRMED'?' · 待核':''}</>}))} />
-        <Descriptions column={1} size="small" items={[{key:'bake',label:'二烤',children:bakeText(s.snapshot.bake)},...[...NUMERIC_PROCESS_FIELDS,...TEXT_PROCESS_FIELDS].flatMap(([key,label])=>{const p=s.snapshot.process_parameters?.[key];return p?[{key,label,children:<>{processParameterText(p,TEXT_PROCESS_FIELDS.some(([name])=>name===key))}{p.state==='RAW_UNCONFIRMED'?' · 原文待核':''}</>}]:[]})]} />
+        <Descriptions column={1} size="small" items={[{key:'bake',label:'二烤',children:bakeText(s.snapshot.bake)},...[...VISIBLE_NUMERIC_PROCESS_FIELDS,...TEXT_PROCESS_FIELDS].flatMap(([key,label])=>{const p=s.snapshot.process_parameters?.[key];return p?[{key,label,children:<>{processParameterText(p,TEXT_PROCESS_FIELDS.some(([name])=>name===key))}{p.state==='RAW_UNCONFIRMED'?' · 原文待核':''}</>}]:[]})]} />
       </Card>)}
       {editing&&<ProductStandardEditor data={data} open close={()=>setEditing(false)} changed={()=>void query.refetch()} initialTab={importFirst?'import':'quality'} />}
     </>}

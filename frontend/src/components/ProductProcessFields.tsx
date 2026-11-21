@@ -1,5 +1,5 @@
 import { Alert, AutoComplete, Card, Form, Input, Radio, Select, Typography } from 'antd'
-import { NUMERIC_PROCESS_FIELDS, TEXT_PROCESS_FIELDS, parameterMode, type ProcessParameter } from './productStandardFields'
+import { VISIBLE_NUMERIC_PROCESS_FIELDS, TEXT_PROCESS_FIELDS, parameterMode, type ProcessParameter } from './productStandardFields'
 
 export function ProductProcessFields() {
   const form = Form.useFormInstance()
@@ -21,7 +21,7 @@ export function ProductProcessFields() {
         {key === 'experience' ? <Input.TextArea autoSize={{ minRows: 2, maxRows: 6 }} placeholder="按原表或已确认经验填写" /> : <AutoComplete options={options.map(value => ({ value }))} placeholder={key === 'oil' ? '如：不洒油、少量；也可直接输入' : '可选填，也可直接输入原表要求'} />}
       </Form.Item>)}</div>
     </Card>
-    {NUMERIC_PROCESS_FIELDS.filter(([key]) => key !== 'mold_temperature_range').map(([key, label, unit]) => <Card key={key} size="small" title={label} className="product-standard-field-card" data-testid={`process-${key}`}>
+    {VISIBLE_NUMERIC_PROCESS_FIELDS.filter(([key]) => key !== 'mold_temperature_range').map(([key, label, unit]) => <Card key={key} size="small" title={label} className="product-standard-field-card" data-testid={`process-${key}`}>
       <Form.Item name={['process_parameters', key, '_mode']} label={`${label}填写方式`}><Radio.Group optionType="button" options={[{ value: 'FIXED', label: '指定值' }, { value: 'RANGE', label: '原表给了范围' }]} /></Form.Item>
       <div className="flow-form-grid"><Form.Item noStyle shouldUpdate>{() => parameterMode(form.getFieldValue(['process_parameters', key]) as ProcessParameter) === 'RANGE' ? <><Form.Item name={['process_parameters', key, 'lower']} label={`${label}下限`}><Input inputMode="decimal" /></Form.Item><Form.Item name={['process_parameters', key, 'upper']} label={`${label}上限`}><Input inputMode="decimal" /></Form.Item></> : <Form.Item name={['process_parameters', key, 'value']} label={`${label}指定值`}><Input inputMode="decimal" placeholder="未规定可留空" /></Form.Item>}</Form.Item>
         <Form.Item name={['process_parameters', key, 'unit']} label={`${label}单位`}><Input placeholder={unit} /></Form.Item>

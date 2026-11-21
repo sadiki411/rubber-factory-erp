@@ -1,8 +1,11 @@
 export type ProcessParameter = { state?: string; lower?: string; upper?: string; value?: string; unit?: string; source?: string; raw_text?: string; _mode?: string; [key: string]: unknown }
 export const NUMERIC_PROCESS_FIELDS = [
+  ['upper_set_temperature', '上模设定温度（旧资料）', '℃'], ['lower_set_temperature', '下模设定温度（旧资料）', '℃'],
+  ['upper_contact_temperature', '上模接触温度目标（旧资料）', '℃'], ['lower_contact_temperature', '下模接触温度目标（旧资料）', '℃'],
   ['mold_temperature_range', 'Mold Temp.（标准模温，上下模共用）', '℃'],
   ['primary_curing_time', 'Cure Time（一次加硫时间）', 's'], ['pressure', 'Pressure（压力）', '注明原表单位'],
 ] as const
+export const VISIBLE_NUMERIC_PROCESS_FIELDS = NUMERIC_PROCESS_FIELDS.filter(([key]) => !['upper_set_temperature','lower_set_temperature','upper_contact_temperature','lower_contact_temperature'].includes(key))
 export const TEXT_PROCESS_FIELDS = [
   ['oil', '毛边洒油', ['不洒油', '少量', '适量', '禁止']],
   ['release_agent', '成型脱模剂', ['不使用', '少量', '按客户要求']],
