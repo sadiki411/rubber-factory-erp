@@ -73,8 +73,11 @@ describe('product-owned standard entry',()=>{
     expect(screen.queryByLabelText('二烤温度下限（℃）')).not.toBeInTheDocument()
     expect(screen.getByRole('combobox',{name:'毛边洒油'})).toHaveValue('禁止')
   })
-  it('uses source ranges and bake values after review, without assigning category measurements',async()=>{
+  it('shows the same 6001 hardness in both phases, keeping 2001 only in the source section',async()=>{
     const adopt={order_id:21,order_no:'SYN-21',item_no:'1',customer_code:'L',project_no:'SYN-163',adoption_key:'bundle',status:'CONFIRMED',groups:[],
+      selection:{policy:'6001-primary-v1',main:[{key:'HD',item:'HD',stage:'MOLDING_HARDNESS',category:'6001',lower:'66',upper:'74',unit:'度',version:'D00',row:8},
+        {key:'C/S-A',item:'C/S-A',stage:'DIMENSION',category:'6001',lower:'2.9',upper:'3.1',unit:'mm',version:'D00',row:9}],
+        supplements:[{key:'FLASH',item:'FLASH',stage:null,category:'2001',lower:'0',upper:'0.2',unit:'mm',version:'F01',row:6}],problems:[],warnings:[]},
       reference:{primary:{state:'REFERENCE',raw:'时间60-65min 温度178-183℃',time_lower:'60',time_upper:'65',temperature_lower:'178',temperature_upper:'183'},
         secondary:{state:'REFERENCE',raw:'时间120min温度150°C',time_lower:'120',time_upper:'120',temperature_lower:'150',temperature_upper:'150'}}} as unknown as CustomerInspection
     const onActivated=vi.fn()
@@ -84,11 +87,26 @@ describe('product-owned standard entry',()=>{
     expect(screen.getByLabelText('二烤温度（℃）')).toHaveValue('150')
     expect(screen.getByLabelText('二烤时间（min）')).toHaveValue('120')
     expect(screen.queryByLabelText('上模设定温度')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab',{name:'硬度与尺寸'}))
+    expect(screen.getAllByDisplayValue('74')).toHaveLength(2)
+    expect(screen.getAllByDisplayValue('66').every(e=>e.hasAttribute('readonly'))).toBe(true)
+    expect(screen.queryByDisplayValue('0.2')).not.toBeInTheDocument()
+    const dimension=screen.getAllByRole('checkbox',{name:/印到流转卡/})[2]
+    expect(dimension).not.toBeChecked()
+    fireEvent.click(dimension)
+    fireEvent.click(screen.getByRole('tab',{name:'来源与适用范围'}))
+    fireEvent.click(screen.getByText(/2001 补缺参考/))
+    expect(screen.getByText(/FLASH（毛边，量法待确认）：0 ～ 0.2 mm/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('tab',{name:'打印项目'}))
     fireEvent.click(screen.getByRole('radio',{name:'不需整模'}))
     fireEvent.click(screen.getByRole('button',{name:'保存并用于本单制卡'}))
     await waitFor(()=>expect(onActivated).toHaveBeenCalledWith(expect.objectContaining({id:8})))
-    expect(flowApi.saveStandard).toHaveBeenCalledWith(expect.objectContaining({customer_reference:{key:'bundle'},applicable_order_id:21,criteria:[],
+    expect(flowApi.saveStandard).toHaveBeenCalledWith(expect.objectContaining({customer_reference:{key:'bundle'},applicable_order_id:21,dimension_count:1,
+      criteria:[
+        expect.objectContaining({customer_item:'HD',stage:'MOLDING_HARDNESS',lower:'66',upper:'74',follow_package:true}),
+        expect.objectContaining({customer_item:'HD',stage:'BAKED_HARDNESS',lower:'66',upper:'74',follow_package:true}),
+        expect.objectContaining({customer_item:'C/S-A',stage:'DIMENSION',follow_package:true}),
+      ],
       process_parameters:expect.objectContaining({mold_temperature_range:expect.objectContaining({lower:'178',upper:'183',unit:'℃'}),primary_curing_time:expect.objectContaining({lower:'60',upper:'65',unit:'s'})})}))
   })
 })

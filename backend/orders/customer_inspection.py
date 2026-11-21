@@ -15,6 +15,16 @@ from .models import BusinessImportBatch, CustomerInspectionReview, OrderInspecti
 
 FACTORY = BusinessImportBatch.SourceType.FACTORY_WORK_CONTACT
 SOURCE = "翔邦"
+SELECTION_POLICY = "6001-primary-v1"
+ADOPTED_CATEGORY = "翔邦6001制卡引用"
+_ITEM_ALIASES = {
+    "硬度": "HD", "成型硬度": "HD", "成型后硬度": "HD", "烤后硬度": "HD", "二烤后硬度": "HD",
+    "密度": "SG", "比重": "SG", "内径": "ID", "外径": "OD", "厚度": "THK",
+    "线径": "C/S", "截面直径": "C/S", "轴向线径": "C/S-A", "径向线径": "C/S-R",
+    "合模错位": "MISMATCH", "错模": "MISMATCH", "毛边厚度": "FLASHT",
+    "毛边长度": "FLASHLEN", "毛边伸出长度": "FLASHLEN", "毛边": "FLASH",
+}
+DIMENSION_ITEMS = {"ID", "OD", "THK", "C/S", "C/S-A", "C/S-R", "[1]", "[2]", "[3]"}
 
 
 def clean(value):
@@ -23,6 +33,11 @@ def clean(value):
 
 def code(value):
     return clean(value).upper()
+
+
+def item_key(value):
+    key = "".join(code(value).split())
+    return _ITEM_ALIASES.get(key, key)
 
 
 def number(value):
@@ -39,6 +54,41 @@ def number(value):
         return formatted.rstrip("0").rstrip(".") if "." in formatted else formatted
     except InvalidOperation:
         return None
+
+
+def selection(snapshot):
+    """Derive how this factory uses the received requirements; never rewrite the source."""
+    result = {"policy": SELECTION_POLICY, "main": [], "supplements": [], "problems": [], "warnings": []}
+    customer, project = snapshot.get("customer_code"), snapshot.get("project_no")
+    if not customer or not project:
+        return result
+    grouped = defaultdict(lambda: defaultdict(list))
+    for group in snapshot.get("groups", []):
+        category = group["category"]
+        if (group["customer_code"], group["project_no"]) != (customer, project) or category not in ("6001", "2001"):
+            continue
+        for row in group["rows"]:
+            key = item_key(row["item"])
+            grouped[category][key].append({
+                **row, "key": key, "category": category, "version": group["version"],
+                "customer_code": customer, "project_no": project,
+                "stage": "MOLDING_HARDNESS" if key == "HD" else "DIMENSION" if key in DIMENSION_ITEMS else None,
+            })
+    for category, bucket in (("6001", "main"), ("2001", "supplements")):
+        for key, rows in grouped[category].items():
+            if category == "2001" and key in grouped["6001"]:
+                continue  # Mere presence in 6001 precludes a fallback, even if its values need review.
+            signatures = {(row["version"], number(row["lower"]), number(row["upper"]), row["unit"]) for row in rows}
+            row = rows[0]
+            low, high = number(row["lower"]), number(row["upper"])
+            if (len(signatures) != 1 or not key or not row["unit"] or not row["version"]
+                    or low is None or high is None or not (low or high)
+                    or (low and high and Decimal(low) > Decimal(high))):
+                result["problems" if category == "6001" else "warnings"].append(
+                    f"{category} / {row['item'] or '未填写项目'} 的版号、范围或单位待核对；不自动带入。")
+                continue
+            result[bucket].append({**row, "stage": row["stage"] if category == "6001" else None})
+    return result
 
 
 _SPAN = r"(?P<lo>\d{1,6}(?:\.\d{1,4})?)(?:\s*[-~～—–至]\s*(?P<hi>\d{1,6}(?:\.\d{1,4})?))?"
@@ -92,7 +142,7 @@ def build_snapshot(rows, raw):
     for row in rows:
         customer, project, category, version = (code(row.get(key)) for key in ("customer", "project_no", "category", "version"))
         origin = (customer, project, category, version)
-        if not all(origin):
+        if not customer or not project or not category or (not version and category != "2001"):
             problems.add("有检验行缺客户代号、项目号、类别或版本。")
         identities.add((customer, project))
         categories[category].add(version)
@@ -100,10 +150,10 @@ def build_snapshot(rows, raw):
         low, high = number(row.get("lower_limit")), number(row.get("upper_limit"))
         valid = bool(name and unit and low is not None and high is not None and (low or high)
                      and not (low and high and Decimal(low) > Decimal(high)))
-        if not valid:
+        if not valid and category != "2001":
             problems.add("有检验行数值、范围或单位待核对；没有按 0 补齐。")
         sig = (low, high, unit)
-        if name in line_counts[origin] and line_counts[origin][name] != sig:
+        if category != "2001" and name in line_counts[origin] and line_counts[origin][name] != sig:
             problems.add("同类同版的同一检验项目有不同限值或单位。")
         line_counts[origin][name] = sig
         groups[origin].append({
@@ -113,10 +163,14 @@ def build_snapshot(rows, raw):
         })
     if len(identities) > 1:
         problems.add("同一订单项次对应多个客户或项目号，待核对。")
-    if any(len(versions) > 1 for versions in categories.values()):
+    if any(len(versions) > 1 for cat, versions in categories.items() if cat != "2001"):
         problems.add("同一类别同时带有不同版本，待核对。")
     customer, project = next(iter(identities)) if len(identities) == 1 else ("", "")
-    normalized = [(key, sorted(line_counts[key].items())) for key in sorted(groups)]
+    # Preserve existing hashes for ordinary rows. For duplicate 2001 rows,
+    # hash every distinct signature, not whichever happened to appear last.
+    normalized = [(key, sorted(set(
+        (r["item"], (number(r["lower"]), number(r["upper"]), r["unit"])) for r in groups[key]
+    ), key=lambda item: (item[0], repr(item[1])))) for key in sorted(groups)]
     digest = hashlib.sha256(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest() if groups and not problems else ""
     return {
         "customer_code": customer, "project_no": project, "digest": digest,
@@ -220,12 +274,13 @@ def order_payload(order, snapshot=None, approvals=None):
     if approvals is None:
         approvals = approval_map([order], {order.pk: snapshot})
     approval = approvals.get((order.product_specification_id, snapshot["digest"]))
-    status = "CONFLICT" if snapshot["problems"] else (
+    selected = selection(snapshot)
+    status = "CONFLICT" if snapshot["problems"] or selected["problems"] else (
         "INHERITED" if snapshot["inherited"] and approval else "CONFIRMED" if approval else
         "PENDING" if snapshot["groups"] else "MISSING"
     )
     return {**snapshot, "status": status, "source": SOURCE, "supplier": order.source_system,
-            "adoption_key": adoption_key(snapshot),
+            "adoption_key": adoption_key(snapshot) if status != "CONFLICT" else "", "selection": selected,
             "order_id": order.pk, "order_no": order.order_no, "item_no": order.item_no,
             "specification": order.specification, "material": order.material,
             "review_id": approval.pk if approval else None,
@@ -236,7 +291,7 @@ def adoption_key(snapshot):
     """Bind a preparation version to both the test groups and the actual order conditions."""
     if not snapshot or not snapshot.get("digest") or not snapshot.get("customer_code") or not snapshot.get("project_no"):
         return ""
-    parts = [snapshot["digest"]]
+    parts = [SELECTION_POLICY, snapshot["digest"]]
     for phase in ("primary", "secondary"):
         item = snapshot["reference"][phase]
         keys = ("state", "time_lower", "time_upper", "temperature_lower", "temperature_upper", "unit")
@@ -305,7 +360,7 @@ def review_order(order, user, data):
         OrderInspectionSource.objects.update_or_create(order=order, defaults={"snapshot": snapshot, "document": None, "recorded_by": user})
         QualityOrder.objects.filter(pk=order.pk).update(customer_code=approved.customer_code)
     elif data.get("action") == "confirm":
-        if not payload["digest"] or payload["digest"] != data.get("digest"):
+        if payload["status"] == "CONFLICT" or not payload["digest"] or payload["digest"] != data.get("digest"):
             raise ValidationError({"inspection": "标准有冲突或与预览不同，请刷新后核对。"})
         if payload["review_id"]:
             return payload
@@ -352,7 +407,7 @@ def product_reviews(product, page=1):
             "order_id": order.pk, "order_no": order.order_no, "item_no": order.item_no,
             "customer_code": match.customer_code, "project_no": match.project_no,
             "groups": match.snapshot["groups"], "status": "CURRENT" if match.is_current else "HISTORICAL",
-            "key": match.digest,
+            "key": match.digest, "selection": selection(match.snapshot),
         }
     for order in orders:
         snapshot = snapshots.get(order.pk)
@@ -365,5 +420,5 @@ def product_reviews(product, page=1):
             unique[key] = {"order_id": order.pk, "order_no": order.order_no, "item_no": order.item_no,
                            "customer_code": snapshot["customer_code"], "project_no": snapshot["project_no"],
                            "groups": snapshot["groups"], "status": ("CURRENT" if match.is_current else "HISTORICAL") if match else "PENDING",
-                           "key": str(key)}
+                           "key": str(key), "selection": selection(snapshot)}
     return list(unique.values()), has_next

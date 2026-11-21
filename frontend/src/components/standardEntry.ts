@@ -2,19 +2,23 @@ import type { CustomerInspection } from '../customerInspection'
 import type { Criterion } from '../flowcards'
 import type { ProcessParameter } from './productStandardFields'
 
-type DraftCriterion = Partial<Criterion> & {name:string; stage:string; criterion_id?:number}
+export type DraftCriterion = Partial<Criterion> & {name:string; stage:string; criterion_id?:number}
 
 const inspectionAliases = new Map([
   ['硬度','HD'], ['成型硬度','HD'], ['成型后硬度','HD'], ['烤后硬度','HD'], ['二烤后硬度','HD'],
   ['密度','SG'], ['比重','SG'], ['内径','ID'], ['外径','OD'], ['厚度','THK'],
   ['轴向线径','C/S-A'], ['径向线径','C/S-R'], ['合模错位','MISMATCH'], ['错模','MISMATCH'],
   ['毛边厚度','FLASHT'], ['毛边伸出长度','FLASHLEN'], ['毛边长度','FLASHLEN'],
-  ['线径','C/S'], ['截面直径','C/S'],
+  ['线径','C/S'], ['截面直径','C/S'], ['毛边','FLASH'],
 ])
 
-export function standardItemKey(name:string, stage:string) {
+function inspectionItemKey(name:string) {
   const text=name.normalize('NFKC').replace(/\s/g,'').toUpperCase()
-  return `${stage}:${inspectionAliases.get(text) || text}`
+  return inspectionAliases.get(text) || text
+}
+
+export function standardItemKey(name:string, stage:string) {
+  return `${stage}:${inspectionItemKey(name)}`
 }
 
 export function factoryItemLabel(name:string, stage:string) {
@@ -60,4 +64,22 @@ export function adoptedConditions(data:CustomerInspection) {
   } : undefined
   return {process_parameters,bake,customer_key:data.customer_code,applicable_order_id:data.order_id,
     customer_reference:{key:data.adoption_key},source:`翔邦原表 · ${data.order_no} / ${data.item_no} · ${data.project_no}`}
+}
+
+export function adoptedInspectionEntries(data:CustomerInspection, current:DraftCriterion[], bakeState?:string) {
+  const primary=data.selection?.main.filter(row=>row.stage) || []
+  const keys=new Set(primary.map(row=>row.key))
+  const rows=current.filter(c=>!c.customer_item&&!keys.has(inspectionItemKey(c.name)))
+  for(const row of primary) {
+    if(!row.stage) continue
+    const stages=row.key==='HD'&&bakeState==='APPLICABLE'?[row.stage,'BAKED_HARDNESS']:[row.stage]
+    for(const stage of stages) {
+      const previous=current.find(c=>c.customer_item===row.key&&c.stage===stage)
+      rows.push({name:row.item,stage,customer_item:row.key,lower:row.lower,upper:row.upper,unit:row.unit,
+        limit_mode:row.lower&&row.upper?'RANGE':row.lower?'LOWER':'UPPER',
+        requirement_state:'CONFIRMED',method:previous?.method||'',follow_package:row.key==='HD'||previous?.follow_package===true,
+        provenance:{...row,raw_text:`${row.lower||'—'} ～ ${row.upper||'—'} ${row.unit}`}})
+    }
+  }
+  return rows
 }

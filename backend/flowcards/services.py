@@ -13,6 +13,7 @@ from rest_framework.exceptions import ValidationError, PermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 
 from orders.identities import order_customer_key
+from orders import customer_inspection as ci
 from orders.models import ProductSpecification, ProductInspectionCriterion
 from production.models import ProductionRun
 from quality.models import QualityOrder, QualityEmployee, ProcessCardUnitBinding
@@ -143,6 +144,62 @@ def requirement_warnings(product, orders, standard=None, *, separate_customer_re
     return warnings
 
 
+def adopted_criteria(document, product, order, entries, bake):
+    """Use only the confirmed, frozen 6001 rows, not client-supplied limits."""
+    primary = {row["key"]: row for row in document["selection"]["main"] if row["stage"]}
+    selected = {}
+    others = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValidationError({"criteria": "检验项目格式无效。"})
+        key = ci.item_key(entry.get("name"))
+        stage = entry.get("stage")
+        if entry.get("customer_item"):
+            item = entry["customer_item"]
+            if not isinstance(item, str) or not isinstance(stage, str) or item not in primary or key != item or (item, stage) in selected:
+                raise ValidationError({"criteria": "6001 检验项目无效或重复，请重新带入本单标准。"})
+            row = primary[item]
+            allowed_stages = {row["stage"]} | ({"BAKED_HARDNESS"} if item == "HD" and bake["state"] == "APPLICABLE" else set())
+            if stage not in allowed_stages:
+                raise ValidationError({"criteria": "6001 项目的检测阶段与本单不符。"})
+            if any(field in entry and ci.clean(entry[field]) != row[field] for field in ("lower", "upper", "unit")):
+                raise ValidationError({"criteria": "6001 原表的范围和单位不能改写，请重新带入本单标准。"})
+            selected[item, stage] = entry
+        elif key in primary:
+            raise ValidationError({"criteria": "本单已有 6001 的同名项目，请采用原表，不另填不同范围。"})
+        else:
+            others.append(entry)
+    raw_rows = list(ProductInspectionCriterion.objects.filter(
+        product_specification=product, order=order, source_batch__source_type=ci.FACTORY, category="6001",
+    ).order_by("pk"))
+    for item, src in primary.items():
+        fields = (("customer", "customer_code"), ("project_no", "project_no"), ("version", "version"),
+                  ("inspection_item", "item"), ("lower_limit", "lower"), ("upper_limit", "upper"), ("unit", "unit"))
+        row = next((r for r in raw_rows if all(ci.clean(getattr(r, dst)) == src[key] for dst, key in fields)), None)
+        if not row:
+            # An inherited or earlier confirmed source may no longer have an
+            # identical live import row. Keep a versioned reference on this
+            # order; never update or retag the original spreadsheet record.
+            row, _ = ProductInspectionCriterion.objects.get_or_create(
+                source_key=f"6001-adoption:{order.pk}:{digest(src)}",
+                defaults={**{dst: src[key] for dst, key in fields}, "product_specification": product,
+                          "order": order, "item_no": order.item_no, "category": ci.ADOPTED_CATEGORY,
+                          "source_sheet": src["sheet"], "source_row": src["row"], "raw_data": {"customer_reference": src}},
+            )
+        stages = [src["stage"]]
+        if item == "HD" and bake["state"] == "APPLICABLE":
+            stages.append("BAKED_HARDNESS")
+        for stage in stages:
+            entry = selected.get((item, stage), {})
+            printed = item == "HD" or entry.get("follow_package", False)
+            others.append({"criterion_id": row.pk, "stage": stage, "method": entry.get("method"),
+                           "limit_mode": "RANGE" if src["lower"] and src["upper"] else "LOWER" if src["lower"] else "UPPER",
+                           "requirement_state": "CONFIRMED", "critical": printed, "follow_package": printed,
+                           "provenance": {**src, "raw_text": f"{src['lower'] or '—'} ～ {src['upper'] or '—'} {src['unit']}"},
+                           "customer_item": item})
+    return others
+
+
 @transaction.atomic
 def confirm_standard(data, user):
     write_enabled()
@@ -157,16 +214,16 @@ def confirm_standard(data, user):
     customer_reference = None
     if prep.enabled() and "customer_reference" in data:
         reference = data["customer_reference"]
-        from orders.customer_inspection import order_payload
         if not isinstance(reference, dict) or not data.get("applicable_order_id"):
             raise ValidationError({"customer_reference": "采用订单原表时必须关联本订单项次。"})
         order = get_row(QualityOrder, data["applicable_order_id"], "applicable_order_id")
-        document = order_payload(order) if order.product_specification_id == product.pk else None
+        document = ci.order_payload(order) if order.product_specification_id == product.pk else None
         if not document or document["status"] not in ("CONFIRMED", "INHERITED") or not document["adoption_key"] or document["adoption_key"] != reference.get("key"):
             raise ValidationError({"customer_reference": "订单客户要求或工艺已变化，请刷新核对后再采用。"})
         if document["customer_code"] != str(data.get("customer_key", "")).strip():
             raise ValidationError({"customer_key": "采用原表时须保留该订单的客户代号。"})
-        customer_reference = {"key": document["adoption_key"], "order_id": order.pk, "project_no": document["project_no"], "customer_code": document["customer_code"]}
+        customer_reference = {"key": document["adoption_key"], "order_id": order.pk, "project_no": document["project_no"],
+                              "customer_code": document["customer_code"], "policy": ci.SELECTION_POLICY}
     if prep.enabled() and isinstance(data.get("import_source"), dict):
         identity = data["import_source"].get("identity", {})
         if not isinstance(identity, dict):
@@ -210,6 +267,14 @@ def confirm_standard(data, user):
     entries = data.get("criteria", [])
     if not isinstance(entries, list) or len(entries) > 30:
         raise ValidationError({"criteria": "最多确认30个项目。"})
+    if customer_reference:
+        if document["reference"]["secondary"]["state"] == "NOT_REQUIRED" and bake["state"] != "NOT_APPLICABLE":
+            raise ValidationError({"bake": "本单原表明确无需二烤；不使用烤后硬度。"})
+        if document["reference"]["secondary"]["state"] == "REFERENCE" and bake["state"] != "APPLICABLE":
+            raise ValidationError({"bake": "本单原表有明确的二烤条件，请先核对。"})
+        entries = adopted_criteria(document, product, order, entries, bake)
+        if len(entries) > 30:
+            raise ValidationError({"criteria": "最多确认30个项目。"})
     issues = data.get("appearance_ids", [])
     if not isinstance(issues, list) or len(set(map(str, issues))) != 4:
         raise ValidationError({"appearance_ids": "请选择四项外观问题。"})
@@ -235,6 +300,10 @@ def confirm_standard(data, user):
             if row.product_specification_id != product.pk:
                 raise ValidationError({"criterion_id": "检验要求不属于此产品。"})
             if prep.enabled():
+                is_factory_reference = row.category == ci.ADOPTED_CATEGORY or (
+                    row.source_batch_id and row.source_batch.source_type == ci.FACTORY)
+                if is_factory_reference and not (customer_reference and entry.get("customer_item") and row.category in ("6001", ci.ADOPTED_CATEGORY)):
+                    raise ValidationError({"criterion_id": "翔邦原表请从本单核对后带入。2001 仅供补缺参考，不用于制卡判定。"})
                 customer = str(data.get("customer_key", "")).strip().casefold()
                 if row.customer and row.customer.casefold() != customer:
                     raise ValidationError({"criterion_id": "原行属于其他客户，不能作为当前标准的依据。"})
@@ -245,7 +314,7 @@ def confirm_standard(data, user):
                 raw = row.raw_data or {}
                 qualifiers_changed = any(k in entry and entry[k] != raw.get(k, True if k.endswith("inclusive") else "PENDING")
                                          for k in ("limit_mode", "upper_inclusive", "lower_inclusive"))
-                if (changed or renamed or qualifiers_changed) and entry.get("override") is not True:
+                if (changed or renamed or qualifiers_changed) and entry.get("override") is not True and not is_factory_reference:
                     raise ValidationError({"criterion_id": "引用原行不可静默改值；请选择明确的新版本/本单例外。"})
                 if entry.get("override") is True and (changed or renamed or (qualifiers_changed and raw.get("limit_mode"))):
                     order = get_row(__import__("quality.models", fromlist=["QualityOrder"]).QualityOrder, data["applicable_order_id"], "applicable_order_id") if data.get("applicable_order_id") else None
@@ -283,6 +352,8 @@ def confirm_standard(data, user):
                           "source_batch_id": str(row.source_batch_id) if row.source_batch_id else None})
         if prep.enabled() and (row.raw_data or {}).get("overrides_criterion_id"):
             snapshots[-1]["overrides_criterion_id"] = row.raw_data["overrides_criterion_id"]
+        if customer_reference and entry.get("customer_item"):
+            snapshots[-1]["customer_item"] = entry["customer_item"]
         criteria.append(row)
     if dimensions is not None and dimensions < sum(e["stage"] == "DIMENSION" and e["limit_mode"] != "NONE" and entry.get("follow_package", True) for e, entry in zip(snapshots, entries)):
         raise ValidationError({"dimension_count": "需要的尺寸项目数不能少于本次已确认的尺寸项目。"})
@@ -290,6 +361,12 @@ def confirm_standard(data, user):
     metadata = prep.standard_metadata(data) if prep.enabled() else {}
     if customer_reference:
         metadata["customer_reference"] = customer_reference
+        metadata["applicability"]["customer_product_no"] = customer_reference["project_no"]
+        if any(c.get("customer_item") == "HD" for c in snapshots):
+            metadata["route"]["molding"] = True
+            metadata["route"]["baked_hardness"] = bake["state"] == "APPLICABLE"
+        if bake["state"] != "UNKNOWN":
+            metadata["route"]["bake"] = bake["state"] == "APPLICABLE"
     extra = {}
     if prep.enabled():
         kind = data.get("source_kind", "FACTORY_EXPERIENCE")
@@ -733,7 +810,8 @@ def record_event(data, user, *, entry_card=None):
             if len({digest(s) for s in standards}) != 1:
                 raise ValidationError({"card_ids": "共同测量的要求不同，请分别登记。"})
             criteria = (standards[0] or {}).get("snapshot", {}).get("criteria", [])
-            matching = [e for e in criteria if e["id"] == values.get("criterion_id") and e["stage"] == kind]
+            from .measurements import applicable_criteria
+            matching = [e for e in applicable_criteria(criteria, kind) if e["id"] == values.get("criterion_id")]
             method_matches = True
             if kind in HARDNESS_STAGES:
                 config = (standards[0] or {}).get("snapshot", {}).get("hardness", {}).get(kind, {})

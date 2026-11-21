@@ -1,7 +1,7 @@
 import { Alert, App, Button, Card, Collapse, Descriptions, Empty, Grid, Select, Space, Spin, Tag, Typography } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { conditionText, customerInspectionApi, type CustomerInspection, type CustomerInspectionGroup } from '../customerInspection'
+import { conditionText, customerInspectionApi, type CustomerInspection, type CustomerInspectionGroup, type CustomerInspectionSelection } from '../customerInspection'
 import { inspectionItemLabel } from '../inspectionItemLabel'
 
 const STATE: Record<string, string> = { PENDING: '原表待核对', CONFLICT: '来源有冲突', CONFIRMED: '来源内容已核对', INHERITED: '沿用已确认版，本单未附检验表', MISSING: '本单未附检验表', CURRENT: '现行核对版', HISTORICAL: '历史已核对版' }
@@ -16,6 +16,21 @@ export function CustomerInspectionGroups({ groups }: { groups: CustomerInspectio
           <Typography.Text type="secondary" style={{ overflowWrap: 'anywhere' }}>{row.batch ? <a href={`/api/flow-cards/source-files/${row.batch}/`}>{row.file || '原表'}</a> : row.file} {row.sheet}{row.row != null ? ` 第 ${row.row} 行` : ''}</Typography.Text></div>,
       }))} /></>,
   }))} />
+}
+
+export function CustomerInspectionSelectionView({selection}: {selection: CustomerInspectionSelection}) {
+  return <>
+    <details><summary>6001 主标准（{selection.main.length} 项）</summary>
+      {!selection.main.length&&<Typography.Paragraph type="secondary">未找到可采用的 6001 行；不使用 2001 替代判定。</Typography.Paragraph>}
+      {selection.main.map(r=><Typography.Paragraph key={r.key} style={{overflowWrap:'anywhere'}}>{inspectionItemLabel(r.item)}：{r.lower||'—'} ～ {r.upper||'—'} {r.unit} · {r.version} · {r.sheet} 第 {r.row??'—'} 行</Typography.Paragraph>)}
+      {selection.problems.map(p=><Typography.Paragraph type="warning" key={p}>{p}</Typography.Paragraph>)}
+    </details>
+    <details><summary>2001 补缺参考（{selection.supplements.length} 项，不参与判定）</summary>
+      {selection.supplements.map(r=><Typography.Paragraph key={r.key} style={{overflowWrap:'anywhere'}}>{inspectionItemLabel(r.item)}：{r.lower||'—'} ～ {r.upper||'—'} {r.unit} · {r.version} · {r.sheet} 第 {r.row??'—'} 行</Typography.Paragraph>)}
+      {selection.warnings.map(p=><Typography.Paragraph type="warning" key={p}>{p}</Typography.Paragraph>)}
+      {!selection.supplements.length&&!selection.warnings.length&&<Typography.Paragraph type="secondary">无只在 2001 中提供的项目。</Typography.Paragraph>}
+    </details>
+  </>
 }
 
 export function OrderCustomerInspectionPanel({ orderId, compact = false, onAdopt }: { orderId: number; compact?: boolean; onAdopt?: (value:CustomerInspection) => void }) {
@@ -39,7 +54,7 @@ export function OrderCustomerInspectionPanel({ orderId, compact = false, onAdopt
   if (query.isError) return <Alert type="error" title="客户标准读取失败" action={<Button onClick={() => void query.refetch()}>重试</Button>} />
   const data = query.data.inspection
   if (!data) return null
-  return <Card size="small" title="翔邦客户检验标准" extra={data.groups.length > 0 && <Button href={customerInspectionApi.print(orderId)}>打印标准 PDF</Button>}>
+  return <Card size="small" title="翔邦客户检验标准" extra={data.groups.length > 0 && <Button href={customerInspectionApi.print(orderId)}>打印原表 PDF</Button>}>
     <Space wrap><Tag>客户 {data.customer_code || '待核'}</Tag><Tag>项目 {data.project_no || '待核'}</Tag><Tag color={data.status === 'CONFIRMED' || data.status === 'INHERITED' ? 'green' : 'orange'}>{STATE[data.status]}</Tag></Space>
     <Typography.Paragraph type="secondary">下单方：{data.source}；协力商：{data.supplier || '未提供'}。原表限值不代表已检验或放行。</Typography.Paragraph>
     {!!data.problems.length && <Alert type="warning" title="客户检验要求待核对" description={data.problems.join('；')} />}
@@ -54,10 +69,10 @@ export function OrderCustomerInspectionPanel({ orderId, compact = false, onAdopt
       {key: 'mold', label: '原表模具 / 尺寸', children: `${data.reference.mold_no || '未提供'} / ${data.reference.mold_size || '未提供'}`},
       {key: 'cut', label: '原表料长 / 切料重', children: `${data.reference.material_length || '未提供'} / ${data.reference.cut_weight || '未提供'}`},
     ]} /></details>}
-    {data.groups.length ? <CustomerInspectionGroups groups={data.groups} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本单没有原始检验表，不按产品猜客户" />}
+    {data.groups.length ? <>{data.selection&&<CustomerInspectionSelectionView selection={data.selection} />}<CustomerInspectionGroups groups={data.groups} /></> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本单没有原始检验表，不按产品猜客户" />}
     {data.can_review && data.adoption_key && ['CONFIRMED','INHERITED'].includes(data.status) && <Space wrap style={{marginTop:8}}>
       <Button type="primary" {...(onAdopt ? {onClick:()=>onAdopt(data)} : {href:`/flow-cards?order_id=${orderId}&order_plan=1&adopt_standard=1`})}>带入本单制卡标准</Button>
-      <Typography.Text type="secondary">带入一次加硫、标准模温和二烤；原检验项目按类别保留，不重复录入。</Typography.Text>
+      <Typography.Text type="secondary">本单采用 6001；需二烤时，成型后和二烤后共用 6001 的硬度限值。</Typography.Text>
     </Space>}
     {data.can_review && data.status === 'PENDING' && data.digest && (confirming ?
       <Alert type="info" title="核对无误后，相同客户、项目、类别、版本及限值的订单可复用；不会改变现场测项。"
@@ -79,6 +94,7 @@ export function ProductCustomerInspectionPanel({ productId }: { productId: numbe
   return <Card size="small" title="翔邦客户标准（独立于本厂工艺）">
     {query.data.results.map(r => <details key={r.key}>
       <summary>客户 {r.customer_code || '待核'} · {r.project_no || '项目待核'} · {r.groups.map(g=>`${g.category}/${g.version}`).join('、')} · {STATE[r.status] || r.status}</summary>
+      {r.selection&&<CustomerInspectionSelectionView selection={r.selection} />}
       <CustomerInspectionGroups groups={r.groups} />
       <Button href={`/order-overview/${r.order_id}`}>查看本单并核对</Button>
     </details>)}

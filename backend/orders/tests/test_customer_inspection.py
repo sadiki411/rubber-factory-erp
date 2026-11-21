@@ -32,18 +32,20 @@ class CustomerInspectionTests(APITestCase):
         self.user = get_user_model().objects.create_user(username="xiangbang-synthetic")
         self.client.force_authenticate(self.user)
 
-    def order(self, no="CI-1", customer="J", high=65, project="XP-1", include=True, day=2):
+    def order(self, no="CI-1", customer="J", high=65, project="XP-1", include=True, day=2, bake=False, extra=()):
         book = load_workbook(BytesIO(fixtures.factory_workbook(
             order_no=no, project_no=project, include_criteria=include, issued_on=date(2026, 8, day),
             primary_curing="时间160-180min 温度175-180℃",
         )))
-        book.worksheets[0]["L4"] = "时间0min温度0°C"
+        book.worksheets[0]["L4"] = "时间120min温度150°C" if bake else "时间0min温度0°C"
         if include:
             sheet = book.worksheets[1]
             sheet.delete_rows(3)
             sheet.append([no, 1, project, customer, "6001", "F02", "HD", 61, 69, "度"])
             sheet.append([no, 1, project, customer, "2001", "F02", "HD", 61, high, "度"])
             sheet.append([no, 1, project, customer, "2001", "F02", "FLASH", 0, .24, "mm"])
+            for category, item, lower, upper, unit in extra:
+                sheet.append([no, 1, project, customer, category, "F02", item, lower, upper, unit])
             book.move_sheet(sheet, -1)
         result = preview_business_workbook(fixtures.upload(f"{no}.xlsx", fixtures.workbook_bytes(book)), self.user)
         self.assertEqual(result["error_count"], 0, result["issues"])
@@ -105,33 +107,36 @@ class CustomerInspectionTests(APITestCase):
         self.assertEqual(inspection_item_label("ｈｄ"), "ｈｄ（硬度）")
         self.assertEqual(inspection_item_label("C/S-A"), "C/S-A（轴向线径，方向待核）")
 
-    def test_adopt_reuses_imported_row_and_freezes_shared_temperature_without_moving_category(self):
-        order, _, _ = self.order()
-        data = self.read(order)
-        self.grant()
-        raw = ProductInspectionCriterion.objects.get(order=order, inspection_item="HD", category="2001")
-        original_raw = raw.raw_data.copy()
-        count = ProductInspectionCriterion.objects.count()
-        body = {"request_key":uuid.uuid4().hex, "product_id":order.product_specification_id, "applicable_order_id":order.pk,
-                "customer_reference":{"key":data["adoption_key"]}, "customer_key":"J", "source_kind":"CUSTOMER", "source":"本单原表",
+    def adoption_body(self, order, data, **patch):
+        return {"request_key":uuid.uuid4().hex, "product_id":order.product_specification_id, "applicable_order_id":order.pk,
+                "customer_reference":{"key":data["adoption_key"]}, "customer_key":data["customer_code"], "source_kind":"CUSTOMER", "source":"本单原表",
                 "whole_mold":"NOT_REQUIRED", "appearance_ids":list(services.AppearanceIssue.objects.values_list("pk", flat=True)),
                 "dimension_count":0, "route":{"confirmed":True,"molding":True,"patrol":True,"deburr":True,"inspection":True},
                 "process_parameters":{"mold_temperature_range":{"lower":"175","upper":"180","unit":"℃","state":"CONFIRMED"},
                                       "primary_curing_time":{"lower":"160","upper":"180","unit":"s","state":"CONFIRMED"}},
-                "packaging":{"simple_entry":True}, "bake":{"state":"NOT_APPLICABLE"},
-                "criteria":[{"criterion_id":raw.pk,"name":"HD","stage":"MOLDING_HARDNESS","lower":"61","upper":"65","unit":"度",
-                             "override":True,"limit_mode":"RANGE","provenance":{"reference":"used only in version"}}]}
+                "packaging":{"simple_entry":True}, "bake":{"state":"NOT_APPLICABLE"}, "criteria":[], **patch}
+
+    def test_adopt_reuses_imported_6001_row_without_bake_or_history_changes(self):
+        order, _, _ = self.order()
+        data = self.read(order)
+        self.grant()
+        raw = ProductInspectionCriterion.objects.get(order=order, inspection_item="HD", category="6001")
+        original_raw = raw.raw_data.copy()
+        count = ProductInspectionCriterion.objects.count()
+        body = self.adoption_body(order, data)
         resp = self.client.post("/api/flow-cards/standards/", body, format="json")
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(self.client.post(self.endpoint(order), {"action":"confirm","digest":data["digest"]}, format="json").status_code, 200)
         resp = self.client.post("/api/flow-cards/standards/", body, format="json")
         self.assertEqual(resp.status_code, 201, resp.data)
         standard_id = resp.data["id"]
-        self.assertEqual(resp.data["snapshot"]["criteria"][0]["id"], raw.pk)
+        criteria = resp.data["snapshot"]["criteria"]
+        self.assertEqual([(c["id"], c["stage"], c["lower"], c["upper"]) for c in criteria], [(raw.pk, "MOLDING_HARDNESS", "61", "69")])
+        self.assertEqual(criteria[0]["provenance"]["category"], "6001")
         self.assertEqual(ProductInspectionCriterion.objects.count(), count)
         raw.refresh_from_db()
         self.assertEqual(raw.raw_data, original_raw)
-        self.assertEqual(raw.category, "2001")
+        self.assertEqual(raw.category, "6001")
         self.assertEqual(self.client.post(f"/api/flow-cards/standards/{standard_id}/activate/", {}, format="json").status_code, 200)
         ctx = prep.context({"order_id":order.pk,"order_plan":"1"}, self.user)
         self.assertEqual(ctx["auto_standard_id"], standard_id)
@@ -143,12 +148,105 @@ class CustomerInspectionTests(APITestCase):
         self.assertIn("上模实测模温", labels)
         self.assertIn("下模实测模温", labels)
         self.assertIn("标准模温（上下模共用）：175～180", labels)
+        self.assertIn("61～69 度", labels)
+        self.assertNotIn("烤后硬度", labels)
         self.assertNotIn("接触温度", labels)
         self.assertEqual([g["category"] for g in group.snapshot["customer_inspections"][0]["groups"]], ["2001","6001"])
         stored = OrderInspectionSource.objects.get(order=order)
         stored.snapshot["reference"]["primary"]["temperature_upper"] = "183"
         stored.save(update_fields=["snapshot"])
         self.assertEqual(prep.context({"order_id":order.pk,"order_plan":"1"}, self.user)["auto_standard_id"], None)
+
+    def test_two_hardness_stages_same_6001_and_2001_readonly_on_product(self):
+        order, _, _ = self.order(bake=True, extra=[("6001", "C/S-A", 2.9, 3.1, "mm"),
+            ("6001", "FLASHLEN", 0, .24, "mm"), ("2001", "C/S-R", 2.9, 3.1, "mm"),
+            ("2001", "FLASHT", 0, .24, "mm"), ("2001", "MISMATCH", 0, .24, "mm")])
+        other, _, _ = self.order("CI-J2", customer="L", project="XP-2")
+        self.assertEqual(order.product_specification_id, other.product_specification_id)
+        self.grant()
+        data = self.read(order)
+        self.assertEqual({r["key"] for r in data["selection"]["main"]}, {"HD", "C/S-A", "FLASHLEN"})
+        self.assertEqual({r["key"] for r in data["selection"]["supplements"]}, {"C/S-R", "FLASH", "FLASHT", "MISMATCH"})
+        result = self.client.post(self.endpoint(order), {"action":"confirm","digest":data["digest"]}, format="json")
+        self.assertEqual(result.status_code, 200, result.data)
+        response = self.client.get(f"/api/orders/product-specifications/{order.product_specification_id}/customer-inspection/")
+        scopes = {r["customer_code"]:r for r in response.data["results"]}
+        self.assertEqual(scopes["J"]["selection"], data["selection"])
+        self.assertEqual({r["key"] for r in scopes["L"]["selection"]["supplements"]}, {"FLASH"})
+        bake = {"state":"APPLICABLE", "temperature_value":"150", "minutes_value":"120"}
+        primary_raw = ProductInspectionCriterion.objects.get(order=order, category="6001", inspection_item="HD")
+        manual_raw = ProductInspectionCriterion.objects.get(order=order, category="2001", inspection_item="FLASH")
+        path = "/api/flow-cards/standards/"
+        for invalid in [
+            {"name":"HD", "stage":"MOLDING_HARDNESS", "customer_item":"HD", "upper":"65"},
+            {"name":"FLASH", "stage":"DIMENSION", "criterion_id":manual_raw.pk},
+        ]:
+            rejected = self.client.post(path, self.adoption_body(order, data, bake=bake, criteria=[invalid]), format="json")
+            self.assertEqual(rejected.status_code, 400, rejected.data)
+        resp = self.client.post(path, self.adoption_body(order, data, bake=bake), format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+        snap = resp.data["snapshot"]
+        self.assertTrue(snap["route"]["baked_hardness"])
+        self.assertEqual([(c["stage"], c["upper"], c["id"]) for c in snap["criteria"] if c["name"] == "HD"],
+                         [("MOLDING_HARDNESS","69",primary_raw.pk), ("BAKED_HARDNESS","69",primary_raw.pk)])
+        axis = next(c for c in snap["criteria"] if c["name"] == "C/S-A")
+        self.assertFalse(axis["follow_package"])
+        self.assertTrue(all(c["provenance"]["category"] == "6001" for c in snap["criteria"]))
+        self.assertEqual(self.client.post(f"{path}{resp.data['id']}/activate/", {}, format="json").status_code, 200)
+        group = prep.save_draft({"product_id":order.product_specification_id,"order_id":order.pk,"order_plan":True,"standard_id":resp.data["id"],"planned_molds":80,"request_key":uuid.uuid4().hex}, self.user)
+        group = services.generate_group(group, self.user)
+        with patch("reportlab.pdfgen.canvas.Canvas.drawString", autospec=True) as draw:
+            render_cards([(group.cards.first(), 0)])
+        labels = [str(c.args[3]) for c in draw.call_args_list]
+        self.assertIn("成型后硬度", labels)
+        self.assertTrue(any("烤后硬度" in v for v in labels), labels)
+        self.assertGreaterEqual(sum("61～69 度" in v for v in labels), 2)
+        self.assertFalse(any("C/S-A" in v or "FLASHT" in v or "MISMATCH" in v for v in labels))
+
+    def test_6001_conflicts_do_not_fall_back_and_2001_conflicts_never_become_limits(self):
+        def row(category, item, hi, customer="J", project="XP"):
+            return {"category": category, "inspection_item": item, "customer": customer, "project_no": project,
+                    "version": "D01", "lower_limit": "50", "upper_limit": hi, "unit": "度"}
+        conflict = ci.build_snapshot([row("6001","HD","65"), row("6001","硬度","68"),
+                                      row("2001","HD","62"), row("2001","SG","60")], {})
+        chosen = ci.selection(conflict)
+        self.assertTrue(chosen["problems"])
+        self.assertEqual(chosen["main"], [])
+        self.assertEqual([r["key"] for r in chosen["supplements"]], ["SG"])
+        invalid_ref = ci.build_snapshot([row("6001","HD","69"), row("2001","HD","bad"),
+                                         row("2001","SG","bad")], {})
+        self.assertTrue(invalid_ref["digest"])
+        self.assertEqual([r["key"] for r in ci.selection(invalid_ref)["main"]], ["HD"])
+        self.assertTrue(ci.selection(invalid_ref)["warnings"])
+        other = ci.build_snapshot([row("6001","HD","69"), row("2001","SG","60", customer="L")], {})
+        self.assertFalse(other["digest"])
+        self.assertEqual(ci.selection(other)["supplements"], [])
+        only_reference = ci.selection(ci.build_snapshot([row("2001","HD","62")], {}))
+        self.assertEqual(only_reference["main"], [])
+        self.assertIsNone(only_reference["supplements"][0]["stage"])
+
+    def test_inherited_6001_adoption_is_scoped_and_reuses_the_same_reference_row(self):
+        original, _, _ = self.order()
+        self.grant()
+        data = self.read(original)
+        self.assertEqual(self.client.post(self.endpoint(original), {"action":"confirm","digest":data["digest"]}, format="json").status_code, 200)
+        new, _, _ = self.order("CI-NO-SHEET", include=False, day=3)
+        choice = self.read(new)["available"][0]
+        resp = self.client.post(self.endpoint(new), {"action":"inherit","review_id":choice["id"]}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        chosen = self.read(new)
+        self.assertEqual(chosen["status"], "INHERITED")
+        self.assertEqual(chosen["selection"], data["selection"])
+        used = set()
+        for _ in range(2):
+            resp = self.client.post("/api/flow-cards/standards/", self.adoption_body(new, chosen), format="json")
+            self.assertEqual(resp.status_code, 201, resp.data)
+            entry, = resp.data["snapshot"]["criteria"]
+            used.add(entry["id"])
+            self.assertEqual((entry["upper"], entry["order_id"]), ("69", new.pk))
+        self.assertEqual(len(used), 1)
+        self.assertEqual(ProductInspectionCriterion.objects.filter(order=new).count(), 1)
+        self.assertEqual(ProductInspectionCriterion.objects.filter(order=original).count(), 3)
 
     def test_machine_suggestions_are_permissioned_independent_and_not_order_data(self):
         order, _, _ = self.order()

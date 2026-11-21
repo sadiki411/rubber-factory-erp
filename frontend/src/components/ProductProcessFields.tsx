@@ -1,7 +1,7 @@
 import { Alert, AutoComplete, Card, Form, Input, Radio, Select, Typography } from 'antd'
 import { VISIBLE_NUMERIC_PROCESS_FIELDS, TEXT_PROCESS_FIELDS, parameterMode, type ProcessParameter } from './productStandardFields'
 
-export function ProductProcessFields() {
+export function ProductProcessFields({lockBakeState=false}: {lockBakeState?:boolean}) {
   const form = Form.useFormInstance()
   return <>
     <Card size="small" title="Mold Temp.（标准模温，上下模共用）" className="product-standard-field-card">
@@ -9,7 +9,7 @@ export function ProductProcessFields() {
       <div className="flow-form-grid"><Form.Item name={['process_parameters','mold_temperature_range','lower']} label="模温下限（℃）"><Input inputMode="decimal" /></Form.Item><Form.Item name={['process_parameters','mold_temperature_range','upper']} label="模温上限（℃）"><Input inputMode="decimal" /></Form.Item></div>
     </Card>
     <Card size="small" title="二烤要求" className="product-standard-field-card" data-testid="bake-fields">
-      <Form.Item name={['bake', 'state']} label="是否需要二烤"><Select options={[{ value: 'UNKNOWN', label: '未规定 / 待确认' }, { value: 'APPLICABLE', label: '需要二烤' }, { value: 'NOT_APPLICABLE', label: '无需二烤' }]} /></Form.Item>
+      <Form.Item name={['bake', 'state']} label="是否需要二烤"><Select disabled={lockBakeState} options={[{ value: 'UNKNOWN', label: '未规定 / 待确认' }, { value: 'APPLICABLE', label: '需要二烤' }, { value: 'NOT_APPLICABLE', label: '无需二烤' }]} /></Form.Item>
       <Form.Item noStyle shouldUpdate>{() => form.getFieldValue(['bake', 'state']) === 'NOT_APPLICABLE' && (form.getFieldValue('criteria') || []).some((c: { stage?: string; limit_mode?: string; requirement_state?: string }) => c.stage === 'BAKED_HARDNESS' && c.limit_mode !== 'NONE' && c.requirement_state !== 'NOT_APPLICABLE') ? <Alert type="warning" showIcon title="仍有烤后硬度要求，请核对是否矛盾" description="不会自动删除原有客户检验要求。请回到硬度与尺寸核对；未解决的冲突会阻止正式发卡。" /> : null}</Form.Item>
       <Form.Item noStyle shouldUpdate>{() => form.getFieldValue(['bake', 'state']) === 'APPLICABLE' ? <div className="flow-form-grid">{([['temperature', '二烤温度', '℃'], ['minutes', '二烤时间', 'min']] as const).map(([key, label, unit]) => <div key={key}>
         <Form.Item name={['bake', `_${key}_mode`]} label={`${label}填写方式`}><Radio.Group optionType="button" options={[{ value: 'FIXED', label: '指定值' }, { value: 'RANGE', label: '原表给了范围' }]} /></Form.Item>

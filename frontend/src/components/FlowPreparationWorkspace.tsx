@@ -171,6 +171,6 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
     {printResults}
     <details><summary>独立扫码查卡</summary>{lookup}</details>
     <details><summary>设置（普通制卡无需先发布模板）</summary>{settings}</details>
-    {(editor||adopting) && <StandardEditor key={adopting?.adoption_key||'edit'} data={data} open adopt={adopting} initialTab={adopting?'process':'quality'} close={()=>{setEditor(false);setAdopt(undefined);setDismissedAdopt(true)}} changed={refresh} onActivated={adoptActivated} />}
+    {(editor||adopting) && <StandardEditor key={adopting?.adoption_key||'edit'} data={data} open adopt={adopting} close={()=>{setEditor(false);setAdopt(undefined);setDismissedAdopt(true)}} changed={refresh} onActivated={adoptActivated} />}
   </>
 }

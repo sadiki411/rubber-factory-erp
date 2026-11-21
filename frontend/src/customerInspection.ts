@@ -1,20 +1,23 @@
 import { apiFetch } from './api/client'
 
 type Condition = { raw: string; state: string; time_lower?: string; time_upper?: string; temperature_lower?: string; temperature_upper?: string; unit?: string; corrected_unit?: boolean }
+type InspectionSourceRow = { item: string; lower: string; upper: string; unit: string; file: string; batch: string; sheet: string; row: number | null }
 export type CustomerInspectionGroup = {
   customer_code: string; project_no: string; category: string; version: string
-  rows: { item: string; lower: string; upper: string; unit: string; file: string; batch: string; sheet: string; row: number | null }[]
+  rows: InspectionSourceRow[]
 }
+export type CustomerInspectionSelectionRow = InspectionSourceRow & Omit<CustomerInspectionGroup,'rows'> & { key: string; stage: 'MOLDING_HARDNESS' | 'DIMENSION' | null }
+export type CustomerInspectionSelection = { policy: string; main: CustomerInspectionSelectionRow[]; supplements: CustomerInspectionSelectionRow[]; problems: string[]; warnings: string[] }
 export type CustomerInspection = {
   order_id: number; order_no: string; item_no: string; customer_code: string; project_no: string; source: string; supplier: string
   status: 'PENDING' | 'CONFLICT' | 'CONFIRMED' | 'INHERITED' | 'MISSING'
   digest: string; groups: CustomerInspectionGroup[]; problems: string[]; can_review?: boolean
-  adoption_key?: string
+  adoption_key?: string; selection?: CustomerInspectionSelection
   available?: { id: number; customer_code: string; project_no: string; versions: {category: string; version: string}[] }[]
   changes?: { category: string; item: string; previous: [string,string,string,string] | null; incoming: [string,string,string,string] | null }[]
   reference: { primary: Condition; secondary: Condition; mold_no: string; mold_size: string; material_length: string; cut_weight: string }
 }
-type ProductReview = Pick<CustomerInspection, 'order_id' | 'order_no' | 'item_no' | 'customer_code' | 'project_no' | 'groups'> & {status: string; key: string}
+type ProductReview = Pick<CustomerInspection, 'order_id' | 'order_no' | 'item_no' | 'customer_code' | 'project_no' | 'groups' | 'selection'> & {status: string; key: string}
 
 const path = (id: number) => `/api/orders/orders/${id}/customer-inspection/`
 export const customerInspectionApi = {

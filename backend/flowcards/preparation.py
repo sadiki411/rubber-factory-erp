@@ -171,7 +171,7 @@ def require_compatible_orders(product, orders, standard):
 def source_rows(product, orders):
     ids = [o.pk for o in orders]
     customers = {order_customer_key(o) for o in orders}
-    qs = ProductInspectionCriterion.objects.filter(product_specification=product).filter(Q(order__isnull=True) | Q(order_id__in=ids)).select_related("source_batch")
+    qs = ProductInspectionCriterion.objects.filter(product_specification=product).exclude(category=ci.ADOPTED_CATEGORY).filter(Q(order__isnull=True) | Q(order_id__in=ids)).select_related("source_batch")
     return [c for c in qs.order_by("id") if not customers or not c.customer or c.customer.casefold() in customers
             or (c.order_id in ids and c.source_batch and c.source_batch.source_type == ci.FACTORY)]
 
@@ -184,7 +184,8 @@ def criterion_data(c):
             "source_file": c.source_batch.original_name if c.source_batch_id else "",
             "source_url": f"/api/flow-cards/source-files/{c.source_batch_id}/" if c.source_batch_id else None,
             "source_sheet": c.source_sheet, "source_row": c.source_row, "version": c.version, "category": c.category, "project_no": c.project_no,
-            "raw_data": raw, "stage": raw.get("stage"), "method": raw.get("method", ""),
+            "raw_data": raw, "customer_order_source": bool(c.source_batch_id and c.source_batch.source_type == ci.FACTORY),
+            "stage": raw.get("stage"), "method": raw.get("method", ""),
             "limit_mode": raw.get("limit_mode"), "upper_inclusive": raw.get("upper_inclusive", True),
             "lower_inclusive": raw.get("lower_inclusive", True)}
 
@@ -194,8 +195,8 @@ def conflict_items(product, orders, standard):
     rows = source_rows(product, orders)
     by_name = defaultdict(list)
     for row in rows:
-        # Unclassified Xiangbang source groups are printable references. Neither
-        # 2001 nor 6001 is assigned to an actual shop-floor inspection stage.
+        # Xiangbang rows are reviewed as a complete customer/project bundle.
+        # They do not compete with manual standards through this legacy picker.
         if row.order_id and row.source_batch and row.source_batch.source_type == ci.FACTORY:
             continue
         by_name[(row.inspection_item, (row.raw_data or {}).get("stage", ""))].append(row)

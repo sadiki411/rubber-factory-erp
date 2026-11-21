@@ -29,11 +29,11 @@ function mount() {
 
 afterEach(()=>vi.restoreAllMocks())
 
-it('shows separate unclassified categories and prints a separate PDF without approval', async () => {
+it('preserves the original categories and lets users print the original without approval', async () => {
   vi.spyOn(customerInspectionApi,'get').mockResolvedValue({inspection:sample})
   const update=vi.spyOn(customerInspectionApi,'update')
   mount()
-  const print=await screen.findByRole('link',{name:'打印标准 PDF'})
+  const print=await screen.findByRole('link',{name:'打印原表 PDF'})
   expect(print).toHaveAttribute('href','/api/orders/orders/5/customer-inspection/print/')
   fireEvent.click(screen.getByText(/类别 2001/))
   fireEvent.click(screen.getByText(/类别 6001/))
