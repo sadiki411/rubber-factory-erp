@@ -114,7 +114,7 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
   return <>
     <Card title={`${data.product.specification} / ${data.product.material} · 制卡准备`} extra={<Button onClick={refresh}>刷新服务器资料</Button>}>
       <Typography.Paragraph>{data.orders.map((o)=>`${o.order_no}/${o.item_no||'-'}${o.customer_code ? `（客户 ${o.customer_code}）` : ''}`).join('、')} · M=模；制卡不报产量、不动库存或交付</Typography.Paragraph>
-      <PreparationGuidancePanel data={currentContext} group={group} standardId={standardId} onEdit={canEdit?()=>setEditor(true):undefined} />
+      <PreparationGuidancePanel data={currentContext} group={group} standardId={standardId} onEdit={()=>setEditor(true)} canEdit={canEdit} />
       {data.orders.length === 1 && data.orders[0].customer_code !== undefined && <OrderCustomerInspectionPanel key={data.orders[0].id} orderId={data.orders[0].id} compact onAdopt={canEdit ? setAdopt : undefined} />}
       <Descriptions title="已带入" column={{xs:1,sm:2}} items={[{key:'run',label:'计划来源',children:data.run_id?`任务#${data.run_id} · 已确认计划${data.runs.find((r)=>r.id===data.run_id)?.planned_molds ?? '见原任务'}模`:'订单直接安排：下方填写预计生产模数即可，不必先建生产任务'}, {key:'standard',label:'采用依据',children:group?.status==='GENERATED'?`原卡 v${group.snapshot.standard?.version||'未登记'} · ${group.snapshot.standard?.source||'依据见原卡'}`:standard?`v${standard.version} · ${standard.source}`:'由负责人核对上方逐项待确认资料'}, {key:'saved',label:'本次准备记录',children:group?`${group.id} · 版本${group.revision} · ${group.updated_at} · 经手人#${group.updated_by||'未记录'}`:'尚未保存（查看不会自动创建）'}]} />
       {group?.status!=='GENERATED'&&currentContext.missing.filter(s=>!s.startsWith('唯一适用的生效标准')).map(s=><Alert key={s} type="warning" title={s} />)}

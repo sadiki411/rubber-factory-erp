@@ -4,6 +4,7 @@ import { flowApi, flowLimitText, flowRequestKey, finishFlowRequest, type Prepara
 import { ProductProcessFields } from './ProductProcessFields'
 import { inspectionItemLabel } from '../inspectionItemLabel'
 import type { CustomerInspection } from '../customerInspection'
+import { useReadOnly } from '../access'
 import { adoptedConditions, factoryItemLabel, mergeStandardEntries, standardItemKey } from './standardEntry'
 import { bakeForForm, bakeForSave, bakeText, NUMERIC_PROCESS_FIELDS, processForForm, processForSave, processParameterText, TEXT_PROCESS_FIELDS } from './productStandardFields'
 
@@ -36,7 +37,8 @@ export function ProductStandardEditor({data,open,close,changed,initialTab='quali
   const [tab,setTab] = useState(initialTab)
   const [sourceStages,setSourceStages] = useState<Record<number,string>>({})
   const {message} = App.useApp()
-  const write = data.can_maintain_standard && data.write_enabled
+  const readOnly=useReadOnly()
+  const write = !readOnly&&data.can_maintain_standard && data.write_enabled
   const markChanged = () => setSaved(undefined)
   const bringCriterion = (c:PreparationSource) => {
     const stage=sourceStages[c.id]||c.stage
