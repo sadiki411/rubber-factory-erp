@@ -9,6 +9,7 @@ export type CustomerInspection = {
   order_id: number; order_no: string; item_no: string; customer_code: string; project_no: string; source: string; supplier: string
   status: 'PENDING' | 'CONFLICT' | 'CONFIRMED' | 'INHERITED' | 'MISSING'
   digest: string; groups: CustomerInspectionGroup[]; problems: string[]; can_review?: boolean
+  adoption_key?: string
   available?: { id: number; customer_code: string; project_no: string; versions: {category: string; version: string}[] }[]
   changes?: { category: string; item: string; previous: [string,string,string,string] | null; incoming: [string,string,string,string] | null }[]
   reference: { primary: Condition; secondary: Condition; mold_no: string; mold_size: string; material_length: string; cut_weight: string }

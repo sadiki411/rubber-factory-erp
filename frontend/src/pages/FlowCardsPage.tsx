@@ -20,7 +20,7 @@ import { inspectionItemLabel } from '../inspectionItemLabel'
 
 const WHOLE: Record<string, string> = { UNKNOWN: '待确认', REQUIRED: '需要整模', NOT_REQUIRED: '不需整模', SYSTEM_UNREGISTERED: '需整模·系统未登记', PARTIAL: '部分处理', COMPLETED: '整包作业完成', EXCEPTION: '异常待处理' }
 const SOURCE_STATE: Record<string, string> = { NEEDS_REVIEW: '更正后/身份缺项待核对', CONFIRMED: '有明确关联', REVOKED: '原错误关联已撤销（留史）', SUPERSEDED: '已由重新核对版本替代' }
-const STAGES = [ ['UPPER_TEMP', '上模接触实测温度'], ['LOWER_TEMP', '下模接触实测温度'], ['MOLDING_HARDNESS', '成型后硬度'], ['BAKED_HARDNESS', '烤后硬度'], ['DIMENSION', '关键尺寸'], ['SECONDARY_CURE', '二烤建议'] ].map(([value, label]) => ({ value, label }))
+const STAGES = [ ['UPPER_TEMP', '上模实测模温'], ['LOWER_TEMP', '下模实测模温'], ['MOLDING_HARDNESS', '成型后硬度'], ['BAKED_HARDNESS', '烤后硬度'], ['DIMENSION', '关键尺寸'], ['SECONDARY_CURE', '二烤建议'] ].map(([value, label]) => ({ value, label }))
 
 function SourceReturnHistory({ cardId, source }: { cardId: string; source: FlowTrace }) {
   const [page, setPage] = useState(1)
@@ -144,7 +144,7 @@ export function FlowCardsPage() {
   }
   if (data?.preparation_enabled) return <div className="page-container flow-cards-page">
     <PageTitle title="订单备卡与工序流转卡" description="订单、生产任务共用同一准备；只补缺项，不重录标准。" extra={<Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回来源页面</Button>} />
-    <FlowPreparationWorkspace data={data as PreparationContext} refresh={() => { void context.refetch() }} lookup={<CardLookup />} settings={<FlowTemplatePanel />} printResults={job && <PrintResults key={job.id} job={job} changed={setJob} disabled={disabled} />} print={async (ids, secondInspection, paperLayout) => { const body={card_ids:ids,resume_active:true,second_inspection:secondInspection,paper_layout:paperLayout};const slot=`print:${ids.join(',')}:${secondInspection}`;const result=await flowApi.print({...body,request_key:flowRequestKey(slot,body)});setJob(result);const prepared=result.file_prepared?result:await flowApi.preparePrint(result.id);setJob(prepared);finishFlowRequest(slot);if((prepared.paper_layout??'SINGLE')!==paperLayout) message.info('已恢复原打印任务，沿用该任务纸张格式。');return prepared }} />
+    <FlowPreparationWorkspace key={scope.toString()} data={data as PreparationContext} refresh={() => { void context.refetch() }} lookup={<CardLookup />} settings={<FlowTemplatePanel />} printResults={job && <PrintResults key={job.id} job={job} changed={setJob} disabled={disabled} />} print={async (ids, secondInspection, paperLayout) => { const body={card_ids:ids,resume_active:true,second_inspection:secondInspection,paper_layout:paperLayout};const slot=`print:${ids.join(',')}:${secondInspection}`;const result=await flowApi.print({...body,request_key:flowRequestKey(slot,body)});setJob(result);const prepared=result.file_prepared?result:await flowApi.preparePrint(result.id);setJob(prepared);finishFlowRequest(slot);if((prepared.paper_layout??'SINGLE')!==paperLayout) message.info('已恢复原打印任务，沿用该任务纸张格式。');return prepared }} />
   </div>
   return <div className="page-container flow-cards-page">
     <PageTitle title="工序流转卡" description="一包产品的记录与身份；不另记产量、库存和交付。" extra={<Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回来源页面</Button>} />

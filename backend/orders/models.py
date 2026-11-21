@@ -267,6 +267,15 @@ def normalize_product_key(*values):
     return "|".join(" ".join(str(value or "").split()).casefold() for value in values)
 
 
+class ProductMachineTemperature(TimeStampedModel):
+    product = models.ForeignKey(ProductSpecification, on_delete=models.CASCADE, related_name="machine_temperatures")
+    station = models.ForeignKey("production.ProductionStation", on_delete=models.PROTECT)
+    temperature_c = models.DecimalField("建议设定模温（℃）", max_digits=6, decimal_places=2)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=("product", "station"), name="one_temperature_per_product_station")]
+
+
 class ProductInspectionCriterion(TimeStampedModel):
     product_specification = models.ForeignKey(
         ProductSpecification,

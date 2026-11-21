@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ProductStandardEditor } from './ProductStandardEditor'
 import { ProductStandardsPanel } from './ProductStandardsPanel'
 import { flowApi, flowLimitText, type PreparationContext } from '../flowcards'
+import type { CustomerInspection } from '../customerInspection'
 
 vi.mock('../flowcards',async original=>({...await original<typeof import('../flowcards')>(),flowApi:{saveStandard:vi.fn(),activateStandard:vi.fn(),context:vi.fn(),importStandards:vi.fn()}}))
 Object.defineProperty(window,'matchMedia',{writable:true,value:vi.fn().mockImplementation((media:string)=>({matches:false,media,addListener:vi.fn(),removeListener:vi.fn(),addEventListener:vi.fn(),removeEventListener:vi.fn()}))})
@@ -16,13 +17,18 @@ describe('product-owned standard entry',()=>{
   it('shows hardness and both diameter bounds immediately, saves under the same product',async()=>{
     mount(<ProductStandardEditor data={context} open close={vi.fn()} changed={vi.fn()} />)
     expect(screen.getByText('这里填写标准，不是本批实测值')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button',{name:'增加成型硬度'}))
+    fireEvent.click(screen.getByRole('button',{name:'增加线径 / 尺寸要求'}))
     expect(screen.getAllByLabelText('下限')).toHaveLength(2)
     expect(screen.getAllByLabelText('上限')).toHaveLength(2)
     expect(screen.getByDisplayValue('线径')).toBeInTheDocument()
     expect(screen.getByDisplayValue('成型硬度')).toBeInTheDocument()
+    for(const field of ['测点','读数时间','客户认可测法','测量对象','测量方法']) expect(screen.queryByLabelText(field)).not.toBeInTheDocument()
     const inputs=screen.getAllByLabelText('下限');fireEvent.change(inputs[1],{target:{value:'2.95'}})
     fireEvent.change(screen.getAllByLabelText('上限')[1],{target:{value:'3.05'}})
     fireEvent.click(screen.getByRole('tab',{name:'来源与适用范围'}))
+    expect(screen.queryByLabelText('客户图号')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('图纸版次')).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('来源文件、版号 / 人工确认依据'),{target:{value:'SYNTH依据A01'}})
     fireEvent.click(screen.getByRole('button',{name:'保存并生效'}))
     await waitFor(()=>expect(flowApi.activateStandard).toHaveBeenCalledWith(8))
@@ -66,5 +72,23 @@ describe('product-owned standard entry',()=>{
     expect(screen.getByLabelText('二烤时间（min）')).toHaveValue('90')
     expect(screen.queryByLabelText('二烤温度下限（℃）')).not.toBeInTheDocument()
     expect(screen.getByRole('combobox',{name:'毛边洒油'})).toHaveValue('禁止')
+  })
+  it('uses source ranges and bake values after review, without assigning category measurements',async()=>{
+    const adopt={order_id:21,order_no:'SYN-21',item_no:'1',customer_code:'L',project_no:'SYN-163',adoption_key:'bundle',status:'CONFIRMED',groups:[],
+      reference:{primary:{state:'REFERENCE',raw:'时间60-65min 温度178-183℃',time_lower:'60',time_upper:'65',temperature_lower:'178',temperature_upper:'183'},
+        secondary:{state:'REFERENCE',raw:'时间120min温度150°C',time_lower:'120',time_upper:'120',temperature_lower:'150',temperature_upper:'150'}}} as unknown as CustomerInspection
+    const onActivated=vi.fn()
+    mount(<ProductStandardEditor data={context} open adopt={adopt} initialTab="process" close={vi.fn()} changed={vi.fn()} onActivated={onActivated} />)
+    expect(screen.getByLabelText('模温下限（℃）')).toHaveValue('178')
+    expect(screen.getByLabelText('模温上限（℃）')).toHaveValue('183')
+    expect(screen.getByLabelText('二烤温度（℃）')).toHaveValue('150')
+    expect(screen.getByLabelText('二烤时间（min）')).toHaveValue('120')
+    expect(screen.queryByLabelText('上模设定温度')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab',{name:'打印项目'}))
+    fireEvent.click(screen.getByRole('radio',{name:'不需整模'}))
+    fireEvent.click(screen.getByRole('button',{name:'保存并用于本单制卡'}))
+    await waitFor(()=>expect(onActivated).toHaveBeenCalledWith(expect.objectContaining({id:8})))
+    expect(flowApi.saveStandard).toHaveBeenCalledWith(expect.objectContaining({customer_reference:{key:'bundle'},applicable_order_id:21,criteria:[],
+      process_parameters:expect.objectContaining({mold_temperature_range:expect.objectContaining({lower:'178',upper:'183',unit:'℃'}),primary_curing_time:expect.objectContaining({lower:'60',upper:'65',unit:'s'})})}))
   })
 })

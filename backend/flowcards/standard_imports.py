@@ -10,6 +10,7 @@ from zipfile import ZipFile
 from decimal import Decimal
 from openpyxl import load_workbook
 from rest_framework.exceptions import ValidationError
+from erp.inspection_labels import ITEM_NOTES
 
 
 NUMBER = r"\d+(?:\.\d+)?"
@@ -42,10 +43,11 @@ def limits(raw):
 
 
 IDENTITY = {"客户": "customer_key", "客户名称": "customer_key", "客户料号": "customer_product_no", "客户产品编号": "customer_product_no", "客户产品号": "customer_product_no", "规格": "specification", "材料": "material", "材质": "material", "模具": "mold_no", "模具编号": "mold_no", "模具号": "mold_no", "版次": "version", "文件版号": "version", "版本": "version", "订单号": "order_no", "项次": "item_no", "适用范围": "scope", "依据产品版本": "base_version"}
-PARAMS = {"上模设定温度": "upper_set_temperature", "下模设定温度": "lower_set_temperature", "上模实测目标": "upper_contact_temperature", "下模实测目标": "lower_contact_temperature", "实际温度上模": "upper_contact_temperature", "实际温度下模": "lower_contact_temperature", "一次硫化时间": "primary_curing_time", "一次加硫时间": "primary_curing_time", "压力": "pressure", "脱模剂": "release_agent", "离型剂": "release_agent", "洒油": "oil", "毛边洒油": "oil", "排气": "venting", "机型": "machine_type", "吨位": "machine_type"}
+PARAMS = {"模温": "mold_temperature_range", "标准模温": "mold_temperature_range", "成型温度": "mold_temperature_range", "上模+下模模温": "mold_temperature_range", "上模设定温度": "upper_set_temperature", "下模设定温度": "lower_set_temperature", "上模实测目标": "upper_contact_temperature", "下模实测目标": "lower_contact_temperature", "实际温度上模": "upper_contact_temperature", "实际温度下模": "lower_contact_temperature", "一次硫化时间": "primary_curing_time", "一次加硫时间": "primary_curing_time", "压力": "pressure", "脱模剂": "release_agent", "离型剂": "release_agent", "洒油": "oil", "毛边洒油": "oil", "排气": "venting", "机型": "machine_type", "吨位": "machine_type"}
 PARAMS.update({"排气参数": "venting", "排料": "arrangement", "排列": "arrangement", "排料方式": "arrangement", "生产注意事项": "experience", "生产工艺要求": "experience"})
-NUMERIC_PARAMS = {"upper_set_temperature", "lower_set_temperature", "upper_contact_temperature", "lower_contact_temperature", "primary_curing_time", "pressure"}
-LABELS = set(IDENTITY) | set(PARAMS) | {"硬度", "线径", "内径", "二烤", "线径测量", "内径测量", "备注"}
+NUMERIC_PARAMS = {"mold_temperature_range", "upper_set_temperature", "lower_set_temperature", "upper_contact_temperature", "lower_contact_temperature", "primary_curing_time", "pressure"}
+INSPECTION_NAMES = (set(ITEM_NOTES) - {"HD"}) | {"线径", "内径", "外径", "厚度", "密度", "比重", "截面直径", "C/S"}
+LABELS = set(IDENTITY) | set(PARAMS) | INSPECTION_NAMES | {"硬度", "HD", "二烤", "线径测量", "内径测量", "备注"}
 IDENTITY["依据的产品版本"] = "base_version"
 LABELS.add("依据的产品版本")
 
@@ -59,6 +61,7 @@ def preview_workbook(content):
     except Exception as exc:
         raise ValidationError({"file": "无法读取工作簿，请上传有效的xlsx文件。"}) from exc
     candidates = []
+    factory_groups = False
     try:
         if len(book.worksheets) > 30:
             raise ValidationError({"file": "工作表过多，请分批上传（最多30张）。"})
@@ -70,6 +73,9 @@ def preview_workbook(content):
                 if n >= 3000 or len(row) > 80:
                     raise ValidationError({"file": "标准表过大，请按产品分批上传。"})
                 rows.append([text(c) for c in row])
+            if any({"独立需求号", "类别", "检验项目"}.issubset(row) for row in rows[:12]):
+                factory_groups = True
+                continue
             item = {"sheet": sheet.title, "criteria": [], "process_parameters": {}, "hardness": {}, "bake": {"state": "UNKNOWN"}, "warnings": [], "raw_rows": rows, "source_kind": "CUSTOMER", "whole_mold": "UNKNOWN"}
             # Label/value pairs and adjacent horizontal header/data blocks.
             for i, row in enumerate(rows):
@@ -90,9 +96,9 @@ def preview_workbook(content):
                         if name and raw:
                             entries.append((n+1, name, raw, get("工序"), get("单位/量表", "单位"), get("对象/方法"), get("执行说明", "备注")))
                 # Horizontal property block: preserve values by exact labelled column.
-                if sum(v in LABELS for v in row) >= 2 and any(v in ("硬度", "线径", "内径", "一次硫化时间") for v in row) and i+1 < len(rows):
+                if sum(v in LABELS for v in row) >= 2 and any(v in INSPECTION_NAMES or v in ("HD", "硬度", "一次硫化时间", "标准模温") for v in row) and i+1 < len(rows):
                     for j, name in enumerate(row):
-                        if name in ("硬度", "线径", "内径", "二烤", *PARAMS):
+                        if name in INSPECTION_NAMES or name in ("HD", "硬度", "二烤", *PARAMS):
                             raw = rows[i+1][j] if j < len(rows[i+1]) else ""
                             if raw:
                                 notes = " ".join(rows[n+1][k] for n,r in enumerate(rows[:-1]) for k,c in enumerate(r) if name+"测量" == c and k<len(rows[n+1]))
@@ -106,6 +112,8 @@ def preview_workbook(content):
                     found_unit = unit if unit not in ("", "—", "见原要求") else next((u for u in ("min", "秒", "s", "°C", "℃", "kg/cm²", "MPa", "T") if u in raw), "")
                     parameter = {"state": "RAW_UNCONFIRMED", "raw_text": raw, "source": f"{sheet.title} 第{row_no}行；{method}"}
                     if PARAMS[name] in NUMERIC_PARAMS:
+                        if PARAMS[name] == "mold_temperature_range" and found_unit in ("°C", "℃"):
+                            found_unit = "℃"
                         parameter.update(lower=parsed["lower"], upper=parsed["upper"], unit=found_unit)
                         fixed = re.fullmatch(rf"\s*({NUMBER})\s*(?:{re.escape(found_unit)})?\s*", raw)
                         if parsed["limit_mode"] == "PENDING" and fixed:
@@ -120,9 +128,9 @@ def preview_workbook(content):
                     else:
                         item["warnings"].append(f"第{row_no}行二烤条件不完整，仍为待确认，不以0补齐。")
                     item["process_parameters"]["bake_reference"] = {"state": "RAW_UNCONFIRMED", "raw_text": raw, "source": f"{sheet.title} 第{row_no}行"}
-                elif name in ("线径", "内径") or "硬度" in name or name.upper().startswith("HD"):
+                elif name.upper() in INSPECTION_NAMES or "硬度" in name or name.upper().startswith("HD"):
                     parsed = limits(raw)
-                    dimension = name in ("线径", "内径")
+                    dimension = name.upper() in INSPECTION_NAMES
                     phase = "DIMENSION" if dimension else "BAKED_HARDNESS" if "二次" in stage or "烤" in stage else "MOLDING_HARDNESS"
                     actual_unit = unit if unit not in ("—", "见原要求") else ""
                     if not actual_unit:
@@ -141,6 +149,8 @@ def preview_workbook(content):
                 item["scope"] = item.get("scope", "")
                 item["route"] = {"confirmed": False, "molding": True, "patrol": True, "deburr": True, "inspection": True, "bake": item["bake"]["state"] == "APPLICABLE", "baked_hardness": "BAKED_HARDNESS" in item["hardness"]}
                 candidates.append(item)
+        if not candidates and factory_groups:
+            raise ValidationError({"file": "这是翔邦订单附带的检验表。请从订单管理导入，再到订单详情核对并点击「带入本单制卡标准」；原类别不会被合并。"})
         if not candidates:
             raise ValidationError({"file": "没有识别到带客户料号的标准块。请使用界面的手工填写入口，或提供带项目/要求列的标准表。"})
         # Explicit order exceptions inherit only a unique same-product document version.

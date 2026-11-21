@@ -3,7 +3,7 @@ import dayjs from 'dayjs'
 import { inspectionItemLabel } from '../inspectionItemLabel'
 import { flowLimitText, type Criterion, type FlowCardDetail, type FlowEvent } from '../flowcards'
 
-export const FLOW_KIND: Record<string, string> = { WHOLE_MOLD: '整模作业', UPPER_TEMP: '上模实测温度', LOWER_TEMP: '下模实测温度', MOLDING_HARDNESS: '成型硬度', BAKED_HARDNESS: '烤后硬度', DIMENSION: '尺寸测量', BAKE: '二烤作业', DEBURR: '去毛边', APPEARANCE: '外观检查', ANOMALY: '异常', RESOLUTION: '异常处理', SOURCE_CONFIRM: '实物来源核对', VOID: '作废',WORK_GUIDANCE:'补充作业指示（不改原卡）' }
+export const FLOW_KIND: Record<string, string> = { WHOLE_MOLD: '整模作业', UPPER_TEMP: '上模实测模温', LOWER_TEMP: '下模实测模温', MOLDING_HARDNESS: '成型硬度', BAKED_HARDNESS: '烤后硬度', DIMENSION: '尺寸测量', BAKE: '二烤作业', DEBURR: '去毛边', APPEARANCE: '外观检查', ANOMALY: '异常', RESOLUTION: '异常处理', SOURCE_CONFIRM: '实物来源核对', VOID: '作废',WORK_GUIDANCE:'补充作业指示（不改原卡）' }
 export const flowTime = (v: string | null) => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '未知'
 export type CouponSample = { sample_ref: string; material_ref: string; card_ids: string[]; trays: number[]; accompanied: boolean }
 export function FlowMeasurementSummary({ card, disabled, measure }: { card: FlowCardDetail; disabled: boolean; measure: (c: Criterion, original?: FlowEvent) => void }) {

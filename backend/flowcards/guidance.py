@@ -4,11 +4,12 @@ from decimal import Decimal, InvalidOperation
 from rest_framework.exceptions import ValidationError
 
 LABELS = {
+    "mold_temperature_range": "Mold Temp.（标准模温，上下模共用）",
     "oil": "毛边洒油", "upper_contact_temperature": "上模接触温度目标", "lower_contact_temperature": "下模接触温度目标",
     "upper_set_temperature": "上模设定温度", "lower_set_temperature": "下模设定温度", "primary_curing_time": "一次加硫时间",
     "pressure": "压力", "release_agent": "成型脱模剂", "venting": "排气要求", "arrangement": "排列/排料", "experience": "生产注意事项",
 }
-NUMERIC = {"upper_contact_temperature", "lower_contact_temperature", "upper_set_temperature", "lower_set_temperature", "primary_curing_time", "pressure"}
+NUMERIC = {"mold_temperature_range", "upper_contact_temperature", "lower_contact_temperature", "upper_set_temperature", "lower_set_temperature", "primary_curing_time", "pressure"}
 
 
 def same_value(a, b):
@@ -67,6 +68,11 @@ def summary(product, standard=None, snapshot=None, order_reference=None):
     rows = []
     for key, label in LABELS.items():
         param = params.get(key, {})
+        primary = (order_reference or {}).get("primary", {})
+        if key == "mold_temperature_range" and not param and primary.get("state") == "REFERENCE":
+            param = {"lower": primary["temperature_lower"], "upper": primary["temperature_upper"], "unit": "℃", "state": "RAW_UNCONFIRMED"}
+        if key in ("upper_contact_temperature", "lower_contact_temperature", "upper_set_temperature", "lower_set_temperature") and ("mold_temperature_range" in params or primary.get("state") == "REFERENCE"):
+            continue
         if not param and key not in ("oil", "primary_curing_time", "pressure", "upper_contact_temperature", "lower_contact_temperature"):
             continue
         state = param.get("state", "NOT_PROVIDED")
@@ -76,7 +82,7 @@ def summary(product, standard=None, snapshot=None, order_reference=None):
         elif state not in ("CONFIRMED", "NOT_APPLICABLE"):
             warning = "未提供" if state == "NOT_PROVIDED" else "原文待核，不作为生产指令"
         raw = product.primary_curing if key == "primary_curing_time" else ""
-        xiangbang = (order_reference or {}).get("primary", {}) if key == "primary_curing_time" else {}
+        xiangbang = primary if key == "primary_curing_time" else {}
         value = parameter_text(param)
         if xiangbang.get("state") == "REFERENCE":
             raw = xiangbang["raw"]
@@ -108,11 +114,15 @@ def summary(product, standard=None, snapshot=None, order_reference=None):
     bake = ss.get("bake", {})
     secondary = (order_reference or {}).get("secondary", {})
     no_bake = secondary.get("state") == "NOT_REQUIRED"
+    bake_is_reference = secondary.get("state") == "REFERENCE" and bake.get("state") not in ("APPLICABLE", "NOT_APPLICABLE")
+    if bake_is_reference:
+        bake = {"state": "APPLICABLE", **{f"temperature_{side}": secondary[f"temperature_{side}"] for side in ("lower", "upper")},
+                **{f"minutes_{side}": secondary[f"time_{side}"] for side in ("lower", "upper")}}
     warning = "所选工艺要求二烤，与本单翔邦原表不一致，请核对" if no_bake and bake.get("state") == "APPLICABLE" else ""
-    if not no_bake and bake.get("state") not in ("APPLICABLE", "NOT_APPLICABLE"):
+    if bake_is_reference or (not no_bake and bake.get("state") not in ("APPLICABLE", "NOT_APPLICABLE")):
         warning = "参考原文待确认，不等于本批已二烤"
     rows.append({"key": "bake", "label": "二次加硫", "value": "本单不需要二烤" if no_bake else bake_text(bake),
-                 "state": "CONFIRMED" if no_bake or bake.get("state") in ("APPLICABLE", "NOT_APPLICABLE") else "RAW_UNCONFIRMED",
+                 "state": "CONFIRMED" if no_bake or (not bake_is_reference and bake.get("state") in ("APPLICABLE", "NOT_APPLICABLE")) else "RAW_UNCONFIRMED",
                  "raw_reference": secondary.get("raw") or params.get("bake_reference", {}).get("raw_text") or product.secondary_curing,
                  "warning": warning, "owner": "产品标准负责人 / 管理员"})
     return rows

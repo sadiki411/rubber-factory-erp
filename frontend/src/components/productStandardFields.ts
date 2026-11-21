@@ -1,8 +1,7 @@
 export type ProcessParameter = { state?: string; lower?: string; upper?: string; value?: string; unit?: string; source?: string; raw_text?: string; _mode?: string; [key: string]: unknown }
 export const NUMERIC_PROCESS_FIELDS = [
-  ['upper_set_temperature', '上模设定温度', '℃'], ['lower_set_temperature', '下模设定温度', '℃'],
-  ['upper_contact_temperature', '上模接触温度目标', '℃'], ['lower_contact_temperature', '下模接触温度目标', '℃'],
-  ['primary_curing_time', '一次硫化时间', 's / min，以原表为准'], ['pressure', '压力', '注明压力类别及原单位'],
+  ['mold_temperature_range', 'Mold Temp.（标准模温，上下模共用）', '℃'],
+  ['primary_curing_time', 'Cure Time（一次加硫时间）', 's'], ['pressure', 'Pressure（压力）', '注明原表单位'],
 ] as const
 export const TEXT_PROCESS_FIELDS = [
   ['oil', '毛边洒油', ['不洒油', '少量', '适量', '禁止']],
@@ -27,7 +26,17 @@ export function processForForm(parameters: Record<string, ProcessParameter> = {}
 export function processForSave(parameters: Record<string, ProcessParameter> = {}) {
   return Object.fromEntries(Object.entries(parameters).map(([key, input]) => {
     const p = { ...input }
-    if (NUMERIC_PROCESS_FIELDS.some(([name]) => name === key)) {
+    if (key === 'mold_temperature_range') {
+      delete p.value
+      if (!present(p.lower) && !present(p.upper) && !p.raw_text) return [key, {}] as const
+      if (present(p.lower) || present(p.upper)) {
+        if (!present(p.lower) || !present(p.upper) || !Number.isFinite(Number(p.lower)) || !Number.isFinite(Number(p.upper)) || Number(p.lower) <= 0 || Number(p.lower) > Number(p.upper)) {
+          throw new Error('标准模温请填写有效的上下限，下限不能大于上限。')
+        }
+        p.unit = '℃'
+        p.state = 'CONFIRMED'
+      }
+    } else if (NUMERIC_PROCESS_FIELDS.some(([name]) => name === key)) {
       if (parameterMode(p) === 'RANGE') delete p.value
       else { delete p.lower; delete p.upper }
     }

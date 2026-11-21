@@ -225,10 +225,23 @@ def order_payload(order, snapshot=None, approvals=None):
         "PENDING" if snapshot["groups"] else "MISSING"
     )
     return {**snapshot, "status": status, "source": SOURCE, "supplier": order.source_system,
+            "adoption_key": adoption_key(snapshot),
             "order_id": order.pk, "order_no": order.order_no, "item_no": order.item_no,
             "specification": order.specification, "material": order.material,
             "review_id": approval.pk if approval else None,
             "reviewed_at": approval.confirmed_at.isoformat() if approval else None}
+
+
+def adoption_key(snapshot):
+    """Bind a preparation version to both the test groups and the actual order conditions."""
+    if not snapshot or not snapshot.get("digest") or not snapshot.get("customer_code") or not snapshot.get("project_no"):
+        return ""
+    parts = [snapshot["digest"]]
+    for phase in ("primary", "secondary"):
+        item = snapshot["reference"][phase]
+        keys = ("state", "time_lower", "time_upper", "temperature_lower", "temperature_upper", "unit")
+        parts.append([item.get(k, "") for k in keys] if item.get("state") in ("REFERENCE", "NOT_REQUIRED") else [item.get("state"), item.get("raw")])
+    return hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()
 
 
 def card_payloads(orders, snapshots):

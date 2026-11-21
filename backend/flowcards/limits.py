@@ -53,7 +53,7 @@ def evaluate(row, actual, method_matches):
     result = {"judgment": "NOT_EVALUATED", "limit_text": limit_text(row)}
     if mode in ("PENDING", "NONE"):
         return {**result, "measurement_message": "不要求测，未判定" if mode == "NONE" else "界限待确认，未判定"}
-    if not row.get("unit") or not row.get("method") or not method_matches:
+    if not row.get("unit") or (not row.get("method") and row.get("comparison_basis") != "DIMENSION_READING") or not method_matches:
         return {**result, "measurement_message": "单位/测法未确认或与标准不一致，未判定"}
     upper = Decimal(row["upper"]) if mode != "LOWER" else None
     lower = Decimal(row["lower"]) if mode != "UPPER" else None

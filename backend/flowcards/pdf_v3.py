@@ -99,6 +99,9 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, op
         text(width-44, 15, f"{card.planned_molds}M | {card.sequence}/{card.denominator}批", 11)
         p = snap["product"]
         ss = (snap.get("standard") or {}).get("snapshot", {})
+        simple_temperature = operational_guidance and ss.get("packaging", {}).get("simple_entry") is True and (
+            "mold_temperature_range" in snap.get("process_parameters", {}) or not any(e["stage"] in ("UPPER_TEMP", "LOWER_TEMP") for e in criteria)
+        )
         criteria = [e for e in ss.get("criteria", []) if e.get("follow_package", True)]
         pending = (not snap.get("standard") or ss.get("dimension_count") is None or
                    ss.get("bake", {}).get("state", "UNKNOWN") == "UNKNOWN" or
@@ -160,7 +163,12 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, op
                 row = criterion(stage)
                 if row and limit_mode(row) != "NONE":
                     columns.append((label, limits(row)))
-        if operational_guidance:
+        if simple_temperature:
+            row = criterion("MOLDING_HARDNESS")
+            columns = [("上模实测模温", "℃"), ("下模实测模温", "℃")]
+            if row and limit_mode(row) != "NONE":
+                columns.append(("成型后硬度", limits(row)))
+        elif operational_guidance:
             from .guidance import parameter_text, usable
             mode = snap.get("temperature_plan", {}).get("mode", "PENDING")
             if mode == "REFERENCE" or (mode == "FIRST" and card.sequence != 1):
@@ -194,7 +202,18 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, op
                 text(5,height-7,f"本卡续下页 · {card.card_no}",7)
                 c.showPage(); text(5,10,f"工序流转卡续页 · {card.card_no} · {card.sequence}/{card.denominator}批",10)
                 y=17
-        if operational_guidance:
+        if simple_temperature and applies("molding"):
+            from .guidance import parameter_text, usable
+            p = snap.get("process_parameters", {})
+            temp, cure = p.get("mold_temperature_range", {}), p.get("primary_curing_time", {})
+            notes = []
+            if usable("mold_temperature_range", temp):
+                notes.append(f"标准模温（上下模共用）：{parameter_text(temp)}")
+            if usable("primary_curing_time", cure):
+                notes.append(f"一次加硫时间：{parameter_text(cure)}")
+            if notes:
+                ensure_space(6); box(5,y,span,6); field(6,y,span-2,6,"；".join(notes),8.6); y+=6
+        elif operational_guidance and not simple_temperature:
             mode = snap.get("temperature_plan", {}).get("mode", "PENDING")
             ref = snap.get("temperature_plan", {}).get("reference", "")
             temp_note = {"PENDING":"模温时机待负责人确认；设定温度不代替接触实测",

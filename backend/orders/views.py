@@ -36,6 +36,7 @@ from .models import (
     MaterialReceipt,
     OrderYieldRemainder,
     ProductInspectionCriterion,
+    ProductMachineTemperature,
     ProductSpecification,
 )
 from .serializers import (
@@ -88,6 +89,40 @@ class RevisionHistoryMixin:
 class ProductSpecificationViewSet(RevisionHistoryMixin, NoDeleteModelViewSet):
     serializer_class = ProductSpecificationSerializer
     revision_record_type = BusinessRecordRevision.RecordType.PRODUCT_SPECIFICATION
+
+    @action(detail=True, methods=["get", "put"], url_path="machine-temperatures")
+    def machine_temperatures(self, request, pk=None):
+        from decimal import Decimal, InvalidOperation
+        from flowcards.preparation import can_maintain, require_maintainer
+        from production.models import ProductionStation
+
+        product = self.get_object()
+        if request.method == "PUT":
+            require_maintainer(request.user)
+            station_id = str(request.data.get("station_id", ""))
+            if not station_id.isascii() or not station_id.isdecimal() or len(station_id) > 10:
+                raise DRFValidationError({"station_id": "请选择生产机台。"})
+            station = get_object_or_404(ProductionStation, pk=int(station_id))
+            value = request.data.get("temperature_c", "")
+            if value is not None:
+                try:
+                    decimal = Decimal(str(value))
+                    if not decimal.is_finite() or not (0 < decimal <= 1000) or decimal.as_tuple().exponent < -2:
+                        raise InvalidOperation
+                    value = decimal
+                except (InvalidOperation, ValueError):
+                    raise DRFValidationError({"temperature_c": "请输入正的摄氏温度，最多两位小数。"})
+                if not station.is_active:
+                    raise DRFValidationError({"station_id": "已停用机台不能添加建议值。"})
+            if value is None:
+                product.machine_temperatures.filter(station=station).delete()
+            else:
+                ProductMachineTemperature.objects.update_or_create(product=product, station=station, defaults={"temperature_c": value})
+        suggestions = {key: format(temp.normalize(), "f") for key, temp in product.machine_temperatures.values_list("station_id", "temperature_c")}
+        stations = list(ProductionStation.objects.filter(Q(is_active=True) | Q(pk__in=list(suggestions))))
+        return Response({"can_edit": can_maintain(request.user),
+                         "stations": [{"id": station.id, "code": station.code, "active": station.is_active,
+                                       "temperature_c": suggestions.get(station.id)} for station in stations]})
 
     def get_queryset(self):
         queryset = ProductSpecification.objects.select_related("mold_model")

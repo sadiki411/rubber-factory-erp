@@ -154,6 +154,19 @@ def confirm_standard(data, user):
     if existing:
         return existing
     product = get_row(ProductSpecification, data.get("product_id"), "product_id")
+    customer_reference = None
+    if prep.enabled() and "customer_reference" in data:
+        reference = data["customer_reference"]
+        from orders.customer_inspection import order_payload
+        if not isinstance(reference, dict) or not data.get("applicable_order_id"):
+            raise ValidationError({"customer_reference": "采用订单原表时必须关联本订单项次。"})
+        order = get_row(QualityOrder, data["applicable_order_id"], "applicable_order_id")
+        document = order_payload(order) if order.product_specification_id == product.pk else None
+        if not document or document["status"] not in ("CONFIRMED", "INHERITED") or not document["adoption_key"] or document["adoption_key"] != reference.get("key"):
+            raise ValidationError({"customer_reference": "订单客户要求或工艺已变化，请刷新核对后再采用。"})
+        if document["customer_code"] != str(data.get("customer_key", "")).strip():
+            raise ValidationError({"customer_key": "采用原表时须保留该订单的客户代号。"})
+        customer_reference = {"key": document["adoption_key"], "order_id": order.pk, "project_no": document["project_no"], "customer_code": document["customer_code"]}
     if prep.enabled() and isinstance(data.get("import_source"), dict):
         identity = data["import_source"].get("identity", {})
         if not isinstance(identity, dict):
@@ -206,6 +219,7 @@ def confirm_standard(data, user):
         raise ValidationError({"appearance_ids": "外观选项不存在或已停用。"})
     selected = [selected_by_id[pk] for pk in issues]
     criteria, snapshots = [], []
+    new_criteria = set()
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("stage") not in MEASURE_STAGES:
             raise ValidationError({"criteria": "检验阶段无效。"})
@@ -227,12 +241,13 @@ def confirm_standard(data, user):
                 if row.order_id and str(row.order_id) != str(data.get("applicable_order_id")):
                     raise ValidationError({"criterion_id": "订单特规只能在其明确适用的订单中引用；不可变成通用标准。"})
                 changed = any(k in entry and str(entry[k]) != str(getattr(row, f"{k}_limit" if k in ("lower", "upper") else k)) for k in ("lower", "upper", "unit"))
+                renamed = "name" in entry and str(entry['name']).strip() != row.inspection_item
                 raw = row.raw_data or {}
-                changed = changed or any(k in entry and entry[k] != raw.get(k, True if k.endswith("inclusive") else "PENDING")
+                qualifiers_changed = any(k in entry and entry[k] != raw.get(k, True if k.endswith("inclusive") else "PENDING")
                                          for k in ("limit_mode", "upper_inclusive", "lower_inclusive"))
-                if changed and entry.get("override") is not True:
+                if (changed or renamed or qualifiers_changed) and entry.get("override") is not True:
                     raise ValidationError({"criterion_id": "引用原行不可静默改值；请选择明确的新版本/本单例外。"})
-                if entry.get("override") is True:
+                if entry.get("override") is True and (changed or renamed or (qualifiers_changed and raw.get("limit_mode"))):
                     order = get_row(__import__("quality.models", fromlist=["QualityOrder"]).QualityOrder, data["applicable_order_id"], "applicable_order_id") if data.get("applicable_order_id") else None
                     if order and order.product_specification_id != product.pk:
                         raise ValidationError({"applicable_order_id": "特规订单必须明确关联同一产品。"})
@@ -242,6 +257,7 @@ def confirm_standard(data, user):
                         source_batch=row.source_batch, source_sheet=row.source_sheet, source_row=row.source_row,
                         raw_data={**(row.raw_data or {}), "overrides_criterion_id": row.pk, "source": source, "stage": entry["stage"],
                                   "method": method, **{k: entry[k] for k in ("limit_mode", "upper_inclusive", "lower_inclusive") if k in entry}})
+                    new_criteria.add(row.pk)
         else:
             # New manual requirements join the EXISTING product criteria table.
             row = ProductInspectionCriterion.objects.create(
@@ -252,6 +268,7 @@ def confirm_standard(data, user):
                 unit=unit.strip(), raw_data={"source": source, "method": method, "stage": entry["stage"],
                     **{k: entry[k] for k in ("limit_mode", "upper_inclusive", "lower_inclusive") if k in entry}},
             )
+            new_criteria.add(row.pk)
         numeric = entry.get("numeric", False)
         if numeric not in (True, False):
             raise ValidationError({"criteria": "numeric必须为布尔值。"})
@@ -271,6 +288,8 @@ def confirm_standard(data, user):
         raise ValidationError({"dimension_count": "需要的尺寸项目数不能少于本次已确认的尺寸项目。"})
     version = (StandardRevision.objects.filter(product=product).aggregate(v=Max("version"))["v"] or 0) + 1
     metadata = prep.standard_metadata(data) if prep.enabled() else {}
+    if customer_reference:
+        metadata["customer_reference"] = customer_reference
     extra = {}
     if prep.enabled():
         kind = data.get("source_kind", "FACTORY_EXPERIENCE")
@@ -288,6 +307,8 @@ def confirm_standard(data, user):
             if state not in ("CONFIRMED", "NOT_PROVIDED", "RAW_UNCONFIRMED", "NOT_APPLICABLE", "MEASURE_NO_LIMIT"):
                 raise ValidationError({"requirement_state": "要求状态无效。"})
             snapshot.update({"requirement_state": state, "critical": entry.get("critical", True)})
+            if metadata["packaging"].get("simple_entry") and state == "CONFIRMED" and snapshot["stage"] == "DIMENSION" and not snapshot["method"]:
+                snapshot["comparison_basis"] = "DIMENSION_READING"
             if "follow_package" in entry:
                 if not isinstance(entry["follow_package"], bool):
                     raise ValidationError({"follow_package": "是否随包测必须明确为是或否。"})
@@ -299,7 +320,7 @@ def confirm_standard(data, user):
                 snapshot["provenance"] = provenance
                 # A new/explicit override joins the original product criteria table;
                 # merely referencing a prior row must never rewrite its provenance.
-                if not entry.get("criterion_id") or entry.get("override") is True:
+                if row.pk in new_criteria:
                     row.raw_data = {**(row.raw_data or {}), "standard_import": provenance}
                     row.save(update_fields=["raw_data"])
     result = StandardRevision.objects.create(product=product, mold=mold, version=version, source=source, request_key=key, request_digest=digest(data),
@@ -741,7 +762,7 @@ def record_event(data, user, *, entry_card=None):
                         values["bake_snapshot"] = {"id": str(bake.pk), "business_at": bake.business_at.isoformat(), "card_trays": bake.values["card_trays"]}
             if matching:
                 criterion = matching[0]
-                if values.get("unit") != criterion["unit"] or values.get("method") != criterion["method"]:
+                if values.get("unit") != criterion["unit"] or (criterion.get("comparison_basis") != "DIMENSION_READING" and values.get("method") != criterion["method"]):
                     method_matches = False
                 values["standard_snapshot"] = criterion
                 values.update(evaluate(criterion, actual, method_matches))

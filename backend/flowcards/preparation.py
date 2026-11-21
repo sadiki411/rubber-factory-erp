@@ -139,6 +139,9 @@ def applicable_standards(product, run, orders, inspections=None):
     qs = qs.filter(Q(applicable_order__isnull=True) | Q(applicable_order_id__in=ids))
     result = []
     for row in qs.order_by("-version"):
+        adopted = row.snapshot.get("customer_reference")
+        if adopted and (len(orders) != 1 or adopted.get("order_id") != orders[0].pk or adopted.get("key") != ci.adoption_key(inspections.get(orders[0].pk))):
+            continue
         applicability = row.snapshot.get("applicability", {})
         project_nos = {v["project_no"] for v in inspections.values() if v["project_no"]} or {product.customer_product_no}
         if applicability.get("customer_product_no") and any(ci.code(v) != ci.code(applicability["customer_product_no"]) for v in project_nos):
@@ -250,7 +253,8 @@ def context(params, user):
     standards = applicable_standards(product, run, orders, inspections)
     active = [s for s in standards if s.status == "ACTIVE"]
     # Order exceptions must be explicitly selected if they coexist with a base.
-    chosen = active[0] if orders and len(active) == 1 else None
+    adopted = [s for s in active if s.snapshot.get("customer_reference")]
+    chosen = adopted[0] if len(adopted) == 1 else active[0] if orders and len(active) == 1 else None
     if params.get("standard_id"):
         chosen = next((s for s in standards if str(s.pk) == str(params["standard_id"])), None)
         if chosen is None:
@@ -562,6 +566,11 @@ def activate_standard(standard, user):
         return standard
     if standard.status != "DRAFT":
         raise ValidationError({"status": "仅可生效新草稿；被替代/旧版不可直接复活。"})
+    adopted = standard.snapshot.get("customer_reference")
+    if adopted:
+        document = ci.order_payload(standard.applicable_order)
+        if not document or document["status"] not in ("CONFIRMED", "INHERITED") or document["adoption_key"] != adopted["key"]:
+            raise ValidationError({"customer_reference": "订单原表已变化，请重新核对并带入。"})
     previous = StandardRevision.objects.filter(product=standard.product, mold=standard.mold,
         customer_key=standard.customer_key, applicable_order=standard.applicable_order, status="ACTIVE")
     # A revision for another machine/drawing does not retire the first scope.
@@ -587,7 +596,7 @@ def standard_metadata(data):
         if not isinstance(value, dict):
             raise ValidationError({key: "请按字段保存对象，不用说明文字代替结构化参数。"})
         result[key] = deepcopy(value)
-    # Four independent temperatures, time WITH units, pressure type WITH units.
+    # Preserve old structured values; new edits use one shared mold range.
     params = result["process_parameters"]
     if len(params) > 40:
         raise ValidationError({"process_parameters": "最多40项结构化工艺参数。"})
@@ -597,7 +606,7 @@ def standard_metadata(data):
         value.setdefault("state", "RAW_UNCONFIRMED")
         if value.get("state") not in ("NOT_PROVIDED", "RAW_UNCONFIRMED", "NOT_APPLICABLE", "CONFIRMED"):
             raise ValidationError({"process_parameters": f"{key}状态无效。"})
-        if value.get("state") == "CONFIRMED" and key in ("upper_set_temperature", "lower_set_temperature", "upper_contact_temperature", "lower_contact_temperature", "primary_curing_time", "pressure") and not value.get("unit"):
+        if value.get("state") == "CONFIRMED" and key in ("mold_temperature_range", "upper_set_temperature", "lower_set_temperature", "upper_contact_temperature", "lower_contact_temperature", "primary_curing_time", "pressure") and not value.get("unit"):
             raise ValidationError({"process_parameters": f"{key}已确认时必须保留单位；单位未知请标待核。"})
         for field in ("lower", "upper", "value"):
             if value.get(field) not in (None, ""):
@@ -608,6 +617,9 @@ def standard_metadata(data):
                     raise ValidationError({"process_parameters": f"{key}.{field}必须是有限数值。"})
         if value.get("lower") not in (None, "") and value.get("upper") not in (None, "") and Decimal(str(value["lower"])) > Decimal(str(value["upper"])):
             raise ValidationError({"process_parameters": f"{key}下限不得超过上限。"})
+        if key == "mold_temperature_range" and value["state"] == "CONFIRMED":
+            if value.get("lower") in (None, "") or value.get("upper") in (None, "") or value.get("unit") != "℃" or Decimal(str(value["lower"])) <= 0:
+                raise ValidationError({"process_parameters": "标准模温须同时填写正数下限、上限（℃），上下模共用。"})
         if any(not isinstance(value.get(field, ""), str) or len(value.get(field, "")) > 2000 for field in ("unit", "source", "raw_text")):
             raise ValidationError({"process_parameters": "单位、原文、出处每项最多2000字。"})
     route = result["route"]
@@ -616,6 +628,8 @@ def standard_metadata(data):
             raise ValidationError({"route": f"{key}必须是布尔值。"})
     from .services import integer
     packaging = result["packaging"]
+    if "simple_entry" in packaging and not isinstance(packaging["simple_entry"], bool):
+        raise ValidationError({"packaging": "流转卡录入格式无效。"})
     if "temperature_plan" in packaging:
         from .guidance import temperature_plan
         packaging["temperature_plan"] = temperature_plan(packaging["temperature_plan"])
