@@ -7,6 +7,7 @@ import { businessImportApi } from '../api/client'
 import { CutLengthReminder } from './CutLengthReminder'
 import { ImportMoldCheck } from './ImportMoldCheck'
 import type { BusinessImportHistoryRow, BusinessImportHistorySummary, ImportIssue } from '../types'
+import { inspectionImportSummary } from '../inspectionItemLabel'
 
 interface Props {
   open: boolean
@@ -46,6 +47,10 @@ function timestamp(value?: string | null) {
 
 function actionSummary(batch: BusinessImportHistorySummary) {
   return `新增 ${batch.actions.CREATE || 0} · 更新 ${batch.actions.UPDATE || 0} · 跳过 ${batch.actions.SKIP || 0}`
+}
+
+function rowSummary(row: BusinessImportHistoryRow) {
+  return row.record_type === 'INSPECTION_CRITERION' && row.inspection_item ? inspectionImportSummary(row) : row.summary
 }
 
 export function BusinessImportHistoryDrawer({ open, onClose }: Props) {
@@ -91,7 +96,7 @@ export function BusinessImportHistoryDrawer({ open, onClose }: Props) {
     { title: '工作表 / 行', key: 'source', width: 165, render: (_, row) => `${row.sheet || '-'}${row.row === null || row.row === undefined ? '' : ` / ${row.row}`}` },
     { title: '动作', dataIndex: 'action', width: 90, render: (value) => { const meta = ACTION_META[value] || { text: value || '-', color: 'default' }; return <Tag color={meta.color}>{meta.text}</Tag> } },
     { title: '订单号 / 项次', key: 'order', width: 210, render: (_, row) => `${row.order_no || '-'}${row.item_no ? ` / ${row.item_no}` : ''}` },
-    { title: '识别摘要', dataIndex: 'summary', width: 280, ellipsis: true, render: (value) => value || '-' },
+    { title: '识别摘要', dataIndex: 'summary', width: 280, render: (_, row) => rowSummary(row) || '-' },
     { title: '失败或略过原因', key: 'reasons', width: 420, render: (_, row) => row.reasons?.length ? <ul className="import-history-reasons">{row.reasons.map((reason, index) => <li key={`${index}-${reason}`}>{reason}</li>)}</ul> : '-' },
   ]
   const issueColumns: TableColumnsType<ImportIssue> = [
@@ -181,7 +186,7 @@ export function BusinessImportHistoryDrawer({ open, onClose }: Props) {
                   <Card size="small" style={{ width: '100%' }}>
                     <Space direction="vertical" size={4} style={{ width: '100%' }}>
                       <Space wrap><Tag>{row.sheet || '-'}/{row.row ?? '-'}</Tag>{row.action && <Tag color={ACTION_META[row.action]?.color}>{ACTION_META[row.action]?.text || row.action}</Tag>}</Space>
-                      <Typography.Text strong>{row.summary || `${row.order_no || '-'} / ${row.item_no || '-'}`}</Typography.Text>
+                      <Typography.Text strong>{rowSummary(row) || `${row.order_no || '-'} / ${row.item_no || '-'}`}</Typography.Text>
                       {row.reasons?.map((reason, index) => <Typography.Text key={`${index}-${reason}`} type="danger">{reason}</Typography.Text>)}
                     </Space>
                   </Card>

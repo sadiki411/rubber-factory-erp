@@ -566,6 +566,10 @@ export interface BusinessImportPreviewRow {
   specification?: string
   material?: string
   customer_code?: string
+  inspection_item?: string
+  inspection_lower?: string
+  inspection_upper?: string
+  inspection_unit?: string
   summary?: string
   changes?: Record<string, { from?: unknown; to?: unknown }>
   product_candidates?: BusinessImportProductCandidate[]

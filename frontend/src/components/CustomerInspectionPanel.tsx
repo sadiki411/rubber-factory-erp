@@ -1,17 +1,19 @@
-import { Alert, App, Button, Card, Collapse, Descriptions, Empty, Select, Space, Spin, Tag, Typography } from 'antd'
+import { Alert, App, Button, Card, Collapse, Descriptions, Empty, Grid, Select, Space, Spin, Tag, Typography } from 'antd'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { conditionText, customerInspectionApi, type CustomerInspectionGroup } from '../customerInspection'
+import { inspectionItemLabel } from '../inspectionItemLabel'
 
 const STATE: Record<string, string> = { PENDING: '原表待核对', CONFLICT: '来源有冲突', CONFIRMED: '来源内容已核对', INHERITED: '沿用已确认版，本单未附检验表', MISSING: '本单未附检验表', CURRENT: '现行核对版', HISTORICAL: '历史已核对版' }
 
 export function CustomerInspectionGroups({ groups }: { groups: CustomerInspectionGroup[] }) {
+  const { sm } = Grid.useBreakpoint()
   return <Collapse items={groups.map((g, i) => ({
     key: String(i), label: `客户 ${g.customer_code || '待核'} · 类别 ${g.category || '待核'} · ${g.version || '版号待核'} · ${g.rows.length} 项`,
-    children: <><Typography.Paragraph type="secondary">项目号：{g.project_no || '待核'}。类别含义未确认，保留翔邦原码。</Typography.Paragraph>
-      <Descriptions size="small" column={1} items={g.rows.map((row, index) => ({
-        key: index, label: row.item, children: <><span>下限 {row.lower === '' ? '未提供' : row.lower} · 上限 {row.upper === '' ? '未提供' : row.upper} · {row.unit || '单位未提供'}</span><br />
-          <Typography.Text type="secondary">{row.batch ? <a href={`/api/flow-cards/source-files/${row.batch}/`}>{row.file || '原表'}</a> : row.file} {row.sheet}{row.row != null ? ` 第 ${row.row} 行` : ''}</Typography.Text></>,
+    children: <><Typography.Paragraph type="secondary">项目号：{g.project_no || '待核'}。类别保留原码，括注供读表参考，测点和量法以翔邦图纸为准。</Typography.Paragraph>
+      <Descriptions size="small" layout={sm ? 'horizontal' : 'vertical'} column={1} items={g.rows.map((row, index) => ({
+        key: index, label: <span style={{ overflowWrap: 'anywhere' }}>{inspectionItemLabel(row.item)}</span>, children: <><span>下限 {row.lower === '' ? '未提供' : row.lower} · 上限 {row.upper === '' ? '未提供' : row.upper} · {row.unit || '单位未提供'}</span><br />
+          <Typography.Text type="secondary" style={{ overflowWrap: 'anywhere' }}>{row.batch ? <a href={`/api/flow-cards/source-files/${row.batch}/`}>{row.file || '原表'}</a> : row.file} {row.sheet}{row.row != null ? ` 第 ${row.row} 行` : ''}</Typography.Text></>,
       }))} /></>,
   }))} />
 }
@@ -43,7 +45,7 @@ export function OrderCustomerInspectionPanel({ orderId, compact = false }: { ord
     {!!data.problems.length && <Alert type="warning" title="客户检验要求待核对" description={data.problems.join('；')} />}
     {!!data.changes?.length && <details><summary>与上次核对版不同（{data.changes.length} 项）</summary>
       <Descriptions size="small" column={1} items={data.changes.map((row, index) => ({
-        key: index, label: `${row.category} / ${row.item}`, children: `${row.previous?.join(' / ') || '无'} → ${row.incoming?.join(' / ') || '本次未提供'}`,
+        key: index, label: `${row.category} / ${inspectionItemLabel(row.item)}`, children: `${row.previous?.join(' / ') || '无'} → ${row.incoming?.join(' / ') || '本次未提供'}`,
       }))} />
     </details>}
     {!compact && <details><summary>订单原表工艺与模具</summary><Descriptions size="small" column={1} items={[

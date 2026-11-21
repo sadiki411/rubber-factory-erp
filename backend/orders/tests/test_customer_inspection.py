@@ -8,12 +8,14 @@ from django.contrib.auth.models import Permission
 from django.core.management import call_command
 from django.test import override_settings
 from openpyxl import load_workbook
+from reportlab.platypus import Paragraph
 from rest_framework.test import APITestCase
 
 from flowcards import preparation as prep, services
 from flowcards.models import InternalCard, PrintJob
 from flowcards.pdf import render_cards
 from orders import customer_inspection as ci
+from erp.inspection_labels import ITEM_NOTES, inspection_item_label
 from orders.imports import preview_business_workbook, commit_business_batch
 from orders.models import BusinessImportBatch, CustomerInspectionReview, OrderInspectionSource, ProductInspectionCriterion, ProductSpecification
 from quality.models import QualityOrder
@@ -62,21 +64,45 @@ class CustomerInspectionTests(APITestCase):
         self.client.force_authenticate(type(self.user).objects.get(pk=self.user.pk))
 
     def test_ingest_preserves_categories_and_exact_seconds_can_print_without_workflow(self):
-        order, _, preview = self.order()
+        order, batch, preview = self.order()
         self.assertEqual([row["customer_code"] for row in preview["rows"] if row["record_type"] == "ORDER"], ["J"])
         self.assertEqual(order.customer_code, "J")
         data = self.read(order)
         self.assertEqual((data["source"], data["customer_code"], data["status"]), ("翔邦", "J", "PENDING"))
         self.assertEqual([(g["category"], g["rows"][0]["upper"]) for g in data["groups"]], [("2001", "65"), ("6001", "69")])
         self.assertEqual(data["groups"][0]["rows"][1]["lower"], "0")
+        self.assertEqual(data["groups"][0]["rows"][1]["item"], "FLASH")
         self.assertEqual(data["reference"]["primary"]["time_lower"], "160")
         self.assertEqual(data["reference"]["primary"]["unit"], "s")
         self.assertEqual(data["reference"]["secondary"]["state"], "NOT_REQUIRED")
-        raw = self.client.get(self.endpoint(order) + "print/")
+        with patch("orders.customer_inspection_pdf.Paragraph", wraps=Paragraph) as paragraph:
+            raw = self.client.get(self.endpoint(order) + "print/")
+        printed = [call.args[0] for call in paragraph.call_args_list]
+        self.assertIn("HD（硬度）", printed)
+        self.assertIn("FLASH（毛边，量法待确认）", printed)
+        self.assertIn("J / 2001 / F02", printed)
+        self.assertIn("J / 6001 / F02", printed)
         self.assertEqual(raw.status_code, 200, raw.content[:100])
         self.assertTrue(raw.content.startswith(b"%PDF"))
         self.assertFalse(InternalCard.objects.exists())
         self.assertFalse(PrintJob.objects.exists())
+        history = self.client.get(f"/api/orders/imports/history/{batch.pk}/")
+        self.assertEqual(history.status_code, 200)
+        flash = next(r for r in history.json()["rows"] if r.get("inspection_item") == "FLASH")
+        self.assertEqual([flash["inspection_lower"], flash["inspection_upper"], flash["inspection_unit"]], ["0", "0.24", "mm"])
+        self.assertEqual(self.read(order)["digest"], data["digest"])
+
+    def test_print_labels_do_not_rename_categories_or_unknown_items(self):
+        self.assertEqual(ITEM_NOTES, {
+            "HD": "硬度", "SG": "密度", "ID": "内径", "OD": "外径", "THK": "厚度",
+            "C/S-A": "轴向线径，方向待核", "C/S-R": "径向线径，方向待核", "MISMATCH": "合模错位",
+            "FLASHT": "毛边厚度", "FLASHLEN": "毛边伸出长度", "FLASH": "毛边，量法待确认",
+            "[1]": "图纸尺寸1，位置见图纸", "[2]": "图纸尺寸2，位置见图纸", "[3]": "图纸尺寸3，位置见图纸",
+        })
+        for name in ("2001", "6001", "UNKNOWN", "HD（人工释义）", "原有中文"):
+            self.assertEqual(inspection_item_label(name), name)
+        self.assertEqual(inspection_item_label("ｈｄ"), "ｈｄ（硬度）")
+        self.assertEqual(inspection_item_label("C/S-A"), "C/S-A（轴向线径，方向待核）")
 
     def test_content_approval_reuse_changed_limits_and_missing_sheet(self):
         first, _, _ = self.order()
@@ -138,12 +164,15 @@ class CustomerInspectionTests(APITestCase):
         self.assertEqual(group.snapshot["orders"][0]["customer_code"], "J")
         self.assertEqual(group.snapshot["standard"]["snapshot"]["criteria"], [])
         self.assertEqual(len(group.snapshot["customer_inspections"][0]["groups"]), 2)
+        self.assertEqual(group.snapshot["customer_inspections"][0]["groups"][0]["rows"][0]["item"], "HD")
         card = group.cards.order_by("sequence").first()
         with patch("reportlab.pdfgen.canvas.Canvas.drawString", autospec=True) as draw:
             render_cards([(card, 0)])
         self.assertTrue(any("客户 J" in str(c.args[3]) for c in draw.call_args_list))
-        current = self.client.get(f"/api/flow-cards/cards/{card.pk}/customer-inspection/")
+        with patch("orders.customer_inspection_pdf.Paragraph", wraps=Paragraph) as paragraph:
+            current = self.client.get(f"/api/flow-cards/cards/{card.pk}/customer-inspection/")
         self.assertEqual(current.status_code, 200)
+        self.assertIn("HD（硬度）", [call.args[0] for call in paragraph.call_args_list])
         self.assertFalse(PrintJob.objects.exists())
         other, _, _ = self.order("CI-2", customer="L", project="XP-2", day=3)
         with self.assertRaisesMessage(services.ValidationError, "分别备卡"):

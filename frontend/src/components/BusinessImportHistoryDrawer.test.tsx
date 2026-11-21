@@ -73,6 +73,9 @@ describe('BusinessImportHistoryDrawer', () => {
         summary: '04-A001-2607230001 / 20', changes: {}, valid: true,
         skip_reason: '该订单号和项次已存在，且业务数据没有变化。',
         reasons: ['该订单号和项次已存在，且业务数据没有变化。'], issues: [],
+      }, {
+        row_key: 'sheet2:3:INSPECTION_CRITERION', record_type: 'INSPECTION_CRITERION', sheet: 'sheet2', row: 3,
+        action: 'CREATE', inspection_item: 'FLASHLEN', inspection_lower: '0', inspection_upper: '0.08', inspection_unit: 'mm', reasons: [], issues: [],
       }],
     })
 
@@ -85,6 +88,7 @@ describe('BusinessImportHistoryDrawer', () => {
 
     expect(await screen.findByText('该订单号和项次已存在，且业务数据没有变化。')).toBeInTheDocument()
     expect(screen.getByText('订单号和项次已存在。')).toBeInTheDocument()
+    expect(screen.getByText('FLASHLEN（毛边伸出长度）：0 ～ 0.08 mm')).toBeVisible()
     await waitFor(() => expect(apiMocks.historyDetail).toHaveBeenCalledWith('batch-1'))
   })
 })

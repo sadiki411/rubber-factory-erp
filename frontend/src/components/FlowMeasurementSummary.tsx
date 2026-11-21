@@ -1,5 +1,6 @@
 import { Alert, Button, Card, Space, Typography } from 'antd'
 import dayjs from 'dayjs'
+import { inspectionItemLabel } from '../inspectionItemLabel'
 import { flowLimitText, type Criterion, type FlowCardDetail, type FlowEvent } from '../flowcards'
 
 export const FLOW_KIND: Record<string, string> = { WHOLE_MOLD: '整模作业', UPPER_TEMP: '上模实测温度', LOWER_TEMP: '下模实测温度', MOLDING_HARDNESS: '成型硬度', BAKED_HARDNESS: '烤后硬度', DIMENSION: '尺寸测量', BAKE: '二烤作业', DEBURR: '去毛边', APPEARANCE: '外观检查', ANOMALY: '异常', RESOLUTION: '异常处理', SOURCE_CONFIRM: '实物来源核对', VOID: '作废',WORK_GUIDANCE:'补充作业指示（不改原卡）' }
@@ -9,12 +10,12 @@ export function FlowMeasurementSummary({ card, disabled, measure }: { card: Flow
   return <section aria-label="实测与复核状态">
     {card.measurement_alerts?.map((e) => {
       const c = e.values.standard_snapshot as Criterion
-      const name = c?.name || FLOW_KIND[e.kind]
+      const name = c?.name ? inspectionItemLabel(c.name) : FLOW_KIND[e.kind]
       return <Alert key={e.id} type="error" showIcon title={`${name}${e.values.limit_side === 'LOWER' ? '低于下限' : '超上限'}，待复核`}
         description={<><div>实测 {String(e.values.actual)} {String(e.values.unit || '')}；标准 {flowLimitText(c)}</div><div>{String(e.values.measurement_message)} · {card.card_no}</div><div>{e.employee_name} · {flowTime(e.business_at)}；仅为本次检查，不判整批合格。</div></>}
         action={<Button disabled={disabled} onClick={() => measure(c, e.review_target || e)}>复测 / 更正</Button>} />
     })}
-    {card.measurement_status?.filter((m) => !card.measurement_alerts?.some((e) => e.id === m.event?.id)).map((m) => <Alert key={`${m.criterion.stage}:${m.criterion.id}`} type={m.event?.values.judgment === 'WITHIN' ? 'info' : 'warning'} title={`${m.criterion.name} · ${m.message}`} description={`标准 ${m.limit_text}${m.event?.values.actual != null ? `；实测 ${m.event.values.actual} ${m.event.values.unit || ''}` : ''}`} action={<Button disabled={disabled} onClick={() => measure(m.criterion, m.event || undefined)}>{m.event ? '复测 / 更正' : '登记实测'}</Button>} />)}
+    {card.measurement_status?.filter((m) => !card.measurement_alerts?.some((e) => e.id === m.event?.id)).map((m) => <Alert key={`${m.criterion.stage}:${m.criterion.id}`} type={m.event?.values.judgment === 'WITHIN' ? 'info' : 'warning'} title={`${inspectionItemLabel(m.criterion.name)} · ${m.message}`} description={`标准 ${m.limit_text}${m.event?.values.actual != null ? `；实测 ${m.event.values.actual} ${m.event.values.unit || ''}` : ''}`} action={<Button disabled={disabled} onClick={() => measure(m.criterion, m.event || undefined)}>{m.event ? '复测 / 更正' : '登记实测'}</Button>} />)}
     {card.baked_measurement_notice && <Alert type="info" title={card.baked_measurement_notice} />}
     {Boolean(card.bake_measurement_status?.length) && <Card size="small" title="二烤各次胶片检测（各次结果不通用）">{card.bake_measurement_status?.map((b) => <div key={b.id}><strong>{flowTime(b.business_at)} · 本包盘{b.trays?.join('、') || '未登记'} · {b.scope}</strong><div>{b.notice}</div>{b.checks.map((c, i) => <div key={i}>胶片{c.sample_ref} · 胶料{c.material_ref} · 取样盘{c.trays.join('、')}：{c.message}{c.actual != null ? `；实测${c.actual} ${c.unit || ''}` : ''}</div>)}</div>)}</Card>}
     {Boolean(card.baked_product_measurements?.length) && <Card size="small" title="烤后成品实测（独立事实，不代替胶片）">{card.baked_product_measurements?.map((e) => <div key={e.id}>{flowTime(e.business_at)} · {e.scope} · {e.values.actual != null ? `实测 ${e.values.actual} ${e.values.unit || ''}` : '未测 / 未判定'} · {String(e.values.measurement_message || '未判定')} · {e.employee_name}</div>)}</Card>}

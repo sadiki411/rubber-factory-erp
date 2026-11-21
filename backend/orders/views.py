@@ -22,6 +22,7 @@ from rest_framework.views import APIView
 from quality.models import QualityOrder
 
 from .imports import (
+    RECORD_CRITERION,
     commit_business_batch,
     create_business_error_report,
     create_business_template,
@@ -865,6 +866,12 @@ def _history_row(row, errors, warnings):
         "item_no": row.get("item_no", ""),
         "specification": row.get("specification", ""),
         "material": row.get("material", ""),
+        **({
+            "inspection_item": row.get("inspection_item", ""),
+            "inspection_lower": row.get("lower_limit", ""),
+            "inspection_upper": row.get("upper_limit", ""),
+            "inspection_unit": row.get("unit", ""),
+        } if row.get("record_type") == RECORD_CRITERION else {}),
         "summary": row.get("summary", "") or " / ".join(
             str(value)
             for value in (

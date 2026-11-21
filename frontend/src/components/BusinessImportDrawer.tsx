@@ -8,6 +8,7 @@ import type { BusinessImportCounts, BusinessImportPreview, BusinessImportPreview
 import { PurchaseImageImport } from './PurchaseImageImport'
 import { CutLengthReminder } from './CutLengthReminder'
 import { ImportMoldCheck } from './ImportMoldCheck'
+import { inspectionImportSummary, inspectionItemLabel } from '../inspectionItemLabel'
 
 interface Props {
   open: boolean
@@ -82,11 +83,12 @@ const CHANGE_FIELD_LABELS: Record<string, string> = {
   external_key: '外部业务标识',
 }
 
-function formatChangeValue(value: unknown) {
+function formatChangeValue(value: unknown, field: string) {
   if (value === null || value === undefined || value === '') return '（空）'
   if (value === true) return '是'
   if (value === false) return '否'
   if (typeof value === 'object') return JSON.stringify(value)
+  if (field === 'inspection_item') return inspectionItemLabel(String(value))
   return String(value)
 }
 
@@ -98,7 +100,7 @@ function renderChanges(changes: BusinessImportPreviewRow['changes']) {
       {entries.map(([field, change]) => (
         <div key={field}>
           <strong>{CHANGE_FIELD_LABELS[field] || field}：</strong>
-          <span>{formatChangeValue(change?.from)} → {formatChangeValue(change?.to)}</span>
+          <span>{formatChangeValue(change?.from, field)} → {formatChangeValue(change?.to, field)}</span>
         </div>
       ))}
     </div>
@@ -225,7 +227,7 @@ function BusinessImportDrawerForm({ open, context = 'orders', onClose }: Props) 
     { title: '规格', dataIndex: 'specification', width: 180, render: (value) => value || '-' },
     { title: '材质', dataIndex: 'material', width: 130, render: (value) => value || '-' },
     { title: '客户代号 / 检验', width: 180, render: (_, row) => row.record_type === 'ORDER' ? (row.customer_code || '—') : row.record_type === 'INSPECTION_CRITERION' ? `${row.customer_code || '待核'} · ${row.inspection_category || '类别待核'} / ${row.inspection_version || '版本待核'}` : '—' },
-    { title: '识别摘要', dataIndex: 'summary', width: 280, render: (value, row) => row.record_type === 'INSPECTION_CRITERION' ? `${row.inspection_item || '项目待核'}：${row.inspection_lower ?? '—'} ～ ${row.inspection_upper ?? '—'} ${row.inspection_unit || ''}` : value || '-' },
+    { title: '识别摘要', dataIndex: 'summary', width: 280, render: (value, row) => row.record_type === 'INSPECTION_CRITERION' ? inspectionImportSummary(row) : value || '-' },
     { title: '拟变更字段（原值 → 新值）', dataIndex: 'changes', width: 360, render: renderChanges },
     { title: '校验', dataIndex: 'valid', fixed: 'right', width: 80, render: (value) => <Tag color={value === false ? 'error' : 'success'}>{value === false ? '失败' : '通过'}</Tag> },
   ]

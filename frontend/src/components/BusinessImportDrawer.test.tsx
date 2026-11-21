@@ -46,7 +46,8 @@ describe('BusinessImportDrawer', () => {
       token: 'token-1', source_type: 'MIXED', total_rows: 3,
       counts: { product_specifications: 1, orders: 1, material_receipts: 1, inspection_criteria: 0 },
       error_count: 1, warning_count: 1,
-      rows: [{ row_key: 'order-1', record_type: 'ORDER', sheet: '订单', row: 2, action: 'CREATE', order_no: 'TEST-ORDER-001', valid: false }],
+      rows: [{ row_key: 'order-1', record_type: 'ORDER', sheet: '订单', row: 2, action: 'CREATE', order_no: 'TEST-ORDER-001', valid: false },
+        { row_key: 'standard-1', record_type: 'INSPECTION_CRITERION', sheet: '检验', row: 3, action: 'CREATE', inspection_category: '2001', inspection_version: 'F01', inspection_item: 'FLASH', inspection_lower: '0', inspection_upper: '0.24', inspection_unit: 'mm', valid: true }],
       issues: [{ level: 'error', sheet: '订单', row: 2, field: 'order_no', message: '订单编号重复' }],
     })
     const user = userEvent.setup()
@@ -57,6 +58,7 @@ describe('BusinessImportDrawer', () => {
 
     expect(await screen.findByText('混合业务工作簿')).toBeInTheDocument()
     expect(screen.getByText('订单编号重复')).toBeInTheDocument()
+    expect(screen.getByText('FLASH（毛边，量法待确认）：0 ～ 0.24 mm')).toBeVisible()
     const commit = screen.getByRole('button', { name: /确认整批导入/ })
     expect(commit).toBeDisabled()
     await waitFor(() => expect(apiMocks.preview).toHaveBeenCalledTimes(1))
