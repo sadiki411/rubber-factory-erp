@@ -1,4 +1,7 @@
 """Synthetic-only review of new guidance, samples and print-time inspection layout."""
+import hashlib
+import re
+import tempfile
 import uuid
 from unittest.mock import patch
 from django.test import TestCase, override_settings
@@ -8,7 +11,8 @@ from orders.models import ProductSpecification
 from . import test_preparation as fixtures
 from . import preparation as p, services as s
 from .guidance import bake_text, oil_instruction, summary
-from .models import CardGroup, CardEvent, InternalCard, PrintJob, TraceAudit
+from .models import CardGroup, CardEvent, InternalCard, PrintItem, PrintJob, TraceAudit
+from .paper import A4_TWO_UP, SINGLE, TwoUpCanvas
 from .pdf import render_cards
 
 
@@ -143,6 +147,84 @@ class GuidanceTests(QualityTestMixin, TestCase):
         with self.assertRaisesMessage(s.ValidationError,'冻结'):
             s.create_print({'request_key':uuid.uuid4().hex,'card_ids':ids,'resume_active':True,'second_inspection':False},self.user)
         self.assertEqual(s.create_print({'request_key':uuid.uuid4().hex,'card_ids':ids,'resume_active':True,'second_inspection':True},self.user).pk,job.pk)
+
+    def test_a4_pairs_batches_top_down_and_odd_last_has_no_second_card(self):
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen.canvas import Canvas
+        from reportlab.lib.units import mm
+        self.standard()
+        group = s.generate_group(p.save_draft(self.body(order_plan=True, planned_molds=755), self.user), self.user)
+        cards = list(group.cards.order_by('sequence'))
+        form_names, placements, batches = [], [], {}
+        original_form, original_text = Canvas.doForm, Canvas.drawString
+        original_translate = Canvas.translate
+
+        def capture_form(canvas, name):
+            if not canvas.capturing:
+                form_names.append(batches[name])
+            return original_form(canvas, name)
+
+        def capture_text(canvas, x, y, text, *args, **kwargs):
+            if canvas.capturing and str(text).endswith('/8批'):
+                batches[canvas.form_name] = int(str(text).split()[-1].split('/')[0])
+            return original_text(canvas, x, y, text, *args, **kwargs)
+
+        def capture_translate(canvas, x, y):
+            if not canvas.capturing:
+                placements.append((x, y))
+            return original_translate(canvas, x, y)
+
+        for count, expected in [(8, 4), (5, 3), (1, 1)]:
+            form_names.clear(); placements.clear(); batches.clear()
+            selection = cards[:count] if count != 1 else [cards[3]]
+            with patch.object(TwoUpCanvas, "doForm", capture_form), patch.object(TwoUpCanvas, "drawString", capture_text), patch.object(TwoUpCanvas, "translate", capture_translate):
+                raw = render_cards([(card, 0) for card in reversed(selection)], print_options={"paper_layout": A4_TWO_UP})
+            self.assertEqual(len(re.findall(rb"/Type /Page\b", raw)), expected)
+            self.assertEqual(form_names, [c.sequence for c in selection])
+            self.assertEqual(len(placements), count)
+            self.assertEqual([y > A4[1]/2 for _, y in placements], [i % 2 == 0 for i in range(count)])
+            self.assertTrue(all(abs(x - 10*mm) < .01 for x, _ in placements))
+        single = render_cards([(card, 0) for card in cards[:5]], print_options={"paper_layout": SINGLE})
+        self.assertEqual(len(re.findall(rb"/Type /Page\b", single)), 5)
+
+    def test_print_preview_and_selected_reprint_do_not_touch_other_batches(self):
+        group = self.generated()
+        card = group.cards.get(sequence=4)
+        ids = [str(card.pk)]
+        endpoint = '/api/flow-cards/print-jobs/'
+        before = list(group.cards.values('pk', 'printed_at', 'reprint_count'))
+        counts = (PrintJob.objects.count(), PrintItem.objects.count(), TraceAudit.objects.count())
+        with patch('flowcards.pdf_v3.QrCodeWidget', side_effect=AssertionError('Preview must not be scannable')):
+            preview = self.client.post(endpoint+'preview/', {'card_ids': ids}, format='json')
+        self.assertEqual(preview.status_code, 200, preview.content[:200])
+        self.assertEqual(len(re.findall(rb"/Type /Page\b", preview.content)), 1)
+        self.assertEqual(counts, (PrintJob.objects.count(), PrintItem.objects.count(), TraceAudit.objects.count()))
+        self.assertEqual(before, list(group.cards.values('pk', 'printed_at', 'reprint_count')))
+        self.assertEqual(self.client.post(endpoint+'preview/', {'card_ids': ids, 'paper_layout': 'INVALID'}, format='json').status_code, 400)
+        with tempfile.TemporaryDirectory() as root, override_settings(FLOW_CARDS_PRIVATE_ROOT=root):
+            old = s.create_print({'card_ids': ids, 'request_key': uuid.uuid4().hex, 'paper_layout': SINGLE}, self.user)
+            old.template.pop('paper_layout')
+            old.save(update_fields=['template'])
+            old_file = render_cards([(card, 0)])
+            resumed = self.client.post(endpoint, {'card_ids': ids, 'request_key': uuid.uuid4().hex, 'resume_active': True}, format='json')
+            self.assertEqual(resumed.status_code, 201, resumed.content)
+            self.assertEqual(resumed.json()['id'], str(old.pk))
+            self.assertEqual(resumed.json()['paper_layout'], SINGLE)
+            self.assertEqual(resumed.json()['pdf_sha256'], hashlib.sha256(old_file).hexdigest())
+            confirm = lambda job: self.client.post(endpoint+job+'/confirm/', {'outcomes': {ids[0]: 'SUCCESS'}}, format='json')
+            self.assertEqual(confirm(str(old.pk)).status_code, 200)
+            raw = self.client.post(endpoint, {'card_ids': ids, 'request_key': uuid.uuid4().hex}, format='json')
+            self.assertEqual(raw.status_code, 201, raw.content)
+            new = raw.json()
+            self.assertEqual(new['paper_layout'], A4_TWO_UP)
+            self.assertEqual([(i['card_no'], i['sequence'], i['denominator'], i['proposed_reprint']) for i in new['items']], [(card.card_no, 4, 5, 1)])
+            card.refresh_from_db()
+            self.assertEqual(card.reprint_count, 0)
+            self.assertEqual(confirm(new['id']).status_code, 200)
+            card.refresh_from_db()
+            self.assertEqual(card.reprint_count, 1)
+            self.assertEqual(list(group.cards.exclude(pk=card.pk).values('pk', 'printed_at', 'reprint_count')), [row for row in before if row['pk'] != card.pk])
+            self.assertEqual(b''.join(self.client.get(resumed.json()['pdf_url']).streaming_content), old_file)
 
     def test_oil_actual_violation_creates_linked_anomaly_once_without_changing_actual(self):
         group=self.generated(standard={'process_parameters':{'oil':{'state':'CONFIRMED','raw_text':'禁止'}}})

@@ -2,6 +2,7 @@ import hashlib
 import io
 import uuid
 import re
+from types import SimpleNamespace
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from django.db import IntegrityError, OperationalError, transaction
 from django.db.models import Max, Q
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from PIL import Image, UnidentifiedImageError
 from rest_framework import viewsets
 from rest_framework import serializers
@@ -26,6 +28,7 @@ from production.models import ProductionRun
 from quality.models import QualityOrder, QualityReworkCase, QualityShipmentBatch
 from . import services as s
 from .limits import limit_text, limit_mode
+from .paper import A4_TWO_UP, SINGLE
 from .measurements import applicable_criteria, reviewed_measurements
 from .models import (AppearanceIssue, StandardRevision, CardGroup, InternalCard, CardEvent,
                      PrintJob, Attachment, PositionDiagram, TemplatePublication, ShipmentSource)
@@ -278,8 +281,6 @@ class GroupViewSet(ErrorsMixin, viewsets.GenericViewSet):
         """Same renderer as issuance, but no identity, QR or database writes."""
         from . import preparation as prep
         from .pdf import render_cards
-        from types import SimpleNamespace
-        from django.utils import timezone
         if not prep.enabled():
             raise Http404("订单纸卡样张未启用。")
         plan = prep.build_plan(request.data, request.data.get("group_id"))
@@ -288,12 +289,16 @@ class GroupViewSet(ErrorsMixin, viewsets.GenericViewSet):
         which = request.data.get("sample_position", "FIRST")
         if which not in ("FIRST", "LAST"):
             raise ValidationError({"sample_position": "请选择首卡或尾卡样张。"})
-        index = 0 if which == "FIRST" else plan["count"] - 1
+        options = s.print_options(request.data)
+        count = plan["count"]
+        indices = [0 if which == "FIRST" else count - 1]
+        if options["paper_layout"] == A4_TWO_UP:
+            indices = range(min(count, 2)) if which == "FIRST" else range((count - 1)//2*2, count)
         publication = TemplatePublication.objects.filter(renderer=s.current_renderer()).first()
         snapshot = {**plan["snapshot"], "sample_only": True, "template": {**plan["snapshot"]["template"], "version": publication.version if publication else "草稿"}}
-        card = SimpleNamespace(pk=None, card_no="样张 - 未发号", original_date=timezone.localdate(),
-            sequence=index+1, denominator=plan["count"], planned_molds=snapshot["card_molds"][index], group=SimpleNamespace(snapshot=snapshot))
-        raw = render_cards([(card, 0)], print_options={"second_inspection": request.data.get("second_inspection") is True})
+        cards = [SimpleNamespace(pk=None, card_no="样张 - 未发号", original_date=timezone.localdate(),
+            sequence=index+1, denominator=count, planned_molds=snapshot["card_molds"][index], group=SimpleNamespace(snapshot=snapshot)) for index in indices]
+        raw = render_cards([(card, 0) for card in cards], print_options=options)
         response = HttpResponse(raw, content_type="application/pdf")
         response["Content-Disposition"] = 'inline; filename="flowcard-sample-not-issued.pdf"'
         response["Cache-Control"] = "private, no-store"
@@ -457,13 +462,36 @@ class EventView(ErrorsMixin, APIView):
 class PrintViewSet(ErrorsMixin, viewsets.GenericViewSet):
     queryset = PrintJob.objects.all()
 
+    @staticmethod
+    def frozen_options(job):
+        return {"second_inspection": bool(job.template.get("second_inspection")),
+                "paper_layout": job.template.get("paper_layout", SINGLE)}
+
     def result(self, job):
         return {"id": str(job.pk), "status": job.status, "request_key": job.request_key,
                 "items": [{"card_id": str(i.card_id), "card_no": i.card.card_no, "sequence": i.card.sequence,
                            "denominator": i.card.denominator, "proposed_reprint": i.proposed_reprint,
                            "status": i.status, "active": i.active} for i in job.items.select_related("card").order_by("card__group_id", "card__sequence")],
                 "pdf_url": f"/api/flow-cards/print-jobs/{job.pk}/pdf/", "pdf_sha256": job.pdf_sha256,
-                "file_prepared": bool(job.pdf_storage_name), "second_inspection": bool(job.template.get("second_inspection"))}
+                "file_prepared": bool(job.pdf_storage_name), **self.frozen_options(job)}
+
+    @action(detail=False, methods=["post"])
+    def preview(self, request):
+        from .pdf import render_cards
+        options = s.print_options(request.data)
+        source = s.print_cards(request.data, options)
+        cards = [(SimpleNamespace(pk=c.pk, group_id=c.group_id, card_no=c.card_no, sequence=c.sequence,
+                    denominator=c.denominator, planned_molds=c.planned_molds, original_date=c.original_date,
+                    group=SimpleNamespace(snapshot={**c.group.snapshot, "paper_preview": True})),
+                  c.reprint_count + (1 if c.printed_at else 0)) for c in source]
+        try:
+            raw = render_cards(cards, print_options=options)
+        except (RuntimeError, ValueError) as exc:
+            raise ValidationError({"detail": f"纸张预览生成失败，未建立打印任务：{exc}"}) from exc
+        response = HttpResponse(raw, content_type="application/pdf")
+        response["Content-Disposition"] = 'inline; filename="flowcard-paper-preview.pdf"'
+        response["Cache-Control"] = "private, no-store"
+        return response
 
     def prepare_file(self, job):
         if job.pdf_storage_name:
@@ -473,7 +501,7 @@ class PrintViewSet(ErrorsMixin, viewsets.GenericViewSet):
         items = list(job.items.select_related("card__group").order_by("card__group_id", "card__sequence"))
         # Rendering is deliberately OUTSIDE the quantity / print-reservation transaction.
         try:
-            raw = render_cards([(i.card, i.proposed_reprint) for i in items], print_options={"second_inspection": bool(job.template.get("second_inspection"))})
+            raw = render_cards([(i.card, i.proposed_reprint) for i in items], print_options=self.frozen_options(job))
         except (RuntimeError, ValueError) as exc:
             error = APIException({"detail": "PDF生成失败，打印任务仍保留；请使用原请求号重试。", "print_job_id": str(job.pk), "reason": str(exc)})
             error.status_code = 503

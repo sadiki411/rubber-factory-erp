@@ -3,9 +3,10 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useReadOnly } from '../access'
-import { flowApi, flowLimitText, flowRequestKey, finishFlowRequest, splitPlannedMolds, type PreparationContext, type PreparationGroup, type PreparationSource, type FlowGroup, type PrintJob, type PlanPreview } from '../flowcards'
+import { flowApi, flowLimitText, flowRequestKey, finishFlowRequest, splitPlannedMolds, DEFAULT_PAPER_LAYOUT, type PaperLayout, type PreparationContext, type PreparationGroup, type PreparationSource, type FlowGroup, type PrintJob, type PlanPreview } from '../flowcards'
 import { ProductStandardEditor as StandardEditor } from './ProductStandardEditor'
 import { PreparationGuidancePanel } from './PreparationGuidancePanel'
+import { FlowPrintLayout, FlowPrintPreview } from './FlowPrintLayout'
 
 const STATE = { LEGACY: '旧记录·待复核适用性', DRAFT: '草稿', ACTIVE: '生效', SUPERSEDED: '已被替代' }
 const PARAMETERS = [
@@ -18,7 +19,7 @@ const sourceText = (c: PreparationSource) => `${c.order_id ? `订单项#${c.orde
 const sourceLink = (c: PreparationSource) => c.source_url ? <a href={c.source_url} target="_blank" rel="noopener noreferrer">{sourceText(c)} · 查看原件</a> : sourceText(c)
 
 
-export function FlowPreparationWorkspace({ data, refresh, lookup, settings, printResults, print }: { data: PreparationContext; refresh: () => void; lookup: ReactNode; settings: ReactNode; printResults: ReactNode; print: (ids: string[],secondInspection?:boolean) => Promise<PrintJob | void> }) {
+export function FlowPreparationWorkspace({ data, refresh, lookup, settings, printResults, print }: { data: PreparationContext; refresh: () => void; lookup: ReactNode; settings: ReactNode; printResults: ReactNode; print: (ids: string[], secondInspection: boolean, paperLayout: PaperLayout) => Promise<PrintJob | void> }) {
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const readOnly = useReadOnly()
@@ -30,6 +31,7 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
   const [preview,setPreview] = useState<PlanPreview>()
   const [samples,setSamples] = useState<Record<string,string>>({})
   const [secondInspection,setSecondInspection] = useState(false)
+  const [paperLayout, setPaperLayout] = useState<PaperLayout>(DEFAULT_PAPER_LAYOUT)
   const sampleUrls=useRef<Record<string,string>>({})
   const clearSamples=useCallback(()=>{Object.values(sampleUrls.current).forEach(url=>URL.revokeObjectURL(url));sampleUrls.current={};setSamples({})},[])
   useEffect(()=>()=>{Object.values(sampleUrls.current).forEach(url=>URL.revokeObjectURL(url))},[])
@@ -90,7 +92,7 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
     applyGroup(result); refresh()
     if(generate) {
       const firstPage=await flowApi.cards(result.id)
-      if(firstPage.results.length) await print(firstPage.results.map(c=>c.id),secondInspection)
+      if(firstPage.results.length) await print(firstPage.results.map(c=>c.id), secondInspection, paperLayout)
     }
   })
   const active = data.runs.filter((r)=>!r.historical)
@@ -109,8 +111,9 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
     {group?.status==='GENERATED'?<Card title={`原卡组 ${group.id.slice(0,8)} · ${group.planned_molds}模${group.range_start?`（${group.range_start}–${group.range_end}）`:''}`}>
       <Alert type="success" title="本组已发号；重复打开查看原卡，不另开首次生产" />
       {cards.isError?<Alert type="error" title="卡列表读取失败，不视为没有卡" />:cards.isPending?<Typography.Paragraph>正在读取原卡与岗位记录…</Typography.Paragraph>:<Space wrap>{cards.data?.results.map((c)=><div key={c.id} style={{maxWidth:'100%'}}><Button href={`/flow-cards/cards/${c.id}`}>{c.card_no} · {c.planned_molds}模</Button><Typography.Paragraph type="secondary" style={{maxWidth:360}}>{c.process_todos?.map((t)=>`${t.label}·${t.role}：${t.state==='SYSTEM_UNREGISTERED'?'系统未登记':`有记录（${t.employees.join('、')||'看原单'}），核对范围`}`).join('；')}</Typography.Paragraph></div>)}</Space>}
-      <Checkbox checked={secondInspection} onChange={e=>setSecondInspection(e.target.checked)}>本次打印需要二检（品检员&emsp;一检：___&emsp;二检：___）</Checkbox>
-      {cards.data && <><Button disabled={disabled||busy} onClick={()=>void perform(async()=>{await print(cards.data.results.map((c)=>c.id),secondInspection)})}>打印/补打本页原卡（不改旧号旧标准）</Button>{cards.data.count>100 && <Space><Button disabled={cardPage===1} onClick={()=>setCardPage(cardPage-1)}>上一页</Button><Button disabled={cardPage*100>=cards.data.count} onClick={()=>setCardPage(cardPage+1)}>下一页</Button></Space>}</>}
+      <Space wrap><FlowPrintLayout value={paperLayout} onChange={setPaperLayout} disabled={busy} />
+      <Checkbox disabled={busy} checked={secondInspection} onChange={e=>setSecondInspection(e.target.checked)}>本次打印需要二检（品检员&emsp;一检：___&emsp;二检：___）</Checkbox>
+      {cards.data && <><FlowPrintPreview ids={cards.data.results.map(c=>c.id)} layout={paperLayout} second={secondInspection} disabled={readOnly||busy} /><Button disabled={disabled||busy||!cards.data.results.length} onClick={()=>void perform(async()=>{await print(cards.data.results.map((c)=>c.id), secondInspection, paperLayout)})}>打印/补打本页原卡（不改旧号旧标准）</Button>{cards.data.count>100 && <Space><Button disabled={cardPage===1} onClick={()=>setCardPage(cardPage-1)}>上一页</Button><Button disabled={cardPage*100>=cards.data.count} onClick={()=>setCardPage(cardPage+1)}>下一页</Button></Space>}</>}</Space>
       {(data.available_ranges.length>0 || !data.run_id) && <Button onClick={()=>applyGroup(null)}>{data.run_id?'明确追加未覆盖模段':'确有另一批：另建预计生产计划'}</Button>}
     </Card>:<Card title="分卡结果 / 保存本次准备">
       <Form form={form} layout="vertical" onValuesChange={(changed,values)=>{setPreview(undefined);clearSamples();if('planned_molds' in changed || 'molds_per_card' in changed) form.setFieldValue('card_molds',splitPlannedMolds(values.planned_molds,values.molds_per_card))}}><div className="flow-form-grid">
@@ -141,9 +144,10 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
       <Typography.Title level={4}>{count?`${molds||0}模 → ${count}张 · ${allocation.join(' + ')}模`:preview?.planned_molds?`试算 ${preview.planned_molds} 模 → ${preview.count} 张 · 尾卡 ${preview.tail_molds} 模（尚未采用）`:'填写预计模数后自动分卡'}</Typography.Title>
       {standard && <><Typography.Paragraph>本次要测：{standard.snapshot.criteria.filter(c=>c.follow_package!==false&&c.limit_mode!=='NONE').map((c)=>`${c.name} ${flowLimitText(c)}`).join('；')||'该版没有已确认测项'}</Typography.Paragraph><Typography.Paragraph>适用工序：{Object.entries(standard.snapshot.route||{}).filter(([k,v])=>k!=='confirmed'&&v).map(([k])=>({molding:'成型实测',patrol:'巡检',deburr:'毛边',bake:'二烤',baked_hardness:'烤后硬度',inspection:'品检员'} as Record<string,string>)[k]||k).join(' → ')}；巡检每{standard.snapshot.packaging?.patrol_every_molds||'待确认'}模，与每包模数分开。</Typography.Paragraph></>}
       {preview && <Alert type={preview.count?'info':'warning'} title={preview.count?`不落库预览：${preview.count}张，尾包${preview.tail_molds}模`:'尚无可分卡的试算结果'} description={<>{preview.snapshot?.plan_basis}{!molds&&preview.planned_molds&&<Button onClick={()=>{form.setFieldsValue({planned_molds:preview.planned_molds,card_molds:preview.card_molds||splitPlannedMolds(preview.planned_molds,per)});clearSamples();setPreview(undefined)}}>采用此建议：{preview.planned_molds} 模</Button>}</>} />}
-      <Checkbox disabled={busy} checked={secondInspection} onChange={e=>{setSecondInspection(e.target.checked);clearSamples()}}>本次打印需要二检（品检员&emsp;一检：___&emsp;二检：___）</Checkbox>
-      <Space wrap>{(['FIRST','LAST'] as const).map(position=><Button key={position} loading={busy} onClick={()=>void perform(async()=>{const url=await flowApi.sample({...await payload(),sample_position:position,second_inspection:secondInspection});const old=sampleUrls.current[position];if(old)URL.revokeObjectURL(old);sampleUrls.current[position]=url;setSamples({...sampleUrls.current})})}>{position==='FIRST'?'看首卡样张':'看尾卡样张'}（不发号）</Button>)}</Space>
-      {Object.entries(samples).map(([position,url])=><Card size="small" key={position} title={`${position==='FIRST'?'首卡':'尾卡'}样张 · 未发号、无真实二维码`}><a href={url} target="_blank" rel="noopener noreferrer">打开样张PDF（非正式卡）</a><object data={url} type="application/pdf" aria-label={`${position}纸卡样张`} style={{width:'100%',height:420}}>此设备请点击上方链接查看PDF</object></Card>)}
+      <Space wrap><FlowPrintLayout value={paperLayout} onChange={layout=>{setPaperLayout(layout);clearSamples()}} disabled={busy} />
+      <Checkbox disabled={busy} checked={secondInspection} onChange={e=>{setSecondInspection(e.target.checked);clearSamples()}}>本次打印需要二检（品检员&emsp;一检：___&emsp;二检：___）</Checkbox></Space>
+      <Space wrap>{(['FIRST','LAST'] as const).map(position=><Button key={position} loading={busy} onClick={()=>void perform(async()=>{const url=await flowApi.sample({...await payload(),sample_position:position,second_inspection:secondInspection,paper_layout:paperLayout});const old=sampleUrls.current[position];if(old)URL.revokeObjectURL(old);sampleUrls.current[position]=url;setSamples({...sampleUrls.current})})}>{paperLayout==='A4_TWO_UP'?(position==='FIRST'?'看首页样张':'看末页样张'):(position==='FIRST'?'看首卡样张':'看尾卡样张')}（不发号）</Button>)}</Space>
+      {Object.entries(samples).map(([position,url])=><Card size="small" key={position} title={`${position==='FIRST'?'首':'末'}页样张 · 未发号、无真实二维码`}><a href={url} target="_blank" rel="noopener noreferrer">打开样张PDF（非正式卡）</a><object data={url} type="application/pdf" aria-label={`${position}纸卡样张`} style={{width:'100%',height:420}}>此设备请点击上方链接查看PDF</object></Card>)}
       <Space wrap><Button loading={busy} onClick={()=>void perform(async()=>{setPreview(await flowApi.preview(await payload()))})}>预览（不保存，只读可用）</Button><Button disabled={disabled} loading={busy} onClick={()=>void save(false)}>保存本次准备</Button><Button type="primary" disabled={disabled||!validPlan||!standard||standard.status!=='ACTIVE'} loading={busy} onClick={()=>void save(true)}>生成{count?` ${count} 张`:''}并准备打印</Button></Space>
       {count && count>100 && <Alert type="info" title="超过100张将分批打印；本次先准备前100张，余卡在原卡组翻页打印，不重新发号。" />}
       {group && <Typography.Paragraph copyable>同一草稿ID：{group.id} · 版本{group.revision}；保存只更新本组。</Typography.Paragraph>}

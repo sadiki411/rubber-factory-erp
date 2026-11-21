@@ -1,11 +1,11 @@
 """Review layout v2. v1 remains available for issued identities and old PDFs."""
 import io
 from reportlab.lib.units import mm
-from reportlab.pdfgen import canvas
 from reportlab.graphics.barcode.qr import QrCodeWidget
 from reportlab.graphics.shapes import Drawing
 from reportlab.graphics import renderPDF
 from .pdf import font_name, wrap
+from .paper import SINGLE, make_canvas, start_card, finish_card
 
 
 def display_text(value):
@@ -14,7 +14,7 @@ def display_text(value):
     return str(value).replace("℃", "°C")
 
 
-def render_cards_v2(items, *, second_inspection=False):
+def render_cards_v2(items, *, second_inspection=False, paper_layout=SINGLE):
     out, font = io.BytesIO(), font_name()
     sizes = {(c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c, _ in items}
     if len(sizes) != 1:
@@ -22,9 +22,10 @@ def render_cards_v2(items, *, second_inspection=False):
     width, height = sizes.pop()
     if not 180 <= width <= 220 or not 125 <= height <= 165:
         raise ValueError("纸张尺寸超出已支持的180~220 × 125~165mm；不自动缩字。")
-    c = canvas.Canvas(out, pagesize=(width*mm, height*mm), pageCompression=1, invariant=1)
+    c = make_canvas(out, (width*mm, height*mm), paper_layout)
     c.setTitle("工序流转卡 · 隔离审阅布局")
     for card, reprint in items:
+        start_card(c)
         snap, extra = card.group.snapshot, []
         right, span = width-5, width-10
         signer_x, line_x = width-45, width-27
@@ -60,10 +61,14 @@ def render_cards_v2(items, *, second_inspection=False):
         def signer(y, label):
             text(signer_x, y, label); line(line_x, y+.7, 20)
 
-        qr = QrCodeWidget(f"ERPFC:{card.pk}")
-        b = qr.getBounds(); size = 17*mm
-        drawing = Drawing(size, size, transform=[size/(b[2]-b[0]), 0, 0, size/(b[3]-b[1]), 0, 0]); drawing.add(qr)
-        renderPDF.draw(drawing, c, 5*mm, (height-19)*mm)
+        if snap.get("paper_preview"):
+            text(5, 10, "预览", 14)
+            text(5, 16, "不可扫码", 7)
+        else:
+            qr = QrCodeWidget(f"ERPFC:{card.pk}")
+            b = qr.getBounds(); size = 17*mm
+            drawing = Drawing(size, size, transform=[size/(b[2]-b[0]), 0, 0, size/(b[3]-b[1]), 0, 0]); drawing.add(qr)
+            renderPDF.draw(drawing, c, 5*mm, (height-19)*mm)
         # Keep the entire date segment together. Never slice the assigned ID.
         parts = card.card_no.rsplit("-", 1)
         text(24, 8, parts[0], 8.9)
@@ -139,5 +144,6 @@ def render_cards_v2(items, *, second_inspection=False):
                     text(6,yy,row,10); yy+=5
                 yy+=3
             c.showPage()
+        finish_card(c)
     c.save()
     return out.getvalue()

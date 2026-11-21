@@ -21,6 +21,7 @@ from .models import (
     PrintJob, PrintItem, TemplatePublication, ShipmentSource, TraceAudit, PositionDiagram,
 )
 from .limits import validate_limits, evaluate
+from .paper import A4_TWO_UP, print_layout
 
 RENDERER = "flowcard-review-20261119-v4"
 PREPARATION_RENDERER = "flowcard-guidance-20261121-v6"
@@ -503,6 +504,27 @@ def generate_group(group, user, expected_revision=None):
     return group
 
 
+def print_options(data):
+    second = data.get("second_inspection", False)
+    if not isinstance(second, bool):
+        raise ValidationError({"second_inspection": "是否二检必须明确选择。"})
+    return {"second_inspection": second, "paper_layout": print_layout(data.get("paper_layout", A4_TWO_UP))}
+
+
+def print_cards(data, options, *, lock=False):
+    ids = card_ids(data)
+    rows = InternalCard.objects.select_for_update() if lock else InternalCard.objects.all()
+    cards = list(rows.filter(pk__in=ids).select_related("group").order_by("group_id", "sequence"))
+    if len(cards) != len(set(map(str, ids))) or any(c.status != "ACTIVE" for c in cards):
+        raise ValidationError({"card_ids": "卡不存在或已作废。"})
+    templates = {(c.group.snapshot["template"]["renderer"], c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c in cards}
+    if len(templates) > 1:
+        raise ValidationError({"card_ids": "不同模板渲染版本或纸张尺寸请分别打印，旧卡不套新模板。"})
+    if options["second_inspection"] and any(c.group.snapshot["template"]["renderer"] in (PREPARATION_RENDERER, "flowcard-preparation-20261119-v5") and not c.group.snapshot.get("route", {}).get("inspection") for c in cards):
+        raise ValidationError({"second_inspection": "所选原卡有不适用品检工序的卡，不能添加二检签名；请核对适用范围。"})
+    return cards
+
+
 @transaction.atomic
 def create_print(data, user):
     write_enabled()
@@ -510,33 +532,23 @@ def create_print(data, user):
     existing = replay(PrintJob, key, data)
     if existing:
         return existing
-    second = data.get("second_inspection", False)
-    if not isinstance(second, bool):
-        raise ValidationError({"second_inspection": "是否二检必须明确选择。"})
-    ids = card_ids(data)
-    cards = list(InternalCard.objects.select_for_update().filter(pk__in=ids).select_related("group").order_by("group_id", "sequence"))
-    if len(cards) != len(set(map(str, ids))) or any(c.status != "ACTIVE" for c in cards):
-        raise ValidationError({"card_ids": "卡不存在或已作废。"})
-    templates = {(c.group.snapshot["template"]["renderer"], c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c in cards}
-    if len(templates) > 1:
-        raise ValidationError({"card_ids": "不同模板渲染版本或纸张尺寸请分别打印，旧卡不套新模板。"})
-    if second and any(c.group.snapshot["template"]["renderer"] in (PREPARATION_RENDERER, "flowcard-preparation-20261119-v5") and not c.group.snapshot.get("route", {}).get("inspection") for c in cards):
-        raise ValidationError({"second_inspection": "所选原卡有不适用品检工序的卡，不能添加二检签名；请核对适用范围。"})
+    options = print_options(data)
+    cards = print_cards(data, options, lock=True)
     active_items = PrintItem.objects.filter(card__in=cards, active=True)
     if data.get("resume_active") is True and active_items.exists():
         job_ids = list(active_items.values_list("job_id", flat=True).distinct())
         if len(job_ids) == 1:
             job = PrintJob.objects.get(pk=job_ids[0])
             if set(job.items.values_list("card_id", flat=True)) == {c.pk for c in cards} and not job.items.filter(active=False).exists():
-                if bool(job.template.get("second_inspection")) != second:
+                if bool(job.template.get("second_inspection")) != options["second_inspection"]:
                     raise ValidationError({"second_inspection": "原打印任务的格式已经冻结；请先继续/核对原任务，不覆盖原PDF。"})
                 return job
     if active_items.exists():
         raise ValidationError({"card_ids": "有未核对打印结果的任务，请继续原任务，不能重复补打。"})
-    template = {**deepcopy(cards[0].group.snapshot["template"]), "second_inspection": second}
+    template = {**deepcopy(cards[0].group.snapshot["template"]), **options}
     job = PrintJob.objects.create(request_key=key, request_digest=digest(data), template=template, created_by=user)
     PrintItem.objects.bulk_create([PrintItem(job=job, card=c, proposed_reprint=c.reprint_count + (1 if c.printed_at else 0)) for c in cards])
-    audit(job, "FILE_PREPARED_NOT_PRINTED", user, {"cards": list(map(str, ids))})
+    audit(job, "FILE_PREPARED_NOT_PRINTED", user, {"cards": list(map(str, card_ids(data)))})
     return job
 
 

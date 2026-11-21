@@ -1,11 +1,11 @@
 """Review v3: explicit limits and paper identity. v1/v2 stay frozen."""
 import io
 from reportlab.lib.units import mm
-from reportlab.pdfgen import canvas
 from reportlab.graphics.barcode.qr import QrCodeWidget
 from reportlab.graphics.shapes import Drawing
 from reportlab.graphics import renderPDF
 from .pdf import font_name, wrap, inspection_signatures
+from .paper import SINGLE, make_canvas, start_card, finish_card
 from .limits import limit_text, limit_mode
 
 
@@ -29,7 +29,7 @@ def compact_identity(product, font, width):
         lengths[target] -= 1
 
 
-def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, operational_guidance=False, second_inspection=False):
+def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, operational_guidance=False, second_inspection=False, paper_layout=SINGLE):
     out, font = io.BytesIO(), font_name()
     sizes = {(c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c, _ in items}
     if len(sizes) != 1:
@@ -37,9 +37,10 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, op
     width, height = sizes.pop()
     if not 180 <= width <= 220 or not 125 <= height <= 165:
         raise ValueError("纸张尺寸超出已支持的180~220 × 125~165mm；不自动缩字。")
-    c = canvas.Canvas(out, pagesize=(width*mm, height*mm), pageCompression=1, invariant=1)
+    c = make_canvas(out, (width*mm, height*mm), paper_layout)
     c.setTitle("工序流转卡 · 隔离审阅布局")
     for card, reprint in items:
+        start_card(c)
         snap, extra = card.group.snapshot, []
         route = snap.get("route", {}) if route_aware else {}
         def applies(name):
@@ -79,7 +80,9 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, op
             text(signer_x, y, label); line(line_x, y+.7, 20)
 
         sample = snap.get("sample_only") or not card.pk or str(card.pk) == "00000000-0000-0000-0000-000000000000"
-        if not sample:
+        if snap.get("paper_preview"):
+            text(6,10,"预览",14,True); text(5,16,"不可扫码",7)
+        elif not sample:
             qr = QrCodeWidget(f"ERPFC:{card.pk}")
             b = qr.getBounds(); size = 17*mm
             drawing = Drawing(size, size, transform=[size/(b[2]-b[0]), 0, 0, size/(b[3]-b[1]), 0, 0]); drawing.add(qr)
@@ -253,5 +256,6 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, op
                     text(6,yy,row,10); yy+=5
                 yy+=3
             c.showPage()
+        finish_card(c)
     c.save()
     return out.getvalue()

@@ -56,7 +56,10 @@ export type FlowEvent = { id: string; kind: string; values: Record<string, unkno
 export type FlowPage<T> = { count: number; results: T[] }
 export type FlowReturn = { id: number; case_no: string; status: string; return_round: number | null; reshipment_batch_id: number | null }
 export type FlowTrace = { id: number; batch_id: number; shipment_no: string; current_shipment_status: string; state: string; scope: string; related_returns: FlowReturn[]; related_return_count: number }
-export type PrintJob = { id: string; status: string; request_key: string; pdf_url: string; file_prepared: boolean; pdf_sha256: string; second_inspection?:boolean; items: Array<{ card_id: string; card_no: string; sequence: number; denominator: number; proposed_reprint: number; status: string; active: boolean }> }
+export type PaperLayout = 'A4_TWO_UP' | 'SINGLE'
+export const DEFAULT_PAPER_LAYOUT: PaperLayout = 'A4_TWO_UP'
+export const PAPER_LAYOUT_LABEL: Record<PaperLayout, string> = { A4_TWO_UP: 'A4 双卡打印', SINGLE: '原尺寸单卡' }
+export type PrintJob = { id: string; status: string; request_key: string; pdf_url: string; file_prepared: boolean; pdf_sha256: string; second_inspection?:boolean; paper_layout?: PaperLayout; items: Array<{ card_id: string; card_no: string; sequence: number; denominator: number; proposed_reprint: number; status: string; active: boolean }> }
 export type FlowContext = {
   preparation_enabled?: boolean
   write_enabled: boolean; product: FlowSnapshot['product']; run_id: number | null; mold_id: number | null; order_ids: number[]; orders: FlowSnapshot['orders']; suggested_molds: number | null
@@ -70,6 +73,16 @@ export type FlowContext = {
 export type InternalSource = { card_id: string; request_key: string; scope: 'SET_UNKNOWN' | 'WHOLE' | 'PARTIAL'; evidence: string; raw_code: string; shipment_unit_no?: number }
 export function isInternalCardCode(code: string) { return /^(ERPFC:|FC-)/i.test(code.trim()) }
 const post = <T,>(path: string, body: unknown) => apiFetch<T>(`/api/flow-cards/${path}`, { method: 'POST', body: JSON.stringify(body) })
+async function previewPdf(path: string, body: unknown) {
+  const csrf = document.cookie.split('; ').find(v => v.startsWith('csrftoken='))?.split('=').slice(1).join('=') || ''
+  const response = await fetch(`/api/flow-cards/${path}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': decodeURIComponent(csrf) }, body: JSON.stringify(body) })
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    throw new ApiError(response.status, String(data?.detail || Object.values(data || {})[0] || '纸卡预览生成失败'), data)
+  }
+  if (!response.headers.get('Content-Type')?.includes('application/pdf')) throw new Error('未收到有效的预览PDF，请核对登录后重试。')
+  return URL.createObjectURL(await response.blob())
+}
 export const flowApi = {
   importStandards: (file: File) => { const body = new FormData(); body.append('file', file); return apiFetch<StandardImportPreview>('/api/flow-cards/standards/import-preview/', { method: 'POST', body }) },
   context: (params: URLSearchParams) => apiFetch<FlowContext>(`/api/flow-cards/context/?${params}`),
@@ -80,13 +93,7 @@ export const flowApi = {
   preparationSources: (params: URLSearchParams, page = 1) => apiFetch<FlowPage<PreparationSource>>(`/api/flow-cards/preparation-sources/?${params}&page=${page}&page_size=50`),
   appearance: (body: unknown) => post('appearance/', body),
   preview: (body: unknown) => post<PlanPreview>('groups/preview/', body),
-  sample: async (body:unknown) => {
-    const csrf=document.cookie.split('; ').find(v=>v.startsWith('csrftoken='))?.split('=').slice(1).join('=')||''
-    const response=await fetch('/api/flow-cards/groups/sample/',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json','X-CSRFToken':decodeURIComponent(csrf)},body:JSON.stringify(body)})
-    if(!response.ok){const data=await response.json().catch(()=>null);throw new ApiError(response.status,String(data?.detail||Object.values(data||{})[0]||'纸卡样张生成失败'),data)}
-    if(!response.headers.get('Content-Type')?.includes('application/pdf')) throw new Error('未收到有效的样张PDF，请核对登录后重试。')
-    return URL.createObjectURL(await response.blob())
-  },
+  sample: (body: unknown) => previewPdf('groups/sample/', body),
   create: (body: unknown) => post<FlowGroup>('groups/', body),
   generate: (id: string, expectedRevision?: number) => post<FlowGroup>(`groups/${id}/generate/`, expectedRevision == null ? {} : {expected_revision:expectedRevision}),
   revise: (id: string, body: unknown) => post<FlowGroup>(`groups/${id}/revise/`, body),
@@ -104,6 +111,7 @@ export const flowApi = {
   trace: (id: string, page: number) => apiFetch<FlowPage<FlowTrace>>(`/api/flow-cards/cards/${id}/trace/?page=${page}`),
   traceReturns: (id: string, source: number, page: number) => apiFetch<FlowPage<FlowReturn>>(`/api/flow-cards/cards/${id}/trace-returns/?source_id=${source}&page=${page}`),
   print: (body: unknown) => post<PrintJob>('print-jobs/', body),
+  printPreview: (body: unknown) => previewPdf('print-jobs/preview/', body),
   prints: (cardId: string, page = 1) => apiFetch<FlowPage<PrintJob>>(`/api/flow-cards/print-jobs/?card_id=${cardId}&page=${page}`),
   printResult: (id: string, outcomes: Record<string, string>) => post<PrintJob>(`print-jobs/${id}/confirm/`, { outcomes }),
   preparePrint: (id: string) => post<PrintJob>(`print-jobs/${id}/prepare/`, {}),

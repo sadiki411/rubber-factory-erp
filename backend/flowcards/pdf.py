@@ -6,10 +6,10 @@ from pathlib import Path
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfgen import canvas
 from reportlab.graphics.barcode.qr import QrCodeWidget
 from reportlab.graphics.shapes import Drawing
 from reportlab.graphics import renderPDF
+from .paper import A4_TWO_UP, SINGLE, make_canvas, start_card, finish_card
 
 
 def font_name():
@@ -43,24 +43,27 @@ def render_cards(items, *, print_options=None):
     items = list(items)
     renderers = {card.group.snapshot.get("template", {}).get("renderer") for card, _ in items}
     second = bool((print_options or {}).get("second_inspection"))
+    paper_layout = (print_options or {}).get("paper_layout", SINGLE)
+    if paper_layout == A4_TWO_UP:
+        items.sort(key=lambda item: (str(getattr(item[0], "group_id", "")), item[0].sequence))
     if renderers == {"flowcard-guidance-20261121-v6"}:
         from .pdf_v3 import render_cards_v3
-        return render_cards_v3(items, applicable_dimensions=True, route_aware=True, operational_guidance=True, second_inspection=second)
+        return render_cards_v3(items, applicable_dimensions=True, route_aware=True, operational_guidance=True, second_inspection=second, paper_layout=paper_layout)
     if renderers == {"flowcard-preparation-20261119-v5"}:
         from .pdf_v3 import render_cards_v3
-        return render_cards_v3(items, applicable_dimensions=True, route_aware=True, second_inspection=second)
+        return render_cards_v3(items, applicable_dimensions=True, route_aware=True, second_inspection=second, paper_layout=paper_layout)
     if renderers == {"flowcard-review-20261119-v4"}:
         from .pdf_v3 import render_cards_v3
-        return render_cards_v3(items, applicable_dimensions=True, second_inspection=second)
+        return render_cards_v3(items, applicable_dimensions=True, second_inspection=second, paper_layout=paper_layout)
     if renderers == {"flowcard-review-20261118-v3"}:
         from .pdf_v3 import render_cards_v3
-        return render_cards_v3(items, second_inspection=second)
+        return render_cards_v3(items, second_inspection=second, paper_layout=paper_layout)
     if renderers == {"flowcard-review-20261118-v2"}:
         from .pdf_v2 import render_cards_v2
-        return render_cards_v2(items, second_inspection=second)
+        return render_cards_v2(items, second_inspection=second, paper_layout=paper_layout)
     if renderers != {"flowcard-draft-20261118-v1"}:
         raise ValueError("不同渲染版本请分开打印；不能替换旧卡模板。")
-    return render_cards_v1(items, second_inspection=second)
+    return render_cards_v1(items, second_inspection=second, paper_layout=paper_layout)
 
 
 def inspection_signatures(text, line, width, height):
@@ -70,12 +73,13 @@ def inspection_signatures(text, line, width, height):
     text(x+53,y,"二检：",9); line(x+65,y+.7,25)
 
 
-def render_cards_v1(items, *, second_inspection=False):
+def render_cards_v1(items, *, second_inspection=False, paper_layout=SINGLE):
     out = io.BytesIO()
     font = font_name()
-    c = canvas.Canvas(out, pagesize=(190 * mm, 130 * mm), pageCompression=1, invariant=1)
+    c = make_canvas(out, (190*mm, 130*mm), paper_layout)
     c.setTitle("工序流转卡 - 每卡独立身份，计划不计产量")
     for card, reprint in items:
+        start_card(c)
         snap = card.group.snapshot
         template = snap.get("template", {})
         if template.get("renderer") != "flowcard-draft-20261118-v1":
@@ -100,11 +104,15 @@ def render_cards_v1(items, *, second_inspection=False):
                 text(x+w/2 if center else x+1, y+((h-(len(lines)*(size+1)/mm))/2)+size/mm+i*(size+1)/mm,
                      line, size, center)
 
-        qr = QrCodeWidget(f"ERPFC:{card.pk}")
-        bounds = qr.getBounds()
-        drawing = Drawing(14*mm, 14*mm, transform=[14*mm/(bounds[2]-bounds[0]), 0, 0, 14*mm/(bounds[3]-bounds[1]), 0, 0])
-        drawing.add(qr)
-        renderPDF.draw(drawing, c, 5*mm, 110*mm)
+        if snap.get("paper_preview"):
+            text(5, 8, "预览", 9)
+            text(5, 14, "不扫码", 7)
+        else:
+            qr = QrCodeWidget(f"ERPFC:{card.pk}")
+            bounds = qr.getBounds()
+            drawing = Drawing(14*mm, 14*mm, transform=[14*mm/(bounds[2]-bounds[0]), 0, 0, 14*mm/(bounds[3]-bounds[1]), 0, 0])
+            drawing.add(qr)
+            renderPDF.draw(drawing, c, 5*mm, 110*mm)
         text(21, 8, card.card_no[:12], 8.9)
         text(21, 13, card.card_no[12:], 8.9)
         text(100, 13, "工序流转卡", 17.5, True)
@@ -213,5 +221,6 @@ def render_cards_v1(items, *, second_inspection=False):
                     yy += 5
                 yy += 3
             c.showPage()
+        finish_card(c)
     c.save()
     return out.getvalue()

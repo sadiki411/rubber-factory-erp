@@ -42,7 +42,7 @@ class FlowPilotReviewTests(QualityTestMixin, TestCase):
                 texts.append(str(text))
                 return super().drawString(x, y, text, *args, **kwargs)
         from .pdf import render_cards
-        with patch("flowcards.pdf_v3.canvas.Canvas", ObserveCanvas):
+        with patch("flowcards.paper.Canvas", ObserveCanvas):
             raw = render_cards([(card, 0)])
         self.assertTrue(raw.startswith(b"%PDF"))
         return "\n".join(texts)
