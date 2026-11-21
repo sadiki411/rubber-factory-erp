@@ -155,7 +155,7 @@ class GuidanceTests(QualityTestMixin, TestCase):
         self.standard()
         group = s.generate_group(p.save_draft(self.body(order_plan=True, planned_molds=755), self.user), self.user)
         cards = list(group.cards.order_by('sequence'))
-        form_names, placements, batches = [], [], {}
+        form_names, placements, cut_dashes, batches = [], [], [], {}
         original_form, original_text = Canvas.doForm, Canvas.drawString
         original_translate = Canvas.translate
 
@@ -174,12 +174,18 @@ class GuidanceTests(QualityTestMixin, TestCase):
                 placements.append((x, y))
             return original_translate(canvas, x, y)
 
+        def capture_dash(canvas, *args, **kwargs):
+            if not canvas.capturing:
+                cut_dashes.append(args)
+            return Canvas.setDash(canvas, *args, **kwargs)
+
         for count, expected in [(8, 4), (5, 3), (1, 1)]:
-            form_names.clear(); placements.clear(); batches.clear()
+            form_names.clear(); placements.clear(); cut_dashes.clear(); batches.clear()
             selection = cards[:count] if count != 1 else [cards[3]]
-            with patch.object(TwoUpCanvas, "doForm", capture_form), patch.object(TwoUpCanvas, "drawString", capture_text), patch.object(TwoUpCanvas, "translate", capture_translate):
+            with patch.object(TwoUpCanvas, "doForm", capture_form), patch.object(TwoUpCanvas, "drawString", capture_text), patch.object(TwoUpCanvas, "translate", capture_translate), patch.object(TwoUpCanvas, "setDash", capture_dash):
                 raw = render_cards([(card, 0) for card in reversed(selection)], print_options={"paper_layout": A4_TWO_UP})
             self.assertEqual(len(re.findall(rb"/Type /Page\b", raw)), expected)
+            self.assertEqual(cut_dashes, [([3*mm, 2*mm],)] * expected)
             self.assertEqual(form_names, [c.sequence for c in selection])
             self.assertEqual(len(placements), count)
             self.assertEqual([y > A4[1]/2 for _, y in placements], [i % 2 == 0 for i in range(count)])

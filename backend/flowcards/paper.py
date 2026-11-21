@@ -66,9 +66,12 @@ class TwoUpCanvas(Canvas):
             self.doForm(name)
             self.restoreState()
         if cut:
+            self.saveState()
             self.setLineWidth(.35)
             self.setStrokeGray(.55)
+            self.setDash([3*mm, 2*mm])
             self.line(7*mm, half, width-7*mm, half)
+            self.restoreState()
         super().showPage()
 
     def save(self):
