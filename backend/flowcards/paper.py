@@ -17,8 +17,9 @@ def print_layout(value):
 class TwoUpCanvas(Canvas):
     """A logical page is captured as a vector form; no rasterizing or QR regeneration."""
 
-    def __init__(self, target, *, pagesize, **kwargs):
+    def __init__(self, target, *, pagesize, fuller_a4=False, **kwargs):
         self.card_size = pagesize
+        self.fuller_a4 = fuller_a4
         self.primaries = []
         self.continuations = []
         self.current_card = []
@@ -58,7 +59,9 @@ class TwoUpCanvas(Canvas):
         half = height / 2
         # Keep normal 190 x 130 mm cards at 100%; fit exceptional sizes in a
         # half sheet with printer margins, never stretch or rotate the QR.
-        scale = min(1, (width - 14*mm) / card_width, (half - 14*mm) / card_height)
+        scale = min(1.06 if self.fuller_a4 else 1,
+                    (width - (10 if self.fuller_a4 else 14)*mm) / card_width,
+                    (half - (10 if self.fuller_a4 else 14)*mm) / card_height)
         for slot, name in enumerate(names):
             self.saveState()
             self.translate((width-card_width*scale)/2, (1-slot)*half+(half-card_height*scale)/2)
@@ -84,9 +87,11 @@ class TwoUpCanvas(Canvas):
         super().save()
 
 
-def make_canvas(target, pagesize, paper_layout):
-    cls = TwoUpCanvas if paper_layout == A4_TWO_UP else Canvas
-    return cls(target, pagesize=pagesize, pageCompression=1, invariant=1)
+def make_canvas(target, pagesize, paper_layout, *, fuller_a4=False):
+    options = dict(pagesize=pagesize, pageCompression=1, invariant=1)
+    if paper_layout == A4_TWO_UP:
+        return TwoUpCanvas(target, fuller_a4=fuller_a4, **options)
+    return Canvas(target, **options)
 
 
 def start_card(canvas):

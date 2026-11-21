@@ -25,7 +25,8 @@ from .limits import validate_limits, evaluate
 from .paper import A4_TWO_UP, print_layout
 
 RENDERER = "flowcard-review-20261119-v4"
-PREPARATION_RENDERER = "flowcard-guidance-20261121-v6"
+LEGACY_PREPARATION_RENDERER = "flowcard-guidance-20261121-v6"
+PREPARATION_RENDERER = "flowcard-guidance-20261122-v7"
 TEMPLATE = {"renderer": RENDERER, "version": "草稿", "width_mm": 190, "height_mm": 130}
 
 
@@ -625,7 +626,7 @@ def print_cards(data, options, *, lock=False):
     templates = {(c.group.snapshot["template"]["renderer"], c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c in cards}
     if len(templates) > 1:
         raise ValidationError({"card_ids": "不同模板渲染版本或纸张尺寸请分别打印，旧卡不套新模板。"})
-    if options["second_inspection"] and any(c.group.snapshot["template"]["renderer"] in (PREPARATION_RENDERER, "flowcard-preparation-20261119-v5") and not c.group.snapshot.get("route", {}).get("inspection") for c in cards):
+    if options["second_inspection"] and any(c.group.snapshot["template"]["renderer"] in (PREPARATION_RENDERER, LEGACY_PREPARATION_RENDERER, "flowcard-preparation-20261119-v5") and not c.group.snapshot.get("route", {}).get("inspection") for c in cards):
         raise ValidationError({"second_inspection": "所选原卡有不适用品检工序的卡，不能添加二检签名；请核对适用范围。"})
     return cards
 

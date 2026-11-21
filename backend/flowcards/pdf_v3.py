@@ -99,10 +99,10 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, op
         text(width-44, 15, f"{card.planned_molds}M | {card.sequence}/{card.denominator}批", 11)
         p = snap["product"]
         ss = (snap.get("standard") or {}).get("snapshot", {})
+        criteria = [e for e in ss.get("criteria", []) if e.get("follow_package", True)]
         simple_temperature = operational_guidance and ss.get("packaging", {}).get("simple_entry") is True and (
             "mold_temperature_range" in snap.get("process_parameters", {}) or not any(e["stage"] in ("UPPER_TEMP", "LOWER_TEMP") for e in criteria)
         )
-        criteria = [e for e in ss.get("criteria", []) if e.get("follow_package", True)]
         pending = (not snap.get("standard") or ss.get("dimension_count") is None or
                    ss.get("bake", {}).get("state", "UNKNOWN") == "UNKNOWN" or
                    any(limit_mode(e) != "NONE" and (limit_mode(e) == "PENDING" or not e.get("unit") or not e.get("method")) for e in criteria) or

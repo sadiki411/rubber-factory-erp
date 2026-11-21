@@ -77,7 +77,7 @@ class GuidanceTests(QualityTestMixin, TestCase):
         self.assertEqual(result.status_code,200,result.content)
         self.assertEqual(result.json()['card_molds'],[100,100,100,100,55])
         for which in ('FIRST','LAST'):
-            with patch('flowcards.pdf_v3.QrCodeWidget',side_effect=AssertionError('Sample must have no code')):
+            with patch('flowcards.pdf_v7.QrCodeWidget',side_effect=AssertionError('Sample must have no code')):
                 response=self.client.post('/api/flow-cards/groups/sample/',{**body,'sample_position':which,'second_inspection':True},format='json')
             self.assertEqual(response.status_code,200,response.content)
             self.assertEqual(response['Content-Type'],'application/pdf')
@@ -148,6 +148,52 @@ class GuidanceTests(QualityTestMixin, TestCase):
             s.create_print({'request_key':uuid.uuid4().hex,'card_ids':ids,'resume_active':True,'second_inspection':False},self.user)
         self.assertEqual(s.create_print({'request_key':uuid.uuid4().hex,'card_ids':ids,'resume_active':True,'second_inspection':True},self.user).pk,job.pk)
 
+    def test_new_dense_single_card_keeps_qa_on_front_and_v6_reprints_original(self):
+        from copy import deepcopy
+        from types import SimpleNamespace
+        from reportlab.graphics.barcode.qr import QrCodeWidget
+        from .pdf_v3 import render_cards_v3
+        group = self.generated()
+        card = group.cards.first()
+        original = deepcopy(card.group.snapshot)
+        old_snapshot = deepcopy(original)
+        old_snapshot["template"]["renderer"] = s.LEGACY_PREPARATION_RENDERER
+        old = SimpleNamespace(pk=card.pk, card_no=card.card_no, original_date=card.original_date,
+                              sequence=card.sequence, denominator=card.denominator, planned_molds=card.planned_molds,
+                              group=SimpleNamespace(snapshot=old_snapshot))
+        self.assertEqual(render_cards([(old,0)]), render_cards_v3(
+            [(old,0)], applicable_dimensions=True, route_aware=True, operational_guidance=True))
+
+        snap = card.group.snapshot
+        snap["whole_mold"] = "REQUIRED"
+        snap["route"].update(molding=True,patrol=True,deburr=True,bake=True,baked_hardness=True,inspection=True)
+        snap["process_parameters"].update(
+            mold_temperature_range={"state":"CONFIRMED","lower":"178","upper":"183","unit":"℃"},
+            primary_curing_time={"state":"CONFIRMED","lower":"60","upper":"65","unit":"s"},
+        )
+        standard = snap["standard"]["snapshot"]
+        standard.update(dimension_count=1, bake={"state":"APPLICABLE","temperature_value":"150","minutes_value":"120"})
+        standard["criteria"] = [
+            {"name":name,"stage":stage,"lower":low,"upper":high,"unit":unit,"limit_mode":"RANGE"}
+            for name,stage,low,high,unit in (("HD","MOLDING_HARDNESS","66","74","度"),
+                ("C/S-A","DIMENSION","2.56","2.68","mm"),("HD","BAKED_HARDNESS","66","74","度"))
+        ]
+        with patch("flowcards.pdf_v7.QrCodeWidget", wraps=QrCodeWidget) as qr:
+            pdf, contents = self.rendered_strings(card, print_options={"second_inspection":True, "paper_layout":SINGLE})
+        qr.assert_called_once_with(f"ERPFC:{card.pk}")
+        self.assertEqual(len(re.findall(rb"/Type /Page\b", pdf)), 1)
+        self.assertEqual(contents.splitlines().count("178～183 °C"),2)
+        for text in ("整模检验","二烤建议","烤后硬度","一检：","二检：","版式 07"):
+            self.assertIn(text,contents)
+        self.assertNotIn("表单版次：草稿", contents)
+        snap["product"].update(specification="合成超长规格"*27, material="合成长材质"*17,
+                               customer_product_no="DEMO-"*25)
+        continued, contents = self.rendered_strings(card)
+        self.assertGreater(len(re.findall(rb"/Type /Page\b", continued)), 1)
+        self.assertIn("完整规格与材质见续页", contents)
+        self.assertIn(f"身份详情 · {card.card_no}", contents)
+        self.assertIn("品检员", contents)
+
     def test_a4_pairs_batches_top_down_and_odd_last_has_no_second_card(self):
         from reportlab.lib.pagesizes import A4
         from reportlab.pdfgen.canvas import Canvas
@@ -165,8 +211,9 @@ class GuidanceTests(QualityTestMixin, TestCase):
             return original_form(canvas, name)
 
         def capture_text(canvas, x, y, text, *args, **kwargs):
-            if canvas.capturing and str(text).endswith('/8批'):
-                batches[canvas.form_name] = int(str(text).split()[-1].split('/')[0])
+            batch = re.fullmatch(r"第 (\d+)/8 批", str(text))
+            if canvas.capturing and batch:
+                batches[canvas.form_name] = int(batch[1])
             return original_text(canvas, x, y, text, *args, **kwargs)
 
         def capture_translate(canvas, x, y):
@@ -189,7 +236,7 @@ class GuidanceTests(QualityTestMixin, TestCase):
             self.assertEqual(form_names, [c.sequence for c in selection])
             self.assertEqual(len(placements), count)
             self.assertEqual([y > A4[1]/2 for _, y in placements], [i % 2 == 0 for i in range(count)])
-            self.assertTrue(all(abs(x - 10*mm) < .01 for x, _ in placements))
+            self.assertTrue(all(abs(x - 5*mm) < .01 for x, _ in placements))
         single = render_cards([(card, 0) for card in cards[:5]], print_options={"paper_layout": SINGLE})
         self.assertEqual(len(re.findall(rb"/Type /Page\b", single)), 5)
 
@@ -200,7 +247,7 @@ class GuidanceTests(QualityTestMixin, TestCase):
         endpoint = '/api/flow-cards/print-jobs/'
         before = list(group.cards.values('pk', 'printed_at', 'reprint_count'))
         counts = (PrintJob.objects.count(), PrintItem.objects.count(), TraceAudit.objects.count())
-        with patch('flowcards.pdf_v3.QrCodeWidget', side_effect=AssertionError('Preview must not be scannable')):
+        with patch('flowcards.pdf_v7.QrCodeWidget', side_effect=AssertionError('Preview must not be scannable')):
             preview = self.client.post(endpoint+'preview/', {'card_ids': ids}, format='json')
         self.assertEqual(preview.status_code, 200, preview.content[:200])
         self.assertEqual(len(re.findall(rb"/Type /Page\b", preview.content)), 1)

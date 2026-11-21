@@ -46,6 +46,9 @@ def render_cards(items, *, print_options=None):
     paper_layout = (print_options or {}).get("paper_layout", SINGLE)
     if paper_layout == A4_TWO_UP:
         items.sort(key=lambda item: (str(getattr(item[0], "group_id", "")), item[0].sequence))
+    if renderers == {"flowcard-guidance-20261122-v7"}:
+        from .pdf_v7 import render_cards_v7
+        return render_cards_v7(items, second_inspection=second, paper_layout=paper_layout)
     if renderers == {"flowcard-guidance-20261121-v6"}:
         from .pdf_v3 import render_cards_v3
         return render_cards_v3(items, applicable_dimensions=True, route_aware=True, operational_guidance=True, second_inspection=second, paper_layout=paper_layout)
