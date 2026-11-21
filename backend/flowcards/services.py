@@ -360,7 +360,9 @@ def confirm_standard(data, user):
     version = (StandardRevision.objects.filter(product=product).aggregate(v=Max("version"))["v"] or 0) + 1
     metadata = prep.standard_metadata(data) if prep.enabled() else {}
     if customer_reference:
-        metadata["customer_reference"] = customer_reference
+        # Keep the applied product version traceable without treating any
+        # 2001 supplemental row as a shop-floor criterion.
+        metadata["customer_reference"] = {**customer_reference, "selection": document["selection"]}
         metadata["applicability"]["customer_product_no"] = customer_reference["project_no"]
         if any(c.get("customer_item") == "HD" for c in snapshots):
             metadata["route"]["molding"] = True

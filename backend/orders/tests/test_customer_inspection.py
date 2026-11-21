@@ -169,6 +169,8 @@ class CustomerInspectionTests(APITestCase):
         self.assertEqual({r["key"] for r in data["selection"]["supplements"]}, {"C/S-R", "FLASH", "FLASHT", "MISMATCH"})
         result = self.client.post(self.endpoint(order), {"action":"confirm","digest":data["digest"]}, format="json")
         self.assertEqual(result.status_code, 200, result.data)
+        review = CustomerInspectionReview.objects.get(order=order)
+        self.assertEqual(review.snapshot["selection"], data["selection"])
         response = self.client.get(f"/api/orders/product-specifications/{order.product_specification_id}/customer-inspection/")
         scopes = {r["customer_code"]:r for r in response.data["results"]}
         self.assertEqual(scopes["J"]["selection"], data["selection"])
@@ -186,6 +188,7 @@ class CustomerInspectionTests(APITestCase):
         resp = self.client.post(path, self.adoption_body(order, data, bake=bake), format="json")
         self.assertEqual(resp.status_code, 201, resp.data)
         snap = resp.data["snapshot"]
+        self.assertEqual(snap["customer_reference"]["selection"], data["selection"])
         self.assertTrue(snap["route"]["baked_hardness"])
         self.assertEqual([(c["stage"], c["upper"], c["id"]) for c in snap["criteria"] if c["name"] == "HD"],
                          [("MOLDING_HARDNESS","69",primary_raw.pk), ("BAKED_HARDNESS","69",primary_raw.pk)])

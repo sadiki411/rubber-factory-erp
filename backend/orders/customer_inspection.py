@@ -376,7 +376,7 @@ def review_order(order, user, data):
         is_current = not previous or bool(source_date and previous_date and source_date >= previous_date)
         if is_current:
             current.update(is_current=False)
-        snapshot = {key: payload[key] for key in ("groups", "customer_code", "project_no", "digest", "problems", "inherited")}
+        snapshot = {key: payload[key] for key in ("groups", "customer_code", "project_no", "digest", "problems", "inherited", "selection")}
         snapshot["source_document_at"] = source_date
         CustomerInspectionReview.objects.create(
             product_id=order.product_specification_id, order=order, customer_code=payload["customer_code"],
