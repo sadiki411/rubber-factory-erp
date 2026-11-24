@@ -247,6 +247,18 @@ class GuidanceTests(QualityTestMixin, TestCase):
         entry = next_job.items.get()
         self.assertEqual((entry.card_id,entry.proposed_reprint),(first.pk,1))
 
+    def test_cancelled_job_without_pdf_returns_original_cancel_result_on_retry(self):
+        card = self.generated().cards.first()
+        body = {"card_ids":[str(card.pk)],"request_key":uuid.uuid4().hex}
+        job = s.create_print(body,self.user)
+        s.confirm_print(job,{"outcomes":{str(card.pk):"CANCELLED"}},self.user)
+        endpoint = "/api/flow-cards/print-jobs/"
+        response = self.client.post(endpoint,body,format="json")
+        self.assertEqual(response.status_code,201,response.data)
+        self.assertEqual((response.data["id"],response.data["status"],response.data["file_prepared"]),
+                         (str(job.pk),"CLOSED",False))
+        self.assertEqual(PrintJob.objects.count(),1)
+
     def test_void_unused_cards_preserves_history_and_allows_reissue_only_after_group_void(self):
         self.standard()
         body = self.body(order_plan=True,planned_molds=120)

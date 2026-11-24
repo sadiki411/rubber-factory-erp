@@ -571,7 +571,10 @@ class PrintViewSet(ErrorsMixin, viewsets.GenericViewSet):
         return Response(self.result(self.get_object()))
 
     def create(self, request):
-        return Response(self.result(self.prepare_file(s.create_print(request.data, request.user))), status=201)
+        job = s.create_print(request.data, request.user)
+        # The original request may be replayed after its task was cancelled.
+        # Report the closed outcome even if it never reached PDF storage.
+        return Response(self.result(job if job.status == "CLOSED" else self.prepare_file(job)), status=201)
 
     @action(detail=True, methods=["post"])
     def prepare(self, request, pk=None):
