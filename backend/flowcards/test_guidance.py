@@ -183,7 +183,7 @@ class GuidanceTests(QualityTestMixin, TestCase):
         qr.assert_called_once_with(f"ERPFC:{card.pk}")
         self.assertEqual(len(re.findall(rb"/Type /Page\b", pdf)), 1)
         self.assertEqual(contents.splitlines().count("178～183 °C"),2)
-        for text in ("整模检验","二烤建议","烤后硬度","一检：","二检：","版式 07"):
+        for text in ("整模检验","二烤建议","烤后硬度","一检：","二检：","版式 08"):
             self.assertIn(text,contents)
         self.assertNotIn("表单版次：草稿", contents)
         snap["product"].update(specification="合成超长规格"*27, material="合成长材质"*17,
@@ -193,6 +193,98 @@ class GuidanceTests(QualityTestMixin, TestCase):
         self.assertIn("完整规格与材质见续页", contents)
         self.assertIn(f"身份详情 · {card.card_no}", contents)
         self.assertIn("品检员", contents)
+
+    def test_material_snapshot_uses_actual_length_and_whole_strip_layout(self):
+        self.product.material_length = "999mm"
+        self.product.actual_material_length = "320"
+        self.product.large_strip_weight_g = 21
+        self.product.large_strip_count = 5
+        self.product.small_strip_weight_g = 11
+        self.product.small_strip_count = 2
+        self.product.save()
+        card = self.generated().cards.first()
+        self.product.actual_material_length = "777mm"
+        self.product.save()
+        _, text = self.rendered_strings(card)
+        self.assertIn("料长 320 mm", text)
+        self.assertIn("大条 21g×5条 / 小条 11g×2条", text)
+        self.assertNotIn("777mm", text)
+        self.assertNotIn("999mm", text)
+        card.group.snapshot["template"]["renderer"] = "flowcard-guidance-20261122-v7"
+        _, old = self.rendered_strings(card)
+        self.assertNotIn("料长", old)
+        self.assertIn("版式 07", old)
+
+        from .paper_material import paper_material, material_text
+        from types import SimpleNamespace
+        run = SimpleNamespace(large_strip_weight_g=18, large_strip_count=6,
+                              small_strip_weight_g=None, small_strip_count=None)
+        self.product.actual_material_length = ""
+        single = material_text(paper_material(self.product, run))
+        self.assertEqual(single, "料长 ____    条重 18g×6条")
+
+    def test_reopen_pending_job_cancel_only_one_card_then_reprint_it(self):
+        group = self.generated()
+        first, second = list(group.cards.all())[:2]
+        endpoint = "/api/flow-cards/print-jobs/"
+        job = s.create_print({"card_ids": [str(first.pk), str(second.pk)], "request_key": uuid.uuid4().hex}, self.user)
+        rows = self.client.get(endpoint, {"group_id":group.pk,"pending":"1"}).json()
+        self.assertEqual([row["id"] for row in rows["results"]], [str(job.pk)])
+        self.assertEqual(self.client.get(f"/api/flow-cards/cards/{first.pk}/").json()["pending_print_job_id"], str(job.pk))
+        def outcome(card, value):
+            response = self.client.post(f"{endpoint}{job.pk}/confirm/", {"outcomes":{str(card.pk):value}}, format="json")
+            self.assertEqual(response.status_code, 200, response.data)
+        outcome(first,"SUCCESS")
+        self.assertEqual(self.client.get(endpoint, {"card_id":first.pk,"pending":"1"}).json()["count"],0)
+        self.assertEqual(self.client.get(endpoint, {"card_id":second.pk,"pending":"1"}).json()["count"],1)
+        outcome(second,"CANCELLED")
+        first.refresh_from_db(); second.refresh_from_db()
+        self.assertIsNotNone(first.printed_at)
+        self.assertIsNone(second.printed_at)
+        self.assertEqual(second.status,"ACTIVE")
+        self.assertEqual(self.client.get(endpoint, {"group_id":group.pk,"pending":"1"}).json()["count"],0)
+        next_job = s.create_print({"card_ids":[str(first.pk)],"request_key":uuid.uuid4().hex}, self.user)
+        entry = next_job.items.get()
+        self.assertEqual((entry.card_id,entry.proposed_reprint),(first.pk,1))
+
+    def test_void_unused_cards_preserves_history_and_allows_reissue_only_after_group_void(self):
+        self.standard()
+        body = self.body(order_plan=True,planned_molds=120)
+        group = s.generate_group(p.save_draft(body,self.user),self.user)
+        first, second = list(group.cards.all())
+        job = s.create_print({"card_ids":[str(second.pk)],"request_key":uuid.uuid4().hex},self.user)
+        def void(cards, *, reason="合成误发", unused=True):
+            return self.client.post("/api/flow-cards/events/", {
+                "card_ids":[str(c.pk) for c in cards],"kind":"VOID","scope":"误发未使用","evidence":"合成核对",
+                "request_key":uuid.uuid4().hex,"values":{"reason":reason,"unused_confirmed":unused}
+            },format="json")
+        self.assertEqual(void([first],unused=False).status_code,400)
+        self.assertEqual(void([first],reason="").status_code,400)
+        self.assertEqual(void([first,second]).status_code,400)
+        self.assertEqual(void([first]).status_code,201)
+        group.refresh_from_db()
+        self.assertEqual(group.status,"GENERATED")
+        with self.assertRaises(p.PreparationConflict):
+            p.save_draft({**body,"request_key":uuid.uuid4().hex},self.user)
+        s.confirm_print(job,{"outcomes":{str(second.pk):"SUCCESS"}},self.user)
+        result=void([second])
+        self.assertEqual(result.status_code,201,result.data)
+        group.refresh_from_db()
+        self.assertEqual(group.status,"VOID")
+        with self.assertRaisesMessage(s.ValidationError,"已作废"):
+            s.generate_group(group,self.user)
+        self.assertEqual(set(group.cards.values_list("status",flat=True)),{"VOID"})
+        second.refresh_from_db()
+        self.assertIsNotNone(second.printed_at)
+        new=s.generate_group(p.save_draft({**body,"request_key":uuid.uuid4().hex},self.user),self.user)
+        self.assertFalse(set(new.cards.values_list("card_no",flat=True)) & set(group.cards.values_list("card_no",flat=True)))
+        self.assertEqual(void([new.cards.first()]).status_code,201)
+        used = new.cards.last()
+        event=CardEvent.objects.create(kind="ANOMALY",request_key=uuid.uuid4().hex,request_digest="synthetic",created_by=self.user)
+        event.cards.add(used)
+        self.assertEqual(void([used]).status_code,400)
+        used.refresh_from_db()
+        self.assertEqual(used.status,"ACTIVE")
 
     def test_a4_pairs_batches_top_down_and_odd_last_has_no_second_card(self):
         from reportlab.lib.pagesizes import A4

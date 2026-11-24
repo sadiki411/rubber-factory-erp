@@ -9,14 +9,14 @@ import { flowApi, type PreparationContext, type PreparationGroup } from '../flow
 Object.defineProperty(window,'matchMedia',{writable:true,value:vi.fn().mockImplementation((query:string)=>({matches:false,media:query,addListener:vi.fn(),removeListener:vi.fn(),addEventListener:vi.fn(),removeEventListener:vi.fn()}))})
 globalThis.ResizeObserver=class { observe(){} unobserve(){} disconnect(){} }
 
-vi.mock('../flowcards', async (original) => ({...await original<typeof import('../flowcards')>(),flowApi:{create:vi.fn(),generate:vi.fn(),preview:vi.fn(),cards:vi.fn(),group:vi.fn(),sample:vi.fn(),context:vi.fn()}}))
+vi.mock('../flowcards', async (original) => ({...await original<typeof import('../flowcards')>(),flowApi:{create:vi.fn(),generate:vi.fn(),preview:vi.fn(),cards:vi.fn(),group:vi.fn(),sample:vi.fn(),context:vi.fn(),pendingPrints:vi.fn()}}))
 URL.revokeObjectURL=vi.fn()
 configure({asyncUtilTimeout:5000})
 const standard={id:1,version:1,status:'ACTIVE',customer_key:'翔邦',source_kind:'FACTORY_PROCESS',applicable_order_id:null,scope:'',whole_mold:'NOT_REQUIRED',source:'合成复核标准',snapshot:{criteria:[],appearance:[{id:1,name:'毛刺'},{id:2,name:'杂质'},{id:3,name:'包风'},{id:4,name:'缺料'}],route:{confirmed:true,inspection:true},packaging:{molds_per_card:100,patrol_every_molds:50}}}
 const data:PreparationContext={write_enabled:true,preparation_enabled:true,can_maintain_standard:false,product:{id:1,specification:'SYNTH-201',material:'SYNTH'},run_id:1,mold_id:null,order_ids:[1],orders:[{id:1,order_no:'SYNTH-ORDER',item_no:'1'}],suggested_molds:201,standards:[standard],appearance:standard.snapshot.appearance,criteria:[],diagrams:[],existing_groups:[],runs:[{id:1,segment_no:1,status:'PLANNED',status_display:'待上机',station_id:null,mold_id:null,planned_molds:201,historical:false}],available_ranges:[[1,201]],occupied_ranges:[],preferred_group:null,missing:[],auto_standard_id:1,conflicts:[],suggestion_id:1}
 const draft:PreparationGroup={id:'same-draft',revision:3,range_start:1,range_end:201,updated_at:'2026-11-19',updated_by:1,product_id:1,run_id:1,planned_molds:201,molds_per_card:100,whole_mold:'NOT_REQUIRED',plan_basis:'明确生产段',status:'DRAFT',request_key:'saved',snapshot:{product:data.product,orders:data.orders,standard,whole_mold:'NOT_REQUIRED',template:{version:'草稿'}}}
 const print=vi.fn()
-function mount(context:PreparationContext=data,readonly=false){return render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><MemoryRouter initialEntries={['/flow-cards?order_id=1']}><ReadOnlyContext.Provider value={readonly}><App><FlowPreparationWorkspace data={context} refresh={vi.fn()} lookup={null} settings={null} printResults={null} print={print} /></App></ReadOnlyContext.Provider></MemoryRouter></QueryClientProvider>)}
+function mount(context:PreparationContext=data,readonly=false,openPrint?: (id:string,cardId?:string,groupId?:string)=>Promise<void>){return render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><MemoryRouter initialEntries={['/flow-cards?order_id=1']}><ReadOnlyContext.Provider value={readonly}><App><FlowPreparationWorkspace data={context} refresh={vi.fn()} lookup={null} settings={null} printResults={null} print={print} openPrint={openPrint} /></App></ReadOnlyContext.Provider></MemoryRouter></QueryClientProvider>)}
 describe('server preparation workspace',{timeout:30000},()=>{
   beforeEach(()=>{vi.clearAllMocks();vi.mocked(flowApi.create).mockResolvedValue(draft);vi.mocked(flowApi.generate).mockResolvedValue({...draft,status:'GENERATED'});vi.mocked(flowApi.cards).mockResolvedValue({count:0,results:[]});vi.mocked(flowApi.preview).mockResolvedValue({count:3,tail_molds:1,planned_molds:201})})
   it('generates from auto inherited standard without entering parameters',async()=>{await act(async()=>{mount()});const button=await screen.findByRole('button',{name:'生成 3 张并准备打印'});expect(button).toBeEnabled();fireEvent.click(button);await waitFor(()=>expect(flowApi.generate).toHaveBeenCalledWith('same-draft',3));expect(vi.mocked(flowApi.create).mock.calls[0][0]).toMatchObject({run_id:1,order_ids:[1],standard_id:1,planned_molds:201,molds_per_card:100,card_molds:[100,100,1]});expect(await screen.findByText(/本组已发号/)).toBeInTheDocument()})
@@ -50,6 +50,23 @@ describe('server preparation workspace',{timeout:30000},()=>{
     expect(screen.queryByText(/新计划还需处理/)).not.toBeInTheDocument()
     expect(screen.getByText(/原卡 v1/)).toBeInTheDocument()
   })
+  it('reopens a pending job without reissuing cards, and can reprint just another batch',async()=>{
+    const opener=vi.fn().mockResolvedValue(undefined)
+    const results=['one','two','void'].map((id,i)=>({id,group_id:draft.id,card_no:`FC-SYNTH-${id}`,code:`ERPFC:${id}`,sequence:i+1,
+      denominator:3,planned_molds:100,original_date:'2026-11-24',status:id==='void'?'VOID':'ACTIVE',
+      printed_at:'2026-11-24',reprint_count:0,pending_print_job_id:id==='one'?'old-job':null}))
+    vi.mocked(flowApi.cards).mockResolvedValue({count:3,results})
+    vi.mocked(flowApi.pendingPrints).mockResolvedValue({count:1,results:[{id:'old-job'} as never]})
+    mount({...data,preferred_group:{...draft,status:'GENERATED'}},false,opener)
+    fireEvent.click(await screen.findByRole('button',{name:'处理原打印任务'}))
+    expect(opener).toHaveBeenCalledWith('old-job',undefined,draft.id)
+    fireEvent.click(await screen.findByRole('button',{name:'处理本批待确认打印'}))
+    expect(opener).toHaveBeenCalledWith('old-job','one')
+    fireEvent.click(await screen.findByRole('button',{name:'补打本批'}))
+    expect(print).toHaveBeenCalledWith(['two'],false,'A4_TWO_UP')
+    expect(flowApi.create).not.toHaveBeenCalled()
+    expect(screen.getByText('已作废')).toBeInTheDocument()
+  })
   it('uses the same computed 455 result and adopts it without persisting',async()=>{
     vi.mocked(flowApi.preview).mockResolvedValueOnce({count:5,tail_molds:55,planned_molds:455,card_molds:[100,100,100,100,55],snapshot:{plan_basis:'本次明确安排7268件 ÷ 已确认有效产出16件/模（向上取整）'}})
     mount({...data,run_id:null,suggested_molds:null,available_ranges:[]})
@@ -64,8 +81,8 @@ describe('server preparation workspace',{timeout:30000},()=>{
   })
   it('sample includes second inspection choice but does not generate or reserve prints',async()=>{
     vi.mocked(flowApi.sample).mockResolvedValueOnce('blob:test-sample')
-    mount()
-    await screen.findByLabelText('第3张预计模数')
+    await act(async()=>{mount()})
+    await waitFor(()=>expect(screen.getByRole('button',{name:'生成 3 张并准备打印'})).toBeEnabled())
     fireEvent.click(screen.getByRole('checkbox',{name:/本次打印需要二检/}))
     fireEvent.click(screen.getByRole('button',{name:'看末页样张（不发号）'}))
     await waitFor(()=>expect(flowApi.sample).toHaveBeenCalled())

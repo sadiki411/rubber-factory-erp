@@ -13,6 +13,7 @@ from .guidance import bake_text, oil_instruction, parameter_text, usable
 from .limits import limit_text
 from .measurements import applicable_criteria
 from .paper import SINGLE, finish_card, make_canvas, start_card
+from .paper_material import material_text
 from .pdf import font_name, wrap
 from .pdf_v3 import display_text
 
@@ -156,7 +157,7 @@ class CardLayout:
         return y+h, overflow
 
 
-def build_rows(card, second_inspection):
+def build_rows(card, second_inspection, *, include_material=False):
     snap = card.group.snapshot
     route = snap.get("route", {})
     std = snap.get("standard") or {}
@@ -184,6 +185,9 @@ def build_rows(card, second_inspection):
         standard += " · 有项目待核"
     cure = params.get("primary_curing_time", {})
     main = Cell(f"{standard}     一次加硫 {parameter_text(cure)}" if usable("primary_curing_time", cure) else standard, 3)
+    if include_material:
+        curing = parameter_text(cure) if usable("primary_curing_time", cure) else "待核"
+        main = Cell(f"{standard}    一次加硫 {curing}    {material_text(snap.get('paper_material', {}))}", 4)
     yield (main, write("机台员", 1)), 6.5, True
 
     if snap.get("sample_only") and not std:
@@ -267,7 +271,7 @@ def short_item_label(item):
     return {"C/S-A":"C/S-A（轴向线径）", "C/S-R":"C/S-R（径向线径）"}.get(item,inspection_item_label(item))
 
 
-def render_cards_v7(items, *, second_inspection=False, paper_layout=SINGLE):
+def render_cards_v7(items, *, second_inspection=False, paper_layout=SINGLE, include_material=False):
     sizes = {(c.group.snapshot["template"].get("width_mm",190),c.group.snapshot["template"].get("height_mm",130)) for c,_ in items}
     if len(sizes) != 1:
         raise ValueError("不同纸张尺寸请分开打印。")
@@ -286,7 +290,7 @@ def render_cards_v7(items, *, second_inspection=False, paper_layout=SINGLE):
         preview = snap.get("paper_preview",False)
         y, identity_overflow = paper.header(card,sample=sample,preview=preview)
         rows = []
-        for cells,minimum,stretch in build_rows(card,second_inspection):
+        for cells,minimum,stretch in build_rows(card,second_inspection,include_material=include_material):
             h = paper.height_for(cells,minimum)
             # Long statements can never run out of a fixed box or create an
             # unbounded-height row. Continue verbatim on numbered card pages.
@@ -318,7 +322,9 @@ def render_cards_v7(items, *, second_inspection=False, paper_layout=SINGLE):
         stretch_count = sum(flag for _,_,flag in rows)
         extra = min(2.4,max(0,free)/max(stretch_count,1))
         version = snap["template"].get("version")
-        edition = f"版式 07 · 审定版 {version}" if isinstance(version,int) else "版式 07"
+        edition = "版式 08" if include_material else "版式 07"
+        if isinstance(version,int):
+            edition += f" · 审定版 {version}"
         state = "样张 · 未发号" if sample else "预览 · 不可扫码" if preview else "随货流转"
         footer = f"{state}   ·   异常同号续记   ·   {edition}" + (f"   ·   补打 {reprint} 次" if reprint else "")
         page = 1

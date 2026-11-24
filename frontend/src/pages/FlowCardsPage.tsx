@@ -9,10 +9,11 @@ import { QualityQrScanner } from '../components/QualityQrScanner'
 import { FlowTemplatePanel } from '../components/FlowTemplatePanel'
 import { FlowPreparationWorkspace } from '../components/FlowPreparationWorkspace'
 import { FlowPrintLayout, FlowPrintPreview } from '../components/FlowPrintLayout'
+import { FlowPrintResults, FlowVoidDialog } from '../components/FlowPrintResults'
 import type { PreparationContext } from '../flowcards'
 import { FlowBakePanel } from '../components/FlowBakePanel'
 import { FlowEventSummary, FlowMeasurementSummary, flowTime, type CouponSample } from '../components/FlowMeasurementSummary'
-import { flowApi, flowLimitText, applicableFlowCriteria, flowRequestKey, finishFlowRequest, isInternalCardCode, DEFAULT_PAPER_LAYOUT, PAPER_LAYOUT_LABEL, type PaperLayout, type Criterion, type FlowEvent, type FlowGroup, type PrintJob, type FlowTrace } from '../flowcards'
+import { flowApi, flowLimitText, applicableFlowCriteria, flowRequestKey, finishFlowRequest, isInternalCardCode, DEFAULT_PAPER_LAYOUT, type PaperLayout, type Criterion, type FlowEvent, type FlowGroup, type PrintJob, type FlowTrace } from '../flowcards'
 import { safeBusinessReturn } from '../navigation'
 import './FlowCardsPage.css'
 import { CustomerInspectionGroups } from '../components/CustomerInspectionPanel'
@@ -53,27 +54,10 @@ function CardLookup() {
   </Card>
 }
 
-function PrintResults({ job, changed, disabled }: { job: PrintJob; changed: (job: PrintJob) => void; disabled: boolean }) {
-  const { message } = App.useApp()
-  const [success, setSuccess] = useState<string[]>([])
-  const [busy, setBusy] = useState(false)
-  const save = async (cancel = false) => {
-    setBusy(true)
-    try {
-      const outcomes = Object.fromEntries(job.items.filter((i) => i.active).map((i) => [i.card_id, success.includes(i.card_id) ? 'SUCCESS' : cancel ? 'CANCELLED' : 'UNKNOWN']))
-      changed(await flowApi.printResult(job.id, outcomes)); setSuccess([])
-      message.success('已保存实际确认结果；未知项仍保留在原任务')
-    } catch (e) { message.error((e as Error).message) } finally { setBusy(false) }
-  }
-  const layout = job.paper_layout ?? 'SINGLE'
-  return <Card size="small" title="打印任务（下载不等于打印成功）">
-    <Typography.Paragraph copyable>请求号：{job.request_key}</Typography.Paragraph><Typography.Paragraph>本任务打印格式：{job.second_inspection?'品检员　一检：___　二检：___':'原格式：品检员签名'}（文件生成后不覆盖）</Typography.Paragraph>
-    <Typography.Paragraph>纸张：{PAPER_LAYOUT_LABEL[layout]}。{layout === 'A4_TWO_UP' ? '打印机选 A4 纵向、实际大小 100%、每张纸 1 页。PDF 已排好双卡，无需再选“每张纸 2 页”。' : '请选择原卡纸张尺寸，按实际大小 100% 打印。'}</Typography.Paragraph>
-    {job.file_prepared ? <Button href={job.pdf_url} target="_blank">打开原PDF · 100%打印</Button> : <Button disabled={disabled} loading={busy} onClick={() => { setBusy(true); flowApi.preparePrint(job.id).then(changed).catch((e: Error) => message.error(e.message)).finally(() => setBusy(false)) }}>继续原打印任务生成PDF</Button>}
-    <Typography.Paragraph>仅勾选确实打印成功的卡。未勾选默认“结果未知”；失败后可继续下载同一任务，不另增补打次数。</Typography.Paragraph>
-    <Checkbox.Group value={success} onChange={(v) => setSuccess(v as string[])} options={job.items.map((i) => ({ label: `${i.card_no} · 原${i.sequence}/${i.denominator}批 · ${i.proposed_reprint ? `补打${i.proposed_reprint}次` : '初印'} · ${i.status}`, value: i.card_id, disabled: disabled || !i.active }))} />
-    <Space wrap style={{ marginTop: 12 }}><Button disabled={disabled || !job.items.some((i) => i.active)} loading={busy} onClick={() => void save()}>保存成功范围，其余待核对</Button><Button disabled={disabled || !job.items.some((i) => i.active)} loading={busy} onClick={() => void save(true)}>保存成功范围，其余明确取消</Button></Space>
-  </Card>
+function printDialog(job: PrintJob | undefined, changed: (job: PrintJob) => void, close: () => void, disabled: boolean, cardId?: string, groupId?:string) {
+  return <Modal open={Boolean(job)} title="打印 / 补打原卡" footer={<Button onClick={close}>关闭</Button>} onCancel={close} width={680} destroyOnHidden>
+    {job && <FlowPrintResults key={job.id+':' + (cardId || groupId || 'all')} job={job} changed={changed} disabled={disabled} cardId={cardId} groupId={groupId} />}
+  </Modal>
 }
 
 export function FlowCardsPage() {
@@ -90,6 +74,8 @@ export function FlowCardsPage() {
   const [cardPage, setCardPage] = useState(1)
   const [selected, setSelected] = useState<string[]>([])
   const [job, setJob] = useState<PrintJob>()
+  const [jobCardId,setJobCardId] = useState<string>()
+  const [jobGroupId,setJobGroupId] = useState<string>()
   const [secondInspection,setSecondInspection] = useState(false)
   const [paperLayout, setPaperLayout] = useState<PaperLayout>(DEFAULT_PAPER_LAYOUT)
   const [busy, setBusy] = useState(false)
@@ -144,7 +130,10 @@ export function FlowCardsPage() {
   }
   if (data?.preparation_enabled) return <div className="page-container flow-cards-page">
     <PageTitle title="订单备卡与工序流转卡" description="订单、生产任务共用同一准备；只补缺项，不重录标准。" extra={<Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回来源页面</Button>} />
-    <FlowPreparationWorkspace key={scope.toString()} data={data as PreparationContext} refresh={() => { void context.refetch() }} lookup={<CardLookup />} settings={<FlowTemplatePanel />} printResults={job && <PrintResults key={job.id} job={job} changed={setJob} disabled={disabled} />} print={async (ids, secondInspection, paperLayout) => { const body={card_ids:ids,resume_active:true,second_inspection:secondInspection,paper_layout:paperLayout};const slot=`print:${ids.join(',')}:${secondInspection}`;const result=await flowApi.print({...body,request_key:flowRequestKey(slot,body)});setJob(result);const prepared=result.file_prepared?result:await flowApi.preparePrint(result.id);setJob(prepared);finishFlowRequest(slot);if((prepared.paper_layout??'SINGLE')!==paperLayout) message.info('已恢复原打印任务，沿用该任务纸张格式。');return prepared }} />
+    <FlowPreparationWorkspace key={scope.toString()} data={data as PreparationContext} refresh={() => { void context.refetch() }} lookup={<CardLookup />} settings={<FlowTemplatePanel />}
+      openPrint={async (id, cardId, groupId) => { const row=await flowApi.printJob(id);setJobCardId(cardId);setJobGroupId(groupId);setJob(row) }}
+      printResults={printDialog(job, row=>{setJob(row);void client.invalidateQueries({queryKey:['prepared-cards']});void client.invalidateQueries({queryKey:['flow-pending-prints']})},()=>setJob(undefined),disabled,jobCardId,jobGroupId)}
+      print={async (ids, secondInspection, paperLayout) => { const body={card_ids:ids,resume_active:true,second_inspection:secondInspection,paper_layout:paperLayout};const slot=`print:${ids.join(',')}:${secondInspection}`;const result=await flowApi.print({...body,request_key:flowRequestKey(slot,body)});setJobCardId(undefined);setJobGroupId(undefined);setJob(result);const prepared=result.file_prepared?result:await flowApi.preparePrint(result.id);setJob(prepared);finishFlowRequest(slot);if((prepared.paper_layout??'SINGLE')!==paperLayout) message.info('已恢复原打印任务，沿用该任务纸张格式。');return prepared }} />
   </div>
   return <div className="page-container flow-cards-page">
     <PageTitle title="工序流转卡" description="一包产品的记录与身份；不另记产量、库存和交付。" extra={<Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回来源页面</Button>} />
@@ -202,7 +191,7 @@ export function FlowCardsPage() {
           <Space wrap><FlowPrintLayout value={paperLayout} onChange={setPaperLayout} disabled={busy} /><Checkbox checked={secondInspection} onChange={e=>setSecondInspection(e.target.checked)}>本次打印需要二检</Checkbox><FlowPrintPreview ids={selected} layout={paperLayout} second={secondInspection} disabled={readOnly||busy} /><Button disabled={disabled || !selected.length} loading={busy} onClick={() => void act(async () => { const body = { card_ids: selected,second_inspection:secondInspection,paper_layout:paperLayout }; setJob(await flowApi.print({ ...body, request_key: flowRequestKey(`print:${group.id}`, body) })); finishFlowRequest(`print:${group.id}`) })}>生成选中卡PDF / 原卡补打（最多100张）</Button></Space>
         </>}
       </Card>}
-      {job && <PrintResults key={job.id} job={job} changed={setJob} disabled={disabled} />}
+      {printDialog(job, setJob, ()=>setJob(undefined), disabled)}
       <Modal title="确认产品要求（新版本，不改旧卡）" open={standardOpen} width={880} onCancel={() => setStandardOpen(false)} confirmLoading={busy} okButtonProps={{ disabled }} onOk={() => void act(async () => { const values = await standardForm.validateFields(); const body = { ...values, product_id: data.product.id, mold_id: data.mold_id }; await flowApi.standard({ ...body, request_key: flowRequestKey(`standard:${data.product.id}`, body) }); finishFlowRequest(`standard:${data.product.id}`); setStandardOpen(false); void context.refetch(); message.success('已保存确认版本；新要求进入原产品检验项目资料') })}>
         <Alert type="info" title="复用原产品检验项目；上下模、成型硬度和烤后硬度分别确认，不从材质猜限值。" />
         <Typography.Paragraph>原产品参考（未自动解析/确认）：一次硫化 {data.raw_process_reference?.primary_curing || '未登记'}；二烤 {data.raw_process_reference?.secondary_curing || '未登记'}。秒/min等歧义须核对来源，不会自动当实际执行。</Typography.Paragraph>
@@ -257,6 +246,7 @@ export function FlowCardDetailPage() {
   const { message } = App.useApp()
   const [form] = Form.useForm()
   const [recordOpen, setRecordOpen] = useState(false)
+  const [voidOpen,setVoidOpen] = useState(false)
   const [tab, setTab] = useState('events')
   const [page, setPage] = useState(1)
   const [job, setJob] = useState<PrintJob>()
@@ -278,7 +268,7 @@ export function FlowCardDetailPage() {
   const [bakePage, setBakePage] = useState(1)
   const bakeSources = useQuery({ queryKey: ['flow-bake-samples', id, bakePage], queryFn: () => flowApi.bakeSamples(id, bakePage), enabled: recordOpen && kind === 'BAKED_HARDNESS' && measurementObject === 'COUPON' })
   const data = card.data
-  const disabled = readOnly || data?.write_enabled === false
+  const disabled = readOnly || data?.write_enabled === false || data?.status === 'VOID'
   const measure = (c: Criterion, original?: FlowEvent) => {
     form.resetFields()
     form.setFieldsValue({ kind: c.stage, state: 'NOT_MEASURED', criterion_id: c.id, unit: c.unit, method: c.method,
@@ -323,6 +313,12 @@ export function FlowCardDetailPage() {
     <PageTitle title="工序卡详情" description="实物来源、工序事实与客户交付分别查看。" extra={<Space wrap><Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/production'))}>返回来源</Button><Button onClick={() => void card.refetch()}>刷新</Button></Space>} />
     {card.isError ? <Alert type="error" title="内部卡读取失败，不视为不存在的客户卡" description={card.error.message} /> : !data ? <Skeleton active /> : <>
       <Card title={data.card_no} extra={<Button disabled={disabled} onClick={() => { form.resetFields(); form.setFieldsValue({ kind: 'WHOLE_MOLD', status: 'PARTIAL', state: 'UNKNOWN' }); setRecordOpen(true) }}>登记 / 续记 / 复测</Button>}>
+        {data.status==='VOID'?<Alert type="warning" title="本卡已作废，只供追溯" />:
+          <Space wrap style={{marginBottom:12}}>
+            {data.pending_print_job_id?<Button type="primary" loading={busy} onClick={()=>void act(async()=>setJob(await flowApi.printJob(data.pending_print_job_id!)))}>处理本批待确认打印</Button>:
+              <><Button type="primary" disabled={disabled} onClick={()=>{setTab('prints');setPage(1);requestAnimationFrame(()=>document.getElementById('flow-card-prints')?.scrollIntoView({block:'start'}))}}>{data.printed_at?'补打本批':'打印本批'}</Button>
+              <Button danger disabled={disabled||Boolean(data.has_usage)} onClick={()=>setVoidOpen(true)}>{data.has_usage?'已有使用记录，不可作废':'作废本批'}</Button></>}
+          </Space>}
         {Boolean(data.process_todos?.length) && <Descriptions title="本包适用工序 / 待核对岗位" column={{xs:1,sm:2}} items={data.process_todos?.map((todo)=>({key:todo.stage,label:`${todo.label} · ${todo.role}`,children:`${todo.notice}${todo.employees.length?` · ${todo.employees.join('、')}`:''}`}))} />}
         <FlowMeasurementSummary card={data} disabled={disabled} measure={measure} />
         <Descriptions column={{ xs: 1, sm: 2 }} items={[
@@ -354,9 +350,10 @@ export function FlowCardDetailPage() {
         </>}
         {tab === 'trace' && (trace.isError ? <Alert type="error" title="追溯读取失败" /> : trace.isPending ? <Skeleton active /> : <><Typography.Paragraph>源集合未确认份额时，不把每张卡乘一遍出货/退回量。原出货更正后保留快照，需重新核对；物流事件不自动生成返工作业。</Typography.Paragraph>{!trace.data.results.length && <Empty description="未建立明确出货追溯；不猜填历史关系" />}{trace.data.results.map((s) => <Card key={s.id} size="small" title={s.shipment_no}><Button href={`/quality?shipment_batch_id=${s.batch_id}`}>查看原出货</Button><Tag>{s.current_shipment_status}</Tag><Tag>{SOURCE_STATE[s.state] || '状态需核对'}</Tag><SourceReturnHistory cardId={id} source={s} /></Card>)}<Pagination current={page} total={trace.data.count} pageSize={20} showSizeChanger={false} onChange={setPage} /></>)}
         {tab === 'diagram' && (!data.snapshot.diagram_id ? <Alert type="info" title="当时未建立定点图，不能声称位置已核对；仍可登记定点数" /> : diagram.isError ? <Alert type="error" title="当时定点图读取失败" /> : diagram.data && <><div>版本{diagram.data.version} · 方向/基准 {diagram.data.direction} · 适用 {diagram.data.scope}</div><Button href={diagram.data.url} target="_blank">查看当时标记图</Button></>)}
-        {tab === 'prints' && <>{prints.isError && <Alert type="error" title="原打印任务读取失败" />}{prints.data?.results.map((p) => <Button key={p.id} onClick={() => setJob(p)}>任务 {p.id.slice(0, 8)} · {p.status}</Button>)}<Pagination current={page} total={prints.data?.count} pageSize={20} showSizeChanger={false} onChange={setPage} /><Space wrap><FlowPrintLayout value={paperLayout} onChange={setPaperLayout} disabled={busy} /><Checkbox checked={secondInspection} onChange={e=>setSecondInspection(e.target.checked)}>本次打印需要二检</Checkbox><FlowPrintPreview ids={[id]} layout={paperLayout} second={secondInspection} disabled={readOnly||busy} /><Button disabled={disabled} loading={busy} onClick={() => void act(async () => { const body = { card_ids: [id],second_inspection:secondInspection,paper_layout:paperLayout }; setJob(await flowApi.print({ ...body, request_key: flowRequestKey(`print:${id}`, body) })); finishFlowRequest(`print:${id}`); void prints.refetch() })}>只打印 / 补打本批</Button></Space></>}
+        {tab === 'prints' && <div id="flow-card-prints">{prints.isError && <Alert type="error" title="原打印任务读取失败" />}{prints.data?.results.map((p) => <Button key={p.id} onClick={() => setJob(p)}>任务 {p.id.slice(0, 8)} · {p.status}</Button>)}<Pagination current={page} total={prints.data?.count} pageSize={20} showSizeChanger={false} onChange={setPage} /><Space wrap><FlowPrintLayout value={paperLayout} onChange={setPaperLayout} disabled={busy} /><Checkbox checked={secondInspection} onChange={e=>setSecondInspection(e.target.checked)}>本次打印需要二检</Checkbox><FlowPrintPreview ids={[id]} layout={paperLayout} second={secondInspection} disabled={disabled||busy||Boolean(data.pending_print_job_id)} /><Button disabled={disabled||Boolean(data.pending_print_job_id)} loading={busy} onClick={() => void act(async () => { const body = { card_ids: [id],second_inspection:secondInspection,paper_layout:paperLayout }; setJob(await flowApi.print({ ...body, request_key: flowRequestKey(`print:${id}`, body) })); finishFlowRequest(`print:${id}`); void prints.refetch(); void card.refetch() })}>只打印 / 补打本批</Button></Space></div>}
       </Card>
-      {job && <PrintResults key={job.id} job={job} changed={setJob} disabled={disabled} />}
+      {printDialog(job, row=>{setJob(row);void card.refetch();if(tab==='prints')void prints.refetch()}, ()=>setJob(undefined), disabled, id)}
+      {voidOpen&&data&&<FlowVoidDialog cards={[data]} close={()=>setVoidOpen(false)} changed={()=>{void card.refetch();void events.refetch()}} />}
       <Modal title="真实作业 / 异常同号续记" open={recordOpen} onCancel={() => setRecordOpen(false)} onOk={() => void record()} confirmLoading={busy} okButtonProps={{ disabled }}>
         <Form form={form} layout="vertical">
           <Form.Item name="covered_card_ids" hidden><Input /></Form.Item>

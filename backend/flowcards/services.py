@@ -19,14 +19,16 @@ from production.models import ProductionRun
 from quality.models import QualityOrder, QualityEmployee, ProcessCardUnitBinding
 from .models import (
     AppearanceIssue, StandardRevision, CardGroup, InternalCard, CardEvent,
-    PrintJob, PrintItem, TemplatePublication, ShipmentSource, TraceAudit, PositionDiagram,
+    PrintJob, PrintItem, TemplatePublication, ShipmentSource, TraceAudit, PositionDiagram, Attachment,
 )
 from .limits import validate_limits, evaluate
 from .paper import A4_TWO_UP, print_layout
 
 RENDERER = "flowcard-review-20261119-v4"
 LEGACY_PREPARATION_RENDERER = "flowcard-guidance-20261121-v6"
-PREPARATION_RENDERER = "flowcard-guidance-20261122-v7"
+PREPARATION_RENDERER = "flowcard-guidance-20261124-v8"
+ROUTE_RENDERERS = (PREPARATION_RENDERER, "flowcard-guidance-20261122-v7",
+                   LEGACY_PREPARATION_RENDERER, "flowcard-preparation-20261119-v5")
 TEMPLATE = {"renderer": RENDERER, "version": "草稿", "width_mm": 190, "height_mm": 130}
 
 
@@ -565,6 +567,8 @@ def generate_group(group, user, expected_revision=None):
     group = CardGroup.objects.select_for_update().get(pk=group.pk)
     if group.status == "GENERATED":
         return group
+    if group.status != "DRAFT":
+        raise ValidationError({"group_id": "已作废的原卡组不能再次发号；请另建准备。"})
     if prep.enabled() and expected_revision is not None and expected_revision != group.revision:
         raise prep.PreparationConflict("发卡前草稿版本已变化，请重新读取核对。")
     if prep.enabled():
@@ -584,6 +588,10 @@ def generate_group(group, user, expected_revision=None):
     snapshot["template"] = {**snapshot["template"], "renderer": renderer, "version": publication.version if publication else "草稿"}
     snapshot["confirmed_by"] = user.pk
     if prep.enabled():
+        if "paper_material" not in snapshot:
+            # Drafts saved before this field existed have never issued a card.
+            from .paper_material import paper_material
+            snapshot["paper_material"] = paper_material(group.product, group.run)
         snapshot["todos"] = prep.package_todos(snapshot)
     now = timezone.now()
     day = timezone.localtime(now).date()
@@ -626,7 +634,7 @@ def print_cards(data, options, *, lock=False):
     templates = {(c.group.snapshot["template"]["renderer"], c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c in cards}
     if len(templates) > 1:
         raise ValidationError({"card_ids": "不同模板渲染版本或纸张尺寸请分别打印，旧卡不套新模板。"})
-    if options["second_inspection"] and any(c.group.snapshot["template"]["renderer"] in (PREPARATION_RENDERER, LEGACY_PREPARATION_RENDERER, "flowcard-preparation-20261119-v5") and not c.group.snapshot.get("route", {}).get("inspection") for c in cards):
+    if options["second_inspection"] and any(c.group.snapshot["template"]["renderer"] in ROUTE_RENDERERS and not c.group.snapshot.get("route", {}).get("inspection") for c in cards):
         raise ValidationError({"second_inspection": "所选原卡有不适用品检工序的卡，不能添加二检签名；请核对适用范围。"})
     return cards
 
@@ -718,6 +726,16 @@ def record_event(data, user, *, entry_card=None):
     evidence = (required_text(data, "evidence") if data.get("evidence") or kind not in MEASURE_STAGES
                 else "实测登记；未另填依据说明")
     scope = required_text(data, "scope")
+    if kind == "VOID":
+        if values.get("unused_confirmed") is not True or data.get("replaces_id"):
+            raise ValidationError({"card_ids": "请确认这些卡都误发且尚未使用；已发纸卡须先收回。"})
+        if PrintItem.objects.filter(card__in=cards, active=True).exists():
+            raise ValidationError({"card_ids": "先确认或取消这些卡尚未处理的打印任务，再作废误发卡。"})
+        if (CardEvent.objects.filter(cards__in=cards).exclude(kind="VOID").exists()
+                or ShipmentSource.objects.filter(card__in=cards).exists()
+                or Attachment.objects.filter(card__in=cards).exists()):
+            raise ValidationError({"card_ids": "已有工序、照片或出货关联的卡不能作废；请保留原卡并更正。"})
+        values = {"unused_confirmed": True, "reason": required_text(values, "reason", 500)}
     if kind == "WORK_GUIDANCE":
         from .preparation import require_maintainer
         require_maintainer(user)
@@ -919,9 +937,17 @@ def record_event(data, user, *, entry_card=None):
         anomaly.cards.set(barred_cards)
         audit(anomaly, "OIL_EXCEPTION", user, {"deburr_event_id": str(event.pk)})
     if kind == "VOID":
-        if any(c.events.exclude(kind="VOID").exists() or c.shipment_sources.exists() for c in cards):
-            raise ValidationError({"card_ids": "已有使用事实的卡不能作废后换身份；保留原卡并更正。"})
         InternalCard.objects.filter(pk__in=ids).update(status="VOID")
+        from .models import OrderCardPreparation
+        for group in CardGroup.objects.select_for_update().filter(pk__in={c.group_id for c in cards}).order_by("pk"):
+            if not group.cards.filter(status="ACTIVE").exists():
+                group.status = "VOID"
+                group.save(update_fields=["status"])
+                # Only reopen the exact preparation pointer; never change the
+                # order status, production count, or a later preparation.
+                OrderCardPreparation.objects.filter(draft=group, order__status="OPEN",
+                    order__production_required=True, state="GENERATED").update(
+                    state="PENDING", draft=None, updated_at=timezone.now())
     audit(event, "RECORD", user, {"kind": kind, "cards": list(map(str, ids))})
     return event
 
@@ -946,7 +972,8 @@ def bind_sources(batch, data, user):
     customer_refs = {str(l.process_card.tracking_id): l.process_card.card_no for l in lines if l.process_card_id}
     customer_refs.update({str(b.process_card.tracking_id): b.process_card.card_no for b in batch_bindings})
     try:
-        source_cards = {str(c.pk): c for c in InternalCard.objects.filter(pk__in=[e.get("card_id") for e in data if isinstance(e, dict)]).select_related("group")}
+        source_cards = {str(c.pk): c for c in InternalCard.objects.select_for_update(of=("self",)).filter(
+            pk__in=[e.get("card_id") for e in data if isinstance(e, dict)]).select_related("group").order_by("pk")}
     except (DjangoValidationError, ValueError, TypeError):
         raise ValidationError({"internal_sources": "来源卡编号无效。"})
     incoming_keys = [request_key(entry) for entry in data if isinstance(entry, dict)]

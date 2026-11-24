@@ -9,7 +9,7 @@ from pathlib import Path
 from django.conf import settings
 from django.core.files.storage import FileSystemStorage
 from django.db import IntegrityError, OperationalError, transaction
-from django.db.models import Max, Q
+from django.db.models import Exists, Max, OuterRef, Q, Subquery
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -31,7 +31,7 @@ from .limits import limit_text, limit_mode
 from .paper import A4_TWO_UP, SINGLE
 from .measurements import applicable_criteria, reviewed_measurements
 from .models import (AppearanceIssue, StandardRevision, CardGroup, InternalCard, CardEvent,
-                     PrintJob, Attachment, PositionDiagram, TemplatePublication, ShipmentSource)
+                     PrintJob, PrintItem, Attachment, PositionDiagram, TemplatePublication, ShipmentSource)
 
 
 class FlowEnvelopeSerializer(serializers.Serializer):
@@ -71,10 +71,22 @@ def page(view, request, qs, mapper):
 
 def card_data(card):
     from .preparation import package_progress
+    pending = getattr(card, "pending_print_job_id", None)
     return {"id": str(card.pk), "card_no": card.card_no, "code": f"ERPFC:{card.pk}",
             "group_id": str(card.group_id), "sequence": card.sequence, "denominator": card.denominator,
             "planned_molds": card.planned_molds, "original_date": card.original_date,
-            "status": card.status, "reprint_count": card.reprint_count, "process_todos": package_progress(card)}
+            "status": card.status, "printed_at": card.printed_at, "reprint_count": card.reprint_count,
+            "pending_print_job_id": str(uuid.UUID(str(pending))) if pending else None,
+            "has_usage": getattr(card, "has_usage", None), "process_todos": package_progress(card)}
+
+
+def with_card_actions(cards):
+    return cards.annotate(
+        pending_print_job_id=Subquery(PrintItem.objects.filter(card_id=OuterRef("pk"), active=True).values("job_id")[:1]),
+        has_usage=(Exists(CardEvent.objects.filter(cards=OuterRef("pk")).exclude(kind="VOID"))
+                   | Exists(ShipmentSource.objects.filter(card_id=OuterRef("pk")))
+                   | Exists(Attachment.objects.filter(card_id=OuterRef("pk")))),
+    )
 
 
 def group_data(group):
@@ -315,11 +327,12 @@ class GroupViewSet(ErrorsMixin, viewsets.GenericViewSet):
 
     @action(detail=True, methods=["get"])
     def cards(self, request, pk=None):
-        return page(self, request, self.get_object().cards.select_related("group").prefetch_related("events").order_by("sequence"), card_data)
+        cards = self.get_object().cards.select_related("group").prefetch_related("events").order_by("sequence")
+        return page(self, request, with_card_actions(cards), card_data)
 
 
 class CardViewSet(ErrorsMixin, viewsets.GenericViewSet):
-    queryset = InternalCard.objects.select_related("group")
+    queryset = with_card_actions(InternalCard.objects.select_related("group"))
 
     @action(detail=False, methods=["get"])
     def scan(self, request):
@@ -478,7 +491,7 @@ class PrintViewSet(ErrorsMixin, viewsets.GenericViewSet):
 
     def result(self, job):
         return {"id": str(job.pk), "status": job.status, "request_key": job.request_key,
-                "items": [{"card_id": str(i.card_id), "card_no": i.card.card_no, "sequence": i.card.sequence,
+                "items": [{"card_id": str(i.card_id), "group_id": str(i.card.group_id), "card_no": i.card.card_no, "sequence": i.card.sequence,
                            "denominator": i.card.denominator, "proposed_reprint": i.proposed_reprint,
                            "status": i.status, "active": i.active} for i in job.items.select_related("card").order_by("card__group_id", "card__sequence")],
                 "pdf_url": f"/api/flow-cards/print-jobs/{job.pk}/pdf/", "pdf_sha256": job.pdf_sha256,
@@ -505,6 +518,8 @@ class PrintViewSet(ErrorsMixin, viewsets.GenericViewSet):
     def prepare_file(self, job):
         if job.pdf_storage_name:
             return job
+        if not job.items.filter(active=True).exists():
+            raise ValidationError({"detail": "该打印任务已结束，不再生成文件；需要打印请从仍有效的原卡发起。"})
         from .pdf import render_cards
         from django.core.files.base import ContentFile
         items = list(job.items.select_related("card__group").order_by("card__group_id", "card__sequence"))
@@ -536,13 +551,21 @@ class PrintViewSet(ErrorsMixin, viewsets.GenericViewSet):
         qs = self.get_queryset().order_by("-created_at")
         if request.query_params.get("request_key"):
             qs = qs.filter(request_key=request.query_params["request_key"])
+        item_scope = {}
         if request.query_params.get("card_id"):
             try:
-                identity = uuid.UUID(request.query_params["card_id"])
+                item_scope["items__card_id"] = uuid.UUID(request.query_params["card_id"])
             except ValueError:
                 raise ValidationError({"card_id": "内部卡编号无效。"})
-            qs = qs.filter(items__card_id=identity)
-        return page(self, request, qs.prefetch_related("items"), self.result)
+        if request.query_params.get("group_id"):
+            try:
+                item_scope["items__card__group_id"] = uuid.UUID(request.query_params["group_id"])
+            except ValueError:
+                raise ValidationError({"group_id": "卡组编号无效。"})
+        if request.query_params.get("pending") == "1":
+            item_scope["items__active"] = True
+        # Apply together so pending must belong to the same selected card/group.
+        return page(self, request, qs.filter(**item_scope).distinct(), self.result)
 
     def retrieve(self, request, pk=None):
         return Response(self.result(self.get_object()))
@@ -620,8 +643,10 @@ class TemplatePreviewView(ErrorsMixin, APIView):
             "whole_mold": whole, "standard": s.standard_data(standard) if standard else None,
             "appearance": standard.snapshot["appearance"] if standard else list(AppearanceIssue.objects.filter(is_active=True).values("id", "name")[:4])}
         if settings.FLOW_CARDS_PREPARATION_ENABLED and standard:
+            from .paper_material import paper_material
             snapshot["route"] = standard.snapshot.get("route", {})
             snapshot["process_parameters"] = standard.snapshot.get("process_parameters", {})
+            snapshot["paper_material"] = paper_material(product)
         card = SimpleNamespace(pk=uuid.UUID(int=0), card_no="FC-PREVIEW-NOT-ISSUED", group=SimpleNamespace(snapshot=snapshot),
             original_date=timezone.localdate(), sequence=1, denominator=1, planned_molds=100)
         result = HttpResponse(render_cards([(card, 0)]), content_type="application/pdf")
@@ -657,8 +682,13 @@ class AttachmentView(ErrorsMixin, APIView):
         if existing:
             return Response({"id": str(existing.pk), "deduplicated": True})
         from django.core.files.base import ContentFile
-        name = private_storage().save(f"{uuid.uuid4().hex}.bin", ContentFile(raw))
         with transaction.atomic():
+            if card:
+                # Serialize attachment creation with the unused-card check.
+                card = InternalCard.objects.select_for_update().get(pk=card.pk)
+                if card.status != "ACTIVE":
+                    raise ValidationError({"card_id": "已作废的卡只供追溯，不能新增照片。"})
+            name = private_storage().save(f"{uuid.uuid4().hex}.bin", ContentFile(raw))
             row = Attachment.objects.create(card=card, storage_name=name, original_name=Path(upload.name).name[:255], sha256=sha,
                 content_type={"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}[image.format],
                 replaces=replaces, created_by=request.user)

@@ -229,7 +229,7 @@ def groups_for(run, orders, product):
 def ranges_for(run, exclude=None):
     if not run:
         return []
-    return list(CardGroup.objects.filter(run=run, range_start__isnull=False).exclude(pk=exclude).order_by("range_start").values("id", "range_start", "range_end", "status"))
+    return list(CardGroup.objects.filter(run=run, range_start__isnull=False).exclude(pk=exclude).exclude(status="VOID").order_by("range_start").values("id", "range_start", "range_end", "status"))
 
 
 def free_ranges(total, occupied):
@@ -336,6 +336,7 @@ def check_customer_inspections(orders, inspections):
 
 def build_plan(data, exclude=None):
     from . import services as s
+    from .paper_material import paper_material
     product, run, orders, _ = resolve(data)
     if not orders and data.get("order_ids"):
         orders = list(QualityOrder.objects.filter(pk__in=data["order_ids"]).select_related("source_batch", "last_source_batch").order_by("id"))
@@ -366,7 +367,7 @@ def build_plan(data, exclude=None):
     require_compatible_orders(product, orders, standard)
     occupied = ranges_for(run, exclude)
     # Old groups have no structured range; never guess their historical coverage.
-    if run and CardGroup.objects.filter(run=run).exclude(pk=exclude).filter(range_start__isnull=True).exists():
+    if run and CardGroup.objects.filter(run=run).exclude(pk=exclude).exclude(status="VOID").filter(range_start__isnull=True).exists():
         raise ValidationError({"range_start": "本段存在未结构化的历史卡范围，请先核对原卡；不能猜配或重复发卡。"})
     available = free_ranges(run.planned_mold_count, occupied) if run else []
     start = s.integer(data.get("range_start") or (available[0][0] if available else 1), "range_start")
@@ -411,6 +412,7 @@ def build_plan(data, exclude=None):
     plan["snapshot"]["orders"] = [card_order(o, inspections) for o in orders]
     plan["snapshot"]["customer_inspections"] = ci.card_payloads(orders, inspections)
     plan["snapshot"]["template"] = s.current_template()
+    plan["snapshot"]["paper_material"] = paper_material(product, run)
     plan["range_start"], plan["range_end"] = (start, end) if planned and run else (None, None)
     plan["context_key"] = f"run:{run.pk}" if run else f"order:{orders[0].pk}"
     plan["snapshot"].update({"preparation_v2": True, "range_start": plan["range_start"], "range_end": plan["range_end"],

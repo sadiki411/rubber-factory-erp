@@ -52,7 +52,7 @@ export function splitPlannedMolds(total: number | null | undefined, per: number)
   if (!Number.isInteger(total) || !total || total < 1 || !Number.isInteger(per) || per < 1 || Math.ceil(total / per) > 500) return []
   return Array.from({length: Math.ceil(total / per)}, (_, i) => Math.min(per, total - i * per))
 }
-export type FlowCard = { id: string; card_no: string; group_id: string; code: string; sequence: number; denominator: number; planned_molds: number; original_date: string; reprint_count: number; status: string; process_todos?: Array<{stage:string;label:string;role:string;state:string;notice:string;employees:string[];fact_ids:string[]}> }
+export type FlowCard = { id: string; card_no: string; group_id: string; code: string; sequence: number; denominator: number; planned_molds: number; original_date: string; printed_at?: string | null; pending_print_job_id?: string | null; has_usage?: boolean | null; reprint_count: number; status: string; process_todos?: Array<{stage:string;label:string;role:string;state:string;notice:string;employees:string[];fact_ids:string[]}> }
 export type FlowCardDetail = FlowCard & { snapshot: FlowSnapshot; write_enabled?: boolean; can_add_work_guidance?:boolean; whole_mold_status: string; unresolved_anomalies: number; source_status: string; paper_status: string; measurement_alerts?: Array<FlowEvent & { review_target?: FlowEvent }>; measurement_status?: Array<{ criterion: Criterion; limit_text: string; message: string; event: FlowEvent | null }>; bake_measurement_status?: Array<{id: string; business_at: string | null; scope: string; trays?: number[]; notice: string; checks: Array<{sample_ref: string; material_ref: string; trays: number[]; message: string; actual: string | null; unit: string | null}>}>; baked_product_measurements?: FlowEvent[]; baked_measurement_notice?: string }
 export type FlowEvent = { id: string; kind: string; values: Record<string, unknown>; scope: string; card_ids?: string[]; card_refs?: Array<{ id: string; card_no: string }>; followups?: Array<{ id: string; employee_name: string; business_at: string | null; message: string; judgment: string }>; employee_name: string; recorded_by?:number; evidence: string; created_at: string; business_at: string | null; replaces_id: string | null }
 export type FlowPage<T> = { count: number; results: T[] }
@@ -61,7 +61,7 @@ export type FlowTrace = { id: number; batch_id: number; shipment_no: string; cur
 export type PaperLayout = 'A4_TWO_UP' | 'SINGLE'
 export const DEFAULT_PAPER_LAYOUT: PaperLayout = 'A4_TWO_UP'
 export const PAPER_LAYOUT_LABEL: Record<PaperLayout, string> = { A4_TWO_UP: 'A4 双卡打印', SINGLE: '原尺寸单卡' }
-export type PrintJob = { id: string; status: string; request_key: string; pdf_url: string; file_prepared: boolean; pdf_sha256: string; second_inspection?:boolean; paper_layout?: PaperLayout; items: Array<{ card_id: string; card_no: string; sequence: number; denominator: number; proposed_reprint: number; status: string; active: boolean }> }
+export type PrintJob = { id: string; status: string; request_key: string; pdf_url: string; file_prepared: boolean; pdf_sha256: string; second_inspection?:boolean; paper_layout?: PaperLayout; items: Array<{ card_id: string; group_id?: string; card_no: string; sequence: number; denominator: number; proposed_reprint: number; status: string; active: boolean }> }
 export type FlowContext = {
   preparation_enabled?: boolean
   write_enabled: boolean; product: FlowSnapshot['product']; run_id: number | null; mold_id: number | null; order_ids: number[]; orders: FlowSnapshot['orders']; suggested_molds: number | null
@@ -115,6 +115,8 @@ export const flowApi = {
   print: (body: unknown) => post<PrintJob>('print-jobs/', body),
   printPreview: (body: unknown) => previewPdf('print-jobs/preview/', body),
   prints: (cardId: string, page = 1) => apiFetch<FlowPage<PrintJob>>(`/api/flow-cards/print-jobs/?card_id=${cardId}&page=${page}`),
+  pendingPrints: (groupId: string, page = 1) => apiFetch<FlowPage<PrintJob>>(`/api/flow-cards/print-jobs/?group_id=${groupId}&pending=1&page_size=20&page=${page}`),
+  printJob: (id: string) => apiFetch<PrintJob>(`/api/flow-cards/print-jobs/${id}/`),
   printResult: (id: string, outcomes: Record<string, string>) => post<PrintJob>(`print-jobs/${id}/confirm/`, { outcomes }),
   preparePrint: (id: string) => post<PrintJob>(`print-jobs/${id}/prepare/`, {}),
   templates: () => apiFetch<TemplateStatus>('/api/flow-cards/templates/publish/'),
