@@ -106,14 +106,15 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
   const currentContext=standardId&&standardId!==data.auto_standard_id?selectedContext.data||data:data
   const count = allocation.length || null
   const perform = async (work: () => Promise<void>) => {setBusy(true);setError('');try{await work()}catch(e){setError(e instanceof Error?e.message:'请核对标出的必填项。')}finally{setBusy(false)}}
+  const refreshPrintTasks = () => {
+    void queryClient.invalidateQueries({queryKey:['prepared-cards']})
+    void queryClient.invalidateQueries({queryKey:['flow-pending-prints']})
+  }
   const reprint = (ids:string[]) => perform(async()=>{
     const popup = beginPrint?.()
     try {const job=await print(ids, secondInspection, paperLayout);if(job)popup?.show(job);else popup?.close()}
     catch(error){popup?.close();throw error}
-    finally {
-      void queryClient.invalidateQueries({queryKey:['prepared-cards']})
-      void queryClient.invalidateQueries({queryKey:['flow-pending-prints']})
-    }
+    finally {refreshPrintTasks()}
   })
   const voidChanged = async () => {
     try { if(group) setGroup(await flowApi.group(group.id) as PreparationGroup) }
@@ -151,6 +152,7 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
         if(job)popup?.show(job);else popup?.close()
       }
     } catch(error){popup?.close();throw error}
+    finally {if(generate)refreshPrintTasks()}
   })
   const active = data.runs.filter((r)=>!r.historical)
   return <>

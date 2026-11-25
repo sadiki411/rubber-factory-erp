@@ -4,7 +4,7 @@ import { act, configure, fireEvent, render, screen, waitFor } from '@testing-lib
 import { MemoryRouter } from 'react-router-dom'
 import { ReadOnlyContext } from '../access'
 import { FlowPreparationWorkspace } from './FlowPreparationWorkspace'
-import { flowApi, type PreparationContext, type PreparationGroup } from '../flowcards'
+import { flowApi, type FlowCard, type PreparationContext, type PreparationGroup, type PrintJob } from '../flowcards'
 
 Object.defineProperty(window,'matchMedia',{writable:true,value:vi.fn().mockImplementation((query:string)=>({matches:false,media:query,addListener:vi.fn(),removeListener:vi.fn(),addEventListener:vi.fn(),removeEventListener:vi.fn()}))})
 globalThis.ResizeObserver=class { observe(){} unobserve(){} disconnect(){} }
@@ -21,6 +21,23 @@ describe('server preparation workspace',{timeout:30000},()=>{
   beforeEach(()=>{vi.clearAllMocks();vi.mocked(flowApi.create).mockResolvedValue(draft);vi.mocked(flowApi.generate).mockResolvedValue({...draft,status:'GENERATED'});vi.mocked(flowApi.cards).mockResolvedValue({count:0,results:[]});vi.mocked(flowApi.preview).mockResolvedValue({count:3,tail_molds:1,planned_molds:201})})
   it('generates from auto inherited standard without entering parameters',async()=>{await act(async()=>{mount()});const button=await screen.findByRole('button',{name:'生成 3 张并准备打印'});expect(button).toBeEnabled();fireEvent.click(button);await waitFor(()=>expect(flowApi.generate).toHaveBeenCalledWith('same-draft',3));expect(vi.mocked(flowApi.create).mock.calls[0][0]).toMatchObject({run_id:1,order_ids:[1],standard_id:1,planned_molds:201,molds_per_card:100,card_molds:[100,100,1]});expect(await screen.findByText(/本组已发号/)).toBeInTheDocument()})
   it('resolves a lost generation response by the same group instead of creating again',async()=>{vi.mocked(flowApi.generate).mockRejectedValueOnce(new Error('network timeout'));vi.mocked(flowApi.group).mockResolvedValueOnce({...draft,status:'GENERATED'});await act(async()=>{mount()});fireEvent.click(await screen.findByRole('button',{name:'生成 3 张并准备打印'}));expect(await screen.findByText(/本组已发号/)).toBeInTheDocument();expect(flowApi.group).toHaveBeenCalledWith('same-draft');expect(flowApi.create).toHaveBeenCalledTimes(1)})
+  it('refreshes the pending list if the first print job finishes after the group already loaded',async()=>{
+    let ready=false
+    const card={id:'first'} as FlowCard
+    const job={id:'first-print'} as PrintJob
+    vi.mocked(flowApi.cards).mockImplementation(async()=>({count:1,results:[{...card,id:'first',status:'ACTIVE',pending_print_job_id:ready?job.id:null}]}))
+    vi.mocked(flowApi.pendingPrints).mockImplementation(async()=>({count:Number(ready),results:ready?[job]:[]}))
+    let release:()=>void = ()=>{}
+    print.mockImplementationOnce(()=>new Promise(resolve=>{release=()=>{ready=true;resolve(job)}}))
+    mount(data,false,vi.fn())
+    const button=await screen.findByRole('button',{name:'生成 3 张并准备打印'})
+    await waitFor(()=>expect(button).toBeEnabled())
+    fireEvent.click(button)
+    await screen.findByText('没有待确认打印任务。')
+    await waitFor(()=>expect(print).toHaveBeenCalled())
+    release()
+    expect(await screen.findByRole('button',{name:'处理原打印任务'})).toBeInTheDocument()
+  })
   it('normal save carries the same draft id and concurrency version',async()=>{mount({...data,preferred_group:draft,existing_groups:[draft]});await screen.findByText(/同一草稿ID/);fireEvent.click(screen.getByRole('button',{name:'保存本次准备'}));await waitFor(()=>expect(flowApi.create).toHaveBeenCalled());expect(vi.mocked(flowApi.create).mock.calls[0][0]).toMatchObject({group_id:'same-draft',expected_revision:3});expect(flowApi.generate).not.toHaveBeenCalled()})
   it('brings in actual material, retains a saved local override and uses it for preview',async()=>{
     const defaults={actual_material_length:'320',weight_g:'13/11',weight_source:'PRODUCT_ACTUAL'}
