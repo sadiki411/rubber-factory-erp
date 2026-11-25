@@ -11,17 +11,23 @@ import { FlowPrintLayout, FlowPrintPreview } from './FlowPrintLayout'
 import { OrderCustomerInspectionPanel } from './CustomerInspectionPanel'
 import { customerInspectionApi, type CustomerInspection } from '../customerInspection'
 import { FlowVoidDialog } from './FlowPrintResults'
+import { ProductSpecificationDrawer } from './ProductSpecificationDrawer'
+import { productSpecificationApi } from '../api/client'
+import type { FlowPrintWindow } from '../flowPrintWindow'
 
 const STATE = { LEGACY: '旧记录·待复核适用性', DRAFT: '草稿', ACTIVE: '生效', SUPERSEDED: '已被替代' }
 const PARAMETERS = [
   ['primary_curing_time', '一次加硫时间'], ['pressure', '压力（来源注明类别）'], ['venting', '排气'],
   ['arrangement', '排列/排料'], ['release_agent', '离型剂'], ['machine_type', '机型/吨位'], ['oil', '毛边洒油'], ['experience', '异常经验'],
 ]
+const NUMERIC_PARAMETERS = new Set(['primary_curing_time','pressure'])
+const WEIGHT_SOURCE:Record<string,string> = { RUN:'生产段条重',PRODUCT_ACTUAL:'产品资料的实际料重',PRODUCT_STRIPS:'产品资料的条重',MISSING:'未登记' }
+const PAPER_WEIGHT = /^\s*[0-9]{1,9}(?:\.[0-9]{1,2})?\s*(?:g|克)?(?:\s*[/／]\s*[0-9]{1,9}(?:\.[0-9]{1,2})?\s*(?:g|克)?)?\s*$/i
 const sourceText = (c: PreparationSource) => `${c.order_id ? `订单项#${c.order_id}` : '产品通用'} · ${c.source_file || '人工资料'} · ${c.source_sheet || '未登记表'} ${c.source_row == null ? '' : `第${c.source_row}行`} · ${c.version || '原版号未登记'}`
 const sourceLink = (c: PreparationSource) => c.source_url ? <a href={c.source_url} target="_blank" rel="noopener noreferrer">{sourceText(c)} · 查看原件</a> : sourceText(c)
 
 
-export function FlowPreparationWorkspace({ data, refresh, lookup, settings, printResults, print, openPrint }: { data: PreparationContext; refresh: () => void; lookup: ReactNode; settings: ReactNode; printResults: ReactNode; print: (ids: string[], secondInspection: boolean, paperLayout: PaperLayout) => Promise<PrintJob | void>; openPrint?: (id: string, cardId?: string, groupId?: string)=>Promise<void> }) {
+export function FlowPreparationWorkspace({ data, refresh, lookup, settings, printResults, print, openPrint, beginPrint }: { data: PreparationContext; refresh: () => void; lookup: ReactNode; settings: ReactNode; printResults: ReactNode; print: (ids: string[], secondInspection: boolean, paperLayout: PaperLayout) => Promise<PrintJob | void>; openPrint?: (id: string, cardId?: string, groupId?: string)=>Promise<void>; beginPrint?: () => FlowPrintWindow | undefined }) {
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const readOnly = useReadOnly()
@@ -31,6 +37,9 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
   const [busy,setBusy] = useState(false)
   const [error,setError] = useState('')
   const [editor,setEditor] = useState(false)
+  const [productEditor,setProductEditor] = useState(false)
+  const productDetail = useQuery({queryKey:['flow-product-specification',data.product.id],
+    queryFn:()=>productSpecificationApi.detail(data.product.id),enabled:productEditor})
   const [adopt,setAdopt] = useState<CustomerInspection>()
   const [dismissedAdopt,setDismissedAdopt] = useState(false)
   const [activated,setActivated] = useState<PreparationStandard>()
@@ -50,6 +59,8 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
   const cards = useQuery({queryKey:['prepared-cards',group?.id,group?.status,cardPage],queryFn:() => flowApi.cards(group!.id,cardPage),enabled:hasIssued})
   const pendingPrints = useQuery({queryKey:['flow-pending-prints',group?.id,printPage],queryFn:() => flowApi.pendingPrints(group!.id,printPage),enabled:group?.status==='GENERATED'&&Boolean(openPrint)})
   const availableCards = (cards.data?.results || []).filter(c=>c.status==='ACTIVE'&&!c.pending_print_job_id)
+  const initialCards = availableCards.filter(c=>!c.printed_at)
+  const printedCards = availableCards.filter(c=>Boolean(c.printed_at))
   const disabled = readOnly || !data.write_enabled
   const canEdit=!disabled&&data.can_maintain_standard
   const openFromUrl=canEdit&&data.order_ids.length===1&&params.get('adopt_standard')==='1'&&!dismissedAdopt
@@ -66,6 +77,12 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
     const planned = isSuggestion ? null : g?.planned_molds ?? data.suggested_molds
     const perCard = g?.molds_per_card ?? s?.snapshot.packaging?.molds_per_card ?? 100
     form.setFieldsValue({planned_molds:planned,card_molds:isSuggestion?[]:g?.snapshot.card_molds || splitPlannedMolds(planned,perCard),range_start:g?.range_start ?? data.available_ranges[0]?.[0],molds_per_card:perCard,standard_id:s?.id,whole_mold:g?.whole_mold&&g.whole_mold!=='UNKNOWN'?g.whole_mold:s?.whole_mold||'UNKNOWN',diagram_id:g?.snapshot.diagram_id,decisions:snapshot?.decisions || {},preparation_notes:snapshot?.preparation_notes,append_confirmed:snapshot?.append_confirmed===true,process_adjustments:Object.entries(g?.snapshot.process_overrides||{}).map(([name,value])=>({name,...value})),...snapshot?.arrangement})
+    const saved = snapshot?.paper_material
+    const defaults = data.paper_material_defaults
+    form.setFieldsValue({paper_material: {
+      actual_material_length: saved?.actual_material_length ?? defaults?.actual_material_length ?? '',
+      weight_g: saved?.weight_g ?? defaults?.weight_g ?? '',
+    }})
     form.setFieldValue('temperature_plan',g?.snapshot.temperature_plan||s?.snapshot.packaging?.temperature_plan||{mode:'PENDING'})
   }, [data, form, clearSamples])
   useEffect(() => {if(init.current !== contextKey) {init.current=contextKey; queueMicrotask(() => applyGroup(data.preferred_group))}},[contextKey,data,applyGroup])
@@ -90,7 +107,9 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
   const count = allocation.length || null
   const perform = async (work: () => Promise<void>) => {setBusy(true);setError('');try{await work()}catch(e){setError(e instanceof Error?e.message:'请核对标出的必填项。')}finally{setBusy(false)}}
   const reprint = (ids:string[]) => perform(async()=>{
-    try { await print(ids, secondInspection, paperLayout) }
+    const popup = beginPrint?.()
+    try {const job=await print(ids, secondInspection, paperLayout);if(job)popup?.show(job);else popup?.close()}
+    catch(error){popup?.close();throw error}
     finally {
       void queryClient.invalidateQueries({queryKey:['prepared-cards']})
       void queryClient.invalidateQueries({queryKey:['flow-pending-prints']})
@@ -111,28 +130,33 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
     return {...rest,temperature_plan:form.getFieldValue('temperature_plan'),card_molds:values.planned_molds?values.card_molds:undefined,order_plan:!data.run_id,process_overrides:Object.fromEntries(rows.map(({name,...value})=>[name,value])),product_id:data.product.id,order_id:data.order_ids[0],run_id:data.run_id,order_ids:data.order_ids,...(group?.status==='DRAFT'?{group_id:group.id,expected_revision:group.revision}:{})}
   }
   const save = (generate:boolean) => perform(async () => {
-    const body = await payload(); const slot=`preparation:${contextKey}:${group?.id||'new'}`
-    let result = await flowApi.create({...body,request_key:flowRequestKey(slot,body)}) as PreparationGroup
-    setGroup(result); finishFlowRequest(slot)
-    if(generate) {
-      try { result=await flowApi.generate(result.id,result.revision) as PreparationGroup }
-      catch(e) {
-        // A lost success response must resolve the same identity before retry.
-        const known=await flowApi.group(result.id) as PreparationGroup
-        if(known.status!=='GENERATED') throw e
-        result=known
+    const popup = generate ? beginPrint?.() : undefined
+    try {
+      const body = await payload(); const slot=`preparation:${contextKey}:${group?.id||'new'}`
+      let result = await flowApi.create({...body,request_key:flowRequestKey(slot,body)}) as PreparationGroup
+      setGroup(result); finishFlowRequest(slot)
+      if(generate) {
+        try { result=await flowApi.generate(result.id,result.revision) as PreparationGroup }
+        catch(e) {
+          // A lost success response must resolve the same identity before retry.
+          const known=await flowApi.group(result.id) as PreparationGroup
+          if(known.status!=='GENERATED') throw e
+          result=known
+        }
       }
-    }
-    applyGroup(result); refresh()
-    if(generate) {
-      const firstPage=await flowApi.cards(result.id)
-      if(firstPage.results.length) await print(firstPage.results.map(c=>c.id), secondInspection, paperLayout)
-    }
+      applyGroup(result); refresh()
+      if(generate) {
+        const firstPage=await flowApi.cards(result.id)
+        const job=firstPage.results.length?await print(firstPage.results.map(c=>c.id), secondInspection, paperLayout):undefined
+        if(job)popup?.show(job);else popup?.close()
+      }
+    } catch(error){popup?.close();throw error}
   })
   const active = data.runs.filter((r)=>!r.historical)
   return <>
     <Card title={`${data.product.specification} / ${data.product.material} · 制卡准备`} extra={<Button onClick={refresh}>刷新服务器资料</Button>}>
       <Typography.Paragraph>{data.orders.map((o)=>`${o.order_no}/${o.item_no||'-'}${o.customer_code ? `（客户 ${o.customer_code}）` : ''}`).join('、')} · M=模；制卡不报产量、不动库存或交付</Typography.Paragraph>
+      {!hasIssued&&<Button type="primary" ghost style={{marginBottom:12}} onClick={()=>document.getElementById('flow-paper-material')?.scrollIntoView({block:'start'})}>{disabled?'查看本次料长 / 料重':'填写本次料长 / 料重'}</Button>}
       <PreparationGuidancePanel data={currentContext} group={group} standardId={standardId} onEdit={()=>setEditor(true)} canEdit={canEdit} />
       {data.orders.length === 1 && data.orders[0].customer_code !== undefined && <OrderCustomerInspectionPanel key={data.orders[0].id} orderId={data.orders[0].id} compact onAdopt={canEdit ? setAdopt : undefined} />}
       <Descriptions title="已带入" column={{xs:1,sm:2}} items={[{key:'run',label:'计划来源',children:data.run_id?`任务#${data.run_id} · 已确认计划${data.runs.find((r)=>r.id===data.run_id)?.planned_molds ?? '见原任务'}模`:'订单直接安排：下方填写预计生产模数即可，不必先建生产任务'}, {key:'standard',label:'采用依据',children:group?.status==='GENERATED'?`原卡 v${group.snapshot.standard?.version||'未登记'} · ${group.snapshot.standard?.source||'依据见原卡'}`:standard?`v${standard.version} · ${standard.source}`:'由负责人核对上方逐项待确认资料'}, {key:'saved',label:'本次准备记录',children:group?`${group.id} · 版本${group.revision} · ${group.updated_at} · 经手人#${group.updated_by||'未记录'}`:'尚未保存（查看不会自动创建）'}]} />
@@ -156,7 +180,8 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
         <Space wrap style={{marginBlock:10}}><FlowPrintLayout value={paperLayout} onChange={setPaperLayout} disabled={busy} />
           <Checkbox disabled={busy} checked={secondInspection} onChange={e=>setSecondInspection(e.target.checked)}>本次打印需要二检</Checkbox>
           <FlowPrintPreview ids={availableCards.map(c=>c.id)} layout={paperLayout} second={secondInspection} disabled={readOnly||busy} />
-          <Button type="primary" disabled={disabled||busy||!availableCards.length||cards.isError} onClick={()=>void reprint(availableCards.map(c=>c.id))}>打印 / 补打本页可打印卡</Button>
+          {!!initialCards.length&&<Button type="primary" disabled={disabled||busy||cards.isError} onClick={()=>void reprint(initialCards.map(c=>c.id))}>首次打印本页（{initialCards.length} 张）</Button>}
+          {!!printedCards.length&&<Button disabled={disabled||busy||cards.isError} onClick={()=>void reprint(printedCards.map(c=>c.id))}>补打本页已确认卡（{printedCards.length} 张）</Button>}
           {availableCards.length>1&&<Button danger disabled={disabled||busy||pendingPrints.isError||cards.isError||availableCards.length!==cards.data?.results.length||availableCards.length!==cards.data.count||availableCards.some(c=>c.has_usage)} onClick={()=>setVoiding(availableCards)}>整组作废误发卡</Button>}
         </Space>
       </>}
@@ -174,7 +199,21 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
       {(data.available_ranges.length>0 || !data.run_id) && <Button onClick={()=>applyGroup(null)}>{group.status==='VOID'?'重新准备并制卡':data.run_id?'明确追加未覆盖模段':'确有另一批：另建预计生产计划'}</Button>}
       {voiding&&<FlowVoidDialog cards={voiding} close={()=>setVoiding(undefined)} changed={()=>void voidChanged()} />}
     </Card>:<Card title="分卡结果 / 保存本次准备">
-      <Form form={form} layout="vertical" onValuesChange={(changed,values)=>{setPreview(undefined);clearSamples();if('planned_molds' in changed || 'molds_per_card' in changed) form.setFieldValue('card_molds',splitPlannedMolds(values.planned_molds,values.molds_per_card))}}><div className="flow-form-grid">
+      <Form form={form} layout="vertical" onValuesChange={(changed,values)=>{setPreview(undefined);clearSamples();if('planned_molds' in changed || 'molds_per_card' in changed) form.setFieldValue('card_molds',splitPlannedMolds(values.planned_molds,values.molds_per_card))}}>
+      <Card id="flow-paper-material" size="small" title="本次纸卡 · 实际料长与料重" style={{marginBottom:16,scrollMarginTop:70}}>
+        <Typography.Paragraph>可直接填写或改本次值，不回写产品资料。留空则纸卡上留空。</Typography.Paragraph>
+        {data.paper_material_defaults?.weight_reference && <Alert type="warning" title={`产品资料实际料重原文：${data.paper_material_defaults.weight_reference}`} description="不是可直接带入的克重格式，请核对后填写本次值。" />}
+        <div className="flow-form-grid">
+          <Form.Item name={['paper_material','actual_material_length']} label="本次实际料长（mm）"><Input disabled={disabled} maxLength={100} placeholder="例如 320" /></Form.Item>
+          <Form.Item name={['paper_material','weight_g']} label="本次料重（g）" extra={`有大小条填大条/小条；纸卡不印条数。带入来源：${WEIGHT_SOURCE[data.paper_material_defaults?.weight_source||'MISSING']}。`}
+            rules={[{validator:(_, value)=>!value?.trim()||PAPER_WEIGHT.test(value)?Promise.resolve():Promise.reject(new Error('请填单值或大条/小条，例如 13/11，最多两位小数。'))}]}><Input disabled={disabled} maxLength={40} placeholder="例如 13 或 13/11" /></Form.Item>
+        </div>
+        <Space wrap>
+          <Button disabled={disabled} onClick={()=>{const d=data.paper_material_defaults;form.setFieldsValue({paper_material:{actual_material_length:d?.actual_material_length||'',weight_g:d?.weight_g||''}});setPreview(undefined);clearSamples()}}>带入当前参考值</Button>
+          <Button disabled={readOnly} onClick={()=>setProductEditor(true)}>编辑产品规格资料</Button>
+        </Space>
+      </Card>
+      <div className="flow-form-grid">
         <Form.Item name="standard_id" label="本次制卡采用的标准"><Select allowClear options={standards.filter((s)=>s.status==='ACTIVE'||s.status==='DRAFT').map((s)=>({value:s.id,label:`${s.customer_key||'通用'} v${s.version} · ${STATE[s.status as keyof typeof STATE]} · ${s.source}`}))} onChange={(id)=>{const s=standards.find((s)=>s.id===id);if(s)form.setFieldsValue({whole_mold:s.whole_mold,molds_per_card:s.snapshot.packaging?.molds_per_card||100,card_molds:splitPlannedMolds(molds,s.snapshot.packaging?.molds_per_card||100),temperature_plan:s.snapshot.packaging?.temperature_plan||{mode:'PENDING'}})}} /></Form.Item>
         {data.run_id && <Form.Item name="range_start" label="本次起始模号"><InputNumber min={1} precision={0} /></Form.Item>}
         <Form.Item name="planned_molds" label="本次预计生产模数"><InputNumber min={1} max={10000000} precision={0} placeholder="例如360模" /></Form.Item>
@@ -189,11 +228,20 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
       {data.existing_groups.some(g=>g.status==='GENERATED'&&(!data.run_id||!g.run_id)) && <Form.Item name="append_confirmed" valuePropName="checked"><Checkbox>已核对原卡，这确实是另一批预计生产计划，不是重复打印</Checkbox></Form.Item>}
       {!data.run_id && <details><summary>先保存明确安排建议（不创建生产任务，不用总孔代替有效孔）</summary><div className="flow-form-grid"><Form.Item name="arranged_quantity" label="本次明确安排件数（不是欠交）"><InputNumber min={1} precision={0} /></Form.Item><Form.Item name="confirmed_effective_output" label="经确认的每模有效产出"><InputNumber min={1} precision={0} /></Form.Item><Form.Item name="output_unit" label="有效产出单位"><Select allowClear options={[{value:'件/模',label:'件/模'}]} /></Form.Item><Form.Item name="output_basis" label="有效产出依据"><Input /></Form.Item></div><Form.Item name="effective_output_confirmed" valuePropName="checked"><Checkbox>已核对有效产出，未把总孔或定点数当成有效孔</Checkbox></Form.Item></details>}
       <Form.Item name="preparation_notes" label="本次待准备说明（保存服务器，不回写母版）"><Input.TextArea maxLength={2000} /></Form.Item>
-      <details><summary>仅调整本次生产段工艺（不回写产品标准）</summary>
+      <details><summary>填写或调整本次工艺（一次加硫、洒油等）</summary>
+        <Typography.Paragraph>本次调整不回写产品标准。标准模温、二烤、硬度和尺寸请在 <Button type="link" size="small" onClick={()=>setEditor(true)}>详细工艺与检验标准</Button> 设置或查看。</Typography.Paragraph>
         <Form.List name="process_adjustments">{(fields,{add,remove})=><>{fields.map((field)=><Card size="small" key={field.key} extra={<Button onClick={()=>remove(field.name)}>移除本次调整</Button>}>
-          <div className="flow-form-grid"><Form.Item name={[field.name,'name']} label="工艺参数" rules={[{required:true}]}><Select options={PARAMETERS.map(([value,label])=>({value,label}))} /></Form.Item>
+          <div className="flow-form-grid"><Form.Item name={[field.name,'name']} label="工艺参数" rules={[{required:true}]}><Select options={PARAMETERS.map(([value,label])=>({value,label}))} onChange={()=>{for(const key of ['value','lower','upper','unit','raw_text'])form.setFieldValue(['process_adjustments',field.name,key],undefined)}} /></Form.Item>
           <Form.Item name={[field.name,'state']} label="确认状态" rules={[{required:true}]}><Select options={[{value:'CONFIRMED',label:'已确认本段条件'},{value:'RAW_UNCONFIRMED',label:'待核，仅保存'},{value:'NOT_APPLICABLE',label:'本段不适用'}]} /></Form.Item>
-          {([['lower','下限'],['upper','上限'],['unit','原单位'],['source','本次调整出处/依据']] as const).map(([key,label])=><Form.Item key={key} name={[field.name,key]} label={label} rules={key==='source'?[{required:true}]:[]}><Input /></Form.Item>)}</div>
+          <Form.Item noStyle shouldUpdate>{({getFieldValue})=>{
+            const name=getFieldValue(['process_adjustments',field.name,'name'])
+            if(!name)return null
+            return NUMERIC_PARAMETERS.has(name)?<>
+              <Form.Item name={[field.name,'value']} label="固定值（若采用范围则留空）"><Input inputMode="decimal" /></Form.Item>
+              {([['lower','下限'],['upper','上限'],['unit',name==='primary_curing_time'?'单位（s）':'原单位']] as const).map(([key,label])=><Form.Item key={key} name={[field.name,key]} label={label}><Input /></Form.Item>)}
+            </>:<Form.Item name={[field.name,'raw_text']} label="本次要求"><Input placeholder={name==='oil'?'例如 不洒油 / 少量':''} /></Form.Item>
+          }}</Form.Item>
+          <Form.Item name={[field.name,'source']} label="本次调整出处/依据" rules={[{required:true}]}><Input /></Form.Item></div>
         </Card>)}<Button onClick={()=>add({state:'RAW_UNCONFIRMED'})}>增加本次调整</Button></>}</Form.List>
       </details>
       {currentContext.conflicts.map((problem)=><Card key={problem.key} size="small" title={`${inspectionItemLabel(problem.name)} · ${problem.stage||'原阶段待核'}`}><Table rowKey="id" size="small" dataSource={problem.sources} pagination={false} scroll={{x:600}} columns={[{title:'原值与单位',render:(_,c)=>`${c.lower_limit||'无下限'}～${c.upper_limit||'无上限'} ${c.unit||'单位待核'}`},{title:'出处',render:(_,c)=>sourceLink(c)}]} /><Form.Item name={['decisions',problem.key]} label="本次明确采用（未含订单特规须维护新版本，不能写说明绕过）"><Select allowClear options={(standard?.snapshot.criteria||[]).filter((c)=>problem.sources.some((v)=>v.id===c.id)).map((c)=>({value:c.id,label:`${inspectionItemLabel(c.name)} · ${flowLimitText(c)} · 已选v${standard?.version}`}))} /></Form.Item></Card>)}
@@ -214,5 +262,7 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
     <details><summary>独立扫码查卡</summary>{lookup}</details>
     <details><summary>设置（普通制卡无需先发布模板）</summary>{settings}</details>
     {(editor||adopting) && <StandardEditor key={adopting?.adoption_key||'edit'} data={data} open adopt={adopting} close={()=>{setEditor(false);setAdopt(undefined);setDismissedAdopt(true)}} changed={refresh} onActivated={adoptActivated} />}
+    {productEditor && productDetail.data && <ProductSpecificationDrawer open specification={productDetail.data} onClose={()=>{setProductEditor(false);void productDetail.refetch();refresh()}} materialFirst />}
+    {productEditor && !productDetail.data && <Alert type={productDetail.isError?'error':'info'} title={productDetail.isError?'产品资料读取失败，可关闭后重试':'正在读取这条产品资料…'} action={<Button onClick={()=>setProductEditor(false)}>关闭</Button>} />}
   </>
 }

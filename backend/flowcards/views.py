@@ -591,7 +591,8 @@ class PrintViewSet(ErrorsMixin, viewsets.GenericViewSet):
         if not job.pdf_storage_name:
             return Response({"detail": "打印任务文件尚未生成；有权限人员请继续原任务生成，不另建补打。"}, status=503)
         try:
-            result = FileResponse(private_storage().open(job.pdf_storage_name, "rb"), content_type="application/pdf", as_attachment=True, filename=f"flowcards-{job.pk}.pdf")
+            result = FileResponse(private_storage().open(job.pdf_storage_name, "rb"), content_type="application/pdf",
+                                  as_attachment=request.query_params.get("inline") != "1", filename=f"flowcards-{job.pk}.pdf")
         except FileNotFoundError:
             return Response({"detail": "原PDF文件缺失，请核对备份；不会用当前模板冒充原文件。"}, status=503)
         result["ETag"] = f'"{job.pdf_sha256}"'
@@ -649,7 +650,7 @@ class TemplatePreviewView(ErrorsMixin, APIView):
             from .paper_material import paper_material
             snapshot["route"] = standard.snapshot.get("route", {})
             snapshot["process_parameters"] = standard.snapshot.get("process_parameters", {})
-            snapshot["paper_material"] = paper_material(product)
+            snapshot["paper_material"] = paper_material(product, compact=True)
         card = SimpleNamespace(pk=uuid.UUID(int=0), card_no="FC-PREVIEW-NOT-ISSUED", group=SimpleNamespace(snapshot=snapshot),
             original_date=timezone.localdate(), sequence=1, denominator=1, planned_molds=100)
         result = HttpResponse(render_cards([(card, 0)]), content_type="application/pdf")

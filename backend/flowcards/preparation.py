@@ -247,6 +247,7 @@ def free_ranges(total, occupied):
 
 def context(params, user):
     from .guidance import summary
+    from .paper_material import paper_material
     from .services import standard_data
     from .views import group_data
     product, run, orders, runs = resolve(params)
@@ -303,6 +304,7 @@ def context(params, user):
             "criteria": [criterion_data(c) for c in source_rows(product, orders)[:50]],
             "criteria_count": len(source_rows(product, orders)), "conflicts": conflicts,
             "raw_process_reference": process,
+            "paper_material_defaults": paper_material(product, run, compact=True),
             "suggestion_id": OrderCardPreparation.objects.filter(order__in=orders).values_list("pk", flat=True).first(),
             "limitations": ["只读打开不创建生产/草稿/卡号。", "制卡不增加产量、库存或交付。", "订单可直接填写预计模数制卡；不虚构生产任务和有效孔数。"]}
 
@@ -412,7 +414,8 @@ def build_plan(data, exclude=None):
     plan["snapshot"]["orders"] = [card_order(o, inspections) for o in orders]
     plan["snapshot"]["customer_inspections"] = ci.card_payloads(orders, inspections)
     plan["snapshot"]["template"] = s.current_template()
-    plan["snapshot"]["paper_material"] = paper_material(product, run)
+    material_fields = data.get("paper_material")
+    plan["snapshot"]["paper_material"] = paper_material(product, run, material_fields, compact=True)
     plan["range_start"], plan["range_end"] = (start, end) if planned and run else (None, None)
     plan["context_key"] = f"run:{run.pk}" if run else f"order:{orders[0].pk}"
     plan["snapshot"].update({"preparation_v2": True, "range_start": plan["range_start"], "range_end": plan["range_end"],

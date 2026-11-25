@@ -1,6 +1,7 @@
 import { Alert, App, Button, Card, Checkbox, Input, Modal, Space, Tag, Typography } from 'antd'
 import { useState } from 'react'
 import { flowApi, flowRequestKey, finishFlowRequest, PAPER_LAYOUT_LABEL, type FlowCard, type PrintJob } from '../flowcards'
+import { canPrintWholeJob, inlinePrintPdf, openFlowPrintWindow, supportsDesktopFlowPrint, withFlowPrintWindow } from '../flowPrintWindow'
 
 export function FlowVoidDialog({cards, close, changed}: {cards: FlowCard[]; close:()=>void; changed:()=>void}) {
   const { message } = App.useApp()
@@ -63,19 +64,34 @@ export function FlowPrintResults({ job, changed, disabled, cardId, groupId }: {
       onOk: () => update(targets.map(item => item.card_id), 'CANCELLED'),
     })
   }
+  const confirmOutput = () => {
+    modal.confirm({
+      title: `这 ${checked.length} 张卡已实际打印出来？`,
+      content: '请只确认已出纸、内容正确的卡。仅打开文件、取消打印或没出纸，请返回继续原任务，不登记成功。',
+      okText: '已出纸，确认成功', cancelText: '返回',
+      onOk: () => update(checked.map(item => item.card_id), 'SUCCESS'),
+    })
+  }
   const layout = job.paper_layout ?? 'SINGLE'
-  return <Card size="small" title="打印任务" extra={<Tag color={active.length ? 'orange' : 'default'}>{active.length ? '待确认打印结果' : '此处无待确认项'}</Tag>}>
+  const whole = canPrintWholeJob(job, cardId, groupId)
+  const printType = active.every(item=>!item.proposed_reprint)?'首次打印':active.every(item=>item.proposed_reprint)?'补打':'首次打印与补打'
+  return <Card size="small" title={active.length?`原任务 · ${printType}`:'历史打印任务'} extra={<Tag color={active.length ? 'orange' : 'default'}>{active.length ? '尚未确认出纸' : '此处无待确认项'}</Tag>}>
     <Typography.Paragraph>纸张：{PAPER_LAYOUT_LABEL[layout]}。{layout === 'A4_TWO_UP' ? 'A4 纵向，实际大小 100%，每张纸 1 页。' : '原卡尺寸，实际大小 100%。'}{job.second_inspection ? '含一检、二检签名。' : ''}</Typography.Paragraph>
     {items.length < job.items.length && <Alert type="info" title={cardId?'原 PDF 还有其他批次；下方确认或取消仅作用于本批。':'原 PDF 还有其他卡组；下方确认或取消仅作用于当前卡组。'} />}
-    {job.file_prepared ? <Button type={active.length ? 'primary' : 'default'} href={job.pdf_url} target="_blank">{active.length ? '打开原 PDF 打印' : '查看历史 PDF'}</Button> :
-      <Button disabled={disabled || !active.length} loading={busy} onClick={() => { setBusy(true); void flowApi.preparePrint(job.id).then(changed).catch((e: Error) => message.error(e.message)).finally(() => setBusy(false)) }}>继续生成原 PDF</Button>}
-    {active.length > 0 && <Typography.Paragraph style={{marginTop:8}}>已打出的卡请勾选「确认打印成功」。未打或打坏的卡可取消，再从原卡补打。</Typography.Paragraph>}
+    {active.length>0 && job.file_prepared && !whole && <Alert type="warning" title="原 PDF 包含其他批次或已处理的卡，打印时请核对页码，避免重复出纸。" />}
+    {job.file_prepared ? <Space wrap style={{marginTop:8}}>
+      {whole && supportsDesktopFlowPrint() && <Button type="primary" onClick={()=>{const popup=openFlowPrintWindow(); if(popup)popup.show(job);else message.info('浏览器拦截了打印窗口，请允许弹窗，或点“打开原 PDF”打印。')}}>继续原任务打印</Button>}
+      <Button type={active.length&&!supportsDesktopFlowPrint()?'primary':'default'} href={inlinePrintPdf(job)} target="_blank" rel="noopener noreferrer">{active.length ? '打开原 PDF' : '查看历史 PDF'}</Button>
+      <Button href={job.pdf_url}>下载原 PDF</Button>
+    </Space> :
+      <Button disabled={disabled || !active.length} loading={busy} onClick={() => { setBusy(true); void withFlowPrintWindow(()=>flowApi.preparePrint(job.id),cardId,groupId).then(changed).catch((e: Error) => message.error(e.message)).finally(() => setBusy(false)) }}>继续生成原 PDF</Button>}
+    {active.length > 0 && <Typography.Paragraph style={{marginTop:8}}>没出纸或关掉打印窗口：直接继续同一任务，不算补打。有纸拿到手后，再勾选并确认成功。</Typography.Paragraph>}
     <Checkbox.Group value={selected} onChange={setSelected} style={{display:'flex',flexDirection:'column',gap:6}}
-      options={items.map(i => ({label: `第 ${i.sequence}/${i.denominator} 批 · ${i.proposed_reprint ? `补打 ${i.proposed_reprint} 次` : '初印'} · ${i.active?'待确认':i.status==='SUCCESS'?'已打印':'已取消'}`,
+      options={items.map(i => ({label: `第 ${i.sequence}/${i.denominator} 批 · ${i.proposed_reprint ? `补打 ${i.proposed_reprint} 次` : '首次打印'} · ${i.active?'未确认出纸':i.status==='SUCCESS'?'已确认出纸':'已取消'}`,
         value:i.card_id, disabled:disabled||busy||!i.active}))} />
     {active.length > 0 && <Space wrap style={{marginTop:12}}>
       {active.length > 1 && <Button disabled={disabled||busy} onClick={()=>setSelected(active.map(i=>i.card_id))}>选中全部待确认</Button>}
-      <Button type="primary" disabled={disabled||!checked.length} loading={busy} onClick={()=>void update(checked.map(i=>i.card_id),'SUCCESS')}>确认所选打印成功</Button>
+      <Button disabled={disabled||!checked.length||!job.file_prepared} loading={busy} onClick={confirmOutput}>确认所选打印成功</Button>
       <Button danger disabled={disabled} loading={busy} onClick={cancel}>{checked.length ? '取消所选打印' : '取消未确认打印'}</Button>
     </Space>}
   </Card>

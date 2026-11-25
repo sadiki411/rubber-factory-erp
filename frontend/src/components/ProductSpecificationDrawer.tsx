@@ -11,6 +11,7 @@ interface Props {
   open: boolean
   specification?: ProductSpecification
   onClose: () => void
+  materialFirst?: boolean
 }
 
 const moldModelApi = masterApi<MoldModel>('mold-models')
@@ -19,7 +20,7 @@ export function ProductSpecificationDrawer(props: Props) {
   return <WriteAccess open={props.open} onClose={props.onClose}><ProductSpecificationDrawerForm {...props} /></WriteAccess>
 }
 
-function ProductSpecificationDrawerForm({ open, specification, onClose }: Props) {
+function ProductSpecificationDrawerForm({ open, specification, onClose, materialFirst }: Props) {
   const [form] = Form.useForm<Record<string, unknown>>()
   const [files, setFiles] = useState<UploadFile[]>([])
   const queryClient = useQueryClient()
@@ -83,6 +84,10 @@ function ProductSpecificationDrawerForm({ open, specification, onClose }: Props)
   })
 
   const submit = async () => mutation.mutate(await form.validateFields())
+  const actualMaterialFields = <Row gutter={14}>
+    <Col xs={24} sm={12}><Form.Item name="actual_material_length" label="实际切料长"><Input placeholder="例如 275 mm" maxLength={100} /></Form.Item></Col>
+    <Col xs={24} sm={12}><Form.Item name="actual_cut_weight" label="实际切料重（g）" extra="大小条用大条/小条，如 13/11。订单导入不会覆盖实际值。"><Input placeholder="例如 13 或 13/11" maxLength={100} /></Form.Item></Col>
+  </Row>
 
   return (
     <Drawer
@@ -111,9 +116,10 @@ function ProductSpecificationDrawerForm({ open, specification, onClose }: Props)
           description={specification.latest_unit_weight_measured_on ? `最后确认日期：${specification.latest_unit_weight_measured_on}；历史记录 ${specification.unit_weight_history_count || 0} 条。出货确认时会继续保留历史版本。` : '该单重来自已确认出货记录。'}
         />
       )}
-      {specification && <ProductStandardsPanel productId={specification.id} />}
+      {specification && !materialFirst && <ProductStandardsPanel productId={specification.id} />}
       {!specification && <Alert type="info" title="先保存产品基本资料，再在本条产品中填写或导入硬度、线径上下限和详细工艺标准。" />}
       <Form form={form} layout="vertical" requiredMark="optional">
+        {materialFirst && <><div className="business-form-section">本产品实际切料（以后制卡可直接带入）</div>{actualMaterialFields}</>}
         <div className="business-form-section">基本资料</div>
         <Row gutter={14}>
           <Col xs={24} sm={12}><Form.Item name="product_name" label="产品名称" dependencies={['customer_product_no', 'specification']} rules={[{ validator: (_, value) => [value, form.getFieldValue('customer_product_no'), form.getFieldValue('specification')].some((item) => String(item || '').trim()) ? Promise.resolve() : Promise.reject(new Error('产品名称、客户产品编号、规格至少填写一项')) }]}><Input /></Form.Item></Col>
@@ -139,8 +145,9 @@ function ProductSpecificationDrawerForm({ open, specification, onClose }: Props)
         <Row gutter={14}>
           <Col xs={24} sm={12}><Form.Item name="material_length" label="胶料长度 / 尺寸"><Input placeholder="保留原表写法" /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="cut_weight" label="裁料重量"><Input placeholder="例如 10g、0.010kg" /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="actual_material_length" label="实际切料长" extra="只允许在这里手工修改，导入订单或产品规格时不会覆盖。"><Input placeholder="例如 275mm" /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="actual_cut_weight" label="实际切料重" extra="只允许在这里手工修改，导入订单或产品规格时不会覆盖。"><Input placeholder="例如 10.2g" /></Form.Item></Col>
+        </Row>
+        {!materialFirst && actualMaterialFields}
+        <Row gutter={14}>
           <Col xs={12} sm={6}><Form.Item name="large_strip_weight_g" label="大条条重(g)" extra="成型前排料"><Input type="number" min={0} step="0.01" /></Form.Item></Col>
           <Col xs={12} sm={6}><Form.Item name="large_strip_count" label="大条数量" extra="可留空"><Input type="number" min={1} step="1" /></Form.Item></Col>
           <Col xs={12} sm={6}><Form.Item name="small_strip_weight_g" label="小条条重(g)" extra="补料，没有可留空"><Input type="number" min={0} step="0.01" /></Form.Item></Col>

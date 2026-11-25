@@ -207,7 +207,8 @@ class GuidanceTests(QualityTestMixin, TestCase):
         self.product.save()
         _, text = self.rendered_strings(card)
         self.assertIn("料长 320 mm", text)
-        self.assertIn("大条 21g×5条 / 小条 11g×2条", text)
+        self.assertIn("料重 21/11 g", text)
+        self.assertNotIn("×5条", text)
         self.assertNotIn("777mm", text)
         self.assertNotIn("999mm", text)
         card.group.snapshot["template"]["renderer"] = "flowcard-guidance-20261122-v7"
@@ -222,6 +223,72 @@ class GuidanceTests(QualityTestMixin, TestCase):
         self.product.actual_material_length = ""
         single = material_text(paper_material(self.product, run))
         self.assertEqual(single, "料长 ____    条重 18g×6条")
+
+    def test_actual_cut_weight_and_card_override_survive_draft_sample_and_generation(self):
+        self.product.actual_material_length = "320"
+        self.product.actual_cut_weight = "13g／11g"
+        self.product.cut_weight = "999"
+        self.product.large_strip_weight_g = 98
+        self.product.large_strip_count = 5
+        self.product.save()
+        self.standard()
+        defaults = p.context({"order_id": self.order.pk, "order_plan": "1"}, self.user)["paper_material_defaults"]
+        self.assertEqual((defaults["weight_g"], defaults["weight_source"]), ("13/11", "PRODUCT_ACTUAL"))
+        body = self.body(order_plan=True, planned_molds=100, paper_material={"actual_material_length":"321", "weight_g":"14 / 12.50"})
+        response = self.client.post('/api/flow-cards/groups/sample/', {**body, "sample_position":"FIRST"}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(InternalCard.objects.exists())
+        draft = p.save_draft(body, self.user)
+        self.product.actual_cut_weight = "15"
+        self.product.save(update_fields=["actual_cut_weight"])
+        reopened = p.context({"order_id": self.order.pk, "order_plan": "1"}, self.user)["preferred_group"]
+        self.assertEqual(reopened["snapshot"]["paper_material"]["weight_g"], "14/12.5")
+        card = s.generate_group(draft, self.user).cards.first()
+        _, content = self.rendered_strings(card)
+        self.assertIn("料长 321 mm", content)
+        self.assertIn("料重 14/12.5 g", content)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.actual_cut_weight, "15")
+        self.assertEqual(self.product.actual_material_length, "320")
+
+    def test_weight_validation_blank_zero_and_missing_actual_reference(self):
+        from .paper_material import paper_material, material_text
+        self.product.cut_weight = "999"
+        self.product.actual_cut_weight = "原记录：待实测"
+        self.assertEqual(paper_material(self.product, compact=True)["weight_g"], "")
+        self.assertEqual(paper_material(self.product, compact=True)["weight_reference"], "原记录：待实测")
+        for value in ("13/","/11","13/11/10","13.001","0.013kg"):
+            with self.subTest(value=value), self.assertRaises(s.ValidationError):
+                paper_material(self.product, overrides={"weight_g":value}, compact=True)
+        for value, text in (("0","料重 0 g"),("","料重 ____ g")):
+            self.assertIn(text,material_text(paper_material(self.product, overrides={"weight_g":value}, compact=True)))
+
+    def test_open_original_pdf_is_never_confirmation_then_success_controls_reprint(self):
+        card = self.generated().cards.first()
+        endpoint = "/api/flow-cards/print-jobs/"
+        identity = str(card.pk)
+        with tempfile.TemporaryDirectory() as storage, override_settings(FLOW_CARDS_PRIVATE_ROOT=storage):
+            def reserve():
+                result = self.client.post(endpoint, {"card_ids":[identity],"request_key":uuid.uuid4().hex}, format="json")
+                self.assertEqual(result.status_code,201,result.data)
+                return result.json()
+            job = reserve()
+            copies=[]
+            for query in ("","?inline=1"):
+                response=self.client.get(job["pdf_url"]+query)
+                self.assertEqual(response.status_code,200)
+                self.assertTrue(response["Content-Disposition"].startswith("inline" if query else "attachment"))
+                copies.append(b"".join(response.streaming_content))
+                response.close()
+            self.assertEqual(copies[0],copies[1])
+            self.assertEqual(hashlib.sha256(copies[0]).hexdigest(), job["pdf_sha256"])
+            card.refresh_from_db()
+            self.assertIsNone(card.printed_at)
+            self.assertEqual(card.reprint_count,0)
+            self.assertEqual(self.client.get(f"{endpoint}{job['id']}/").json()["items"][0]["proposed_reprint"],0)
+            self.assertEqual(PrintJob.objects.count(),1)
+            self.assertEqual(self.client.post(f"{endpoint}{job['id']}/confirm/",{"outcomes":{identity:"SUCCESS"}},format="json").status_code,200)
+            self.assertEqual(reserve()["items"][0]["proposed_reprint"],1)
 
     def test_reopen_pending_job_cancel_only_one_card_then_reprint_it(self):
         group = self.generated()

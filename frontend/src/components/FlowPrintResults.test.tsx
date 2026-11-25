@@ -1,6 +1,7 @@
 import { App } from 'antd'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { FlowPrintResults, FlowVoidDialog } from './FlowPrintResults'
+import { canPrintWholeJob } from '../flowPrintWindow'
 import { flowApi, type FlowCard, type PrintJob } from '../flowcards'
 
 vi.mock('../flowcards',async (original)=>({...await original<typeof import('../flowcards')>(),
@@ -31,7 +32,21 @@ it('confirms a printed card without changing the outcome for unchecked cards',as
   render(<App><FlowPrintResults job={job} changed={vi.fn()} disabled={false}/></App>)
   fireEvent.click(screen.getByRole('checkbox',{name:/第 1\/2 批/}))
   fireEvent.click(screen.getByRole('button',{name:'确认所选打印成功'}))
+  expect(flowApi.printResult).not.toHaveBeenCalled()
+  fireEvent.click(await screen.findByRole('button',{name:'已出纸，确认成功'}))
   await waitFor(()=>expect(flowApi.printResult).toHaveBeenCalledWith('job',{first:'SUCCESS'}))
+})
+
+it('opening or downloading the original never records success or creates another job',()=>{
+  render(<App><FlowPrintResults job={job} changed={vi.fn()} disabled={false}/></App>)
+  expect(screen.getByText('原任务 · 首次打印')).toBeInTheDocument()
+  expect(screen.getByRole('link',{name:'打开原 PDF'})).toHaveAttribute('href',expect.stringContaining('?inline=1'))
+  expect(screen.getByRole('link',{name:'下载原 PDF'})).toHaveAttribute('href',job.pdf_url)
+  expect(screen.getByRole('button',{name:'确认所选打印成功'})).toBeDisabled()
+  expect(flowApi.printResult).not.toHaveBeenCalled()
+  expect(canPrintWholeJob(job)).toBe(true)
+  expect(canPrintWholeJob(job,'first')).toBe(false)
+  expect(canPrintWholeJob({...job,items:[{...job.items[0],active:false},job.items[1]]})).toBe(false)
 })
 
 it('void requires a reason and confirmation that the selected card is unused',async()=>{

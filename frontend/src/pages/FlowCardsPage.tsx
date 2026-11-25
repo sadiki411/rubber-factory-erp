@@ -18,6 +18,7 @@ import { safeBusinessReturn } from '../navigation'
 import './FlowCardsPage.css'
 import { CustomerInspectionGroups } from '../components/CustomerInspectionPanel'
 import { inspectionItemLabel } from '../inspectionItemLabel'
+import { openFlowPrintWindow, withFlowPrintWindow } from '../flowPrintWindow'
 
 const WHOLE: Record<string, string> = { UNKNOWN: '待确认', REQUIRED: '需要整模', NOT_REQUIRED: '不需整模', SYSTEM_UNREGISTERED: '需整模·系统未登记', PARTIAL: '部分处理', COMPLETED: '整包作业完成', EXCEPTION: '异常待处理' }
 const SOURCE_STATE: Record<string, string> = { NEEDS_REVIEW: '更正后/身份缺项待核对', CONFIRMED: '有明确关联', REVOKED: '原错误关联已撤销（留史）', SUPERSEDED: '已由重新核对版本替代' }
@@ -55,7 +56,7 @@ function CardLookup() {
 }
 
 function printDialog(job: PrintJob | undefined, changed: (job: PrintJob) => void, close: () => void, disabled: boolean, cardId?: string, groupId?:string) {
-  return <Modal open={Boolean(job)} title="打印 / 补打原卡" footer={<Button onClick={close}>关闭</Button>} onCancel={close} width={680} destroyOnHidden>
+  return <Modal open={Boolean(job)} title="工序卡打印结果" footer={<Button onClick={close}>关闭（不登记结果）</Button>} onCancel={close} width={680} destroyOnHidden>
     {job && <FlowPrintResults key={job.id+':' + (cardId || groupId || 'all')} job={job} changed={changed} disabled={disabled} cardId={cardId} groupId={groupId} />}
   </Modal>
 }
@@ -130,10 +131,10 @@ export function FlowCardsPage() {
   }
   if (data?.preparation_enabled) return <div className="page-container flow-cards-page">
     <PageTitle title="订单备卡与工序流转卡" description="订单、生产任务共用同一准备；只补缺项，不重录标准。" extra={<Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回来源页面</Button>} />
-    <FlowPreparationWorkspace key={scope.toString()} data={data as PreparationContext} refresh={() => { void context.refetch() }} lookup={<CardLookup />} settings={<FlowTemplatePanel />}
-      openPrint={async (id, cardId, groupId) => { const row=await flowApi.printJob(id);setJobCardId(cardId);setJobGroupId(groupId);setJob(row) }}
+    <FlowPreparationWorkspace key={scope.toString()} data={data as PreparationContext} refresh={() => { void context.refetch() }} lookup={<CardLookup />} settings={<FlowTemplatePanel />} beginPrint={openFlowPrintWindow}
+      openPrint={async (id, cardId, groupId) => { const row=await withFlowPrintWindow(()=>flowApi.printJob(id),cardId,groupId);setJobCardId(cardId);setJobGroupId(groupId);setJob(row) }}
       printResults={printDialog(job, row=>{setJob(row);void client.invalidateQueries({queryKey:['prepared-cards']});void client.invalidateQueries({queryKey:['flow-pending-prints']})},()=>setJob(undefined),disabled,jobCardId,jobGroupId)}
-      print={async (ids, secondInspection, paperLayout) => { const body={card_ids:ids,resume_active:true,second_inspection:secondInspection,paper_layout:paperLayout};const slot=`print:${ids.join(',')}:${secondInspection}`;const result=await flowApi.print({...body,request_key:flowRequestKey(slot,body)});setJobCardId(undefined);setJobGroupId(undefined);setJob(result);finishFlowRequest(slot);if(result.status==='CLOSED'){message.info('已找回原打印结果。如需再打印，请关闭后点补打。');return result}const prepared=result.file_prepared?result:await flowApi.preparePrint(result.id);setJob(prepared);if((prepared.paper_layout??'SINGLE')!==paperLayout) message.info('已恢复原打印任务，沿用该任务纸张格式。');return prepared }} />
+      print={async (ids, secondInspection, paperLayout) => { const body={card_ids:ids,resume_active:true,second_inspection:secondInspection,paper_layout:paperLayout};const slot=`print:${ids.join(',')}:${secondInspection}`;const result=await flowApi.print({...body,request_key:flowRequestKey(slot,body)});setJobCardId(undefined);setJobGroupId(undefined);setJob(result);finishFlowRequest(slot);if(result.status==='CLOSED'){message.info('已找回原打印结果。请按原卡当前状态选择首次打印或补打。');return result}const prepared=result.file_prepared?result:await flowApi.preparePrint(result.id);setJob(prepared);if((prepared.paper_layout??'SINGLE')!==paperLayout) message.info('已恢复原打印任务，沿用该任务纸张格式。');return prepared }} />
   </div>
   return <div className="page-container flow-cards-page">
     <PageTitle title="工序流转卡" description="一包产品的记录与身份；不另记产量、库存和交付。" extra={<Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回来源页面</Button>} />
@@ -188,7 +189,7 @@ export function FlowCardsPage() {
             { title: '补打', dataIndex: 'reprint_count' },
           ]} />
           <Pagination current={cardPage} total={cards.data?.count} pageSize={100} showSizeChanger={false} onChange={(p) => { setCardPage(p); setSelected([]) }} />
-          <Space wrap><FlowPrintLayout value={paperLayout} onChange={setPaperLayout} disabled={busy} /><Checkbox checked={secondInspection} onChange={e=>setSecondInspection(e.target.checked)}>本次打印需要二检</Checkbox><FlowPrintPreview ids={selected} layout={paperLayout} second={secondInspection} disabled={readOnly||busy} /><Button disabled={disabled || !selected.length} loading={busy} onClick={() => void act(async () => { const body = { card_ids: selected,second_inspection:secondInspection,paper_layout:paperLayout }; setJob(await flowApi.print({ ...body, request_key: flowRequestKey(`print:${group.id}`, body) })); finishFlowRequest(`print:${group.id}`) })}>生成选中卡PDF / 原卡补打（最多100张）</Button></Space>
+          <Space wrap><FlowPrintLayout value={paperLayout} onChange={setPaperLayout} disabled={busy} /><Checkbox checked={secondInspection} onChange={e=>setSecondInspection(e.target.checked)}>本次打印需要二检</Checkbox><FlowPrintPreview ids={selected} layout={paperLayout} second={secondInspection} disabled={readOnly||busy} /><Button disabled={disabled || !selected.length} loading={busy} onClick={() => void act(async () => { const body = { card_ids: selected,second_inspection:secondInspection,paper_layout:paperLayout }; setJob(await withFlowPrintWindow(()=>flowApi.print({ ...body, request_key: flowRequestKey(`print:${group.id}`, body) }))); finishFlowRequest(`print:${group.id}`) })}>打印所选（最多100张）</Button></Space>
         </>}
       </Card>}
       {printDialog(job, setJob, ()=>setJob(undefined), disabled)}
@@ -315,7 +316,7 @@ export function FlowCardDetailPage() {
       <Card title={data.card_no} extra={<Button disabled={disabled} onClick={() => { form.resetFields(); form.setFieldsValue({ kind: 'WHOLE_MOLD', status: 'PARTIAL', state: 'UNKNOWN' }); setRecordOpen(true) }}>登记 / 续记 / 复测</Button>}>
         {data.status==='VOID'?<Alert type="warning" title="本卡已作废，只供追溯" />:
           <Space wrap style={{marginBottom:12}}>
-            {data.pending_print_job_id?<Button type="primary" loading={busy} onClick={()=>void act(async()=>setJob(await flowApi.printJob(data.pending_print_job_id!)))}>处理本批待确认打印</Button>:
+            {data.pending_print_job_id?<Button type="primary" loading={busy} onClick={()=>void act(async()=>setJob(await withFlowPrintWindow(()=>flowApi.printJob(data.pending_print_job_id!),id)))}>处理本批待确认打印</Button>:
               <><Button type="primary" disabled={disabled} onClick={()=>{setTab('prints');setPage(1);requestAnimationFrame(()=>document.getElementById('flow-card-prints')?.scrollIntoView({block:'start'}))}}>{data.printed_at?'补打本批':'打印本批'}</Button>
               <Button danger disabled={disabled||Boolean(data.has_usage)} onClick={()=>setVoidOpen(true)}>{data.has_usage?'已有使用记录，不可作废':'作废本批'}</Button></>}
           </Space>}
@@ -350,7 +351,7 @@ export function FlowCardDetailPage() {
         </>}
         {tab === 'trace' && (trace.isError ? <Alert type="error" title="追溯读取失败" /> : trace.isPending ? <Skeleton active /> : <><Typography.Paragraph>源集合未确认份额时，不把每张卡乘一遍出货/退回量。原出货更正后保留快照，需重新核对；物流事件不自动生成返工作业。</Typography.Paragraph>{!trace.data.results.length && <Empty description="未建立明确出货追溯；不猜填历史关系" />}{trace.data.results.map((s) => <Card key={s.id} size="small" title={s.shipment_no}><Button href={`/quality?shipment_batch_id=${s.batch_id}`}>查看原出货</Button><Tag>{s.current_shipment_status}</Tag><Tag>{SOURCE_STATE[s.state] || '状态需核对'}</Tag><SourceReturnHistory cardId={id} source={s} /></Card>)}<Pagination current={page} total={trace.data.count} pageSize={20} showSizeChanger={false} onChange={setPage} /></>)}
         {tab === 'diagram' && (!data.snapshot.diagram_id ? <Alert type="info" title="当时未建立定点图，不能声称位置已核对；仍可登记定点数" /> : diagram.isError ? <Alert type="error" title="当时定点图读取失败" /> : diagram.data && <><div>版本{diagram.data.version} · 方向/基准 {diagram.data.direction} · 适用 {diagram.data.scope}</div><Button href={diagram.data.url} target="_blank">查看当时标记图</Button></>)}
-        {tab === 'prints' && <div id="flow-card-prints">{prints.isError && <Alert type="error" title="原打印任务读取失败" />}{prints.data?.results.map((p) => <Button key={p.id} onClick={() => setJob(p)}>任务 {p.id.slice(0, 8)} · {p.status}</Button>)}<Pagination current={page} total={prints.data?.count} pageSize={20} showSizeChanger={false} onChange={setPage} /><Space wrap><FlowPrintLayout value={paperLayout} onChange={setPaperLayout} disabled={busy} /><Checkbox checked={secondInspection} onChange={e=>setSecondInspection(e.target.checked)}>本次打印需要二检</Checkbox><FlowPrintPreview ids={[id]} layout={paperLayout} second={secondInspection} disabled={disabled||busy||Boolean(data.pending_print_job_id)} /><Button disabled={disabled||Boolean(data.pending_print_job_id)} loading={busy} onClick={() => void act(async () => { const body = { card_ids: [id],second_inspection:secondInspection,paper_layout:paperLayout }; setJob(await flowApi.print({ ...body, request_key: flowRequestKey(`print:${id}`, body) })); finishFlowRequest(`print:${id}`); void prints.refetch(); void card.refetch() })}>只打印 / 补打本批</Button></Space></div>}
+        {tab === 'prints' && <div id="flow-card-prints">{prints.isError && <Alert type="error" title="原打印任务读取失败" />}{prints.data?.results.map((p) => <Button key={p.id} onClick={() => setJob(p)}>任务 {p.id.slice(0, 8)} · {p.status}</Button>)}<Pagination current={page} total={prints.data?.count} pageSize={20} showSizeChanger={false} onChange={setPage} /><Space wrap><FlowPrintLayout value={paperLayout} onChange={setPaperLayout} disabled={busy} /><Checkbox checked={secondInspection} onChange={e=>setSecondInspection(e.target.checked)}>本次打印需要二检</Checkbox><FlowPrintPreview ids={[id]} layout={paperLayout} second={secondInspection} disabled={disabled||busy||Boolean(data.pending_print_job_id)} /><Button disabled={disabled||Boolean(data.pending_print_job_id)||data.status!=='ACTIVE'} loading={busy} onClick={() => void act(async () => { const body = { card_ids: [id],second_inspection:secondInspection,paper_layout:paperLayout }; setJob(await withFlowPrintWindow(()=>flowApi.print({ ...body, request_key: flowRequestKey(`print:${id}`, body) }),id)); finishFlowRequest(`print:${id}`); void prints.refetch(); void card.refetch() })}>{data.printed_at?'补打本批原卡':'首次打印本批'}</Button></Space></div>}
       </Card>
       {printDialog(job, row=>{setJob(row);void card.refetch();if(tab==='prints')void prints.refetch()}, ()=>setJob(undefined), disabled, id)}
       {voidOpen&&data&&<FlowVoidDialog cards={[data]} close={()=>setVoidOpen(false)} changed={()=>{void card.refetch();void events.refetch()}} />}

@@ -588,10 +588,13 @@ def generate_group(group, user, expected_revision=None):
     snapshot["template"] = {**snapshot["template"], "renderer": renderer, "version": publication.version if publication else "草稿"}
     snapshot["confirmed_by"] = user.pk
     if prep.enabled():
-        if "paper_material" not in snapshot:
-            # Drafts saved before this field existed have never issued a card.
+        old_material = snapshot.get("paper_material", {})
+        if "weight_g" not in old_material:
+            # A draft has not issued any cards yet. Keep its saved length but
+            # use the current paper format for its first issuance.
             from .paper_material import paper_material
-            snapshot["paper_material"] = paper_material(group.product, group.run)
+            length = {"actual_material_length": old_material["actual_material_length"]} if "actual_material_length" in old_material else None
+            snapshot["paper_material"] = paper_material(group.product, group.run, length, compact=True)
         snapshot["todos"] = prep.package_todos(snapshot)
     now = timezone.now()
     day = timezone.localtime(now).date()

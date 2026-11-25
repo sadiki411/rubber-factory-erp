@@ -3,6 +3,15 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        // Nginx serves hashed .js as JavaScript on all deployed versions.
+        assetFileNames: asset => asset.names.includes('pdf.worker.min.mjs')
+          ? 'assets/pdf.worker-[hash].js' : 'assets/[name]-[hash][extname]',
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: {

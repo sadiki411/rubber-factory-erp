@@ -1,6 +1,8 @@
 import { apiFetch, ApiError } from './api/client'
 import type { CustomerInspection } from './customerInspection'
 
+export type PaperMaterial = { actual_material_length?: string; weight_g?: string; weight_source?: string; length_source?: string; weight_reference?: string; large_strip_weight_g?: string; small_strip_weight_g?: string }
+
 export type FlowSnapshot = {
   product: { id: number; name?: string; specification: string; material: string; customer_product_no?: string }
   orders: Array<{ id: number; order_no: string; item_no: string; customer?: string; customer_code?: string; customer_project_no?: string }>
@@ -8,6 +10,7 @@ export type FlowSnapshot = {
   run_id?: number | null; mold_id?: number | null
   effective_cavities?: number | null; confirmed_total_cavities?: number | null
   diagram_id?: number | null; whole_mold: string
+  paper_material?: PaperMaterial
   whole_mold_basis?: string; cavities_basis?: string; material_evidence?: string; requirements_review?: string; appearance?: Array<{ id: number; name: string }>
   template: { version: string | number }
   process_overrides?: Record<string, Record<string, unknown>>
@@ -45,6 +48,7 @@ export type PreparationContext = Omit<FlowContext, 'standards' | 'criteria' | 'e
   available_ranges: number[][]; occupied_ranges: Array<{id: string; range_start: number; range_end: number; status: string}>; preferred_group: PreparationGroup | null
   missing: string[]; auto_standard_id: number | null; conflicts: Array<{key: string; name: string; stage: string; sources: PreparationSource[]; selected_ids: number[]; missing_order_ids: number[]}>; suggestion_id: number | null
   criteria_count?: number
+  paper_material_defaults?: PaperMaterial
 }
 export type PreparationGuidance = {key:string;label:string;value:string;state:string;instruction?:string;warning?:string;raw_reference?:string;owner:string}
 export type PlanPreview = {count:number;tail_molds:number|null;planned_molds:number|null;card_molds?:number[];snapshot?:{plan_basis?:string}}
