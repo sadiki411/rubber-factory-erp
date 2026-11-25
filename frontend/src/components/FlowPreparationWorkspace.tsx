@@ -1,5 +1,5 @@
 import { Alert, Button, Card, Checkbox, Descriptions, Form, Input, InputNumber, Pagination, Select, Space, Table, Tag, Typography } from 'antd'
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useReadOnly } from '../access'
@@ -11,10 +11,10 @@ import { FlowPrintLayout, FlowPrintPreview } from './FlowPrintLayout'
 import { OrderCustomerInspectionPanel } from './CustomerInspectionPanel'
 import { customerInspectionApi, type CustomerInspection } from '../customerInspection'
 import { FlowVoidDialog } from './FlowPrintResults'
-import { ProductSpecificationDrawer } from './ProductSpecificationDrawer'
 import { productSpecificationApi } from '../api/client'
 import type { FlowPrintWindow } from '../flowPrintWindow'
 
+const ProductSpecificationDrawer = lazy(() => import('./ProductSpecificationDrawer').then(module=>({default:module.ProductSpecificationDrawer})))
 const STATE = { LEGACY: '旧记录·待复核适用性', DRAFT: '草稿', ACTIVE: '生效', SUPERSEDED: '已被替代' }
 const PARAMETERS = [
   ['primary_curing_time', '一次加硫时间'], ['pressure', '压力（来源注明类别）'], ['venting', '排气'],
@@ -262,7 +262,7 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
     <details><summary>独立扫码查卡</summary>{lookup}</details>
     <details><summary>设置（普通制卡无需先发布模板）</summary>{settings}</details>
     {(editor||adopting) && <StandardEditor key={adopting?.adoption_key||'edit'} data={data} open adopt={adopting} close={()=>{setEditor(false);setAdopt(undefined);setDismissedAdopt(true)}} changed={refresh} onActivated={adoptActivated} />}
-    {productEditor && productDetail.data && <ProductSpecificationDrawer open specification={productDetail.data} onClose={()=>{setProductEditor(false);void productDetail.refetch();refresh()}} materialFirst />}
+    {productEditor && productDetail.data && <Suspense fallback={<Typography.Text>正在打开产品资料…</Typography.Text>}><ProductSpecificationDrawer open specification={productDetail.data} onClose={()=>{setProductEditor(false);void productDetail.refetch();refresh()}} materialFirst /></Suspense>}
     {productEditor && !productDetail.data && <Alert type={productDetail.isError?'error':'info'} title={productDetail.isError?'产品资料读取失败，可关闭后重试':'正在读取这条产品资料…'} action={<Button onClick={()=>setProductEditor(false)}>关闭</Button>} />}
   </>
 }
