@@ -1,6 +1,11 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
+from .supplement_views import (
+    SupplementConfigView, SupplementDeliveryReleaseView, SupplementDetailView, SupplementIssueView, SupplementListView,
+    SupplementLookupView, SupplementOrdersView, SupplementSearchView,
+)
+
 from .views import (
     DefectReasonViewSet,
     QualityEmployeeViewSet,
@@ -30,6 +35,16 @@ router.register("rework-attempts", QualityReworkAttemptViewSet, basename="qualit
 
 
 urlpatterns = [
+    path("supplements/config/", SupplementConfigView.as_view(), name="quality-supplement-config"),
+    path("supplements/", SupplementListView.as_view(), name="quality-supplements"),
+    path("supplements/origins/", SupplementLookupView.as_view(), name="quality-supplement-origins"),
+    path("supplements/preflight/", SupplementSearchView.as_view(), name="quality-supplement-preflight"),
+    path("supplements/issues/", SupplementIssueView.as_view(), name="quality-supplement-issues"),
+    path("supplements/issues/<int:pk>/", SupplementIssueView.as_view(), name="quality-supplement-issue"),
+    path("supplements/issues/<int:pk>/delivery-release/", SupplementDeliveryReleaseView.as_view(), name="quality-supplement-delivery-release"),
+    path("supplements/<int:pk>/", SupplementDetailView.as_view(), name="quality-supplement-detail"),
+    path("supplements/<int:pk>/orders/", SupplementOrdersView.as_view(), name="quality-supplement-orders"),
+    path("supplements/<int:pk>/<str:operation>/", SupplementDetailView.as_view(), name="quality-supplement-operation"),
     path("summary/", QualitySummaryView.as_view(), name="quality-summary"),
     path("shipment-ledger/", QualityShipmentLedgerView.as_view(), name="quality-shipment-ledger"),
     # Canonical candidate endpoint plus the two additive aliases used by

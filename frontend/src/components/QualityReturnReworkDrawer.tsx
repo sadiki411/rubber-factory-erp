@@ -375,6 +375,7 @@ export function QualityReworkCaseDetailDrawer({ open, item, employees = [], onCl
   const { message } = App.useApp()
   const currentItem = localItem?.id === item?.id ? localItem : item
   const source = currentItem?.source
+  const supplementReturn = Boolean(source?.supplement_kind)
   const attempts = currentItem?.attempts || []
   const processCardId = currentItem?.process_card?.id || currentItem?.process_card_id
   const cardTimelineQuery = useQuery({
@@ -391,7 +392,7 @@ export function QualityReworkCaseDetailDrawer({ open, item, employees = [], onCl
   const openedOn = Form.useWatch('opened_on', form) as Dayjs | undefined
   const historical = Boolean(openedOn?.isValid() && openedOn.startOf('day').isBefore(dayjs().startOf('day')))
   const active = Boolean(currentItem && !['CANCELLED', 'SCRAPPED'].includes(currentItem.status))
-  const editable = Boolean(currentItem && currentItem.status !== 'CANCELLED')
+  const editable = Boolean(currentItem && currentItem.status !== 'CANCELLED' && !supplementReturn)
   const reshipment = currentItem?.reshipment
   const reshipContext = useQuery({
     queryKey: ['quality', 'return-reship-context', currentItem?.id],
@@ -532,15 +533,17 @@ export function QualityReworkCaseDetailDrawer({ open, item, employees = [], onCl
   const footer = editing
     ? <Space className="drawer-footer-actions"><Button onClick={() => setEditing(false)}>取消修改</Button><Button disabled={readOnly} type="primary" loading={saving} onClick={() => void saveEdits()}>保存修改</Button></Space>
     : <Space className="drawer-footer-actions quality-return-detail-actions">
-      {currentItem?.origin === 'CUSTOMER_RETURN' && active && <Popconfirm disabled={readOnly} title="确认取消这条误登记吗？" description="记录会保留审计历史，但原物理批号将释放并可重新登记。" okText="确认取消" cancelText="返回" onConfirm={() => void cancelCase()}><Button disabled={readOnly} danger loading={cancelling}>取消误登记</Button></Popconfirm>}
+      {!supplementReturn && currentItem?.origin === 'CUSTOMER_RETURN' && active && <Popconfirm disabled={readOnly} title="确认取消这条误登记吗？" description="记录会保留审计历史，但原物理批号将释放并可重新登记。" okText="确认取消" cancelText="返回" onConfirm={() => void cancelCase()}><Button disabled={readOnly} danger loading={cancelling}>取消误登记</Button></Popconfirm>}
       <Button onClick={closeDrawer}>关闭</Button>
       {currentItem && editable && <Button disabled={readOnly} icon={<EditOutlined />} onClick={startEditing}>修改退货信息</Button>}
-      {currentItem?.origin === 'CUSTOMER_RETURN' && ['OPEN', 'PROCESSING', 'WAITING_REINSPECTION', 'WAITING_REWORK'].includes(currentItem.status) && <Button disabled={readOnly} type="primary" onClick={startReship}>沿本退货单再次出货</Button>}
+      {!supplementReturn && currentItem?.origin === 'CUSTOMER_RETURN' && ['OPEN', 'PROCESSING', 'WAITING_REINSPECTION', 'WAITING_REWORK'].includes(currentItem.status) && <Button disabled={readOnly} type="primary" onClick={startReship}>沿本退货单再次出货</Button>}
       {processCardId == null && currentItem?.origin === 'CUSTOMER_RETURN' && active && <Button disabled={readOnly} type="primary" onClick={() => { closeDrawer(); onAddAttempt(currentItem) }}>手工登记下一轮返工</Button>}
     </Space>
 
   return <Drawer open={open} onClose={closeDrawer} width={620} className="quality-return-rework-drawer" afterOpenChange={(visible) => { if (visible) { setLocalItem(undefined); setEditing(false) } }} title={currentItem ? `退货返工记录 · ${currentItem.case_no}` : '退货返工记录'} footer={footer}>
     {currentItem && <>
+      {supplementReturn && <Alert type="info" title="无订单补货实退" description="只回冲原包已认领份额。普通订单的退货更正和原包再发不用于此记录。"
+        action={<Button href={`/quality?tab=daily&supplement_batch_id=${source?.shipment_batch_id}`}>打开原补货</Button>} />}
       {reshipOpen && <Card size="small" title={`沿 ${currentItem.case_no} 再次出货（不是首次出货）`} style={{ marginBottom: 16 }}>
         {reshipContext.isFetching ? <Spin tip="核对原实物包流程卡关联…"><div style={{ minHeight: 48 }} /></Spin> : reshipContext.isError ? <Alert type="error" message="原实物关联读取失败，不能当作无流程卡" action={<Button onClick={() => void reshipContext.refetch()}>重试核对</Button>} /> : <>
           <Alert type={reshipContext.data?.eligible ? 'info' : 'warning'} message={reshipContext.data?.eligible ? '已查到原实物包唯一有效客户流程卡' : '需要人工核对，暂不出货'} description={<>{reshipContext.data?.message}<div>{reshipContext.data?.cards.map((c) => c.card_no).join('、') || '暂无有效客户流程卡关联'}</div></>} />

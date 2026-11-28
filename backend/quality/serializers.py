@@ -2027,6 +2027,8 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
         shipment_line = attrs.get("shipment_line", getattr(self.instance, "shipment_line", None))
         shipment_batch = attrs.get("shipment_batch", getattr(self.instance, "shipment_batch", None))
         shipment_unit_no = attrs.get("shipment_unit_no", getattr(self.instance, "shipment_unit_no", None))
+        if (shipment_batch or (shipment_line.batch if shipment_line else None)) and (shipment_batch or shipment_line.batch).supplement_kind:
+            raise serializers.ValidationError({"detail": "无单补货的实物退回须从原补货明细登记，不走普通订单退货。"})
         origin = attrs.get("origin", getattr(self.instance, "origin", QualityReworkCase.Origin.INTERNAL))
         immutable = ("origin", "process_card", "shipment_line", "shipment_batch", "shipment_unit_no", "affected_quantity", "affected_weight_kg")
         customer_return = bool(
@@ -2094,6 +2096,10 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
         source_batch = validated_data.get("shipment_batch")
         if source_batch is None and validated_data.get("shipment_line") is not None:
             source_batch = validated_data["shipment_line"].batch
+        if source_batch and validated_data.get("origin") == QualityReworkCase.Origin.CUSTOMER_RETURN:
+            from .models import ShipmentSupplementDeliveryAdjustment
+            if ShipmentSupplementDeliveryAdjustment.objects.filter(origin__batch=source_batch).exists():
+                raise serializers.ValidationError({"detail": "原出货有交付核减，请按确实退回的物理批号登记，避免重复回冲。"})
         source_inspectors = shipment_inspectors(source_batch)
         if source_inspectors:
             validated_data["responsible_inspector"] = source_inspectors[0]
@@ -2118,6 +2124,10 @@ class QualityReworkCaseSerializer(ValidatedModelSerializer):
         secondary_reasons = validated_data.pop("secondary_reasons", None)
         with transaction.atomic():
             locked = QualityReworkCase.objects.select_for_update().get(pk=instance.pk)
+            if (locked.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
+                    and validated_data.get("status") == QualityReworkCase.Status.CANCELLED):
+                from .supplements import validate_origin_return_cancellation
+                validate_origin_return_cancellation(locked)
             source_batch = locked.shipment_batch
             if source_batch is None and locked.shipment_line_id:
                 source_batch = locked.shipment_line.batch

@@ -187,7 +187,7 @@ export function AnalyticsPage() {
   const sourceLink = (row: AnalyticsQualityWorkRecord) => row.source_type === 'REWORK_CASE' || row.source_type === 'REWORK_ATTEMPT' || row.source_type === 'LEGACY_REWORK'
     ? `/quality?tab=reworks&q=${encodeURIComponent(row.source_no)}${row.rework_case_id ? `&rework_case_id=${row.rework_case_id}` : ''}&date_from=${dateFrom}&date_to=${dateTo}&return_to=${analyticsReturn}`
     : row.shipment_batch_id
-    ? `/quality?shipment_batch_id=${row.shipment_batch_id}&date_from=${dateFrom}&date_to=${dateTo}&return_to=${analyticsReturn}`
+    ? `/quality?${row.source_type === 'SUPPLEMENT' ? 'tab=daily&supplement_batch_id' : 'shipment_batch_id'}=${row.shipment_batch_id}&date_from=${dateFrom}&date_to=${dateTo}&return_to=${analyticsReturn}`
     : `/quality?q=${encodeURIComponent(row.source_no)}&date_from=${dateFrom}&date_to=${dateTo}&return_to=${analyticsReturn}`
   const cardReferences = (row: AnalyticsQualityWorkRecord) => {
     const cards = row.process_cards?.length ? row.process_cards : row.process_card_no ? [{ id: 0, card_no: row.process_card_no }] : []

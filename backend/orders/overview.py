@@ -14,9 +14,11 @@ from production.models import ProductionDailyLog, ProductionRun
 from quality.models import (
     ProcessCard, QualityOrder, QualityReworkCase,
     QualityReturnAllocation, QualityShipment, QualityShipmentLine, ReturnRework,
+    ShipmentSupplementIssue, ShipmentSupplementOrigin,
 )
 from quality.services import (
-    PENDING_RETURN_STATUSES, delivered_quantities_by_order, shipment_line_piece_quantity,
+    PENDING_RETURN_STATUSES, delivered_quantities_by_order, effective_supplement_adjustments,
+    shipment_line_piece_quantity, shipment_unit_allocations,
 )
 from quality.tracing import attach_shipment_card_sources
 from .models import MaterialReceipt
@@ -28,7 +30,7 @@ SECTIONS = (
     "production", "receipts", "cards", "shipments", "piece_shipments",
     "returns", "piece_returns", "inventory",
 )
-KINDS = ("ORDER_SHORTAGE", "RETURN_PENDING", "INVENTORY_QUALITY", "RECEIPT_UNLINKED", "CARD_PREPARATION")
+KINDS = ("ORDER_SHORTAGE", "RETURN_PENDING", "INVENTORY_QUALITY", "RECEIPT_UNLINKED", "CARD_PREPARATION", "SUPPLEMENT_PENDING")
 
 
 class ReadQuery(serializers.Serializer):
@@ -59,6 +61,24 @@ def identity(order):
 
 def build_workbench(*, q="", kind="", due_scope="", page=1, page_size=20, **_):
     tasks = []
+    if settings.QUALITY_SUPPLEMENTS_ENABLED:
+        from quality.supplements import issue_data
+        issues = ShipmentSupplementIssue.objects.select_related("product").all()
+        for issue in issues:
+            entry = issue_data(issue)
+            if entry["moved_out"] or (entry["package_count"] and not entry["disputed_quantity"]
+                    and not entry["unknown_packages"] and (entry["remaining"] == 0
+                    or (issue.kind == "REQUEST" and entry["remaining"] is None))):
+                continue
+            tasks.append({
+                "id": f"supplement:{issue.pk}", "kind": "SUPPLEMENT_PENDING", "title": "翔邦补货待办",
+                "document_no": entry["reference"], "specification": entry["specification"],
+                "material": entry["material"], "quantity": entry["remaining"], "unit": "件",
+                "due_date": None, "order_id": None, "owner": None,
+                "reason": ("客户交付有争议，待核；不自动回冲。" if entry["disputed_quantity"] else
+                           "待补量未核实。" if entry["remaining"] is None else "仅已确认实发更新补货进度。"),
+                "source": "翔邦补货事项", "url": f"/quality?tab=daily&supplement_issue_id={issue.pk}",
+            })
     if settings.FLOW_CARDS_PREPARATION_ENABLED:
         from flowcards.models import OrderCardPreparation
         for suggestion in OrderCardPreparation.objects.filter(state__in=("PENDING", "PREPARING"), order__status="OPEN").select_related("order"):
@@ -141,7 +161,7 @@ def build_workbench(*, q="", kind="", due_scope="", page=1, page_size=20, **_):
     selected.sort(key=lambda row: (row["due_date"] is None, row["due_date"] or date.max, row["kind"], row["id"]))
     return {
         **page_rows(selected, page, page_size),
-        "summary": {key: counts[key] for key in KINDS},
+        "summary": {key: counts[key] for key in KINDS if key != "SUPPLEMENT_PENDING" or settings.QUALITY_SUPPLEMENTS_ENABLED},
         "summary_scope": "全部匹配搜索及交期范围的事项条数（不受当前类别和分页影响）",
         "generated_at": timezone.now(),
         "limitations": [
@@ -228,6 +248,11 @@ def trace_row(obj, section, order, binding_cards):
                    status=obj.batch.get_status_display(), physical_quantity=shipment_line_piece_quantity(obj),
                    own_quantity=own, cards=cards, url=f"/quality?shipment_batch_id={obj.batch_id}",
                    details=f"明细#{obj.pk}，净重{obj.net_weight_kg}kg；本单为原出货归属（尚未扣本页退回）。" + (" 卡号来自系统明确关联及历史证据，详见出货单；未逐行猜配，不按分摊猜配纸卡原始订单。" if not obj.process_card_id and cards else ""))
+        if obj.batch.supplement_kind:
+            weight = f"{obj.net_weight_kg} kg" if obj.net_weight_kg is not None else "未称重"
+            row.update(url=f"/quality?tab=daily&supplement_batch_id={obj.batch_id}",
+                       cards=[obj.batch.supplement.customer_card_no] if obj.batch.supplement.customer_card_no else [],
+                       details=f"原实际发货；包号 {obj.batch.shipment_no}/1；{weight}。后补项次仅计原记录认领份额，不新增发货。")
     elif section == "piece_shipments":
         row.update(document_no=obj.shipment_no, date=obj.shipment_date, physical_quantity=obj.shipped_quantity,
                    own_quantity=obj.shipped_quantity, details="件数出货；无流程卡可能为合法采购出货，不补造卡。", url="/quality")
@@ -273,6 +298,11 @@ def build_order_overview(order_id, *, section="production", page=1, page_size=20
         batches = {obj.batch_id: obj.batch for obj in objects}
         attach_shipment_card_sources(batches.values())
         bindings = {pk: list(dict.fromkeys(ref["card_no"] for ref in batch.trace_card_sources)) for pk, batch in batches.items()}
+    delivery_adjustments = []
+    if balance_breakdown[order.pk].get("delivery_adjustments"):
+        delivery_adjustments = list(effective_supplement_adjustments().filter(allocation__order=order)
+            .select_related("origin__batch").order_by("-pk").values("id", "origin__issue_id", "origin__batch__shipment_no",
+                "unit_no", "piece_quantity", "evidence")[:20])
     return {
         "order": identity(order), "generated_at": timezone.now(),
         "summary": {"net_delivered": delivered, "delivery_remaining": max(order.order_quantity - delivered, 0),
@@ -284,9 +314,37 @@ def build_order_overview(order_id, *, section="production", page=1, page_size=20
                     )},
         "counts": counts, "section": section, "count": counts[section], "page": page, "page_size": page_size,
         "results": [trace_row(obj, section, order, bindings) for obj in objects],
+        "supplement_disputes": related_supplement_disputes(order) if settings.QUALITY_SUPPLEMENTS_ENABLED else [],
+        "supplement_delivery_adjustments": delivery_adjustments,
         "limitations": [
             "只读串联明确关系，不猜配同规格历史。原出货和退回分列，净交付以顶部统一口径为准。",
             "生产→后工序→成品包缺统一身份，未找到关系不代表现场没做。",
             "库存独立管理，只列明确引用本订单的出库，不把同规格库存当本订单剩余。",
         ],
     }
+
+
+def related_supplement_disputes(order):
+    """Display an issue only if its selected physical unit really fed this item."""
+    candidates = ShipmentSupplementOrigin.objects.filter(issue__disputed_quantity__isnull=False,
+        batch__status="CONFIRMED", issue__product_id=order.product_specification_id).filter(
+        Q(batch__lines__order_allocations__order_id=order.pk)
+        | Q(batch__lines__order_id=order.pk) | Q(batch__lines__process_card__order_id=order.pk),
+    ).select_related("issue", "batch").distinct()
+    matched = {}
+    for origin in candidates:
+        if origin.batch.supplement_kind:
+            order_matches = origin.unit_no == 1 and origin.batch.lines.filter(order_allocations__order_id=order.pk).exists()
+        else:
+            try:
+                _, allocations = shipment_unit_allocations(origin.batch, origin.unit_no)
+            except ValueError:
+                continue
+            order_matches = any((share["shipment_order_allocation"].order_id if share.get("shipment_order_allocation")
+                else share["shipment_line"].order_id or (share["shipment_line"].process_card.order_id
+                                                         if share["shipment_line"].process_card_id else None)) == order.pk
+                for share in allocations)
+        if order_matches:
+            matched[origin.issue_id] = {"id": origin.issue_id, "quantity": origin.issue.disputed_quantity,
+                                        "note": origin.issue.dispute_note}
+    return list(matched.values())

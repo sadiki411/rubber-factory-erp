@@ -19,6 +19,7 @@ interface BaseDrawerProps {
 }
 
 interface ShipmentDrawerProps extends BaseDrawerProps {
+  onOpenSupplement?: (code?: string) => void
   mode?: 'PIECES' | 'WEIGHTED'
   shipment?: QualityShipment
   orders: QualityOrder[]
@@ -200,6 +201,7 @@ function QualityShipmentDrawerForm(props: ShipmentDrawerProps) {
       existingShipments={props.existingShipments}
       existingBatches={props.existingBatches}
       resetKey={props.resetKey}
+      onOpenSupplement={props.onOpenSupplement}
       onSubmit={props.onSubmit}
       onSaved={props.onSaved}
       onClose={props.onClose}

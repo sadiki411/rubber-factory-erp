@@ -612,6 +612,7 @@ export const productionImportApi = {
 }
 
 export interface QualityListFilters {
+  supplement_kind?: 'REQUEST' | 'REPLACEMENT' | 'RESHIP'
   quick_filter?: string
   reason_text?: string
   customer?: string

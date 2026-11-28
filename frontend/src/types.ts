@@ -1610,6 +1610,7 @@ export interface QualityReturnableBatch {
 }
 
 export interface QualityReworkSource {
+  supplement_kind?: 'REQUEST' | 'REPLACEMENT'
   shipment_batch_id: number | string
   shipment_line_id?: number | string | null
   shipment_unit_no: number
@@ -1622,8 +1623,8 @@ export interface QualityReworkSource {
   customer?: string
   specification?: string
   material?: string
-  single_batch_net_weight_kg: number | string
-  pieces_per_batch: number
+  single_batch_net_weight_kg: number | string | null
+  pieces_per_batch: number | null
   total_batches: number
   inspectors?: QualityEmployeeSummary[]
   lines?: QualityReturnableBatchLineSummary[]
@@ -1634,6 +1635,8 @@ export type QualityShipmentLedgerStatus = 'CONFIRMED' | 'DRAFT' | 'VOID'
 
 /** A read-only row from the unified historical and weighted shipment ledger. */
 export interface QualityShipmentLedgerRow {
+  supplement_kind?: 'REQUEST' | 'REPLACEMENT'
+  reused_card_no?: string
   key: string
   source_type: QualityShipmentLedgerSource
   source_id: number | string
@@ -1822,6 +1825,8 @@ export interface QualityEmployeeStatistics {
 export interface QualitySummary {
   period: { date_from: string; date_to: string }
   totals: {
+    pending_piece_packages?: number
+    pending_return_piece_packages?: number
     rework_record_count?: number
     inspection_quantity: number
     qualified_quantity: number
@@ -1835,7 +1840,7 @@ export interface QualitySummary {
     inspection_record_count: number
     order_count: number
     first_pass_rate: number | string
-    return_rate: number | string
+    return_rate: number | string | null
     rework_pass_rate: number | string
   }
   shipment_attribution: AnalyticsShipmentAttribution

@@ -6,7 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable
 
 from django.db import IntegrityError, OperationalError, connection, transaction
-from django.db.models import Max, Prefetch, Q, Sum
+from django.db.models import Exists, Max, OuterRef, Prefetch, Q, Subquery, Sum
 from django.utils import timezone
 from orders.identities import can_auto_allocate_orders
 
@@ -22,6 +22,7 @@ from .models import (
     QualityShipmentBatch,
     QualityShipmentLine,
     QualityShipmentOrderAllocation,
+    ShipmentSupplementDeliveryAdjustment,
 )
 
 
@@ -181,6 +182,16 @@ def shipment_line_piece_quantity(line: QualityShipmentLine) -> int:
     return max(0, int(quantity or 0))
 
 
+def effective_supplement_adjustments():
+    # The physical return of this exact package takes over its release. Do
+    # not count the same release twice, including after reshipment or scrap.
+    actual_return = QualityReworkCase.objects.filter(
+        shipment_batch_id=OuterRef("origin__batch_id"), shipment_unit_no=OuterRef("unit_no"),
+        origin=QualityReworkCase.Origin.CUSTOMER_RETURN,
+    ).exclude(status=QualityReworkCase.Status.CANCELLED)
+    return ShipmentSupplementDeliveryAdjustment.objects.filter(~Exists(actual_return))
+
+
 def delivered_quantities_by_order(
     order_ids: Iterable[int], *, exclude_batch_id: int | None = None,
     breakdown: dict | None = None,
@@ -201,14 +212,17 @@ def delivered_quantities_by_order(
             "physical_shipments": 0,
         } for order_id in ids})
 
-    def add_balance(order_id, gross, returned, physical):
+    def add_balance(order_id, gross, returned, physical, release=0):
         gross, returned = max(0, int(gross or 0)), max(0, int(returned or 0))
-        net = max(0, gross - returned)
-        delivered[order_id] += net
+        after_return = max(0, gross - returned)
+        release = min(after_return, int(release or 0))
+        delivered[order_id] += after_return - release
         if breakdown is not None:
             row = breakdown[order_id]
             row["all_effective_shipments"] += gross
-            row["effective_returns"] += gross - net
+            row["effective_returns"] += gross - after_return
+            if release:
+                row["delivery_adjustments"] = row.get("delivery_adjustments", 0) + release
             row["recorded_returns"] += returned
             row["return_clamp_difference"] += max(returned - gross, 0)
             row["physical_shipments"] += physical
@@ -254,9 +268,11 @@ def delivered_quantities_by_order(
         return delivered
     allocations_by_line = {}
     allocation_ids = set()
+    releases = (effective_supplement_adjustments().filter(allocation_id=OuterRef("pk"))
+                .order_by().values("allocation_id").annotate(total=Sum("piece_quantity")).values("total"))
     for allocation in QualityShipmentOrderAllocation.objects.filter(
         shipment_line_id__in=line_ids
-    ).order_by().values("id", "shipment_line_id", "order_id", "piece_quantity"):
+    ).annotate(release=Subquery(releases)).order_by().values("id", "shipment_line_id", "order_id", "piece_quantity", "release"):
         allocations_by_line.setdefault(allocation["shipment_line_id"], []).append(allocation)
         allocation_ids.add(allocation["id"])
 
@@ -348,7 +364,8 @@ def delivered_quantities_by_order(
                 if len(allocations) == 1:
                     returned += legacy_returned
                 order_id = allocation["order_id"]
-                add_balance(order_id, allocation["piece_quantity"], returned, 0 if order_id in physical_seen else physical_quantity)
+                add_balance(order_id, allocation["piece_quantity"], returned,
+                            0 if order_id in physical_seen else physical_quantity, allocation["release"])
                 physical_seen.add(order_id)
             continue
 
@@ -847,6 +864,10 @@ def shipment_return_groups(
     line with globally unique unit numbers inside the shipment.
     """
 
+    if batch.supplement_kind:
+        # These facts can be count-only or weight-only. The normal weighted
+        # return grouping requires both; the supplement service uses unit 1.
+        return []
     if lines is None:
         prefetched = getattr(batch, '_prefetched_objects_cache', {}).get('lines')
         if prefetched is not None:
@@ -910,7 +931,7 @@ def shipment_return_groups(
         single_weight = line.single_batch_net_weight_kg
         if single_weight is None and repeat_count == 1:
             single_weight = line.net_weight_kg
-        if single_weight is None and repeat_count > 0:
+        if single_weight is None and line.net_weight_kg is not None and repeat_count > 0:
             single_weight = (
                 Decimal(line.net_weight_kg) / Decimal(repeat_count)
             ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
@@ -1487,6 +1508,18 @@ def serialize_rework_source(case: QualityReworkCase) -> dict | None:
     )
     if batch is None:
         return None
+    if batch.supplement_kind:
+        supplement = batch.supplement
+        return {
+            "shipment_batch_id": batch.pk, "shipment_no": batch.shipment_no,
+            "supplement_kind": batch.supplement_kind,
+            "shipment_date": batch.shipment_date, "shipment_unit_no": 1,
+            "total_batches": 1, "returned_batches": int(case.status != "CANCELLED"),
+            "product_name": batch.product_name_snapshot, "specification": batch.specification_snapshot,
+            "material": batch.material_snapshot, "pieces_per_batch": case.affected_quantity,
+            "single_batch_net_weight_kg": case.affected_weight_kg,
+            "lines": [{"card_no": supplement.customer_card_no}] if supplement.customer_card_no else [],
+        }
     prefetched_lines = getattr(batch, "_prefetched_objects_cache", {}).get("lines")
     if prefetched_lines is not None:
         lines = sorted(prefetched_lines, key=lambda line: line.pk)
@@ -2101,6 +2134,10 @@ def return_reship_context(case, *, lock=False):
     if case.status not in PENDING_RETURN_STATUSES:
         return {**result, "message": "这条退货当前不能再次出货，请核对是否已经再发、作废或报废。"}
     batch = case.shipment_batch
+    if ShipmentSupplementDeliveryAdjustment.objects.filter(origin__batch=batch, unit_no=case.shipment_unit_no).exists():
+        return {**result, "message": "该原包有不抵交付记录，实退可保留，但不能按旧订单直接再次出货；请核对补发事项。"}
+    if batch.supplement_kind:
+        return {**result, "message": "这是无单补货实退；保留原包记录，不走普通订单的原卡再发。"}
     if batch.status != QualityShipmentBatch.Status.CONFIRMED:
         return {**result, "message": "原出货不再有效，请先核对；不会生成新的首次出货。"}
     bindings = ProcessCardUnitBinding.objects.select_related("process_card")
@@ -2415,7 +2452,8 @@ def order_delivery_totals(order_ids: Iterable[int]) -> dict[int, dict[str, int]]
     """Expose gross transport work and current effective delivered quantities."""
 
     ids = {int(value) for value in order_ids if value is not None}
-    effective = delivered_quantities_by_order(ids)
+    breakdown = {}
+    effective = delivered_quantities_by_order(ids, breakdown=breakdown)
     result = {
         order_id: {
             "gross_shipped_quantity": 0,
@@ -2457,10 +2495,7 @@ def order_delivery_totals(order_ids: Iterable[int]) -> dict[int, dict[str, int]]
             shipment.shipped_quantity or 0
         )
     for order_id, values in result.items():
-        values["returned_quantity"] = max(
-            0,
-            values["gross_shipped_quantity"] - values["effective_delivered_quantity"],
-        )
+        values["returned_quantity"] = breakdown[order_id]["effective_returns"]
     return result
 
 
@@ -2513,7 +2548,9 @@ def sync_order_status_from_delivery(
         prefix = str(reason_prefix or "").strip()
         detail = (
             f"有效出货 {effective} 件，订单数量 {required} 件，"
-            + ("已达到订单数量。" if target == QualityOrder.Status.COMPLETED else "因退货回落，订单重新进入进行中。")
+            + ("已达到订单数量。" if target == QualityOrder.Status.COMPLETED else
+               "有效交付不足，订单重新进入进行中。" if source == OrderStatusChange.Source.SYSTEM else
+               "因退货回落，订单重新进入进行中。")
         )
         updated = transition_order_status(
             order,

@@ -27,6 +27,7 @@ import { PageTitle } from '../components/PageTitle'
 import { QualityShippingWorkflow } from '../components/QualityShippingWorkflow'
 import { QualityWorkflowManagement, ShipmentBatchReviewDrawer } from '../components/QualityWorkflowManagement'
 import { QualityWeightShipmentDrawer } from '../components/QualityWeightShipmentDrawer'
+import { QualitySupplements, getSupplementConfig, supplementLabel, type SupplementStart } from '../components/QualitySupplements'
 import {
   QualityReturnReworkAttemptDrawer,
   QualityReturnReworkDrawer,
@@ -163,17 +164,18 @@ function ShipmentLedgerMobileList({
       return <Card key={row.key} size="small" className="quality-shipment-ledger-mobile-card">
         <div className="quality-shipment-ledger-mobile-heading">
           <div><Button type="link" className="table-primary-link" onClick={() => onOpen(row)}><strong>{row.shipment_no}</strong></Button><Typography.Text type="secondary">{row.shipment_date ? formatQualityDate(row.shipment_date) : '待补日期'}</Typography.Text></div>
-          <Tag color={row.source_type === 'WEIGHTED' ? 'blue' : 'default'}>{row.source_type === 'WEIGHTED' ? '重量出货' : '件数出货'}</Tag>
+          <Tag color={row.supplement_kind ? 'purple' : row.source_type === 'WEIGHTED' ? 'blue' : 'default'}>{row.supplement_kind ? supplementLabel(row.supplement_kind) : row.source_type === 'WEIGHTED' ? '重量出货' : '件数出货'}</Tag>
+          {row.reused_card_no && <Tag>沿用原卡 {row.reused_card_no}</Tag>}
         </div>
         <div className="quality-shipment-ledger-mobile-grid">
           <span><small>订单 / 项次</small><b>{orderNos.join('、') || '-'}{itemNos.length ? ` / ${itemNos.join('、')}` : ''}</b></span>
           <span><small>产品</small><b>{products.join('、') || '-'}</b></span>
           <span><small>规格 / 材质</small><b>{[specs.join('、'), materials.join('、')].filter(Boolean).join(' · ') || '-'}</b></span>
           <span><small>品检员</small><b>{inspectors.join('、') || '待补录'}</b></span>
-          <span><small>实际出货</small><b>{qualityNumber(row.shipped_quantity)} 件 · {row.net_weight_kg == null ? '-' : `${qualityNumber(row.net_weight_kg, 3)} kg`}</b></span>
-          <span><small>退货 / 返工</small><b className={Number(row.returned_quantity || 0) > 0 ? 'quality-danger-text' : ''}>{qualityNumber(row.returned_quantity)} / {qualityNumber(row.rework_count)} 次</b></span>
+          <span><small>实际出货</small><b>{row.supplement_kind && row.shipped_quantity == null ? '件数待核' : qualityNumber(row.shipped_quantity) + ' 件'} · {row.net_weight_kg == null ? '-' : `${qualityNumber(row.net_weight_kg, 3)} kg`}</b></span>
+          <span><small>退货 / 返工</small><b className={Number(row.returned_quantity || 0) > 0 ? 'quality-danger-text' : ''}>{row.supplement_kind && row.returned_quantity == null ? '件数待核' : qualityNumber(row.returned_quantity)} / {row.supplement_kind && row.rework_count == null ? '未登记' : qualityNumber(row.rework_count) + ' 次'}</b></span>
         </div>
-        <Button block icon={<EyeOutlined />} onClick={() => onOpen(row)}>查看明细 / 修改品检员</Button>
+        <Button block icon={<EyeOutlined />} onClick={() => onOpen(row)}>{row.supplement_kind ? '查看补货明细' : '查看明细 / 修改品检员'}</Button>
       </Card>
     })}
   </div>
@@ -208,6 +210,7 @@ export function QualityPage() {
   const [debouncedMaterialFilter, setDebouncedMaterialFilter] = useState('')
   const [inspectorFilter, setInspectorFilter] = useState<number>()
   const [ordering, setOrdering] = useState('-shipment_date')
+  const [supplementKindFilter, setSupplementKindFilter] = useState<'REQUEST' | 'REPLACEMENT' | 'RESHIP'>()
   const [ledgerPage, setLedgerPage] = useState(1)
   const [ledgerPageSize, setLedgerPageSize] = useState(20)
   const [activeTab, setActiveTab] = useState(() => ['workflow', 'daily', 'reworks', 'orders', 'employees'].includes(new URLSearchParams(window.location.search).get('tab') || '') ? new URLSearchParams(window.location.search).get('tab')! : 'workflow')
@@ -230,6 +233,17 @@ export function QualityPage() {
   const [returnReworkAttempt, setReturnReworkAttempt] = useState<QualityReworkCase>()
   const [resumeReturnAfterShipment, setResumeReturnAfterShipment] = useState(false)
   const [employeeForm, setEmployeeForm] = useState<{ employee?: QualityEmployee }>()
+  const [supplementStart, setSupplementStart] = useState<SupplementStart | undefined>(() => {
+    const params = new URLSearchParams(window.location.search)
+    const id = Number(params.get('supplement_batch_id'))
+    const issueId = Number(params.get('supplement_issue_id'))
+    return id > 0 ? { batchId: id } : issueId > 0 ? { issueId } : undefined
+  })
+  const supplementConfigQuery = useQuery({
+    queryKey: ['quality', 'supplement-config'],
+    queryFn: getSupplementConfig,
+    staleTime: 60_000,
+  })
   const [reworkQuickFilter, setReworkQuickFilter] = useState('ALL')
   const [reworkPage, setReworkPage] = useState(1)
   const [linkedReworkId, setLinkedReworkId] = useState(() => Number(new URLSearchParams(window.location.search).get('rework_case_id')) || undefined)
@@ -320,9 +334,10 @@ export function QualityPage() {
     enabled: orderDataEnabled && !scanWorkOpen,
   })
   const shipmentLedgerQuery = useQuery({
-    queryKey: ['quality', 'shipment-ledger', { dateFrom, dateTo, dueDateFrom, dueDateTo, debouncedQuery, shipmentStatus, orderStatus, deliveryStatus, debouncedSpecificationFilter, debouncedMaterialFilter, inspectorFilter, ordering, ledgerPage, ledgerPageSize, workflowTab }],
+    queryKey: ['quality', 'shipment-ledger', { dateFrom, dateTo, dueDateFrom, dueDateTo, debouncedQuery, shipmentStatus, orderStatus, deliveryStatus, debouncedSpecificationFilter, debouncedMaterialFilter, inspectorFilter, ordering, ledgerPage, ledgerPageSize, workflowTab, supplementKindFilter }],
     queryFn: async ({ signal }) => qualityApi.listShipmentLedger({
       source_type: workflowTab ? 'WEIGHTED' : undefined,
+      supplement_kind: dailyTab ? supplementKindFilter : undefined,
       q: debouncedQuery,
       shipment_status: shipmentStatus,
       order_status: orderStatus || undefined,
@@ -581,6 +596,10 @@ export function QualityPage() {
 
   const ledgerValues = (values?: Array<string | null | undefined>) => [...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))]
   const openLedgerDetail = (row: QualityShipmentLedgerRow) => {
+    if (row.supplement_kind) {
+      setSupplementStart({ batchId: Number(row.source_id) })
+      return
+    }
     if (row.source_type === 'WEIGHTED') {
       setLinkedBatchId(Number(row.source_id))
       return
@@ -589,7 +608,7 @@ export function QualityPage() {
   }
   const ledgerColumns: TableColumnsType<QualityShipmentLedgerRow> = [
     { title: '出货日期', dataIndex: 'shipment_date', fixed: 'left', width: 110, render: (value) => value ? formatQualityDate(value) : <Tag color="warning">待补日期</Tag> },
-    { title: '出货单号', dataIndex: 'shipment_no', fixed: 'left', width: 190, render: (value, row) => <span><Button type="link" className="table-primary-link" onClick={() => openLedgerDetail(row)}>{value}</Button><br /><Tag color={row.source_type === 'WEIGHTED' ? 'blue' : 'default'}>{row.source_type === 'WEIGHTED' ? '重量出货' : '件数出货'}</Tag></span> },
+    { title: '出货单号', dataIndex: 'shipment_no', fixed: 'left', width: 190, render: (value, row) => <span><Button type="link" className="table-primary-link" onClick={() => openLedgerDetail(row)}>{value}</Button><br /><Tag color={row.source_type === 'WEIGHTED' ? 'blue' : 'default'}>{row.supplement_kind ? supplementLabel(row.supplement_kind) : row.source_type === 'WEIGHTED' ? '重量出货' : '件数出货'}</Tag>{row.reused_card_no && <div>沿用原卡 {row.reused_card_no}</div>}</span> },
     { title: '订单 / 项次', key: 'orders', width: 200, render: (_, row) => {
       const orders = ledgerValues(row.order_nos)
       const items = ledgerValues(row.item_nos)
@@ -609,7 +628,7 @@ export function QualityPage() {
     { title: '质检 / 合格 / 不良', key: 'quality', width: 165, render: (_, row) => row.inspection_quantity == null
       ? '-'
       : <span>{qualityNumber(row.inspection_quantity)} / <span className="quality-good-text">{qualityNumber(row.qualified_quantity)}</span> / <span className={row.defective_quantity ? 'quality-danger-text' : ''}>{qualityNumber(row.defective_quantity)}</span></span> },
-    { title: '实际出货', dataIndex: 'shipped_quantity', width: 110, render: (value) => <strong>{qualityNumber(value)}</strong> },
+    { title: '实际出货', dataIndex: 'shipped_quantity', width: 110, render: (value, row) => <strong>{row.supplement_kind && value == null ? '件数待核' : qualityNumber(value)}</strong> },
     { title: '累计净重', dataIndex: 'net_weight_kg', width: 115, render: (value) => value == null ? '-' : `${qualityNumber(value, 3)} kg` },
     { title: '累计退货', dataIndex: 'returned_quantity', width: 105, render: (value) => value == null ? '-' : <span className={value ? 'quality-danger-text' : ''}>{qualityNumber(value)}</span> },
     { title: '返工次数', dataIndex: 'rework_count', width: 105, render: (value) => value == null ? '-' : reworkCountTag(value) },
@@ -696,7 +715,10 @@ export function QualityPage() {
       label: '每日出货',
       children: <div className="quality-tab-content">
         <DailyTrend rows={summary?.daily_trend || []} loading={summaryQuery.isLoading} />
-        <div className="section-heading"><div><Typography.Title level={3}>每日出货台账</Typography.Title><Typography.Text type="secondary">统一显示重量出货与件数出货；点击出货单号可查看或修改。</Typography.Text></div><Space wrap><Button disabled={readOnly} onClick={() => openShipmentForm(undefined, 'PIECES')}>采购单件数出货（无流程卡）</Button><Button disabled={readOnly} type="primary" icon={<PlusOutlined />} onClick={() => openShipmentForm()}>新增出货</Button></Space></div>
+        {Boolean(summary?.totals.pending_piece_packages || summary?.totals.pending_return_piece_packages) && <Alert type="info" title="件数合计仅包含已知件数"
+          description={`另有 ${summary?.totals.pending_piece_packages || 0} 包实发、${summary?.totals.pending_return_piece_packages || 0} 包实退件数待核，暂不显示合计退货率。`} />}
+        <div className="section-heading"><div><Typography.Title level={3}>每日出货台账</Typography.Title><Typography.Text type="secondary">统一显示重量出货与件数出货；点击出货单号可查看或修改。</Typography.Text></div><Space wrap><Button disabled={readOnly} onClick={() => openShipmentForm(undefined, 'PIECES')}>采购单件数出货（无流程卡）</Button>{supplementConfigQuery.data?.enabled && <Button onClick={() => setSupplementStart({ mode: readOnly ? 'list' : 'new' })}>无订单补货</Button>}<Button disabled={readOnly} type="primary" icon={<PlusOutlined />} onClick={() => openShipmentForm()}>新增出货</Button></Space></div>
+        {supplementConfigQuery.data?.enabled && <Select aria-label="出货类型筛选" style={{ width: 170 }} allowClear placeholder="全部出货类型" value={supplementKindFilter} onChange={(value) => { setSupplementKindFilter(value); setLedgerPage(1) }} options={[{ value: 'REQUEST', label: '临时无单' }, { value: 'REPLACEMENT', label: '质量换新' }, { value: 'RESHIP', label: '原包再发' }]} />}
         {renderShipmentLedger(shipmentLedger, shipmentLedgerQuery.isLoading, '当前筛选条件下暂无出货记录')}
       </div>,
     },
@@ -846,6 +868,10 @@ export function QualityPage() {
         existingShipments={shipmentOptions}
         existingBatches={shipmentBatchOptions.length ? shipmentBatchOptions : shipmentBatches}
         resetKey={shipmentSessionKey}
+        onOpenSupplement={supplementConfigQuery.data?.enabled ? (code) => {
+          setShipmentForm(undefined); setResumeReturnAfterShipment(false)
+          setSupplementStart({ mode: 'new', code })
+        } : undefined}
         onClose={() => {
           setShipmentForm(undefined)
           setResumeReturnAfterShipment(false)
@@ -914,6 +940,19 @@ export function QualityPage() {
       <QualityReturnReworkAttemptDrawer open={!!returnReworkAttempt} item={returnReworkAttempt} employees={employees} onClose={() => setReturnReworkAttempt(undefined)} onSaved={refreshAfterReworkAttempt} />
       <QualityReworkCaseDetailDrawer open={!!returnReworkDetail || Boolean(linkedReworkId && linkedReworkQuery.data)} item={returnReworkDetail || linkedReworkQuery.data} employees={employees} onClose={() => { setReturnReworkDetail(undefined); setLinkedReworkId(undefined) }} onAddAttempt={setReturnReworkAttempt} onSaved={refreshAfterReturnChange} />
       <QualityEmployeeDrawer open={!!employeeForm} employee={employeeForm?.employee} onClose={() => setEmployeeForm(undefined)} />
+      {supplementStart && supplementConfigQuery.data?.enabled && <QualitySupplements
+        start={supplementStart}
+        employees={employees}
+        canReconcile={Boolean(supplementConfigQuery.data.can_reconcile)}
+        readOnly={readOnly}
+        onClose={() => setSupplementStart(undefined)}
+        onSaved={() => {
+          void queryClient.invalidateQueries({ predicate: ({queryKey}) => ['orders', 'order-overview', 'order-overview-summary', 'operations', 'analytics'].includes(String(queryKey[0]))
+            || (queryKey[0] === 'quality' && ['summary', 'shipment-ledger', 'supplement-origins', 'supplement-list'].includes(String(queryKey[1]))) })
+        }}
+        onReturn={(id) => { setSupplementStart(undefined); setLinkedReworkId(id) }}
+        onOriginal={(id) => { setSupplementStart(undefined); setLinkedBatchId(id) }}
+      />}
     </div>
   )
 }

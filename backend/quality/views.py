@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from copy import deepcopy
 from functools import wraps
 
+from django.conf import settings
 from django.db import IntegrityError, OperationalError, connection, transaction
 from django.db.models import Case, Count, DateField, F, IntegerField, Min, Prefetch, Q, Sum, Value, When
 from django.db.models.functions import Coalesce, Least
@@ -304,6 +305,11 @@ class ProcessCardViewSet(WorkflowModelViewSet):
     @action(detail=False, methods=["get"], url_path="scan")
     def scan(self, request):
         code = request.query_params.get("code") or request.query_params.get("card_no")
+        if settings.QUALITY_SUPPLEMENTS_ENABLED:
+            from .models import ShipmentSupplement
+            match = ShipmentSupplement.objects.filter(customer_card_key=str(code or "").strip().upper()).first()
+            if match:
+                raise DRFValidationError({"code": f"此卡已随 {match.batch.shipment_no} 出货，请从「无订单补货」查询原包。"})
         try:
             scanned, active = find_process_card(code)
         except ValueError as exc:
@@ -648,6 +654,17 @@ def _shipment_line_amend_payload(line):
 
 class QualityShipmentBatchViewSet(WorkflowModelViewSet):
     serializer_class = QualityShipmentBatchSerializer
+
+    @staticmethod
+    def require_standard_shipment(batch):
+        if batch.supplement_kind:
+            raise DRFValidationError({"detail": "无单补货请在原补货明细操作，不能走普通订单的出货更正。"})
+
+    def get_object(self):
+        batch = super().get_object()
+        if self.request.method not in ("GET", "HEAD", "OPTIONS"):
+            self.require_standard_shipment(batch)
+        return batch
 
     def create(self, request, *args, **kwargs):
         """Create or resume a weighted shipment draft.
@@ -1030,6 +1047,10 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
     def _amend_downstream(batch, line_ids, *, allow_amend=False):
         """Lock and report every immutable fact that points at this batch."""
 
+        from .models import ShipmentSupplementDeliveryAdjustment
+
+        if ShipmentSupplementDeliveryAdjustment.objects.filter(origin__batch=batch).exists():
+            raise DRFValidationError({"detail": "该出货已有原货不抵交付的核对记录，不能直接修订或作废。"})
         case_filter = Q(shipment_batch_id=batch.pk)
         if line_ids:
             case_filter |= Q(shipment_line_id__in=line_ids)
@@ -1337,6 +1358,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
                 QualityShipmentBatch.objects.select_for_update()
                 .get(pk=pk)
             )
+            self.require_standard_shipment(batch)
             if batch.status == QualityShipmentBatch.Status.VOID:
                 raise DRFValidationError({"status": "已作废的出货批次不能再次修订。"})
             if batch.status != QualityShipmentBatch.Status.CONFIRMED:
@@ -1649,6 +1671,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
         reason = envelope.validated_data["void_reason"]
         with transaction.atomic():
             batch = QualityShipmentBatch.objects.select_for_update().get(pk=pk)
+            self.require_standard_shipment(batch)
             if batch.status == QualityShipmentBatch.Status.VOID:
                 return Response(self.get_serializer(batch).data)
             if batch.status != QualityShipmentBatch.Status.CONFIRMED:
@@ -1718,6 +1741,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
     def confirm(self, request, pk=None):
         with transaction.atomic():
             batch = QualityShipmentBatch.objects.select_for_update().get(pk=pk)
+            self.require_standard_shipment(batch)
             if batch.status == QualityShipmentBatch.Status.VOID:
                 raise DRFValidationError({"status": "A void shipment batch cannot be confirmed."})
             if batch.status == QualityShipmentBatch.Status.CONFIRMED:
@@ -2350,6 +2374,7 @@ class QualityShipmentBatchViewSet(WorkflowModelViewSet):
             raise DRFValidationError({"inspector_ids": "品检员编号格式无效。"})
         with transaction.atomic():
             batch = QualityShipmentBatch.objects.select_for_update().get(pk=pk)
+            self.require_standard_shipment(batch)
             if batch.status == QualityShipmentBatch.Status.VOID:
                 raise DRFValidationError({"status": "已作废出货记录不能补录品检员。"})
             people = list(
@@ -2834,6 +2859,8 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
         batch = QualityShipmentBatch.objects.filter(pk=batch_id, status="CONFIRMED").prefetch_related("lines__order", "lines__process_card__order", "lines__order_allocations__order").first()
         if batch is None:
             raise DRFValidationError({"detail": "原出货不存在或尚未确认，请重新核对。"})
+        if batch.supplement_kind:
+            raise DRFValidationError({"detail": "请从无单补货明细登记实物退回。"})
         return Response(return_allocation_preview(batch, unit_no))
 
     @extend_schema(responses=QualityReturnableBatchPageSerializer)
@@ -2842,7 +2869,7 @@ class QualityReworkCaseViewSet(WorkflowModelViewSet):
         """Search confirmed weighted shipments and expose unreturned units."""
 
         queryset = QualityShipmentBatch.objects.filter(
-            status=QualityShipmentBatch.Status.CONFIRMED
+            status=QualityShipmentBatch.Status.CONFIRMED, supplement_kind=""
         ).select_related("inspector").prefetch_related(
             "inspectors",
             "lines__order",
@@ -3168,6 +3195,7 @@ def _weighted_shipment_queryset():
 
     return (
         QualityShipmentBatch.objects.select_related(
+            "supplement",
             "inspector",
             "created_by",
             "order__created_by",
@@ -3255,6 +3283,12 @@ def _product_identity_matches(
 def _line_product_components(line, batch):
     """Return product-specific quantity/weight slices for one shipment line."""
 
+    if batch.supplement_kind:
+        return [{
+            "line": line, "order": None, "product_name": batch.product_name_snapshot,
+            "specification": line.specification_snapshot, "material": line.material_snapshot,
+            "piece_quantity": line.piece_quantity, "net_weight_kg": line.net_weight_kg,
+        }]
     allocations = list(line.order_allocations.all())
     if allocations:
         return [
@@ -3472,7 +3506,7 @@ def _weighted_ledger_row(
         for component in display_components
     }
     lines = list(line_by_id.values())
-    if filter_active:
+    if filter_active and not batch.supplement_kind:
         orders = []
         seen_order_ids = set()
         for component in display_components:
@@ -3600,12 +3634,23 @@ def _weighted_ledger_row(
         "batch": record,
         "created_at": batch.created_at.isoformat(),
     }
+    if batch.supplement_kind and lines:
+        line = lines[0]
+        row.update({
+            "supplement_kind": batch.supplement_kind,
+            "reused_card_no": batch.supplement.reused_card_no,
+            "shipped_quantity": line.piece_quantity,
+            "net_weight_kg": line.net_weight_kg,
+            "returned_quantity": (None if rework_cases and line.piece_quantity is None else returned_quantity),
+            "rework_count": sum(sum(a.status != "CANCELLED" for a in c.attempts.all()) for c in rework_cases) or None,
+        })
     row["_search_text"] = " ".join(
         [
             batch.shipment_no,
             batch.client_key,
             batch.customer,
             batch.delivery_info,
+            *([batch.supplement.customer_card_no, batch.supplement.reused_card_no, f"{batch.shipment_no}/1"] if batch.supplement_kind else []),
             *row["order_nos"],
             *row["item_nos"],
             *row["product_names"],
@@ -3748,6 +3793,16 @@ class QualityShipmentLedgerView(APIView):
             legacy = legacy.filter(order__material__iexact=material)
 
         weighted = _weighted_shipment_queryset().filter(status__in=weighted_statuses)
+        supplement_kind = str(params.get("supplement_kind", "")).strip().upper()
+        if supplement_kind:
+            include_values = {*QualityShipmentBatch.SupplementKind.values, "RESHIP"}
+            if supplement_kind not in include_values:
+                raise DRFValidationError({"supplement_kind": "无效的补货类别。"})
+            legacy = legacy.none()
+            if supplement_kind == "RESHIP":
+                weighted = weighted.filter(source_rework_case__isnull=False)
+            else:
+                weighted = weighted.filter(supplement_kind=supplement_kind)
         if date_from:
             date_filter = Q(shipment_date__gte=date_from)
             if QualityShipmentBatch.Status.DRAFT in weighted_statuses:
@@ -4259,10 +4314,13 @@ class QualitySummaryView(APIView):
         # same quantity and a multi-inspector batch never multiplies company or
         # order totals.
         weighted_rows = []
+        pending_piece_packages = 0
         for batch in weighted_batches:
             batch_quantity = 0
             order_quantities = {}
             for line in reporting_related_rows(batch, "lines"):
+                if batch.supplement_kind and line.piece_quantity is None:
+                    pending_piece_packages += 1
                 quantity = weighted_line_quantity(line, batch)
                 batch_quantity += quantity
                 card = line.process_card if line.process_card_id else None
@@ -4299,6 +4357,12 @@ class QualitySummaryView(APIView):
             scrap_quantity=Sum("scrap_quantity"),
         )
         totals = _empty_quantities()
+        totals["pending_piece_packages"] = pending_piece_packages
+        totals["pending_return_piece_packages"] = sum(
+            1 for case in rework_cases if case.shipment_batch_id and case.shipment_batch.supplement_kind
+            and case.origin == QualityReworkCase.Origin.CUSTOMER_RETURN
+            and case.affected_quantity is None and date_from <= case.opened_on <= date_to
+        )
         totals["rework_record_count"] = _integer(rework_totals["rework_record_count"]) + sum(len(case.period_attempts) for case in rework_cases)
         for key in (
             "inspection_quantity",
@@ -4351,6 +4415,8 @@ class QualitySummaryView(APIView):
                 ),
             }
         )
+        if totals["pending_piece_packages"] or totals["pending_return_piece_packages"]:
+            totals["return_rate"] = None
 
         daily = {}
         cursor = date_from
@@ -4486,6 +4552,9 @@ class QualitySummaryView(APIView):
                 field: dict(_split_integer_by_order_shares(value, shares))
                 for field, value in values.items()
             }
+            if case.shipment_batch_id and case.shipment_batch.supplement_kind:
+                split_values["returned_quantity"] = dict(shares) if case_in_period else {}
+                rework_count = len(case.period_attempts)
             for order, _ in shares:
                 row = order_quantities.setdefault(
                     order.pk,

@@ -1082,6 +1082,9 @@ def bind_sources(batch, data, user):
         card = source_cards.get(str(entry.get("card_id")))
         if card is None:
             raise ValidationError({"card_id": "来源卡不存在。"})
+        from quality.models import ShipmentSupplement
+        if settings.QUALITY_SUPPLEMENTS_ENABLED and ShipmentSupplement.objects.filter(internal_card=card).exists():
+            raise ValidationError({"internal_sources": "该内部卡已随无单补货登记，不能再次作为新包来源。"})
         if card.status != "ACTIVE":
             raise ValidationError({"internal_sources": "作废卡不可绑定出货。"})
         group = card.group

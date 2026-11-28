@@ -9,6 +9,7 @@ const kinds: { value: WorkbenchKind; label: string }[] = [
   { value: 'ORDER_SHORTAGE', label: '订单欠交' }, { value: 'RETURN_PENDING', label: '退回/返工待处理' },
   { value: 'INVENTORY_QUALITY', label: '库存质量处理' }, { value: 'RECEIPT_UNLINKED', label: '发料待关联' },
   { value: 'CARD_PREPARATION', label: '工序卡待准备' },
+  { value: 'SUPPLEMENT_PENDING', label: '翔邦补货待办' },
 ]
 
 export function OperationsPage() {
@@ -22,6 +23,7 @@ export function OperationsPage() {
     queryKey: ['operations', q, kind, dueScope, page],
     queryFn: ({ signal }) => orderApi.workbench({ q, kind, ...(dueScope ? { due_scope: dueScope } : {}), page, page_size: 20 }, { signal }),
   })
+  const visibleKinds = kinds.filter((entry) => entry.value !== 'SUPPLEMENT_PENDING' || result.data?.summary.SUPPLEMENT_PENDING != null)
   const change = (values: Record<string, string>) => {
     const next = new URLSearchParams(params)
     Object.entries(values).forEach(([key, value]) => value ? next.set(key, value) : next.delete(key))
@@ -33,16 +35,16 @@ export function OperationsPage() {
     <Card className="operations-filter-card">
       <Space wrap className="operations-filters">
         <Input.Search key={q} defaultValue={q} allowClear aria-label="搜索待办" placeholder="订单、规格、材质或案号" onSearch={(value) => change({ q: value.trim(), page: '1' })} enterButton="查询" />
-        <Select aria-label="待办类别" value={kind} onChange={(value) => change({ kind: value, page: '1' })} options={[{ value: '', label: '全部类别' }, ...kinds]} />
+        <Select aria-label="待办类别" value={kind} onChange={(value) => change({ kind: value, page: '1' })} options={[{ value: '', label: '全部类别' }, ...visibleKinds]} />
         <Select aria-label="交期范围" value={dueScope} onChange={(value) => change({ due_scope: value, page: '1' })} options={[{ value: '', label: '全部待办' }, { value: 'today', label: '今日交期（订单）' }, { value: 'overdue', label: '已过交期（订单）' }, { value: 'upcoming', label: '未来7日交期（订单）' }]} />
       </Space>
-      {result.data && !result.isError && <><Typography.Paragraph type="secondary">{result.data.summary_scope}</Typography.Paragraph><Space wrap>{kinds.map((entry) => <Tag key={entry.value}>{entry.label} {result.data.summary[entry.value]}</Tag>)}</Space></>}
+      {result.data && !result.isError && <><Typography.Paragraph type="secondary">{result.data.summary_scope}</Typography.Paragraph><Space wrap>{visibleKinds.map((entry) => <Tag key={entry.value}>{entry.label} {result.data.summary[entry.value]}</Tag>)}</Space></>}
     </Card>
     {result.isError ? <Alert type="error" showIcon title="待办读取失败，不能将失败视为0项" description={(result.error as Error).message} action={<Button onClick={() => void result.refetch()}>重试</Button>} /> : result.isPending ? <Skeleton active /> : <>
       <div className="operations-task-list">{result.data.results.map((row) => {
         const target = new URL(row.url, window.location.origin)
         target.searchParams.set('return_to', `/operations?${params}`)
-        const label = { ORDER_SHORTAGE: '看订单', RETURN_PENDING: '看退回单', INVENTORY_QUALITY: '看库位', RECEIPT_UNLINKED: '核对发料', CARD_PREPARATION: '继续备卡' }[row.kind]
+        const label = { ORDER_SHORTAGE: '看订单', RETURN_PENDING: '看退回单', INVENTORY_QUALITY: '看库位', RECEIPT_UNLINKED: '核对发料', CARD_PREPARATION: '继续备卡', SUPPLEMENT_PENDING: '看补货事项' }[row.kind]
         return <article key={row.id} className="operations-task-row">
           <div><Tag>{row.title}</Tag><strong>{row.document_no}</strong><div>{row.specification || '规格未登记'} · {row.material || '材质未登记'}</div></div>
           <div><strong>{row.quantity === null ? '未登记' : Number(row.quantity).toLocaleString('zh-CN')} {row.unit}</strong><div>{row.due_date ? `交期 ${row.due_date}` : row.reason}</div></div>

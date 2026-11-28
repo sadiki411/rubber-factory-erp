@@ -87,6 +87,7 @@ export interface QualityWeightShipmentLineSeed {
 }
 
 export interface QualityWeightShipmentDrawerProps {
+  onOpenSupplement?: (code?: string) => void
   open: boolean
   /** A legacy shipment can still be edited from the daily ledger. */
   shipment?: QualityShipment
@@ -494,6 +495,7 @@ function QualityWeightShipmentDrawerForm({
   onClose,
   onSubmit,
   onSaved,
+  onOpenSupplement,
   amendConfirmed = false,
 }: QualityWeightShipmentDrawerProps) {
   const [form] = Form.useForm<DrawerValues>()
@@ -507,6 +509,7 @@ function QualityWeightShipmentDrawerForm({
   const [loadingDraft, setLoadingDraft] = useState(false)
   const [candidateOrders, setCandidateOrders] = useState<QualityOrder[]>([])
   const [candidateQuery, setCandidateQuery] = useState('')
+  const [shippedCard, setShippedCard] = useState('')
   const [candidateLoaded, setCandidateLoaded] = useState(false)
   const [candidateSelectorOpen, setCandidateSelectorOpen] = useState(false)
   const [loadingCandidates, setLoadingCandidates] = useState(false)
@@ -1385,8 +1388,17 @@ function QualityWeightShipmentDrawerForm({
       }
       if (reshipCase) throw new Error('当前正在处理返工品重新出货，请先完成或关闭后再扫描普通出货。')
       const existingBinding = activeCard?.unit_binding || activeCard?.binding || lookup.binding
+      if (onOpenSupplement && !existingBinding && activeCard?.status === 'SHIPPED') {
+        setShippedCard(pendingCardNo)
+        setScannerOpen(false)
+        throw new Error('此卡已有出货记录。原货没退、这次发新包，请走「沿原卡补发新货」。')
+      }
       if (existingBinding) {
-        throw new Error(`流程卡 ${activeCard?.card_no || pendingCardNo} 已绑定出货单 ${existingBinding.shipment_no || existingBinding.shipment_batch_id} 第 ${existingBinding.shipment_unit_no} 包，不能重复出货；如为退货返工，请先在退货端登记。`)
+        if (onOpenSupplement) {
+          setShippedCard(pendingCardNo)
+          setScannerOpen(false)
+        }
+        throw new Error(`流程卡 ${activeCard?.card_no || pendingCardNo} 已绑定出货单 ${existingBinding.shipment_no || existingBinding.shipment_batch_id} 第 ${existingBinding.shipment_unit_no} 包，不能重复绑定。${onOpenSupplement ? '原货没退、这次发新包，请走「沿原卡补发新货」。' : '确有实退才登记退货。'}`)
       }
       const normalizedCardNo = activeCard?.card_no || pendingCardNo
       const scannedOrder = activeCard?.order || allKnownOrders.find((order) => order.id === activeCard?.order_id)
@@ -1484,6 +1496,10 @@ function QualityWeightShipmentDrawerForm({
       return true
     } catch (error) {
       removePendingCard()
+      if ((error as Error).message.includes('已随') && (error as Error).message.includes('查询原包')) {
+        setShippedCard(pendingCardNo)
+        setScannerOpen(false)
+      }
       throw error
     }
   }
@@ -2060,6 +2076,10 @@ function QualityWeightShipmentDrawerForm({
               notFoundContent={loadingCandidates ? '正在读取可出货订单…' : '没有仍可出货的候选订单'}
             />
           </Form.Item>
+          {onOpenSupplement && !amendConfirmed && !reshipCase && <Form.Item>
+            <Button onClick={() => onOpenSupplement()}>无订单补货</Button>
+            {shippedCard && <Button type="link" onClick={() => onOpenSupplement(shippedCard)}>沿原卡补发新货</Button>}
+          </Form.Item>}
           {candidateError && <Alert className="quality-weight-candidate-alert" type="warning" showIcon message="候选订单暂时读取失败" description={isLineMode || selectedOrder
             ? `${candidateError} 确认出货时服务器仍会按最新订单余量重新核算。`
             : `${candidateError} 请恢复候选订单读取或扫描带订单的流程卡后再确认出货。`} />}

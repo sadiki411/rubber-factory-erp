@@ -50,8 +50,15 @@ export function OrderOverviewPage() {
         <Col xs={12} lg={6}><Statistic title="分配生产进度（非实测良品）" value={data.counts.production ? data.summary.production_progress_quantity : '未关联生产记录'} /></Col>
       </Row></Card>
       <OrderCustomerInspectionPanel orderId={Number(id)} />
+      {data.supplement_disputes?.map((issue) => <Alert key={issue.id} type="warning" title="客户反馈异常 · 交付待核"
+        description={`补货事项争议量 ${issue.quantity} 件（非本项次扣减）：${issue.note}`}
+        action={<Button href={`/quality?tab=daily&supplement_issue_id=${issue.id}`}>查看补货事项</Button>} />)}
+      {data.supplement_delivery_adjustments?.map((entry) => <Alert key={entry.id} type="info"
+        title={`原货未退 · ${entry.piece_quantity.toLocaleString('zh-CN')} 件不抵本项次`}
+        description={`${entry.origin__batch__shipment_no}/${entry.unit_no} · ${entry.evidence}`}
+        action={<Button href={`/quality?tab=daily&supplement_issue_id=${entry.origin__issue_id}`}>查看补货事项</Button>} />)}
       {data.summary.delivery_breakdown && <details className="business-basis"><summary>展开净交付对账（全部有效出货已含再发）</summary>
-        <Typography.Paragraph>{data.summary.delivery_breakdown.all_effective_shipments.toLocaleString('zh-CN')} 件全部有效出货 − {data.summary.delivery_breakdown.effective_returns.toLocaleString('zh-CN')} 件有效回冲 = {data.summary.net_delivered.toLocaleString('zh-CN')} 件净交付。再出货已包含在第一项，不能再加一次。此处总计不受下方分页影响。</Typography.Paragraph>
+        <Typography.Paragraph>{data.summary.delivery_breakdown.all_effective_shipments.toLocaleString('zh-CN')} 件已归属出货 − {data.summary.delivery_breakdown.effective_returns.toLocaleString('zh-CN')} 件实退回冲{data.summary.delivery_breakdown.delivery_adjustments ? ` − ${data.summary.delivery_breakdown.delivery_adjustments.toLocaleString('zh-CN')} 件商务确认不抵交付（未实退）` : ''} = {data.summary.net_delivered.toLocaleString('zh-CN')} 件净交付。补发已归属的件数已包含在第一项，不再另加。此处总计不受下方分页影响。</Typography.Paragraph>
         <Typography.Paragraph>相关原出货物理量 {data.summary.delivery_breakdown.physical_shipments.toLocaleString('zh-CN')} 件，本项次归属出货 {data.summary.delivery_breakdown.all_effective_shipments.toLocaleString('zh-CN')} 件；差额 {(data.summary.delivery_breakdown.physical_shipments - data.summary.delivery_breakdown.all_effective_shipments).toLocaleString('zh-CN')} 件属于关联物理单与本项次分摊的口径差，不再次计入本订单。</Typography.Paragraph>
         {!!data.summary.delivery_breakdown.return_clamp_difference && <Alert type="warning" title={`历史退回登记超过对应原出货 ${data.summary.delivery_breakdown.return_clamp_difference} 件；沿用原单/分摊逐项最低为0的现行口径，未重写历史。`} />}
         <Space wrap>{TRACE_SECTIONS.filter((entry) => ['shipments', 'piece_shipments', 'returns', 'piece_returns'].includes(entry.key)).map((entry) => <Button key={entry.key} onClick={() => change({ section: entry.key, page: '1' })}>{entry.label}原单（{data.counts[entry.key]}）</Button>)}</Space>
@@ -73,7 +80,7 @@ export function OrderOverviewPage() {
       <div className="operations-task-grid">{result.data.results.map((row) => <Card key={`${row.source}:${row.id}`} size="small" title={<Space wrap><span>{row.document_no}</span>{row.status && <Tag>{row.status}</Tag>}</Space>}>
         <Typography.Paragraph>业务日期：{row.date?.slice(0, 10) || '未登记'}<br />物理/原记录量：{quantity(row.physical_quantity, row.unit)}<br />本项次归属量：{quantity(row.own_quantity, row.unit)}</Typography.Paragraph>
         {row.cards.length > 0 && <Typography.Paragraph>流程卡：{row.cards.join('、')}</Typography.Paragraph>}
-        {!!row.order_allocations?.length && <details><summary>逐订单项次分摊（{row.order_allocations.length}）</summary><ul>{row.order_allocations.map((share, index) => <li key={`${share.order_id}-${index}`}>{share.order_no} / {share.item_no || '未登记项次'}：{share.piece_quantity} 件 / {share.net_weight_kg} kg</li>)}</ul></details>}
+        {!!row.order_allocations?.length && <details><summary>逐订单项次分摊（{row.order_allocations.length}）</summary><ul>{row.order_allocations.map((share, index) => <li key={`${share.order_id}-${index}`}>{share.order_no} / {share.item_no || '未登记项次'}：{share.piece_quantity} 件 / {share.net_weight_kg === null ? '未称重' : share.net_weight_kg + ' kg'}</li>)}</ul></details>}
         <Typography.Paragraph>{row.details}</Typography.Paragraph><Typography.Paragraph type="secondary">来源：{row.source} #{row.id}</Typography.Paragraph>
         {row.url && <Button onClick={() => { const target = new URL(row.url!, window.location.origin); target.searchParams.set('return_to', `/order-overview/${id}?${params}`); navigate(target.pathname + target.search) }}>打开原业务页面</Button>}
       </Card>)}</div>

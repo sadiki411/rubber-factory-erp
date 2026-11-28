@@ -652,7 +652,7 @@ def build_quality_employee_details(
             shipment_date__lte=date_to,
         )
         .filter(Q(inspector_id=employee.pk) | Q(inspectors=employee))
-        .select_related("inspector", "order")
+        .select_related("inspector", "order", "supplement")
         .prefetch_related(
             Prefetch("inspectors", to_attr="report_inspectors"),
             Prefetch("lines", queryset=shipment_reporting_lines(), to_attr="report_lines"),
@@ -664,10 +664,12 @@ def build_quality_employee_details(
     for batch in weighted_batches:
         people = shipment_inspectors(batch)
         collaborative = len(people) > 1
-        references = shipment_card_references(batch, lines=reporting_related_rows(batch, "lines"))
+        references = {} if batch.supplement_kind else shipment_card_references(
+            batch, lines=reporting_related_rows(batch, "lines")
+        )
         for line in reporting_related_rows(batch, "lines"):
             card = line.process_card if line.process_card_id else None
-            allocations = reporting_related_rows(line, "order_allocations")
+            allocations = [] if batch.supplement_kind else reporting_related_rows(line, "order_allocations")
             components = [
                 {
                     "order": allocation.order,
@@ -686,7 +688,7 @@ def build_quality_employee_details(
                 components = [
                     {
                         "order": order,
-                        "quantity": shipment_line_piece_quantity(line),
+                        "quantity": line.piece_quantity if batch.supplement_kind else shipment_line_piece_quantity(line),
                         "specification": line.specification_snapshot
                         or (card.specification_snapshot if card else "")
                         or (order.specification if order else "")
@@ -707,7 +709,7 @@ def build_quality_employee_details(
                         "record_key": f"weighted-shipment:{batch.pk}:{line.pk}:{component['key']}",
                         "business_date": batch.shipment_date.isoformat(),
                         "event_type": "SHIPMENT",
-                        "event_type_display": "重量出货",
+                        "event_type_display": batch.get_supplement_kind_display() if batch.supplement_kind else "重量出货",
                         "role": "INSPECTOR",
                         "product_name": (
                             (order.product_name if order else "")
@@ -719,12 +721,12 @@ def build_quality_employee_details(
                         "order_id": order.pk if order else None,
                         "order_no": order.order_no if order else "",
                         "item_no": order.item_no if order else "",
-                        "process_card_no": card.card_no if card else "",
+                        "process_card_no": batch.supplement.customer_card_no if batch.supplement_kind else card.card_no if card else "",
                         "process_cards": references.get(line.pk, []),
                         "product_code": order.product_code if order else "",
-                        "product_specification_id": order.product_specification_id if order else None,
+                        "product_specification_id": order.product_specification_id if order else line.product_specification_id,
                         "source_no": batch.shipment_no,
-                        "source_type": "WEIGHTED_SHIPMENT",
+                        "source_type": "SUPPLEMENT" if batch.supplement_kind else "WEIGHTED_SHIPMENT",
                         "shipment_batch_id": batch.pk,
                         "quantity": quantity,
                         "net_weight_kg": component["net_weight_kg"],
@@ -815,21 +817,23 @@ def build_quality_employee_details(
     for case in responsible_cases:
         shares = _rework_case_order_shares(case)
         returned = _rework_case_returned_quantity(case)
-        split = _split_integer_by_order_shares(returned, shares)
+        supplement = case.shipment_batch if case.shipment_batch_id and case.shipment_batch.supplement_kind else None
+        split = [(None, case.affected_quantity)] if supplement else _split_integer_by_order_shares(returned, shares)
         for order, quantity in split:
             append_record(
                 {
-                    "record_key": f"return:{case.pk}:{order.pk}",
+                    "record_key": f"return:{case.pk}:{order.pk if order else 'physical'}",
                     "business_date": case.opened_on.isoformat(),
                     "event_type": "RETURN_RESPONSIBILITY",
                     "event_type_display": "责任退回",
                     "role": "RESPONSIBLE_INSPECTOR",
-                    "product_name": order.product_name or "",
-                    "specification": order.specification or "",
-                    "material": order.material or "",
-                    "order_id": order.pk,
-                    "order_no": order.order_no,
-                    "item_no": order.item_no or "",
+                    "product_name": supplement.product_name_snapshot if supplement else order.product_name or "",
+                    "specification": supplement.specification_snapshot if supplement else order.specification or "",
+                    "material": supplement.material_snapshot if supplement else order.material or "",
+                    "product_specification_id": supplement.product_specification_id if supplement else None,
+                    "order_id": order.pk if order else None,
+                    "order_no": order.order_no if order else "",
+                    "item_no": order.item_no if order else "",
                     "process_card_no": (
                         case.process_card.card_no if case.process_card_id else ""
                     ),
@@ -987,10 +991,10 @@ def build_quality_employee_details(
     for record in records:
         order = known_orders.get(record["order_id"])
         record["product_code"] = order.product_code if order else ""
-        record["product_specification_id"] = order.product_specification_id if order else None
+        record["product_specification_id"] = order.product_specification_id if order else record.get("product_specification_id")
         # Unknown identities remain separate; matching text is not proof of a
         # shared customer product or process version.
-        identity = f"product:{order.product_specification_id}" if order and order.product_specification_id else f"order:{order.pk}" if order else f"unknown:{record['record_key']}"
+        identity = f"product:{record['product_specification_id']}" if record["product_specification_id"] else f"order:{order.pk}" if order else f"unknown:{record['record_key']}"
         product_key = json.dumps([identity, record["product_name"], record["specification"], record["material"]], ensure_ascii=False)
         record["product_key"] = product_key
         key = (
@@ -1596,9 +1600,8 @@ def build_dashboard(*, date_from, date_to, month=None, group=None, machine_id=No
             case_values = {"returned_quantity": returned_quantity}
             _add_quality(automatic_quality, case_values)
             _add_quality(daily[case.opened_on], case_values)
-            returned_by_order = dict(
-                _split_integer_by_order_shares(returned_quantity, shares)
-            )
+            returned_by_order = dict(shares if case.shipment_batch_id and case.shipment_batch.supplement_kind
+                                     else _split_integer_by_order_shares(returned_quantity, shares))
             for order, _ in shares:
                 order_row = order_rows[order.pk]
                 _add_quality(

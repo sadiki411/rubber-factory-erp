@@ -838,6 +838,8 @@ class ProcessCard(TimeStampedModel):
         self.card_no = str(self.card_no or "").strip().upper()
         if not self.card_no:
             errors["card_no"] = "Process card number is required."
+        elif settings.QUALITY_SUPPLEMENTS_ENABLED and ShipmentSupplement.objects.filter(customer_card_key=self.card_no).exists():
+            errors["card_no"] = "此客户卡已随无订单补货登记，不能再次作为新包登记。"
         if self.replaces_id:
             if self.pk and self.replaces_id == self.pk:
                 errors["replaces"] = "流程卡不能替换自身。"
@@ -1050,6 +1052,12 @@ class QualityShipmentBatch(TimeStampedModel):
         DRAFT = "DRAFT", "Draft"
         CONFIRMED = "CONFIRMED", "Confirmed"
         VOID = "VOID", "Void"
+
+    class SupplementKind(models.TextChoices):
+        REQUEST = "REQUEST", "客户临时要货"
+        REPLACEMENT = "REPLACEMENT", "质量问题换新货"
+
+    supplement_kind = models.CharField(max_length=12, choices=SupplementKind.choices, blank=True, default="", db_index=True)
 
     shipment_no = models.CharField("shipment batch number", max_length=100, unique=True, blank=True, default="")
     client_key = models.CharField("idempotency client key", max_length=128, blank=True, default="")
@@ -1336,6 +1344,7 @@ class QualityShipmentLine(TimeStampedModel):
         "net shipment weight (kg)",
         max_digits=14,
         decimal_places=3,
+        null=True, blank=True,
         validators=[MinValueValidator(Decimal("0.001"))],
     )
     piece_quantity = models.PositiveIntegerField(
@@ -1436,6 +1445,18 @@ class QualityShipmentLine(TimeStampedModel):
 
     def clean(self):
         errors = {}
+        if self.batch_id and self.batch.supplement_kind:
+            if self.process_card_id or self.order_id:
+                errors["process_card"] = "无单补货只登记实发；客户卡身份与订单认领独立处理。"
+            if not self.product_specification_id or not self.specification_snapshot or not self.material_snapshot:
+                errors["product_specification"] = "须明确产品档案、规格和材质。"
+            if (self.piece_quantity is None or self.piece_quantity < 1) and not self.net_weight_kg:
+                errors["piece_quantity"] = "至少登记实际件数或可核实的净重。"
+            if self.net_weight_kg is not None and self.net_weight_kg <= 0:
+                errors["net_weight_kg"] = "实测净重须大于 0。"
+            if errors:
+                raise ValidationError(errors)
+            return
         if self.piece_quantity is not None and self.piece_quantity < 1:
             errors["piece_quantity"] = "Piece quantity must be greater than zero."
         if not self.process_card_id and not self.order_id:
@@ -1630,6 +1651,7 @@ class QualityShipmentOrderAllocation(TimeStampedModel):
     net_weight_kg = models.DecimalField(
         max_digits=14,
         decimal_places=3,
+        null=True, blank=True,
         validators=[MinValueValidator(Decimal("0.001"))],
     )
     is_overflow = models.BooleanField(default=False)
@@ -1654,7 +1676,7 @@ class QualityShipmentOrderAllocation(TimeStampedModel):
                 name="quality_ship_alloc_piece_range_valid",
             ),
             models.CheckConstraint(
-                condition=Q(net_weight_kg__gt=0),
+                condition=Q(net_weight_kg__isnull=True) | Q(net_weight_kg__gt=0),
                 name="quality_ship_alloc_weight_gt_zero",
             ),
         ]
@@ -1676,7 +1698,10 @@ class QualityShipmentOrderAllocation(TimeStampedModel):
             and self.piece_end - self.piece_start != self.piece_quantity
         ):
             errors["piece_quantity"] = "出货订单分配区间与件数不一致。"
-        if self.net_weight_kg is None or self.net_weight_kg <= 0:
+        supplement = self.shipment_line_id and self.shipment_line.batch.supplement_kind
+        if (self.net_weight_kg is None and not supplement) or (
+            self.net_weight_kg is not None and self.net_weight_kg <= 0
+        ):
             errors["net_weight_kg"] = "出货订单分配净重必须大于0。"
         if errors:
             raise ValidationError(errors)
@@ -1697,6 +1722,72 @@ class QualityShipmentOrderAllocation(TimeStampedModel):
             f"line {self.shipment_line_id} / {self.order_no_snapshot or self.order_id} "
             f"/ {self.piece_quantity}"
         )
+
+
+class ShipmentSupplementIssue(TimeStampedModel):
+    """One light-weight follow-up, not an order, a return, or physical output."""
+
+    reference = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    product = models.ForeignKey("orders.ProductSpecification", on_delete=models.PROTECT)
+    kind = models.CharField(max_length=12, choices=QualityShipmentBatch.SupplementKind.choices)
+    customer_code = models.CharField(max_length=150, blank=True)
+    project_no = models.CharField(max_length=150, blank=True)
+    reason = models.CharField(max_length=300)
+    requested_quantity = models.PositiveIntegerField(null=True, blank=True)
+    disputed_quantity = models.PositiveIntegerField(null=True, blank=True)
+    dispute_note = models.CharField(max_length=500, blank=True)
+    retest_note = models.CharField(max_length=500, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+
+
+class ShipmentSupplementOrigin(TimeStampedModel):
+    issue = models.ForeignKey(ShipmentSupplementIssue, on_delete=models.PROTECT, related_name="origins")
+    batch = models.ForeignKey(QualityShipmentBatch, on_delete=models.PROTECT, related_name="replacement_origins")
+    unit_no = models.PositiveIntegerField()
+    card_no_snapshot = models.CharField(max_length=150, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=("issue", "batch", "unit_no"), name="quality_supplement_origin_uniq")]
+
+
+class ShipmentSupplement(models.Model):
+    """Extra facts for physical unit 1 of a first-class shipment in the existing ledger."""
+
+    batch = models.OneToOneField(QualityShipmentBatch, on_delete=models.PROTECT, related_name="supplement")
+    issue = models.ForeignKey(ShipmentSupplementIssue, on_delete=models.PROTECT, related_name="shipments")
+    customer_card_no = models.CharField(max_length=150, blank=True)
+    customer_card_key = models.CharField(max_length=150, unique=True, null=True, blank=True)
+    reused_card_no = models.CharField(max_length=150, blank=True)
+    internal_card = models.OneToOneField("flowcards.InternalCard", on_delete=models.PROTECT, null=True, blank=True)
+    no_claim_reason = models.CharField(max_length=500, blank=True)
+    source_note = models.CharField(max_length=500, blank=True)
+    amount_method = models.CharField(max_length=12, choices=[("COUNT", "实点件数"), ("WEIGHT", "称重")])
+
+
+class ShipmentSupplementEvent(TimeStampedModel):
+    request_key = models.UUIDField(unique=True)
+    digest = models.CharField(max_length=64)
+    action = models.CharField(max_length=16)
+    batch = models.ForeignKey(QualityShipmentBatch, on_delete=models.PROTECT, null=True, blank=True)
+    issue = models.ForeignKey(ShipmentSupplementIssue, on_delete=models.PROTECT)
+    details = models.JSONField(default=dict)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+
+
+class ShipmentSupplementDeliveryAdjustment(TimeStampedModel):
+    """Customer-confirmed release of one order share, not a physical return."""
+
+    origin = models.ForeignKey(ShipmentSupplementOrigin, on_delete=models.PROTECT, related_name="delivery_adjustments")
+    allocation = models.ForeignKey(QualityShipmentOrderAllocation, on_delete=models.PROTECT, related_name="delivery_adjustments")
+    unit_no = models.PositiveIntegerField()
+    piece_quantity = models.PositiveIntegerField()
+    evidence = models.CharField(max_length=500)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("allocation", "unit_no"), name="quality_delivery_adjustment_unit_uniq"),
+            models.CheckConstraint(condition=Q(piece_quantity__gt=0), name="quality_delivery_adjustment_positive"),
+        ]
 
 
 class ProcessCardUnitBinding(TimeStampedModel):

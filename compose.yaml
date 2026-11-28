@@ -28,6 +28,7 @@ services:
       GUNICORN_THREADS: "${GUNICORN_THREADS:-4}"
       FLOW_CARDS_WRITE_ENABLED: "${FLOW_CARDS_WRITE_ENABLED:-0}"
       FLOW_CARDS_PREPARATION_ENABLED: "${FLOW_CARDS_PREPARATION_ENABLED:-0}"
+      QUALITY_SUPPLEMENTS_ENABLED: "${QUALITY_SUPPLEMENTS_ENABLED:-1}"
     volumes:
       - ./runtime/data:/app/data
       - ./runtime/media:/app/media

@@ -1,4 +1,4 @@
-export type WorkbenchKind = 'ORDER_SHORTAGE' | 'RETURN_PENDING' | 'INVENTORY_QUALITY' | 'RECEIPT_UNLINKED' | 'CARD_PREPARATION'
+export type WorkbenchKind = 'ORDER_SHORTAGE' | 'RETURN_PENDING' | 'INVENTORY_QUALITY' | 'RECEIPT_UNLINKED' | 'CARD_PREPARATION' | 'SUPPLEMENT_PENDING'
 export interface WorkbenchTask {
   id: string
   kind: WorkbenchKind
@@ -37,12 +37,14 @@ export interface OrderTraceRow {
   unit: string
   details: string
   cards: string[]
-  order_allocations?: { order_id: number | null; order_no: string; item_no: string; piece_quantity: number; net_weight_kg: string | number }[]
+  order_allocations?: { order_id: number | null; order_no: string; item_no: string; piece_quantity: number; net_weight_kg: string | number | null }[]
   url: string | null
 }
 export interface OrderOverviewResult {
+  supplement_disputes?: { id: number; note: string; quantity: number }[]
+  supplement_delivery_adjustments?: { id: number; origin__issue_id: number; origin__batch__shipment_no: string; unit_no: number; piece_quantity: number; evidence: string }[]
   order: { id: number; order_no: string; item_no: string; specification: string; material: string; product_name: string; customer_code?: string; status: string; due_date: string | null; order_quantity: number }
-  summary: { net_delivered: number; delivery_remaining: number; production_progress_quantity: number; production_status: string; delivery_breakdown?: { all_effective_shipments: number; effective_returns: number; recorded_returns: number; return_clamp_difference: number; physical_shipments: number } }
+  summary: { net_delivered: number; delivery_remaining: number; production_progress_quantity: number; production_status: string; delivery_breakdown?: { all_effective_shipments: number; effective_returns: number; delivery_adjustments?: number; recorded_returns: number; return_clamp_difference: number; physical_shipments: number } }
   counts: Record<OrderTraceSection, number>
   section: OrderTraceSection
   count: number
