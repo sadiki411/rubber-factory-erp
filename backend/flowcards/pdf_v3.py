@@ -29,7 +29,7 @@ def compact_identity(product, font, width):
         lengths[target] -= 1
 
 
-def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, operational_guidance=False, second_inspection=False, paper_layout=SINGLE):
+def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, operational_guidance=False, second_inspection=False, paper_layout=SINGLE, shared=None):
     out, font = io.BytesIO(), font_name()
     sizes = {(c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c, _ in items}
     if len(sizes) != 1:
@@ -37,7 +37,7 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, op
     width, height = sizes.pop()
     if not 180 <= width <= 220 or not 125 <= height <= 165:
         raise ValueError("纸张尺寸超出已支持的180~220 × 125~165mm；不自动缩字。")
-    c = make_canvas(out, (width*mm, height*mm), paper_layout)
+    c = make_canvas(out, (width*mm, height*mm), paper_layout, shared=shared)
     c.setTitle("工序流转卡 · 隔离审阅布局")
     for card, reprint in items:
         start_card(c)
@@ -283,5 +283,6 @@ def render_cards_v3(items, *, applicable_dimensions=False, route_aware=False, op
                 yy+=3
             c.showPage()
         finish_card(c)
-    c.save()
+    if shared is None:
+        c.save()
     return out.getvalue()

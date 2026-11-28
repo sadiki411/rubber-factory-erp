@@ -297,7 +297,7 @@ export function OrdersPage() {
 
       {showingOrders ? (
         <>
-          <Card className="filter-card">
+          <Card className="filter-card" extra={<Button href={`/flow-cards?bulk=1&return_to=${encodeURIComponent(location.pathname+location.search)}`}>批量打印工序卡</Button>}>
             <div className="business-filter-row order-filter-row">
               <Input allowClear prefix={<SearchOutlined />} placeholder="搜索订单号、项次、产品、规格、材质或批次" value={query} onChange={(event) => setQuery(event.target.value)} />
               <Select aria-label="生产安排筛选" value={productionRequired} onChange={(value) => { setOrderPage(1); setProductionRequired(value) }} options={[{ value: '', label: '全部生产安排' }, { value: 'yes', label: '需要生产' }, { value: 'no', label: '无需生产' }]} />

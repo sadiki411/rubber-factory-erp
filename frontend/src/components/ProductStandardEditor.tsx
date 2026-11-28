@@ -2,6 +2,7 @@ import { Alert, App, Button, Card, Checkbox, Form, Input, InputNumber, Modal, Ra
 import { useState } from 'react'
 import { flowApi, flowLimitText, flowRequestKey, finishFlowRequest, type PreparationContext, type PreparationSource, type PreparationStandard, type StandardImportPreview } from '../flowcards'
 import { ProductProcessFields } from './ProductProcessFields'
+import { FlowAppearancePicker } from './FlowAppearancePicker'
 import { inspectionItemLabel } from '../inspectionItemLabel'
 import type { CustomerInspection } from '../customerInspection'
 import { useReadOnly } from '../access'
@@ -42,6 +43,7 @@ export function ProductStandardEditor({data,open,close,changed,initialTab='quali
   const [versionId,setVersionId] = useState(initial?.id)
   const [tab,setTab] = useState(initialTab)
   const [sourceStages,setSourceStages] = useState<Record<number,string>>({})
+  const [addingAppearance,setAddingAppearance] = useState(false)
   const {message} = App.useApp()
   const readOnly=useReadOnly()
   const write = !readOnly&&data.can_maintain_standard && data.write_enabled
@@ -65,7 +67,7 @@ export function ProductStandardEditor({data,open,close,changed,initialTab='quali
       await form.validateFields()
       const values = form.getFieldsValue(true)
       if(!String(values.source||'').trim()) {setTab('source');throw new Error('请填写来源说明；已经导入的标准会自动填写。')}
-      if(new Set(values.appearance_ids||[]).size!==4) {setTab('route');throw new Error('请在「打印项目」选好四项外观检查。')}
+      if(new Set(values.appearance_ids||[]).size>20) {setTab('route');throw new Error('外观检查项目最多20项。')}
       const criteria = (values.criteria||[]).map((c:Record<string,unknown>)=>{
         const hasLower=String(c.lower??'').trim()!==''
         const hasUpper=String(c.upper??'').trim()!==''
@@ -98,7 +100,7 @@ export function ProductStandardEditor({data,open,close,changed,initialTab='quali
       setSaved(result);finishFlowRequest(slot);changed()
       if(activate) {const active=await flowApi.activateStandard(result.id);onActivated?.(active);changed();message.success(values.applicable_order_id?'已保存并用于本单制卡，旧卡不变':'已保存到本产品并生效，旧卡不变');close()}
       else message.success('已保存到本产品的标准草稿，尚未生效')
-    } catch(e) {if(typeof e==='object'&&e&&'errorFields' in e){setError('请补全标出的必填项；来源依据及四项外观检查不能遗漏。');setTab('source')}else setError((e as Error).message||'保存失败，请重试；不会把读取失败当作保存成功。')}
+    } catch(e) {if(typeof e==='object'&&e&&'errorFields' in e){setError('请补全标出的必填项，包括来源依据。');setTab('source')}else setError((e as Error).message||'保存失败，请重试；不会把读取失败当作保存成功。')}
     finally {setBusy(false)}
   }
   const candidate = selected===undefined?undefined:imported?.candidates[selected]
@@ -125,7 +127,7 @@ export function ProductStandardEditor({data,open,close,changed,initialTab='quali
       markChanged();setTab('quality');message.info('已带入。相同项目补到原行，检查上下限后保存即可。')
     } catch(e) {setError((e as Error).message)}
   }
-  return <Modal open={open} onCancel={close} title={`${data.product.specification} / ${data.product.material} · 产品标准`} width={920} className="product-standard-editor" footer={<Space wrap><Button onClick={close}>关闭</Button><Button disabled={!write||tab==='import'} loading={busy} onClick={()=>void save(false)}>保存草稿</Button><Button type="primary" disabled={!write||tab==='import'} loading={busy} onClick={()=>void save(true)}>{adopt?'保存并用于本单制卡':'保存并生效'}</Button></Space>}>
+  return <Modal open={open} onCancel={close} title={`${data.product.specification} / ${data.product.material} · 产品标准`} width={920} className="product-standard-editor" footer={<Space wrap><Button onClick={close}>关闭</Button><Button disabled={!write||addingAppearance||tab==='import'} loading={busy} onClick={()=>void save(false)}>保存草稿</Button><Button type="primary" disabled={!write||addingAppearance||tab==='import'} loading={busy} onClick={()=>void save(true)}>{adopt?'保存并用于本单制卡':'保存并生效'}</Button></Space>}>
     {!adopt&&<Alert type="info" showIcon title="这里填写标准，不是本批实测值" />}
     {!write&&<Alert type="warning" title="当前只读，不能修改产品标准" />}
     {error&&<Alert type="error" title="未完成保存，请核对" description={error} />}
@@ -169,7 +171,8 @@ export function ProductStandardEditor({data,open,close,changed,initialTab='quali
           <Form.Item name="whole_mold" label="整模工序"><Radio.Group options={[{value:'REQUIRED',label:'需要整模'},{value:'NOT_REQUIRED',label:'不需整模'}]} /></Form.Item>
           <Space wrap>{[['molding','成型实测'],['patrol','巡检'],['deburr','毛边'],['inspection','品检']].map(([k,l])=><Form.Item key={k} name={['route',k]} valuePropName="checked"><Checkbox>{l}</Checkbox></Form.Item>)}</Space>
           <div className="flow-form-grid"><Form.Item name={['packaging','molds_per_card']} label="每包模数"><InputNumber min={1} precision={0} /></Form.Item><Form.Item name={['packaging','patrol_every_molds']} label="每隔多少模巡检（选填）"><InputNumber min={1} precision={0} /></Form.Item></div>
-          <Form.Item name="appearance_ids" label="四项外观检查" rules={[{required:true},{type:'array',len:4}]}><Select mode="multiple" options={data.appearance.map(a=>({value:a.id,label:a.name}))} /></Form.Item>
+          <FlowAppearancePicker items={data.appearance} inherited={data.standards.find(s=>s.id===versionId)?.snapshot.appearance}
+            disabled={!write||busy} canAdd={write} changed={()=>{markChanged();changed()}} saving={setAddingAppearance} />
         </>},
         ...(!adopt?[{key:'import',label:'导入客户标准',children:<>
           <Alert type="info" title="先识别预览，再带入本产品核对；不会自动新增产品或改订单" description="支持有项目/要求列或横排字段的xlsx。图片和未识别排版请按原件手填。客户、料号、模具和版次要明确匹配，不能只靠同规格猜配。" />

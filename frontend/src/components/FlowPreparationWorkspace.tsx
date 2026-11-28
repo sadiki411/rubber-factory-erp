@@ -8,6 +8,7 @@ import { inspectionItemLabel } from '../inspectionItemLabel'
 import { ProductStandardEditor as StandardEditor } from './ProductStandardEditor'
 import { PreparationGuidancePanel } from './PreparationGuidancePanel'
 import { FlowPrintLayout, FlowPrintPreview } from './FlowPrintLayout'
+import { FlowAppearancePicker } from './FlowAppearancePicker'
 import { OrderCustomerInspectionPanel } from './CustomerInspectionPanel'
 import { customerInspectionApi, type CustomerInspection } from '../customerInspection'
 import { FlowVoidDialog } from './FlowPrintResults'
@@ -37,6 +38,7 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
   const [busy,setBusy] = useState(false)
   const [error,setError] = useState('')
   const [editor,setEditor] = useState(false)
+  const [addingAppearance,setAddingAppearance] = useState(false)
   const [productEditor,setProductEditor] = useState(false)
   const productDetail = useQuery({queryKey:['flow-product-specification',data.product.id],
     queryFn:()=>productSpecificationApi.detail(data.product.id),enabled:productEditor})
@@ -84,6 +86,7 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
       weight_g: saved?.weight_g ?? defaults?.weight_g ?? '',
     }})
     form.setFieldValue('temperature_plan',g?.snapshot.temperature_plan||s?.snapshot.packaging?.temperature_plan||{mode:'PENDING'})
+    form.setFieldValue('appearance_ids', (snapshot?.appearance ?? s?.snapshot.appearance ?? data.appearance.slice(0,4)).map(a=>a.id))
   }, [data, form, clearSamples])
   useEffect(() => {if(init.current !== contextKey) {init.current=contextKey; queueMicrotask(() => applyGroup(data.preferred_group))}},[contextKey,data,applyGroup])
   const standardId = Form.useWatch('standard_id',form)
@@ -96,7 +99,8 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
   const adoptActivated=(row:PreparationStandard)=>{
     setActivated(row);setPreview(undefined);clearSamples()
     if(group?.status!=='GENERATED') {
-      form.setFieldsValue({standard_id:row.id,whole_mold:row.whole_mold,temperature_plan:row.snapshot.packaging?.temperature_plan||{mode:'PENDING'}})
+      form.setFieldsValue({standard_id:row.id,whole_mold:row.whole_mold,temperature_plan:row.snapshot.packaging?.temperature_plan||{mode:'PENDING'},
+        appearance_ids:row.snapshot.appearance?.map(a=>a.id)})
     }
   }
   const selectedContext = useQuery({queryKey:['selected-preparation-standard',contextKey,standardId],queryFn:async()=>{
@@ -126,9 +130,11 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
     if(values.planned_molds && !validPlan) throw new Error('请核对逐卡模数：每张为正整数，合计必须等于本次预计生产模数。')
     const rows: Array<{name:string}&Record<string,unknown>>=values.process_adjustments||[]
     if(new Set(rows.map((r)=>r.name)).size!==rows.length) throw new Error('本次工艺调整同一参数只能填写一项')
-    const {process_adjustments:_,...rest}=values
+    const {process_adjustments:_,appearance_ids:appearanceIds,...rest}=values
     void _
-    return {...rest,temperature_plan:form.getFieldValue('temperature_plan'),card_molds:values.planned_molds?values.card_molds:undefined,order_plan:!data.run_id,process_overrides:Object.fromEntries(rows.map(({name,...value})=>[name,value])),product_id:data.product.id,order_id:data.order_ids[0],run_id:data.run_id,order_ids:data.order_ids,...(group?.status==='DRAFT'?{group_id:group.id,expected_revision:group.revision}:{})}
+    const standardAppearance=standard?.snapshot.appearance?.map(a=>a.id)
+    const customAppearance=Array.isArray(appearanceIds)&&JSON.stringify(appearanceIds)!==JSON.stringify(standardAppearance)
+    return {...rest,...(customAppearance?{appearance_ids:appearanceIds}:{}),temperature_plan:form.getFieldValue('temperature_plan'),card_molds:values.planned_molds?values.card_molds:undefined,order_plan:!data.run_id,process_overrides:Object.fromEntries(rows.map(({name,...value})=>[name,value])),product_id:data.product.id,order_id:data.order_ids[0],run_id:data.run_id,order_ids:data.order_ids,...(group?.status==='DRAFT'?{group_id:group.id,expected_revision:group.revision}:{})}
   }
   const save = (generate:boolean) => perform(async () => {
     const popup = generate ? beginPrint?.() : undefined
@@ -216,13 +222,18 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
         </Space>
       </Card>
       <div className="flow-form-grid">
-        <Form.Item name="standard_id" label="本次制卡采用的标准"><Select allowClear options={standards.filter((s)=>s.status==='ACTIVE'||s.status==='DRAFT').map((s)=>({value:s.id,label:`${s.customer_key||'通用'} v${s.version} · ${STATE[s.status as keyof typeof STATE]} · ${s.source}`}))} onChange={(id)=>{const s=standards.find((s)=>s.id===id);if(s)form.setFieldsValue({whole_mold:s.whole_mold,molds_per_card:s.snapshot.packaging?.molds_per_card||100,card_molds:splitPlannedMolds(molds,s.snapshot.packaging?.molds_per_card||100),temperature_plan:s.snapshot.packaging?.temperature_plan||{mode:'PENDING'}})}} /></Form.Item>
+        <Form.Item name="standard_id" label="本次制卡采用的标准"><Select allowClear disabled={addingAppearance} options={standards.filter((s)=>s.status==='ACTIVE'||s.status==='DRAFT').map((s)=>({value:s.id,label:`${s.customer_key||'通用'} v${s.version} · ${STATE[s.status as keyof typeof STATE]} · ${s.source}`}))} onChange={(id)=>{const s=standards.find((s)=>s.id===id);if(s)form.setFieldsValue({whole_mold:s.whole_mold,molds_per_card:s.snapshot.packaging?.molds_per_card||100,card_molds:splitPlannedMolds(molds,s.snapshot.packaging?.molds_per_card||100),temperature_plan:s.snapshot.packaging?.temperature_plan||{mode:'PENDING'},appearance_ids:s.snapshot.appearance?.map(a=>a.id)})}} /></Form.Item>
         {data.run_id && <Form.Item name="range_start" label="本次起始模号"><InputNumber min={1} precision={0} /></Form.Item>}
         <Form.Item name="planned_molds" label="本次预计生产模数"><InputNumber min={1} max={10000000} precision={0} placeholder="例如360模" /></Form.Item>
         <Form.Item name="molds_per_card" label="默认每张卡模数（自动分卡）" rules={[{required:true}]}><InputNumber min={1} max={100000} precision={0} /></Form.Item>
         <Form.Item name="diagram_id" label="本副实物模具的定点图（可空）"><Select allowClear options={data.diagrams.map((d)=>({value:d.id,label:`v${d.version} · ${d.direction}`}))} /></Form.Item>
         <Form.Item name="whole_mold" hidden><Input /></Form.Item>
       </div>
+      {(!standard || standard.snapshot.route?.patrol !== false) && <Card size="small" title="本次纸卡 · 外观检查" style={{marginBottom:16}}>
+        <FlowAppearancePicker items={data.appearance} inherited={group?.snapshot.appearance || standard?.snapshot.appearance}
+          disabled={disabled||busy} canAdd={canEdit} changed={()=>{setPreview(undefined);clearSamples();refresh()}} saving={setAddingAppearance} />
+        <Typography.Text type="secondary">这里只调整本次新卡。以后同一产品也默认使用，请到「详细工艺与检验标准 → 打印项目」保存。</Typography.Text>
+      </Card>}
       <Card size="small" title="逐张分配模数（每张及尾数均可修改）">
         <Form.List name="card_molds">{(fields,{add,remove})=><><div className="flow-card-allocation">{fields.map(field=><div key={field.key}><Form.Item name={field.name} label={`第${field.name+1}张${field.name===fields.length-1?' · 尾卡':''}`} rules={[{required:true,message:'请填写模数'}]}><InputNumber aria-label={`第${field.name+1}张预计模数`} min={1} max={100000} precision={0} addonAfter="模" /></Form.Item><Button size="small" onClick={()=>remove(field.name)}>移除此卡</Button></div>)}</div><Space wrap><Button onClick={()=>form.setFieldValue('card_molds',splitPlannedMolds(molds,per))}>按默认模数重新分配</Button><Button disabled={fields.length>=500} onClick={()=>add(1)}>增加一张</Button><Button disabled={!total} onClick={()=>{form.setFieldValue('planned_molds',total);setPreview(undefined)}}>预计模数改为分卡合计 {total} 模</Button></Space></>}</Form.List>
         <Alert type={validPlan?'success':'warning'} title={!molds&&preview?.planned_molds?`试算 ${preview.planned_molds} 模 → ${preview.count} 张 · 尾卡 ${preview.tail_molds} 模（尚未采用）`:molds?`预计 ${molds} 模 · 已分配 ${total} 模 · 差额 ${molds-total} 模`:'尚未填写预计模数'} description={!molds&&preview?.card_molds?.length?`建议逐张分配：${preview.card_molds.join('、')} 模。采用后可逐张调整。`:'改尾数或其他卡后，请保持合计一致；也可用上方按钮把预计模数改为分卡合计。'} />
@@ -253,9 +264,9 @@ export function FlowPreparationWorkspace({ data, refresh, lookup, settings, prin
       {preview && <Alert type={preview.count?'info':'warning'} title={preview.count?`不落库预览：${preview.count}张，尾包${preview.tail_molds}模`:'尚无可分卡的试算结果'} description={<>{preview.snapshot?.plan_basis}{!molds&&preview.planned_molds&&<Button onClick={()=>{form.setFieldsValue({planned_molds:preview.planned_molds,card_molds:preview.card_molds||splitPlannedMolds(preview.planned_molds,per)});clearSamples();setPreview(undefined)}}>采用此建议：{preview.planned_molds} 模</Button>}</>} />}
       <Space wrap><FlowPrintLayout value={paperLayout} onChange={layout=>{setPaperLayout(layout);clearSamples()}} disabled={busy} />
       <Checkbox disabled={busy} checked={secondInspection} onChange={e=>{setSecondInspection(e.target.checked);clearSamples()}}>本次打印需要二检（品检员&emsp;一检：___&emsp;二检：___）</Checkbox></Space>
-      <Space wrap>{(['FIRST','LAST'] as const).map(position=><Button key={position} loading={busy} onClick={()=>void perform(async()=>{const url=await flowApi.sample({...await payload(),sample_position:position,second_inspection:secondInspection,paper_layout:paperLayout});const old=sampleUrls.current[position];if(old)URL.revokeObjectURL(old);sampleUrls.current[position]=url;setSamples({...sampleUrls.current})})}>{paperLayout==='A4_TWO_UP'?(position==='FIRST'?'看首页样张':'看末页样张'):(position==='FIRST'?'看首卡样张':'看尾卡样张')}（不发号）</Button>)}</Space>
+      <Space wrap>{(['FIRST','LAST'] as const).map(position=><Button key={position} disabled={addingAppearance} loading={busy} onClick={()=>void perform(async()=>{const url=await flowApi.sample({...await payload(),sample_position:position,second_inspection:secondInspection,paper_layout:paperLayout});const old=sampleUrls.current[position];if(old)URL.revokeObjectURL(old);sampleUrls.current[position]=url;setSamples({...sampleUrls.current})})}>{paperLayout==='A4_TWO_UP'?(position==='FIRST'?'看首页样张':'看末页样张'):(position==='FIRST'?'看首卡样张':'看尾卡样张')}（不发号）</Button>)}</Space>
       {Object.entries(samples).map(([position,url])=><Card size="small" key={position} title={`${position==='FIRST'?'首':'末'}页样张 · 未发号、无真实二维码`}><a href={url} target="_blank" rel="noopener noreferrer">打开样张PDF（非正式卡）</a><object data={url} type="application/pdf" aria-label={`${position}纸卡样张`} style={{width:'100%',height:420}}>此设备请点击上方链接查看PDF</object></Card>)}
-      <Space wrap><Button loading={busy} onClick={()=>void perform(async()=>{setPreview(await flowApi.preview(await payload()))})}>预览（不保存，只读可用）</Button><Button disabled={disabled} loading={busy} onClick={()=>void save(false)}>保存本次准备</Button><Button type="primary" disabled={disabled||!validPlan||!standard||standard.status!=='ACTIVE'} loading={busy} onClick={()=>void save(true)}>生成{count?` ${count} 张`:''}并准备打印</Button></Space>
+      <Space wrap><Button disabled={addingAppearance} loading={busy} onClick={()=>void perform(async()=>{setPreview(await flowApi.preview(await payload()))})}>预览（不保存，只读可用）</Button><Button disabled={disabled||addingAppearance} loading={busy} onClick={()=>void save(false)}>保存本次准备</Button><Button type="primary" disabled={disabled||addingAppearance||!validPlan||!standard||standard.status!=='ACTIVE'} loading={busy} onClick={()=>void save(true)}>生成{count?` ${count} 张`:''}并准备打印</Button></Space>
       {count && count>100 && <Alert type="info" title="超过100张将分批打印；本次先准备前100张，余卡在原卡组翻页打印，不重新发号。" />}
       {group && <Typography.Paragraph copyable>同一草稿ID：{group.id} · 版本{group.revision}；保存只更新本组。</Typography.Paragraph>}
     </Card>}

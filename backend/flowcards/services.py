@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Max, Q
+from django.db.models import Max, Q, OuterRef, Subquery
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError, PermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -22,7 +22,7 @@ from .models import (
     PrintJob, PrintItem, TemplatePublication, ShipmentSource, TraceAudit, PositionDiagram, Attachment,
 )
 from .limits import validate_limits, evaluate
-from .paper import A4_TWO_UP, print_layout
+from .paper import A4_TWO_UP, A5_SINGLE, print_layout
 
 RENDERER = "flowcard-review-20261119-v4"
 LEGACY_PREPARATION_RENDERER = "flowcard-guidance-20261121-v6"
@@ -101,6 +101,18 @@ def card_ids(data):
         return [uuid.UUID(str(value)) for value in ids]
     except (ValueError, TypeError, AttributeError):
         raise ValidationError({"card_ids": "内部卡编号无效。"})
+
+
+def selected_appearance(values):
+    if not isinstance(values, list) or len(values) > 20:
+        raise ValidationError({"appearance_ids": "外观检查项目最多20项。"})
+    ids = [integer(value, "appearance_ids", maximum=2147483647) for value in values]
+    if len(set(ids)) != len(ids):
+        raise ValidationError({"appearance_ids": "外观检查项目不能重复。"})
+    rows = AppearanceIssue.objects.filter(pk__in=ids, is_active=True).in_bulk()
+    if len(rows) != len(ids):
+        raise ValidationError({"appearance_ids": "有外观项目不存在或已停用，请重新选择。"})
+    return [rows[pk] for pk in ids]
 
 
 def request_key(data):
@@ -278,14 +290,7 @@ def confirm_standard(data, user):
         entries = adopted_criteria(document, product, order, entries, bake)
         if len(entries) > 30:
             raise ValidationError({"criteria": "最多确认30个项目。"})
-    issues = data.get("appearance_ids", [])
-    if not isinstance(issues, list) or len(set(map(str, issues))) != 4:
-        raise ValidationError({"appearance_ids": "请选择四项外观问题。"})
-    issues = [integer(value, "appearance_ids", maximum=2147483647) for value in issues]
-    selected_by_id = {row.pk: row for row in AppearanceIssue.objects.filter(pk__in=issues, is_active=True)}
-    if len(selected_by_id) != 4:
-        raise ValidationError({"appearance_ids": "外观选项不存在或已停用。"})
-    selected = [selected_by_id[pk] for pk in issues]
+    selected = selected_appearance(data.get("appearance_ids", []))
     criteria, snapshots = [], []
     new_criteria = set()
     for entry in entries:
@@ -478,14 +483,7 @@ def group_plan(data, *, separate_customer_reference=False):
         required_text(data, "cavities_basis")
     appearance = standard.snapshot["appearance"] if standard else list(AppearanceIssue.objects.filter(is_active=True).order_by("id").values("id", "name")[:4])
     if data.get("appearance_ids") is not None:
-        issue_ids = data["appearance_ids"]
-        if not isinstance(issue_ids, list) or len(issue_ids) != 4 or len(set(map(str, issue_ids))) != 4:
-            raise ValidationError({"appearance_ids": "请选择四项不同的外观问题。"})
-        issue_ids = [integer(value, "appearance_ids", maximum=2147483647) for value in issue_ids]
-        selected = {row["id"]: row for row in AppearanceIssue.objects.filter(pk__in=issue_ids, is_active=True).values("id", "name")}
-        appearance = [selected[pk] for pk in issue_ids if pk in selected]
-    if len(appearance) != 4:
-        raise ValidationError({"appearance": "请先维护四项适用外观问题。"})
+        appearance = [{"id": row.pk, "name": row.name} for row in selected_appearance(data["appearance_ids"])]
     snapshot = {"card_molds": card_molds, "appearance": appearance, "product": {"id": product.pk, "name": product.product_name, "specification": product.specification,
                             "material": product.material, "customer_product_no": product.customer_product_no},
         "orders": [{"id": o.pk, "order_no": o.order_no, "item_no": o.item_no, "customer": order_customer_key(o)} for o in orders],
@@ -628,14 +626,109 @@ def print_options(data):
     return {"second_inspection": second, "paper_layout": print_layout(data.get("paper_layout", A4_TWO_UP))}
 
 
+def same_order_product(data):
+    specification = required_text(data, "specification", 150)
+    material = required_text(data, "material", 150)
+    return specification, material
+
+
+def selected_print_orders(data):
+    if not isinstance(data, dict):
+        raise ValidationError({"order_scope": "请选择要一起打印的订单项次。"})
+    specification, material = same_order_product(data)
+    ids = data.get("order_ids")
+    if not isinstance(ids, list) or not 1 <= len(ids) <= 200:
+        raise ValidationError({"order_ids": "请选择 1 至 200 个订单项次。"})
+    ids = {integer(i, "order_ids", maximum=2147483647) for i in ids}
+    orders = QualityOrder.objects.filter(pk__in=ids, specification__iexact=specification, material__iexact=material)
+    if orders.count() != len(ids):
+        raise ValidationError({"order_ids": "有订单不存在或规格、材质不一致；请重新查询确认。"})
+    return orders, (specification.casefold(), material.casefold())
+
+
+def print_template_key(card):
+    template = card.group.snapshot["template"]
+    return template["renderer"], template.get("width_mm", 190), template.get("height_mm", 130)
+
+
+def print_card_matches(card, product_pair):
+    # The frozen product printed on the card is the authority; do not relabel a
+    # historical card when a current order/product catalog was edited.
+    product = card.group.snapshot.get("product") or {}
+    return (str(product.get("specification") or "").strip().casefold(),
+            str(product.get("material") or "").strip().casefold()) == product_pair
+
+
+def print_batch_identity(card):
+    group = card.group
+    orders = group.snapshot.get("orders", [])
+    customers = {(str(order.get("customer") or "").strip().casefold(),
+                  str(order.get("customer_code") or "").strip().casefold()) for order in orders}
+    if len(customers) != 1 or not next(iter(customers))[0]:
+        return group.product_id, str(group.pk)
+    return group.product_id, next(iter(customers))
+
+
+def print_order_plan(data):
+    orders, product_pair = selected_print_orders(data.get("order_scope"))
+    layout = print_layout(data.get("paper_layout", A5_SINGLE))
+    reprints = data.get("include_reprints", False)
+    if not isinstance(reprints, bool):
+        raise ValidationError({"include_reprints": "请选择是否包括已确认出纸的卡。"})
+    qs = InternalCard.objects.filter(group__orders__in=orders, group__status="GENERATED", status="ACTIVE").distinct()
+    cards = list(qs.select_related("group").annotate(
+        pending=Subquery(PrintItem.objects.filter(card_id=OuterRef("pk"), active=True).values("job_id")[:1]),
+    ).order_by("group_id", "sequence"))
+    selectable = []
+    pending_jobs = {}
+    counts = {"pending": 0, "reprint": 0, "identity_mismatch": 0, "first_print": 0}
+    for card in cards:
+        if not print_card_matches(card, product_pair):
+            counts["identity_mismatch"] += 1
+        elif card.pending:
+            counts["pending"] += 1
+            pending_jobs.setdefault(str(uuid.UUID(str(card.pending))), []).append(str(card.pk))
+        elif card.printed_at and not reprints:
+            counts["reprint"] += 1
+        else:
+            if card.printed_at:
+                counts["reprint"] += 1
+            else:
+                counts["first_print"] += 1
+            selectable.append(card)
+    by_format = {}
+    for card in selectable:
+        key = (print_batch_identity(card), None if layout == A5_SINGLE else print_template_key(card))
+        by_format.setdefault(key, []).append(card)
+    packets = []
+    for items in by_format.values():
+        for i in range(0, len(items), 100):
+            packets.append([{"id": str(c.pk), "card_no": c.card_no, "sequence": c.sequence,
+                             "denominator": c.denominator, "reprint": bool(c.printed_at),
+                             "group_id": str(c.group_id),
+                             "orders": c.group.snapshot.get("orders", [])} for c in items[i:i+100]])
+    return {"packets": packets, "counts": counts, "card_count": len(selectable),
+            "pending_jobs": [{"id": key, "card_ids": ids} for key, ids in pending_jobs.items()],
+            "write_enabled": settings.FLOW_CARDS_WRITE_ENABLED}
+
+
 def print_cards(data, options, *, lock=False):
     ids = card_ids(data)
     rows = InternalCard.objects.select_for_update() if lock else InternalCard.objects.all()
+    if "order_scope" in data:
+        orders, product_pair = selected_print_orders(data["order_scope"])
+        group_ids = CardGroup.objects.filter(orders__in=orders, status="GENERATED").values("pk")
+        rows = rows.filter(group_id__in=group_ids)
     cards = list(rows.filter(pk__in=ids).select_related("group").order_by("group_id", "sequence"))
     if len(cards) != len(set(map(str, ids))) or any(c.status != "ACTIVE" for c in cards):
         raise ValidationError({"card_ids": "卡不存在或已作废。"})
-    templates = {(c.group.snapshot["template"]["renderer"], c.group.snapshot["template"].get("width_mm", 190), c.group.snapshot["template"].get("height_mm", 130)) for c in cards}
-    if len(templates) > 1:
+    if "order_scope" in data and any(not print_card_matches(c, product_pair) for c in cards):
+        raise ValidationError({"card_ids": "卡面快照的规格、材质与所选订单不一致；请从原卡组核对。"})
+    if "order_scope" in data and len({print_batch_identity(c) for c in cards}) > 1:
+        raise ValidationError({"card_ids": "不同产品档案、客户或客户身份待核的卡必须分册打印。"})
+    if "order_scope" in data and any(c.printed_at for c in cards) and data.get("include_reprints") is not True:
+        raise ValidationError({"card_ids": "有卡已确认出纸；若确定要补打，请明确选择包含补打。"})
+    if len({print_template_key(c) for c in cards}) > 1 and options["paper_layout"] != A5_SINGLE:
         raise ValidationError({"card_ids": "不同模板渲染版本或纸张尺寸请分别打印，旧卡不套新模板。"})
     if options["second_inspection"] and any(c.group.snapshot["template"]["renderer"] in ROUTE_RENDERERS and not c.group.snapshot.get("route", {}).get("inspection") for c in cards):
         raise ValidationError({"second_inspection": "所选原卡有不适用品检工序的卡，不能添加二检签名；请核对适用范围。"})

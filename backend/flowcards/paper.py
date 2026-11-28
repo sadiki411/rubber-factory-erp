@@ -1,16 +1,17 @@
-"""Physical A4 imposition; renderers keep drawing each original-size logical card."""
-from reportlab.lib.pagesizes import A4
+"""Physical imposition without rewriting the versioned logical card artwork."""
+from reportlab.lib.pagesizes import A4, A5, landscape
 from reportlab.lib.units import mm
 from reportlab.pdfgen.canvas import Canvas
 from rest_framework.exceptions import ValidationError
 
 A4_TWO_UP = "A4_TWO_UP"
+A5_SINGLE = "A5_SINGLE"
 SINGLE = "SINGLE"
 
 
 def print_layout(value):
-    if value not in (A4_TWO_UP, SINGLE):
-        raise ValidationError({"paper_layout": "请选择 A4 双卡打印或原尺寸单卡。"})
+    if value not in (A5_SINGLE, A4_TWO_UP, SINGLE):
+        raise ValidationError({"paper_layout": "请选择 A5 横向单卡、A4 双卡或原尺寸单卡。"})
     return value
 
 
@@ -87,8 +88,43 @@ class TwoUpCanvas(Canvas):
         super().save()
 
 
-def make_canvas(target, pagesize, paper_layout, *, fuller_a4=False):
+class A5Canvas(TwoUpCanvas):
+    """One centered vector form per landscape sheet, including continuations."""
+
+    def __init__(self, target):
+        super().__init__(target, pagesize=landscape(A5), pageCompression=1, invariant=1)
+        self.setPageSize(landscape(A5))
+
+    def finish_card(self):
+        if self._code or not self.current_card:
+            raise ValueError("工序卡没有完成逻辑页，无法安全排入 A5。")
+        self.endForm()
+        self.capturing = False
+        width, height = landscape(A5)
+        card_width, card_height = self.card_size
+        scale = min(1.06 if self.fuller_a4 else 1,
+                    (width - 10 * mm) / card_width, (height - 10 * mm) / card_height)
+        for name in self.current_card:
+            self.saveState()
+            self.translate((width - card_width*scale)/2, (height - card_height*scale)/2)
+            self.scale(scale, scale)
+            self.doForm(name)
+            self.restoreState()
+            self.showPage()
+        self.current_card = []
+
+    def save(self):
+        Canvas.save(self)
+
+
+def make_canvas(target, pagesize, paper_layout, *, fuller_a4=False, shared=None):
+    if shared is not None:
+        shared.card_size = pagesize
+        shared.fuller_a4 = fuller_a4
+        return shared
     options = dict(pagesize=pagesize, pageCompression=1, invariant=1)
+    if paper_layout == A5_SINGLE:
+        return make_canvas(target, pagesize, paper_layout, fuller_a4=fuller_a4, shared=A5Canvas(target))
     if paper_layout == A4_TWO_UP:
         return TwoUpCanvas(target, fuller_a4=fuller_a4, **options)
     return Canvas(target, **options)

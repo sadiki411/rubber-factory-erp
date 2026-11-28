@@ -62,10 +62,13 @@ export type FlowEvent = { id: string; kind: string; values: Record<string, unkno
 export type FlowPage<T> = { count: number; results: T[] }
 export type FlowReturn = { id: number; case_no: string; status: string; return_round: number | null; reshipment_batch_id: number | null }
 export type FlowTrace = { id: number; batch_id: number; shipment_no: string; current_shipment_status: string; state: string; scope: string; related_returns: FlowReturn[]; related_return_count: number }
-export type PaperLayout = 'A4_TWO_UP' | 'SINGLE'
+export type PaperLayout = 'A4_TWO_UP' | 'A5_SINGLE' | 'SINGLE'
 export const DEFAULT_PAPER_LAYOUT: PaperLayout = 'A4_TWO_UP'
-export const PAPER_LAYOUT_LABEL: Record<PaperLayout, string> = { A4_TWO_UP: 'A4 双卡打印', SINGLE: '原尺寸单卡' }
-export type PrintJob = { id: string; status: string; request_key: string; pdf_url: string; file_prepared: boolean; pdf_sha256: string; second_inspection?:boolean; paper_layout?: PaperLayout; items: Array<{ card_id: string; group_id?: string; card_no: string; sequence: number; denominator: number; proposed_reprint: number; status: string; active: boolean }> }
+export const PAPER_LAYOUT_LABEL: Record<PaperLayout, string> = { A4_TWO_UP: 'A4 双卡打印', A5_SINGLE: 'A5 一卡打印（A4 对折）', SINGLE: '原尺寸单卡' }
+export type PrintJob = { id: string; status: string; request_key: string; pdf_url: string; file_prepared: boolean; pdf_sha256: string; second_inspection?:boolean; paper_layout?: PaperLayout; items: Array<{ card_id: string; group_id?: string; card_no: string; sequence: number; denominator: number; proposed_reprint: number; status: string; active: boolean; order_refs?: string[] }> }
+export type FlowPrintOrder = { id: number; order_no:string; item_no:string; customer:string; status:string; due_date?:string; has_cards:boolean }
+export type FlowPrintOrderScope = { specification:string; material:string; order_ids:number[] }
+export type FlowPrintPlan = { packets:Array<Array<{ id:string; card_no:string; sequence:number; denominator:number; group_id:string; reprint:boolean; orders:FlowSnapshot['orders'] }>>; card_count:number; write_enabled:boolean; pending_jobs:Array<{id:string;card_ids:string[]}>; counts:{pending:number; reprint:number; identity_mismatch:number; first_print:number} }
 export type FlowContext = {
   preparation_enabled?: boolean
   write_enabled: boolean; product: FlowSnapshot['product']; run_id: number | null; mold_id: number | null; order_ids: number[]; orders: FlowSnapshot['orders']; suggested_molds: number | null
@@ -97,7 +100,7 @@ export const flowApi = {
   saveStandard: (body: unknown) => post<PreparationStandard>('standards/', body),
   activateStandard: (id: number) => post<PreparationStandard>(`standards/${id}/activate/`, {}),
   preparationSources: (params: URLSearchParams, page = 1) => apiFetch<FlowPage<PreparationSource>>(`/api/flow-cards/preparation-sources/?${params}&page=${page}&page_size=50`),
-  appearance: (body: unknown) => post('appearance/', body),
+  appearance: (body: unknown) => post<{id:number;name:string;is_active:boolean}>('appearance/', body),
   preview: (body: unknown) => post<PlanPreview>('groups/preview/', body),
   sample: (body: unknown) => previewPdf('groups/sample/', body),
   create: (body: unknown) => post<FlowGroup>('groups/', body),
@@ -117,6 +120,8 @@ export const flowApi = {
   trace: (id: string, page: number) => apiFetch<FlowPage<FlowTrace>>(`/api/flow-cards/cards/${id}/trace/?page=${page}`),
   traceReturns: (id: string, source: number, page: number) => apiFetch<FlowPage<FlowReturn>>(`/api/flow-cards/cards/${id}/trace-returns/?source_id=${source}&page=${page}`),
   print: (body: unknown) => post<PrintJob>('print-jobs/', body),
+  printOrderOptions: (filters: URLSearchParams, signal?: AbortSignal) => apiFetch<FlowPage<FlowPrintOrder>>('/api/flow-cards/print-jobs/order-options/?' + filters.toString(), {signal}),
+  printOrderPlan: (body: unknown) => post<FlowPrintPlan>('print-jobs/order-plan/', body),
   printPreview: (body: unknown) => previewPdf('print-jobs/preview/', body),
   prints: (cardId: string, page = 1) => apiFetch<FlowPage<PrintJob>>(`/api/flow-cards/print-jobs/?card_id=${cardId}&page=${page}`),
   pendingPrints: (groupId: string, page = 1) => apiFetch<FlowPage<PrintJob>>(`/api/flow-cards/print-jobs/?group_id=${groupId}&pending=1&page_size=20&page=${page}`),

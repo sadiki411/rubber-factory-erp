@@ -34,13 +34,14 @@ export function FlowVoidDialog({cards, close, changed}: {cards: FlowCard[]; clos
   </Modal>
 }
 
-export function FlowPrintResults({ job, changed, disabled, cardId, groupId }: {
-  job: PrintJob; changed: (job: PrintJob) => void; disabled: boolean; cardId?: string; groupId?:string
+export function FlowPrintResults({ job, changed, disabled, cardId, groupId, scopeIds }: {
+  job: PrintJob; changed: (job: PrintJob) => void; disabled: boolean; cardId?: string; groupId?:string; scopeIds?:string[]
 }) {
   const { message, modal } = App.useApp()
   const [selected, setSelected] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
-  const items = job.items.filter(item => (!cardId || item.card_id === cardId) && (!groupId || item.group_id === groupId))
+  const items = job.items.filter(item => (!cardId || item.card_id === cardId) && (!groupId || item.group_id === groupId)
+    && (!scopeIds || scopeIds.includes(item.card_id)))
   const active = items.filter(item => item.active)
   const checked = active.filter(item => selected.includes(item.card_id))
   const update = async (ids: string[], status: 'SUCCESS' | 'CANCELLED') => {
@@ -73,21 +74,28 @@ export function FlowPrintResults({ job, changed, disabled, cardId, groupId }: {
     })
   }
   const layout = job.paper_layout ?? 'SINGLE'
-  const whole = canPrintWholeJob(job, cardId, groupId)
+  const whole = items.length === job.items.length && canPrintWholeJob(job, cardId, groupId)
+  const multipleGroups = new Set(items.map(i => i.group_id)).size > 1
   const printType = active.every(item=>!item.proposed_reprint)?'首次打印':active.every(item=>item.proposed_reprint)?'补打':'首次打印与补打'
   return <Card size="small" title={active.length?`原任务 · ${printType}`:'历史打印任务'} extra={<Tag color={active.length ? 'orange' : 'default'}>{active.length ? '尚未确认出纸' : '此处无待确认项'}</Tag>}>
-    <Typography.Paragraph>纸张：{PAPER_LAYOUT_LABEL[layout]}。{layout === 'A4_TWO_UP' ? 'A4 纵向，实际大小 100%，每张纸 1 页。' : '原卡尺寸，实际大小 100%。'}{job.second_inspection ? '含一检、二检签名。' : ''}</Typography.Paragraph>
-    {items.length < job.items.length && <Alert type="info" title={cardId?'原 PDF 还有其他批次；下方确认或取消仅作用于本批。':'原 PDF 还有其他卡组；下方确认或取消仅作用于当前卡组。'} />}
+    <Typography.Paragraph>纸张：{PAPER_LAYOUT_LABEL[layout]}。{layout === 'A4_TWO_UP' ? 'A4 纵向，实际大小 100%，每张纸 1 页。' : layout === 'A5_SINGLE' ? 'A5 横向，实际大小 100%，每张纸 1 卡。' : '原卡尺寸，实际大小 100%。'}{job.second_inspection ? '含一检、二检签名。' : ''}</Typography.Paragraph>
+    {items.some(item => item.order_refs?.length) && <Typography.Paragraph type="secondary">订单范围：{[...new Set(items.flatMap(item => item.order_refs || []))].join('、')}</Typography.Paragraph>}
+    {items.length < job.items.length && <Alert type="info" title={cardId?'原 PDF 还有其他批次；下方确认或取消仅作用于本批。':groupId?'原 PDF 还有其他卡组；下方确认或取消仅作用于当前卡组。':'原 PDF 还有其他卡；下方确认或取消只作用于这里列出的卡。'} />}
     {active.length>0 && job.file_prepared && !whole && <Alert type="warning" title="原 PDF 包含其他批次或已处理的卡，打印时请核对页码，避免重复出纸。" />}
     {job.file_prepared ? <Space wrap style={{marginTop:8}}>
       {whole && supportsDesktopFlowPrint() && <Button type="primary" onClick={()=>{const popup=openFlowPrintWindow(); if(popup)popup.show(job);else message.info('浏览器拦截了打印窗口，请允许弹窗，或点“打开原 PDF”打印。')}}>继续原任务打印</Button>}
       <Button type={active.length&&!supportsDesktopFlowPrint()?'primary':'default'} href={inlinePrintPdf(job)} target="_blank" rel="noopener noreferrer">{active.length ? '打开原 PDF' : '查看历史 PDF'}</Button>
       <Button href={job.pdf_url}>下载原 PDF</Button>
     </Space> :
-      <Button disabled={disabled || !active.length} loading={busy} onClick={() => { setBusy(true); void withFlowPrintWindow(()=>flowApi.preparePrint(job.id),cardId,groupId).then(changed).catch((e: Error) => message.error(e.message)).finally(() => setBusy(false)) }}>继续生成原 PDF</Button>}
+      <Button disabled={disabled || !active.length} loading={busy} onClick={() => {
+        setBusy(true)
+        const prepare = () => flowApi.preparePrint(job.id)
+        void (items.length === job.items.length ? withFlowPrintWindow(prepare,cardId,groupId) : prepare())
+          .then(changed).catch((e: Error) => message.error(e.message)).finally(() => setBusy(false))
+      }}>继续生成原 PDF</Button>}
     {active.length > 0 && <Typography.Paragraph style={{marginTop:8}}>没出纸或关掉打印窗口：直接继续同一任务，不算补打。有纸拿到手后，再勾选并确认成功。</Typography.Paragraph>}
     <Checkbox.Group value={selected} onChange={setSelected} style={{display:'flex',flexDirection:'column',gap:6}}
-      options={items.map(i => ({label: `第 ${i.sequence}/${i.denominator} 批 · ${i.proposed_reprint ? `补打 ${i.proposed_reprint} 次` : '首次打印'} · ${i.active?'未确认出纸':i.status==='SUCCESS'?'已确认出纸':'已取消'}`,
+      options={items.map(i => ({label: `${multipleGroups ? (i.order_refs?.join('、') || i.card_no) + ' · ' : ''}第 ${i.sequence}/${i.denominator} 批 · ${i.proposed_reprint ? `补打 ${i.proposed_reprint} 次` : '首次打印'} · ${i.active?'未确认出纸':i.status==='SUCCESS'?'已确认出纸':'已取消'}`,
         value:i.card_id, disabled:disabled||busy||!i.active}))} />
     {active.length > 0 && <Space wrap style={{marginTop:12}}>
       {active.length > 1 && <Button disabled={disabled||busy} onClick={()=>setSelected(active.map(i=>i.card_id))}>选中全部待确认</Button>}

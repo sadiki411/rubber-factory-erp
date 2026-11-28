@@ -9,6 +9,7 @@ import { QualityQrScanner } from '../components/QualityQrScanner'
 import { FlowTemplatePanel } from '../components/FlowTemplatePanel'
 import { FlowPreparationWorkspace } from '../components/FlowPreparationWorkspace'
 import { FlowPrintLayout, FlowPrintPreview } from '../components/FlowPrintLayout'
+import { FlowBatchPrintWorkspace } from '../components/FlowBatchPrintWorkspace'
 import { FlowPrintResults, FlowVoidDialog } from '../components/FlowPrintResults'
 import type { PreparationContext } from '../flowcards'
 import { FlowBakePanel } from '../components/FlowBakePanel'
@@ -129,15 +130,22 @@ export function FlowCardsPage() {
     form.setFieldsValue({ paper_width_mm: (group.snapshot.template as { width_mm?: number }).width_mm, paper_height_mm: (group.snapshot.template as { height_mm?: number }).height_mm })
     setPreview(undefined); message.info('已载入上方表单；修改后点击“保存修改到当前准备组”，不会另建组')
   }
+  if (params.get('bulk') === '1') return <div className="page-container flow-cards-page">
+    <PageTitle title="多订单工序卡打印" description="选择同一规格和材质的订单，合在一个打印任务里打印原卡。" extra={<Button onClick={()=>navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回订单管理</Button>} />
+    <FlowBatchPrintWorkspace key={params.toString()} specification={params.get('specification')||''} material={params.get('material')||''} readOnly={readOnly} />
+  </div>
   if (data?.preparation_enabled) return <div className="page-container flow-cards-page">
-    <PageTitle title="订单备卡与工序流转卡" description="订单、生产任务共用同一准备；只补缺项，不重录标准。" extra={<Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回来源页面</Button>} />
+    <PageTitle title="订单备卡与工序流转卡" description="订单、生产任务共用同一准备；只补缺项，不重录标准。" extra={<Space wrap>
+      <Button href={'/flow-cards?'+new URLSearchParams({bulk:'1', specification:data.product.specification, material:data.product.material, return_to:safeBusinessReturn(params.get('return_to'),'/orders')})}>同规格材质批量打印</Button>
+      <Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回来源页面</Button>
+    </Space>} />
     <FlowPreparationWorkspace key={scope.toString()} data={data as PreparationContext} refresh={() => { void context.refetch() }} lookup={<CardLookup />} settings={<FlowTemplatePanel />} beginPrint={openFlowPrintWindow}
       openPrint={async (id, cardId, groupId) => { const row=await withFlowPrintWindow(()=>flowApi.printJob(id),cardId,groupId);setJobCardId(cardId);setJobGroupId(groupId);setJob(row) }}
       printResults={printDialog(job, row=>{setJob(row);void client.invalidateQueries({queryKey:['prepared-cards']});void client.invalidateQueries({queryKey:['flow-pending-prints']})},()=>setJob(undefined),disabled,jobCardId,jobGroupId)}
       print={async (ids, secondInspection, paperLayout) => { const body={card_ids:ids,resume_active:true,second_inspection:secondInspection,paper_layout:paperLayout};const slot=`print:${ids.join(',')}:${secondInspection}`;const result=await flowApi.print({...body,request_key:flowRequestKey(slot,body)});setJobCardId(undefined);setJobGroupId(undefined);setJob(result);finishFlowRequest(slot);if(result.status==='CLOSED'){message.info('已找回原打印结果。请按原卡当前状态选择首次打印或补打。');return result}const prepared=result.file_prepared?result:await flowApi.preparePrint(result.id);setJob(prepared);if((prepared.paper_layout??'SINGLE')!==paperLayout) message.info('已恢复原打印任务，沿用该任务纸张格式。');return prepared }} />
   </div>
   return <div className="page-container flow-cards-page">
-    <PageTitle title="工序流转卡" description="一包产品的记录与身份；不另记产量、库存和交付。" extra={<Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回来源页面</Button>} />
+    <PageTitle title="工序流转卡" description="一包产品的记录与身份；不另记产量、库存和交付。" extra={<Space wrap><Button href="/flow-cards?bulk=1">批量打印工序卡</Button><Button onClick={() => navigate(safeBusinessReturn(params.get('return_to'), '/orders'))}>返回来源页面</Button></Space>} />
     <CardLookup />
     <FlowTemplatePanel standardId={selectedStandard} />
     {!scope.size ? <Alert type="info" title="扫描内部卡查看记录；制卡请从订单项次或生产任务进入" /> : context.isError ? <Alert type="error" title="来源读取失败，不猜配产品" description={context.error.message} action={<Button onClick={() => void context.refetch()}>重试</Button>} /> : !data ? <Skeleton active /> : <>
@@ -162,7 +170,7 @@ export function FlowCardsPage() {
             <Form.Item name="planned_molds" label="本次确认制卡模数（空白仅存准备组）"><InputNumber min={1} precision={0} /></Form.Item>
             <Form.Item name="molds_per_card" label="每卡计划模数" rules={[{ required: true }]}><InputNumber min={1} precision={0} /></Form.Item>
             <Form.Item name="standard_id" label="已确认要求版本（多个候选请核对来源）"><Select allowClear options={data.standards.map((s) => ({ value: s.id, label: `版本${s.version} · ${s.source}` }))} onChange={(id) => { const s = data.standards.find((v) => v.id === id); if (s) form.setFieldsValue({ whole_mold: s.whole_mold, appearance_ids: (s.snapshot.appearance || data.appearance.slice(0, 4)).map((a) => a.id) }) }} /></Form.Item>
-            <Form.Item name="appearance_ids" label="本组四项外观问题" rules={[{ required: true }, { type: 'array', len: 4, message: '请选择四项' }]}><Select mode="multiple" options={data.appearance.map((a) => ({ value: a.id, label: a.name }))} /></Form.Item>
+            <Form.Item name="appearance_ids" label="本组外观检查项目（可增删）" rules={[{ required: false }, { type: 'array', max: 20, message: '最多选择20项' }]}><Select mode="multiple" options={data.appearance.map((a) => ({ value: a.id, label: a.name }))} placeholder="可留空；选择后会印到流转卡" /></Form.Item>
             <Form.Item name="whole_mold" label="本组整模工序" rules={[{ required: true }]}><Select options={['UNKNOWN', 'REQUIRED', 'NOT_REQUIRED'].map((v) => ({ value: v, label: WHOLE[v] }))} /></Form.Item>
             <Form.Item name="whole_mold_basis" label="整组选择依据（正式制卡必填）"><Input placeholder="已核对本产品现场需要/不需要" /></Form.Item>
             <Form.Item name="diagram_id" label="定点图（可空，不猜另一副实物模具）"><Select allowClear options={data.diagrams.map((d) => ({ value: d.id, label: `图版本${d.version} · ${d.direction}` }))} /></Form.Item>
@@ -205,7 +213,7 @@ export function FlowCardsPage() {
             <Form.Item name={['hardness', stage, 'object']} label="默认测量对象"><Select options={[{ value: 'UNKNOWN', label: '待确认（不按尺寸猜）' }, { value: 'PRODUCT', label: '成品' }, { value: 'COUPON', label: '本厂当批胶料自制胶片' }]} /></Form.Item>
             <div className="flow-form-grid">{[['scale', '已确认量表（未知留空，不默认A）'], ['instrument', '手持硬度计型号/编号（未知可空）'], ['points', '适用测点'], ['specimen', '试样/制样要求'], ['conditioning', '冷却/调节条件'], ['reading_time', '接触后读数时间'], ['aggregation', '结果取值方式'], ['accepted_method', '客户认可方法及依据']].map(([key, title]) => <Form.Item key={key} name={['hardness', stage, key]} label={title}><Input maxLength={500} /></Form.Item>)}</div>
           </Card>)}</details>
-          <Form.Item name="appearance_ids" label="四项外观问题（旧卡保留当时名称）" rules={[{ required: true }]}><Select mode="multiple" options={data.appearance.map((a) => ({ value: a.id, label: a.name }))} /></Form.Item>
+          <Form.Item name="appearance_ids" label="外观检查项目（可增删，旧卡保留当时名称）"><Select mode="multiple" allowClear maxCount={20} options={data.appearance.map((a) => ({ value: a.id, label: a.name }))} /></Form.Item>
           <Form.Item name={['bake', 'state']} label="二烤建议适用性"><Select options={[{ value: 'UNKNOWN', label: '待确认' }, { value: 'NOT_APPLICABLE', label: '不适用' }, { value: 'APPLICABLE', label: '适用（确认下列温度和时间）' }]} /></Form.Item>
           <div className="flow-form-grid">{[['temperature_lower', '建议温度下限 ℃'], ['temperature_upper', '建议温度上限 ℃'], ['minutes_lower', '建议时间下限 min'], ['minutes_upper', '建议时间上限 min']].map(([key, label]) => <Form.Item key={key} name={['bake', key]} label={label}><InputNumber min={0} /></Form.Item>)}</div>
           <Form.List name="criteria">{(fields, { add, remove }) => <>{fields.map((f) => <Card size="small" key={f.key} extra={<Button onClick={() => remove(f.name)}>移除此项</Button>}>

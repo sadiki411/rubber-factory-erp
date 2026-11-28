@@ -240,7 +240,13 @@ def build_rows(card, second_inspection, *, include_material=False):
 
     if route.get("patrol"):
         problems = ("正常", *(v["name"] for v in snap.get("appearance",[])), "其他____")
-        yield (block("外观",.65), Cell("",3.5,options=problems),write("巡检",1.2)), 7.2, True
+        # Keep six short options on the original row. More choices retain
+        # their checkboxes and names on consecutive rows, never get clipped.
+        chunk = 3 if any(len(name) > 18 for name in problems) else 6
+        for start in range(0, len(problems), chunk):
+            end = start + chunk
+            yield (block("外观" if not start else "续",.65), Cell("",3.5,options=problems[start:end]),
+                   write("巡检",1.2) if end >= len(problems) else Cell("",1.2)), 7.2, True
     if snap["whole_mold"] == "REQUIRED":
         yield (block("整模检验",1.3),write("定点（孔/模）",2.5),write("整模员",1.2)), 7.2, True
     if route.get("deburr"):
@@ -271,7 +277,7 @@ def short_item_label(item):
     return {"C/S-A":"C/S-A（轴向线径）", "C/S-R":"C/S-R（径向线径）"}.get(item,inspection_item_label(item))
 
 
-def render_cards_v7(items, *, second_inspection=False, paper_layout=SINGLE, include_material=False):
+def render_cards_v7(items, *, second_inspection=False, paper_layout=SINGLE, include_material=False, shared=None):
     sizes = {(c.group.snapshot["template"].get("width_mm",190),c.group.snapshot["template"].get("height_mm",130)) for c,_ in items}
     if len(sizes) != 1:
         raise ValueError("不同纸张尺寸请分开打印。")
@@ -279,7 +285,7 @@ def render_cards_v7(items, *, second_inspection=False, paper_layout=SINGLE, incl
     if not 180 <= width <= 220 or not 125 <= height <= 165:
         raise ValueError("纸张尺寸超出已支持的180~220 × 125~165mm。")
     out = BytesIO()
-    canvas = make_canvas(out,(width*mm,height*mm),paper_layout,fuller_a4=True)
+    canvas = make_canvas(out,(width*mm,height*mm),paper_layout,fuller_a4=True,shared=shared)
     canvas.setTitle("随货工序卡")
     paper = CardLayout(canvas,font_name(),width,height)
     footer_h = 5.3
@@ -347,5 +353,6 @@ def render_cards_v7(items, *, second_inspection=False, paper_layout=SINGLE, incl
                 cells = (Cell(identity),)
                 y = paper.row(y,cells,paper.height_for(cells,8))
         canvas.showPage(); finish_card(canvas)
-    canvas.save()
+    if shared is None:
+        canvas.save()
     return out.getvalue()

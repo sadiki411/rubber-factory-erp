@@ -236,6 +236,12 @@ class AppearanceView(ErrorsMixin, APIView):
         if not isinstance(active, bool):
             raise ValidationError({"is_active": "状态必须是布尔值。"})
         with transaction.atomic():
+            if not request.data.get("id") and request.data.get("reuse_existing") is True:
+                matches = list(AppearanceIssue.objects.filter(name__iexact=name).order_by("pk")[:2])
+                if len(matches) == 1 and matches[0].is_active:
+                    return Response({"id": matches[0].pk, "name": matches[0].name, "is_active": True})
+                if matches:
+                    raise ValidationError({"name": "同名项目已停用或存在歧义，请先核对项目库。"})
             row = s.get_row(AppearanceIssue, request.data["id"], "id") if request.data.get("id") else AppearanceIssue(code="USER_" + uuid.uuid4().hex)
             if AppearanceIssue.objects.filter(name__iexact=name).exclude(pk=row.pk).exists():
                 raise ValidationError({"name": "问题名称已存在，请使用原条目，不重复建立。"})
@@ -492,10 +498,29 @@ class PrintViewSet(ErrorsMixin, viewsets.GenericViewSet):
     def result(self, job):
         return {"id": str(job.pk), "status": job.status, "request_key": job.request_key,
                 "items": [{"card_id": str(i.card_id), "group_id": str(i.card.group_id), "card_no": i.card.card_no, "sequence": i.card.sequence,
+                           "order_refs": [f"{o.get('order_no', '')}/{o.get('item_no') or '—'}" for o in i.card.group.snapshot.get("orders", [])],
                            "denominator": i.card.denominator, "proposed_reprint": i.proposed_reprint,
-                           "status": i.status, "active": i.active} for i in job.items.select_related("card").order_by("card__group_id", "card__sequence")],
+                           "status": i.status, "active": i.active} for i in job.items.select_related("card__group").order_by("card__group_id", "card__sequence")],
                 "pdf_url": f"/api/flow-cards/print-jobs/{job.pk}/pdf/", "pdf_sha256": job.pdf_sha256,
                 "file_prepared": bool(job.pdf_storage_name), **self.frozen_options(job)}
+
+    @action(detail=False, methods=["get"], url_path="order-options")
+    def order_options(self, request):
+        specification, material = s.same_order_product(request.query_params)
+        rows = QualityOrder.objects.filter(specification__iexact=specification, material__iexact=material)
+        if (term := request.query_params.get("q", "").strip()[:100]):
+            rows = rows.filter(Q(order_no__icontains=term) | Q(item_no__icontains=term) | Q(customer_code__icontains=term))
+        cards = InternalCard.objects.filter(group__orders__id=OuterRef("pk"), group__status="GENERATED", status="ACTIVE")
+        rows = rows.select_related("source_batch", "last_source_batch").annotate(has_cards=Exists(cards)).order_by("-due_date", "-pk")
+        return page(self, request, rows, lambda o: {
+            "id": o.pk, "order_no": o.order_no, "item_no": o.item_no, "status": o.get_status_display(),
+            "due_date": o.due_date, "customer": o.customer_code or s.order_customer_key(o),
+            "has_cards": o.has_cards,
+        })
+
+    @action(detail=False, methods=["post"], url_path="order-plan")
+    def order_plan(self, request):
+        return Response(s.print_order_plan(request.data))
 
     @action(detail=False, methods=["post"])
     def preview(self, request):

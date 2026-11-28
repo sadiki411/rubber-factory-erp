@@ -1,6 +1,7 @@
 """Deterministic snapshot-only renderer. Downloading never changes print counters."""
 import io
 import os
+from itertools import groupby
 from pathlib import Path
 
 from reportlab.lib.units import mm
@@ -9,7 +10,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.graphics.barcode.qr import QrCodeWidget
 from reportlab.graphics.shapes import Drawing
 from reportlab.graphics import renderPDF
-from .paper import A4_TWO_UP, SINGLE, make_canvas, start_card, finish_card
+from .paper import A4_TWO_UP, A5_SINGLE, SINGLE, A5Canvas, make_canvas, start_card, finish_card
 
 
 def font_name():
@@ -41,35 +42,52 @@ def wrap(text, width, font, size=9):
 
 def render_cards(items, *, print_options=None):
     items = list(items)
-    renderers = {card.group.snapshot.get("template", {}).get("renderer") for card, _ in items}
     second = bool((print_options or {}).get("second_inspection"))
     paper_layout = (print_options or {}).get("paper_layout", SINGLE)
-    if paper_layout == A4_TWO_UP:
+    if paper_layout in (A4_TWO_UP, A5_SINGLE):
         items.sort(key=lambda item: (str(getattr(item[0], "group_id", "")), item[0].sequence))
+    if paper_layout == A5_SINGLE:
+        out = io.BytesIO()
+        canvas = A5Canvas(out)
+        for _, run in groupby(items, _template_key):
+            _render_template(list(run), second, paper_layout, shared=canvas)
+        canvas.save()
+        return out.getvalue()
+    return _render_template(items, second, paper_layout)
+
+
+def _template_key(item):
+    template = item[0].group.snapshot["template"]
+    return template["renderer"], template.get("width_mm", 190), template.get("height_mm", 130)
+
+
+def _render_template(items, second, paper_layout, *, shared=None):
+    renderers = {_template_key(item)[0] for item in items}
+    options = dict(second_inspection=second, paper_layout=paper_layout, shared=shared)
     if renderers == {"flowcard-guidance-20261124-v8"}:
         from .pdf_v7 import render_cards_v7
-        return render_cards_v7(items, second_inspection=second, paper_layout=paper_layout, include_material=True)
+        return render_cards_v7(items, include_material=True, **options)
     if renderers == {"flowcard-guidance-20261122-v7"}:
         from .pdf_v7 import render_cards_v7
-        return render_cards_v7(items, second_inspection=second, paper_layout=paper_layout)
+        return render_cards_v7(items, **options)
     if renderers == {"flowcard-guidance-20261121-v6"}:
         from .pdf_v3 import render_cards_v3
-        return render_cards_v3(items, applicable_dimensions=True, route_aware=True, operational_guidance=True, second_inspection=second, paper_layout=paper_layout)
+        return render_cards_v3(items, applicable_dimensions=True, route_aware=True, operational_guidance=True, **options)
     if renderers == {"flowcard-preparation-20261119-v5"}:
         from .pdf_v3 import render_cards_v3
-        return render_cards_v3(items, applicable_dimensions=True, route_aware=True, second_inspection=second, paper_layout=paper_layout)
+        return render_cards_v3(items, applicable_dimensions=True, route_aware=True, **options)
     if renderers == {"flowcard-review-20261119-v4"}:
         from .pdf_v3 import render_cards_v3
-        return render_cards_v3(items, applicable_dimensions=True, second_inspection=second, paper_layout=paper_layout)
+        return render_cards_v3(items, applicable_dimensions=True, **options)
     if renderers == {"flowcard-review-20261118-v3"}:
         from .pdf_v3 import render_cards_v3
-        return render_cards_v3(items, second_inspection=second, paper_layout=paper_layout)
+        return render_cards_v3(items, **options)
     if renderers == {"flowcard-review-20261118-v2"}:
         from .pdf_v2 import render_cards_v2
-        return render_cards_v2(items, second_inspection=second, paper_layout=paper_layout)
+        return render_cards_v2(items, **options)
     if renderers != {"flowcard-draft-20261118-v1"}:
         raise ValueError("不同渲染版本请分开打印；不能替换旧卡模板。")
-    return render_cards_v1(items, second_inspection=second, paper_layout=paper_layout)
+    return render_cards_v1(items, **options)
 
 
 def inspection_signatures(text, line, width, height):
@@ -79,10 +97,10 @@ def inspection_signatures(text, line, width, height):
     text(x+53,y,"二检：",9); line(x+65,y+.7,25)
 
 
-def render_cards_v1(items, *, second_inspection=False, paper_layout=SINGLE):
+def render_cards_v1(items, *, second_inspection=False, paper_layout=SINGLE, shared=None):
     out = io.BytesIO()
     font = font_name()
-    c = make_canvas(out, (190*mm, 130*mm), paper_layout)
+    c = make_canvas(out, (190*mm, 130*mm), paper_layout, shared=shared)
     c.setTitle("工序流转卡 - 每卡独立身份，计划不计产量")
     for card, reprint in items:
         start_card(c)
@@ -162,8 +180,8 @@ def render_cards_v1(items, *, second_inspection=False, paper_layout=SINGLE):
             x += w
         y += 21
         box(5, y, 180, 8)
-        problems = snap.get("appearance", [])
-        names = [e["name"] for e in problems] if problems else ["毛刺", "杂质", "包风", "缺料"]
+        problems = snap.get("appearance")
+        names = [e["name"] for e in problems] if problems is not None else ["毛刺", "杂质", "包风", "缺料"]
         field(6, y, 137, 8, "外观 □正常  " + "  ".join("□"+name for name in names) + "  □其他____", 8.9)
         text(145, y+5.3, "巡 检 __________")
         y += 8
@@ -228,5 +246,6 @@ def render_cards_v1(items, *, second_inspection=False, paper_layout=SINGLE):
                 yy += 3
             c.showPage()
         finish_card(c)
-    c.save()
+    if shared is None:
+        c.save()
     return out.getvalue()
