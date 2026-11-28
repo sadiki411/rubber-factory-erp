@@ -274,7 +274,7 @@ export function QualitySupplements({ start, employees, canReconcile, readOnly, o
           style={{height:'auto', whiteSpace:'normal'}} disabled={busy} onClick={() => setRelease(item)}>
           核减 {item.order_no}/{item.item_no || '—'} · 原包 {item.shipment_no}/{item.unit_no} · 最多 {pieces(item.max_quantity)}
         </Button>)}
-        {release && <Form key={release.origin_id + ':' + release.allocation_id} layout="vertical" disabled={busy}
+        {release && <Form key={'release:' + release.origin_id + ':' + release.allocation_id} layout="vertical" disabled={busy}
           onFinish={(values) => void submit(`issues/${activeIssue.data!.id}/delivery-release/`, {
             ...values, origin_id:release.origin_id, allocation_id:release.allocation_id, expected_released:release.expected_released,
           })}>

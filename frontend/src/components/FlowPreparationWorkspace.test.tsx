@@ -29,13 +29,15 @@ describe('server preparation workspace',{timeout:30000},()=>{
     vi.mocked(flowApi.pendingPrints).mockImplementation(async()=>({count:Number(ready),results:ready?[job]:[]}))
     let release:()=>void = ()=>{}
     print.mockImplementationOnce(()=>new Promise(resolve=>{release=()=>{ready=true;resolve(job)}}))
-    mount(data,false,vi.fn())
-    const button=await screen.findByRole('button',{name:'生成 3 张并准备打印'})
-    await waitFor(()=>expect(button).toBeEnabled())
+    // Flush the form-initialization microtask before looking up the computed
+    // button label, as in the two other generation tests above.
+    await act(async()=>{mount(data,false,vi.fn())})
+    await waitFor(()=>expect(screen.getByRole('button',{name:'生成 3 张并准备打印'})).toBeEnabled())
+    const button=screen.getByRole('button',{name:'生成 3 张并准备打印'})
     fireEvent.click(button)
     await screen.findByText('没有待确认打印任务。')
     await waitFor(()=>expect(print).toHaveBeenCalled())
-    release()
+    await act(async()=>{release()})
     expect(await screen.findByRole('button',{name:'处理原打印任务'})).toBeInTheDocument()
   })
   it('normal save carries the same draft id and concurrency version',async()=>{mount({...data,preferred_group:draft,existing_groups:[draft]});await screen.findByText(/同一草稿ID/);fireEvent.click(screen.getByRole('button',{name:'保存本次准备'}));await waitFor(()=>expect(flowApi.create).toHaveBeenCalled());expect(vi.mocked(flowApi.create).mock.calls[0][0]).toMatchObject({group_id:'same-draft',expected_revision:3});expect(flowApi.generate).not.toHaveBeenCalled()})
